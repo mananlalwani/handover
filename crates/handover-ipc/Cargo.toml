@@ -1,0 +1,14 @@
+[package]
+name = "handover-ipc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Client/server IPC protocol for Handover"
+
+[dependencies]
+handover-core = { path = "../handover-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

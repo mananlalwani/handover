@@ -1,0 +1,19 @@
+[package]
+name = "handoverd"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Handover daemon"
+
+[dependencies]
+handover-core = { path = "../crates/handover-core" }
+handover-ipc = { path = "../crates/handover-ipc" }
+handover-kdeconnect = { path = "../crates/handover-kdeconnect" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
