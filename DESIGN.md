@@ -1,0 +1,117 @@
+# Design
+
+Handover is Linux desktop infrastructure. Its main job is to make device state
+and actions available consistently across the desktop, not to act primarily as
+a phone-management application.
+
+Frontends consume normalized Handover device state. KDE Connect object paths,
+plugin names, D-Bus interfaces, and event formats belong inside the KDE Connect
+backend and must not become frontend concepts.
+
+Backends are replaceable. The core domain model describes what Handover knows
+about a device without requiring a particular discovery or transport system.
+The initial KDE Connect backend proves this boundary but does not define it.
+
+The current KDE Connect path is:
+
+```text
+kdeconnectd
+    -> session D-Bus
+    -> handover-kdeconnect
+    -> handover-core StateEvent
+    -> handoverd device and notification maps
+    -> Unix socket
+    -> handoverctl and Quickshell
+```
+
+`handover-kdeconnect` owns KDE Connect service names, object paths, interfaces,
+properties, and signal decoding. It converts each D-Bus snapshot into a
+validated `handover-core::Device`. It watches KDE Connect's D-Bus owner and
+re-enumerates after a restart.
+
+`handoverd` owns the authoritative in-memory device and active notification
+maps. It applies normalized events synchronously, logs meaningful state
+transitions, and publishes the result to clients. No Handover state is
+persisted to disk. KDE Connect remains responsible for its pairing data.
+
+Notifications use an ID made from the source `DeviceId` and a device-local
+notification ID. This prevents collisions between phones. The normalized
+record carries app name, title, body, optional icon path, clearable state,
+optional actions, and reply availability. KDE Connect's D-Bus API does not
+currently expose action identifiers or labels, so its adapter publishes an
+empty action list. It does expose reply and dismissal operations.
+
+Clients request dismissal, action invocation, or reply over IPC. The daemon
+checks the current notification and its advertised capabilities before the
+KDE adapter makes a D-Bus call. A successful response means KDE Connect
+accepted the call, not that Android or the app confirmed delivery. Commands
+do not optimistically remove daemon state; subsequent KDE Connect signals
+update it.
+
+## User service
+
+The installed daemon runs as a systemd user service enabled under
+`default.target`. It uses the user's session D-Bus and `$XDG_RUNTIME_DIR`;
+it never runs as root. It does not depend on a compositor or on a desktop
+activating `graphical-session.target`. `Restart=on-failure` recovers from
+unexpected exits after a short delay without restarting after a clean stop.
+
+systemd creates `$XDG_RUNTIME_DIR/handover` with mode `0700`, while the daemon
+continues to own and clean up `handoverd.sock`. The unit also sets a restrictive
+umask and prevents the process from gaining new privileges. More invasive
+sandboxing is intentionally deferred because Handover is desktop
+infrastructure and needs session-bus and runtime-directory access.
+
+The developer install layout is:
+
+- `~/.local/bin/handoverd`
+- `~/.local/bin/handoverctl`
+- `${XDG_DATA_HOME:-~/.local/share}/systemd/user/handoverd.service`
+- `${XDG_DATA_HOME:-~/.local/share}/handover/quickshell/` for the optional
+  reference client
+
+## Local IPC
+
+`handoverd` listens on
+`$XDG_RUNTIME_DIR/handover/handoverd.sock`. It creates the directory with mode
+`0700` and the socket with mode `0600`. The daemon removes a stale socket only
+when the existing path is a socket and no process accepts connections there.
+
+Protocol 1 uses newline-delimited JSON. Every request includes `protocol: 1`
+and one of these methods:
+
+- `hello`
+- `devices.list`
+- `subscribe`
+
+Server messages also carry `protocol: 1`. Snapshots serialize normalized
+`handover-core::Device` and `Notification` values directly. Battery
+deserialization still runs the core model's percentage validation. Device and
+notification events use add/update/remove forms; no KDE Connect object paths
+or reply tokens cross the socket.
+
+A subscription response includes current devices and notifications, closing
+the race between fetching state and beginning event delivery. The daemon then
+sends future normalized events. Each client runs in its own task, so a broken
+client cannot stop the backend or other clients.
+
+The event channel retains 64 messages. A slow subscriber that falls behind
+does not block device updates. Once it reads again, the server replaces missed
+history with a current `snapshot` message containing both maps. Current state
+matters more than replaying every intermediate battery reading or notification
+update.
+
+The daemon shares its maps through one `RwLock`. Backend callbacks take a short
+write lock, and IPC snapshots take a short read lock and clone the state.
+No lock guard crosses an async wait.
+
+`handoverctl devices` makes a one-shot request. `handoverctl monitor` reconnects
+every two seconds after daemon loss. The Quickshell singleton follows the same
+fixed retry interval, requests a new snapshot after each connection, and owns
+only disposable view state.
+
+Future UI clients must be safe to close, restart, or replace without affecting
+daemon state.
+
+Quickshell is the first reference frontend. It demonstrates the public IPC and
+domain model, but neither the daemon nor the libraries depend on Quickshell.
