@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use handover_core::{Device, DeviceId, Notification, SharedResource};
+use handover_core::{
+    Device, DeviceId, MediaCommand, MediaSession, MediaSessionId, Notification, SharedResource,
+};
 use handover_ipc::{Client, IpcError, PROTOCOL_VERSION, ServerPayload};
 use thiserror::Error;
 use url::Url;
@@ -21,12 +23,32 @@ enum Command {
     Devices,
     /// List active remote notifications
     Notifications,
+    /// List and control active remote media sessions
+    Media {
+        #[command(subcommand)]
+        command: Option<MediaSubcommand>,
+    },
     /// Print live normalized device and notification changes
     Monitor,
     /// Send a URL to one paired device
     SendUrl { device: String, url: String },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+enum MediaSubcommand {
+    /// Start playback
+    Play { session: String },
+    /// Pause playback
+    Pause { session: String },
+    /// Toggle playback
+    #[command(name = "play-pause")]
+    PlayPause { session: String },
+    /// Skip to the next item
+    Next { session: String },
+    /// Return to the previous item
+    Previous { session: String },
 }
 
 #[derive(Debug, Error)]
@@ -37,6 +59,8 @@ enum CliError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     DeviceSelection(String),
+    #[error("{0}")]
+    MediaSelection(String),
     #[error("cannot convert local path to a file URL")]
     InvalidFilePath,
 }
@@ -48,6 +72,7 @@ async fn main() -> ExitCode {
     let result = match cli.command {
         Some(Command::Devices) => list_devices().await,
         Some(Command::Notifications) => list_notifications().await,
+        Some(Command::Media { command }) => media(command).await,
         Some(Command::Monitor) => monitor().await,
         Some(Command::SendUrl { device, url }) => send_url(&device, url).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
@@ -82,6 +107,52 @@ async fn list_notifications() -> Result<(), CliError> {
     let notifications = client.notifications().await?;
     print_notification_table(&devices, &notifications);
     Ok(())
+}
+
+async fn media(command: Option<MediaSubcommand>) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let devices = client.devices().await?;
+    let sessions = client.media_sessions().await?;
+
+    let Some(command) = command else {
+        print_media_table(&devices, &sessions);
+        return Ok(());
+    };
+
+    let (selector, command) = match command {
+        MediaSubcommand::Play { session } => (session, MediaAction::Play),
+        MediaSubcommand::Pause { session } => (session, MediaAction::Pause),
+        MediaSubcommand::PlayPause { session } => (session, MediaAction::PlayPause),
+        MediaSubcommand::Next { session } => (session, MediaAction::Next),
+        MediaSubcommand::Previous { session } => (session, MediaAction::Previous),
+    };
+    let id = select_media_session(&sessions, &selector)?;
+    client
+        .media_command(command.into_command(id.clone()))
+        .await?;
+    println!("media command accepted for {}", media_selector(&id));
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum MediaAction {
+    Play,
+    Pause,
+    PlayPause,
+    Next,
+    Previous,
+}
+
+impl MediaAction {
+    fn into_command(self, id: MediaSessionId) -> MediaCommand {
+        match self {
+            Self::Play => MediaCommand::Play { id },
+            Self::Pause => MediaCommand::Pause { id },
+            Self::PlayPause => MediaCommand::PlayPause { id },
+            Self::Next => MediaCommand::Next { id },
+            Self::Previous => MediaCommand::Previous { id },
+        }
+    }
 }
 
 async fn monitor() -> Result<(), CliError> {
@@ -242,6 +313,15 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::NotificationRemoved { notification_id } => {
             println!("notification removed: {notification_id}");
         }
+        ServerPayload::MediaAdded { media_session } => {
+            println!("media added: {}", describe_media(&media_session));
+        }
+        ServerPayload::MediaUpdated { media_session } => {
+            println!("media updated: {}", describe_media(&media_session));
+        }
+        ServerPayload::MediaRemoved { media_session_id } => {
+            println!("media removed: {}", media_selector(&media_session_id));
+        }
         ServerPayload::ShareReceived { share } => {
             let kind = match share.resource {
                 SharedResource::File { .. } => "local file available",
@@ -252,11 +332,13 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::Snapshot {
             devices,
             notifications,
+            media_sessions,
         } => {
             println!(
-                "state resynchronized: {} device(s), {} notification(s)",
+                "state resynchronized: {} device(s), {} notification(s), {} media session(s)",
                 devices.len(),
-                notifications.len()
+                notifications.len(),
+                media_sessions.len()
             );
         }
         ServerPayload::Error { code, message } => {
@@ -265,10 +347,81 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::Hello { .. }
         | ServerPayload::Devices { .. }
         | ServerPayload::Notifications { .. }
+        | ServerPayload::Media { .. }
         | ServerPayload::CommandCompleted { .. }
         | ServerPayload::ShareAccepted { .. }
+        | ServerPayload::MediaAccepted { .. }
         | ServerPayload::Subscribed { .. } => {}
     }
+}
+
+fn print_media_table(devices: &[Device], sessions: &[MediaSession]) {
+    println!("SESSION  DEVICE  APP  STATE  TITLE  ARTIST");
+    for session in sessions {
+        let device_name = devices
+            .iter()
+            .find(|device| device.id == session.id.device_id)
+            .map(|device| device.name.as_str())
+            .unwrap_or_else(|| session.id.device_id.as_str());
+        println!(
+            "{}  {}  {}  {}  {}  {}",
+            media_selector(&session.id),
+            device_name,
+            session.application,
+            playback_label(session),
+            session.title.as_deref().unwrap_or("-"),
+            session.artist.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+fn playback_label(session: &MediaSession) -> &'static str {
+    match session.playback {
+        handover_core::PlaybackState::Playing => "playing",
+        handover_core::PlaybackState::Paused => "paused",
+        handover_core::PlaybackState::Stopped => "stopped",
+        handover_core::PlaybackState::Unknown => "unknown",
+    }
+}
+
+fn media_selector(id: &MediaSessionId) -> String {
+    format!("{}:{}", id.device_id, id.player_id)
+}
+
+fn select_media_session(
+    sessions: &[MediaSession],
+    selector: &str,
+) -> Result<MediaSessionId, CliError> {
+    if let Some(session) = sessions
+        .iter()
+        .find(|session| media_selector(&session.id) == selector)
+    {
+        return Ok(session.id.clone());
+    }
+
+    let matches: Vec<_> = sessions
+        .iter()
+        .filter(|session| session.application == selector)
+        .collect();
+    match matches.as_slice() {
+        [session] => Ok(session.id.clone()),
+        [] => Err(CliError::MediaSelection(format!(
+            "no media session identified by {selector:?}"
+        ))),
+        _ => Err(CliError::MediaSelection(format!(
+            "multiple media sessions use application {selector:?}; use a session ID"
+        ))),
+    }
+}
+
+fn describe_media(session: &MediaSession) -> String {
+    format!(
+        "{} {} state={} title={}",
+        media_selector(&session.id),
+        session.application,
+        playback_label(session),
+        session.title.as_deref().unwrap_or("-")
+    )
 }
 
 fn describe_device(device: &Device) -> String {
@@ -286,7 +439,7 @@ fn describe_device(device: &Device) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use handover_core::{BatteryState, Capability, DeviceId};
+    use handover_core::{BatteryState, Capability, DeviceId, MediaSession, PlaybackState};
 
     use super::*;
 
@@ -339,5 +492,60 @@ mod tests {
             select_device(&[], "missing"),
             Err(CliError::DeviceSelection(message)) if message.contains("no device")
         ));
+    }
+
+    fn media_session(device_id: &str, player_id: &str, application: &str) -> MediaSession {
+        MediaSession {
+            id: MediaSessionId::new(DeviceId::new(device_id), player_id),
+            application: application.into(),
+            title: Some("Song".into()),
+            artist: Some("Artist".into()),
+            album: None,
+            playback: PlaybackState::Playing,
+            position_ms: None,
+            duration_ms: None,
+            volume_percent: None,
+            controls: Default::default(),
+        }
+    }
+
+    #[test]
+    fn selects_media_by_exact_scoped_id_or_unique_application() {
+        let first = media_session("phone-a", "player-1", "Spotify");
+        let second = media_session("phone-b", "player-2", "Music");
+        assert_eq!(
+            select_media_session(&[first.clone(), second.clone()], "phone-a:player-1")
+                .expect("scoped ID"),
+            first.id
+        );
+        assert_eq!(
+            select_media_session(&[first.clone(), second.clone()], "Music").expect("unique app"),
+            second.id
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unknown_media_selector() {
+        let first = media_session("phone-a", "player-1", "Spotify");
+        let second = media_session("phone-b", "player-2", "Spotify");
+        assert!(matches!(
+            select_media_session(&[first.clone(), second], "Spotify"),
+            Err(CliError::MediaSelection(message)) if message.contains("multiple")
+        ));
+        assert!(matches!(
+            select_media_session(&[first], "missing"),
+            Err(CliError::MediaSelection(message)) if message.contains("no media session")
+        ));
+    }
+
+    #[test]
+    fn formats_media_state_without_optional_metadata() {
+        let mut session = media_session("phone-a", "player-1", "Spotify");
+        session.title = None;
+        session.playback = PlaybackState::Paused;
+        assert_eq!(
+            describe_media(&session),
+            "phone-a:player-1 Spotify state=paused title=-"
+        );
     }
 }

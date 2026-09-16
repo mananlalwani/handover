@@ -3,7 +3,7 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use handover_core::{Capability, DeviceId, NotificationCommand, StateEvent};
+use handover_core::{Capability, DeviceId, MediaCommand, NotificationCommand, StateEvent};
 use handover_ipc::{
     ErrorCode, IpcError, Method, PROTOCOL_VERSION, Request, ServerMessage, ServerPayload,
     read_json_line, runtime_directory, socket_path, write_json_line,
@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 use url::Url;
 
-use crate::state::{CommandValidationError, StateSnapshot, StateStore};
+use crate::state::{CommandValidationError, MediaValidationError, StateSnapshot, StateStore};
 
 pub(crate) const EVENT_CAPACITY: usize = 64;
 
@@ -114,24 +114,26 @@ async fn handle_client(
     let mut reader = BufReader::new(read_half);
     let mut subscription: Option<broadcast::Receiver<StateEvent>> = None;
     let mut include_share_events = false;
+    let mut include_media_events = false;
 
     loop {
         if let Some(receiver) = subscription.as_mut() {
             tokio::select! {
                 request = read_json_line::<_, Request>(&mut reader) => {
-                    if !handle_request_result(request, &mut writer, &state, &events, &mut subscription, &mut include_share_events).await? {
+                    if !handle_request_result(request, &mut writer, &state, &events, &mut subscription, &mut include_share_events, &mut include_media_events).await? {
                         return Ok(());
                     }
                 }
                 event = receiver.recv() => {
                     match event {
                         Ok(event) if matches!(event, StateEvent::ShareReceived(_)) && !include_share_events => {}
+                        Ok(event) if matches!(event, StateEvent::Media(_)) && !include_media_events => {}
                         Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             debug!(skipped, "IPC client lagged; sending current snapshot");
                             write_json_line(
                                 &mut writer,
-                                &ServerMessage::new(snapshot_payload(&state)),
+                                &ServerMessage::new(snapshot_payload(&state, include_media_events)),
                             ).await?;
                         }
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
@@ -147,6 +149,7 @@ async fn handle_client(
                 &events,
                 &mut subscription,
                 &mut include_share_events,
+                &mut include_media_events,
             )
             .await?
             {
@@ -163,6 +166,7 @@ async fn handle_request_result<W>(
     events: &broadcast::Sender<StateEvent>,
     subscription: &mut Option<broadcast::Receiver<StateEvent>>,
     include_share_events: &mut bool,
+    include_media_events: &mut bool,
 ) -> Result<bool, IpcError>
 where
     W: AsyncWrite + Unpin,
@@ -211,14 +215,26 @@ where
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,
         },
-        Method::Subscribe { shares } => {
+        Method::MediaList => ServerPayload::Media {
+            media_sessions: snapshot(state).media_sessions,
+        },
+        Method::Subscribe { shares, media } => {
             *subscription = Some(events.subscribe());
             *include_share_events = shares;
+            *include_media_events = media;
             let snapshot = snapshot(state);
             ServerPayload::Subscribed {
                 devices: snapshot.devices,
                 notifications: snapshot.notifications,
+                media_sessions: if media {
+                    snapshot.media_sessions
+                } else {
+                    Vec::new()
+                },
             }
+        }
+        Method::MediaControl { command } => {
+            return handle_media_command(command, writer, state).await;
         }
         Method::NotificationDismiss { notification_id } => {
             return handle_notification_command(
@@ -267,6 +283,65 @@ where
         }
     };
     write_json_line(writer, &ServerMessage::new(response)).await?;
+    Ok(true)
+}
+
+async fn handle_media_command<W>(
+    command: MediaCommand,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let validation = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .validate_media_command(&command);
+    if let Err(error) = validation {
+        let (code, message) = match error {
+            MediaValidationError::NotFound => (
+                ErrorCode::MediaSessionNotFound,
+                "media session is no longer available",
+            ),
+            MediaValidationError::DeviceUnavailable => (
+                ErrorCode::DeviceDisconnected,
+                "source device is unavailable",
+            ),
+            MediaValidationError::UnsupportedControl => (
+                ErrorCode::InvalidMediaCommand,
+                "media session does not support that control",
+            ),
+            MediaValidationError::InvalidValue => (
+                ErrorCode::InvalidMediaCommand,
+                "invalid media control value",
+            ),
+        };
+        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        return Ok(true);
+    }
+
+    let id = command.id().clone();
+    match handover_kdeconnect::KdeConnectBackend::execute_media(&command).await {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::MediaAccepted { id }),
+            )
+            .await?
+        }
+        Err(error) => {
+            warn!(device_id = %id.device_id, player_id = %id.player_id, %error, "KDE Connect rejected media command");
+            write_json_line(
+                writer,
+                &ServerMessage::protocol_error(
+                    ErrorCode::BackendRejected,
+                    "media backend could not accept the command",
+                ),
+            )
+            .await?;
+        }
+    }
     Ok(true)
 }
 
@@ -457,11 +532,16 @@ fn snapshot(state: &Arc<RwLock<StateStore>>) -> StateSnapshot {
         .snapshot()
 }
 
-fn snapshot_payload(state: &Arc<RwLock<StateStore>>) -> ServerPayload {
+fn snapshot_payload(state: &Arc<RwLock<StateStore>>, include_media: bool) -> ServerPayload {
     let snapshot = snapshot(state);
     ServerPayload::Snapshot {
         devices: snapshot.devices,
         notifications: snapshot.notifications,
+        media_sessions: if include_media {
+            snapshot.media_sessions
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -469,6 +549,7 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
     match event {
         StateEvent::Device(event) => ServerMessage::from_device_event(event),
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
+        StateEvent::Media(event) => ServerMessage::from_media_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })
         }
@@ -480,8 +561,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use handover_core::{
-        BatteryState, Capability, Device, DeviceEvent, DeviceId, Notification, NotificationEvent,
-        NotificationId,
+        BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
+        MediaEvent, MediaSession, MediaSessionId, Notification, NotificationEvent, NotificationId,
+        PlaybackState,
     };
     use handover_ipc::{Client, ServerPayload};
     use tempfile::TempDir;
@@ -511,6 +593,83 @@ mod tests {
             actions: Vec::new(),
             reply_supported: true,
         }
+    }
+
+    fn media_session() -> MediaSession {
+        MediaSession {
+            id: MediaSessionId::new(DeviceId::new("phone"), "Player"),
+            application: "Player".into(),
+            title: Some("Test song".into()),
+            artist: None,
+            album: None,
+            playback: PlaybackState::Paused,
+            position_ms: Some(0),
+            duration_ms: None,
+            volume_percent: None,
+            controls: BTreeSet::from([MediaControl::Play]),
+        }
+    }
+
+    #[tokio::test]
+    async fn media_snapshot_subscription_and_events_are_consistent() {
+        let (_directory, path, state, events, task) = server_with_device().await;
+        let session = media_session();
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Media(MediaEvent::Added(session.clone())));
+        let mut client = Client::connect_to(path.clone()).await.expect("connect");
+        assert_eq!(
+            client.media_sessions().await.expect("list"),
+            vec![session.clone()]
+        );
+        let client = Client::connect_to(path).await.expect("connect");
+        let mut subscription = client.subscribe().await.expect("subscribe");
+        assert_eq!(subscription.media_sessions, vec![session.clone()]);
+        let mut updated = session;
+        updated.playback = PlaybackState::Playing;
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Media(MediaEvent::Updated(updated.clone())));
+        events
+            .send(StateEvent::Media(MediaEvent::Updated(updated.clone())))
+            .expect("subscriber");
+        assert_eq!(
+            subscription.next_message().await.expect("event").payload,
+            ServerPayload::MediaUpdated {
+                media_session: updated
+            }
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn media_preflight_rejects_unknown_and_unsupported_controls() {
+        let (_directory, path, state, _events, task) = server_with_device().await;
+        let mut client = Client::connect_to(path).await.expect("connect");
+        let id = media_session().id;
+        assert!(matches!(
+            client
+                .media_command(MediaCommand::Play { id: id.clone() })
+                .await,
+            Err(IpcError::Server {
+                code: ErrorCode::MediaSessionNotFound,
+                ..
+            })
+        ));
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Media(MediaEvent::Added(media_session())));
+        assert!(matches!(
+            client.media_command(MediaCommand::Pause { id }).await,
+            Err(IpcError::Server {
+                code: ErrorCode::InvalidMediaCommand,
+                ..
+            })
+        ));
+        task.abort();
     }
 
     async fn server_with_device() -> (
@@ -677,11 +836,18 @@ mod tests {
                 current.clone(),
             )));
 
+        let media = media_session();
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Media(MediaEvent::Added(media.clone())));
+
         assert_eq!(
-            snapshot_payload(&state),
+            snapshot_payload(&state, true),
             ServerPayload::Snapshot {
                 devices: vec![device("Phone", 72)],
                 notifications: vec![current],
+                media_sessions: vec![media],
             }
         );
         task.abort();
@@ -988,6 +1154,37 @@ mod tests {
         events
             .send(StateEvent::Device(DeviceEvent::Updated(device(
                 "Phone", 71,
+            ))))
+            .expect("subscriber");
+        let next: ServerMessage = read_json_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("event");
+        assert!(matches!(next.payload, ServerPayload::DeviceUpdated { .. }));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn legacy_subscriber_does_not_receive_media_events() {
+        let (_directory, path, _state, events, task) = server_with_device().await;
+        let mut stream = UnixStream::connect(path).await.expect("connect");
+        stream
+            .write_all(b"{\"protocol\":1,\"method\":\"subscribe\"}\n")
+            .await
+            .expect("subscribe");
+        let (reader, _writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        let initial: ServerMessage = read_json_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("response");
+        assert!(matches!(initial.payload, ServerPayload::Subscribed { .. }));
+        events
+            .send(StateEvent::Media(MediaEvent::Added(media_session())))
+            .expect("subscriber");
+        events
+            .send(StateEvent::Device(DeviceEvent::Updated(device(
+                "Phone", 70,
             ))))
             .expect("subscriber");
         let next: ServerMessage = read_json_line(&mut reader)

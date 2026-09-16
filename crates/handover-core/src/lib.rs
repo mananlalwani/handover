@@ -90,6 +90,7 @@ pub enum BatteryStateError {
 pub enum Capability {
     Battery,
     FileTransfer,
+    Media,
     Notifications,
 }
 
@@ -186,7 +187,120 @@ impl NotificationCommand {
 pub enum StateEvent {
     Device(DeviceEvent),
     Notification(NotificationEvent),
+    Media(MediaEvent),
     ShareReceived(ReceivedShare),
+}
+
+/// A media player identity scoped to its source device.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct MediaSessionId {
+    pub device_id: DeviceId,
+    pub player_id: String,
+}
+
+impl MediaSessionId {
+    pub fn new(device_id: DeviceId, player_id: impl Into<String>) -> Self {
+        Self {
+            device_id,
+            player_id: player_id.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaControl {
+    Play,
+    Pause,
+    PlayPause,
+    Next,
+    Previous,
+    Seek,
+    SetPosition,
+}
+
+/// Current state of one remote media player. Times are milliseconds.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MediaSession {
+    pub id: MediaSessionId,
+    pub application: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub playback: PlaybackState,
+    pub position_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub volume_percent: Option<u8>,
+    pub controls: BTreeSet<MediaControl>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum MediaEvent {
+    Added(MediaSession),
+    Updated(MediaSession),
+    Removed(MediaSessionId),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum MediaCommand {
+    Play {
+        id: MediaSessionId,
+    },
+    Pause {
+        id: MediaSessionId,
+    },
+    PlayPause {
+        id: MediaSessionId,
+    },
+    Next {
+        id: MediaSessionId,
+    },
+    Previous {
+        id: MediaSessionId,
+    },
+    Seek {
+        id: MediaSessionId,
+        offset_ms: i64,
+    },
+    SetPosition {
+        id: MediaSessionId,
+        position_ms: u64,
+    },
+}
+
+impl MediaCommand {
+    pub fn id(&self) -> &MediaSessionId {
+        match self {
+            Self::Play { id }
+            | Self::Pause { id }
+            | Self::PlayPause { id }
+            | Self::Next { id }
+            | Self::Previous { id } => id,
+            Self::Seek { id, .. } | Self::SetPosition { id, .. } => id,
+        }
+    }
+
+    pub fn control(&self) -> MediaControl {
+        match self {
+            Self::Play { .. } => MediaControl::Play,
+            Self::Pause { .. } => MediaControl::Pause,
+            Self::PlayPause { .. } => MediaControl::PlayPause,
+            Self::Next { .. } => MediaControl::Next,
+            Self::Previous { .. } => MediaControl::Previous,
+            Self::Seek { .. } => MediaControl::Seek,
+            Self::SetPosition { .. } => MediaControl::SetPosition,
+        }
+    }
 }
 
 /// A resource made available on Linux after a remote share.
@@ -286,5 +400,32 @@ mod tests {
             serde_json::from_str::<ReceivedShare>(&encoded).expect("share deserializes"),
             share
         );
+    }
+
+    #[test]
+    fn media_identity_is_scoped_to_device_and_player() {
+        let first = MediaSessionId::new(DeviceId::new("phone-a"), "Spotify");
+        assert_ne!(
+            first,
+            MediaSessionId::new(DeviceId::new("phone-b"), "Spotify")
+        );
+        assert_ne!(
+            first,
+            MediaSessionId::new(DeviceId::new("phone-a"), "Browser")
+        );
+    }
+
+    #[test]
+    fn media_command_round_trips_without_backend_details() {
+        let command = MediaCommand::Seek {
+            id: MediaSessionId::new(DeviceId::new("phone-a"), "Player"),
+            offset_ms: -2500,
+        };
+        let json = serde_json::to_string(&command).expect("serialize media command");
+        assert_eq!(
+            serde_json::from_str::<MediaCommand>(&json).expect("deserialize"),
+            command
+        );
+        assert!(!json.contains("kdeconnect"));
     }
 }

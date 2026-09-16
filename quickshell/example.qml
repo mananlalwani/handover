@@ -9,7 +9,7 @@ ShellRoot {
         id: window
         visible: true
         implicitWidth: 420
-        implicitHeight: 470
+        implicitHeight: 640
         color: "#20242b"
         title: "Handover"
         property var shareDevices: HandoverService.devices.filter(device =>
@@ -45,6 +45,128 @@ ShellRoot {
                         ? device.battery.percentage + "%"
                         : "battery unavailable";
                     return device.name + " · " + battery;
+                }
+            }
+
+            Rectangle {
+                id: mediaCard
+                Layout.fillWidth: true
+                implicitHeight: mediaColumn.implicitHeight + 24
+                radius: 8
+                color: "#303741"
+                property var mediaSession: {
+                    const playing = HandoverService.mediaSessions.find(session =>
+                        session.playback === "playing");
+                    return playing || (HandoverService.mediaSessions.length > 0
+                        ? HandoverService.mediaSessions[0] : null);
+                }
+
+                ColumnLayout {
+                    id: mediaColumn
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 5
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#b9c2cf"
+                        textFormat: Text.PlainText
+                        text: {
+                            const session = mediaCard.mediaSession;
+                            if (!session)
+                                return "Phone media";
+                            const device = HandoverService.devices.find(item =>
+                                item.id === session.id.device_id);
+                            return session.application + " · "
+                                + (device ? device.name : session.id.device_id);
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#ffffff"
+                        font.pixelSize: 16
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        text: mediaCard.mediaSession
+                            ? (mediaCard.mediaSession.title || "Untitled")
+                            : "No active media session"
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#e4e7eb"
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        text: mediaCard.mediaSession
+                            ? (mediaCard.mediaSession.artist || "") : ""
+                        visible: text.length > 0
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Button {
+                            text: "Previous"
+                            enabled: mediaCard.mediaSession !== null
+                                && mediaCard.mediaSession.controls.includes("previous")
+                                && !HandoverService.pendingCommand
+                            onClicked: HandoverService.mediaCommand(
+                                mediaCard.mediaSession, "previous")
+                        }
+
+                        Button {
+                            text: mediaCard.mediaSession
+                                && mediaCard.mediaSession.playback === "playing"
+                                ? "Pause" : "Play"
+                            enabled: mediaCard.mediaSession !== null
+                                && (mediaCard.mediaSession.controls.includes("play_pause")
+                                    || (mediaCard.mediaSession.playback === "playing"
+                                        ? mediaCard.mediaSession.controls.includes("pause")
+                                        : mediaCard.mediaSession.controls.includes("play")))
+                                && !HandoverService.pendingCommand
+                            onClicked: {
+                                const session = mediaCard.mediaSession;
+                                if (!session)
+                                    return;
+                                let action = "play_pause";
+                                if (!session.controls.includes("play_pause"))
+                                    action = session.playback === "playing" ? "pause" : "play";
+                                HandoverService.mediaCommand(session, action);
+                            }
+                        }
+
+                        Button {
+                            text: "Next"
+                            enabled: mediaCard.mediaSession !== null
+                                && mediaCard.mediaSession.controls.includes("next")
+                                && !HandoverService.pendingCommand
+                            onClicked: HandoverService.mediaCommand(
+                                mediaCard.mediaSession, "next")
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: mediaCard.mediaSession !== null
+                            && mediaCard.mediaSession.controls.includes("seek")
+                        spacing: 8
+
+                        Button {
+                            text: "−10 s"
+                            enabled: !HandoverService.pendingCommand
+                            onClicked: HandoverService.mediaCommand(
+                                mediaCard.mediaSession, "seek", -10000)
+                        }
+
+                        Button {
+                            text: "+10 s"
+                            enabled: !HandoverService.pendingCommand
+                            onClicked: HandoverService.mediaCommand(
+                                mediaCard.mediaSession, "seek", 10000)
+                        }
+                    }
                 }
             }
 

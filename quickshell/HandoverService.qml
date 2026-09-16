@@ -15,11 +15,13 @@ Singleton {
         : false
     property var devices: []
     property var notifications: []
+    property var mediaSessions: []
     property var lastReceivedShare: null
     property string lastError: ""
     property var pendingCommand: null
     signal commandFinished(string method, var notificationId, bool success, string error)
     signal shareFinished(string method, string deviceId, bool success, string error)
+    signal mediaFinished(string action, var mediaId, bool success, string error)
 
     function sendRequest(method, fields, socketOverride) {
         const socket = socketOverride || socketLoader.item;
@@ -84,18 +86,42 @@ Singleton {
         return sendShare("share.file", device, { file_url: fileUrl });
     }
 
+    function mediaCommand(session, action, value) {
+        if (!session || !session.id || !action)
+            return false;
+        if (pendingCommand) {
+            lastError = "another command is still pending";
+            return false;
+        }
+
+        const fields = { id: session.id, action: action };
+        if (action === "seek")
+            fields.offset_ms = Number(value || 0);
+        else if (action === "set_position")
+            fields.position_ms = Number(value || 0);
+
+        if (!sendRequest("media.control", fields)) {
+            lastError = "handoverd is disconnected";
+            return false;
+        }
+        pendingCommand = { method: "media.control", mediaId: session.id, action: action };
+        lastError = "";
+        return true;
+    }
+
     function onConnected(socket) {
         retryTimer.stop();
         lastError = "";
         sendRequest("hello", null, socket);
         sendRequest("devices.list", null, socket);
-        sendRequest("subscribe", { shares: true }, socket);
+        sendRequest("subscribe", { shares: true, media: true }, socket);
     }
 
     function scheduleReconnect(message) {
         lastError = message;
         devices = [];
         notifications = [];
+        mediaSessions = [];
         lastReceivedShare = null;
         if (pendingCommand) {
             finishPending(false, message);
@@ -128,11 +154,27 @@ Singleton {
         notifications = notifications.filter(notification => !sameNotificationId(notification.id, notificationId));
     }
 
+    function sameMediaId(first, second) {
+        return first.device_id === second.device_id && first.player_id === second.player_id;
+    }
+
+    function replaceMediaSession(session) {
+        const next = mediaSessions.filter(existing => !sameMediaId(existing.id, session.id));
+        next.push(session);
+        mediaSessions = next;
+    }
+
+    function removeMediaSession(mediaId) {
+        mediaSessions = mediaSessions.filter(session => !sameMediaId(session.id, mediaId));
+    }
+
     function finishPending(success, error) {
         if (!pendingCommand)
             return;
         if (pendingCommand.deviceId)
             shareFinished(pendingCommand.method, pendingCommand.deviceId, success, error);
+        else if (pendingCommand.mediaId)
+            mediaFinished(pendingCommand.action, pendingCommand.mediaId, success, error);
         else
             commandFinished(pendingCommand.method, pendingCommand.notificationId, success, error);
         pendingCommand = null;
@@ -163,10 +205,14 @@ Singleton {
         case "notifications":
             notifications = message.notifications || [];
             break;
+        case "media":
+            mediaSessions = message.media_sessions || [];
+            break;
         case "subscribed":
         case "snapshot":
             devices = message.devices || [];
             notifications = message.notifications || [];
+            mediaSessions = message.media_sessions || [];
             break;
         case "device_added":
         case "device_updated":
@@ -182,11 +228,23 @@ Singleton {
         case "notification_removed":
             removeNotification(message.notification_id);
             break;
+        case "media_added":
+        case "media_updated":
+            replaceMediaSession(message.media_session);
+            break;
+        case "media_removed":
+            removeMediaSession(message.media_session_id);
+            break;
         case "share_received":
             lastReceivedShare = message.share;
             break;
         case "share_accepted":
             if (pendingCommand && pendingCommand.deviceId === message.device_id)
+                finishPending(true, "");
+            break;
+        case "media_accepted":
+            if (pendingCommand && pendingCommand.mediaId
+                    && sameMediaId(pendingCommand.mediaId, message.id))
                 finishPending(true, "");
             break;
         case "command_completed":

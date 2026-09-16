@@ -4,10 +4,10 @@ mod state;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use handover_core::{DeviceEvent, NotificationEvent, SharedResource, StateEvent};
+use handover_core::{DeviceEvent, MediaEvent, NotificationEvent, SharedResource, StateEvent};
 use handover_kdeconnect::KdeConnectBackend;
 use ipc_server::{EVENT_CAPACITY, IpcServer};
-use state::{DeviceChange, NotificationChange, StateChange, StateStore};
+use state::{DeviceChange, MediaChange, NotificationChange, StateChange, StateStore};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -77,6 +77,30 @@ fn apply_backend_event(
     events: &broadcast::Sender<StateEvent>,
     event: StateEvent,
 ) {
+    let media_device = match &event {
+        StateEvent::Device(DeviceEvent::Removed(id)) => Some(id),
+        StateEvent::Device(DeviceEvent::Updated(device)) if !device.connected || !device.paired => {
+            Some(&device.id)
+        }
+        _ => None,
+    };
+    if let Some(device_id) = media_device {
+        let sessions = state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot()
+            .media_sessions;
+        for session in sessions
+            .into_iter()
+            .filter(|session| &session.id.device_id == device_id)
+        {
+            apply_backend_event(
+                state,
+                events,
+                StateEvent::Media(MediaEvent::Removed(session.id)),
+            );
+        }
+    }
     let outcome = state
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -94,6 +118,13 @@ fn clear_backend_state(state: &Arc<RwLock<StateStore>>, events: &broadcast::Send
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot();
+    for session in snapshot.media_sessions {
+        apply_backend_event(
+            state,
+            events,
+            StateEvent::Media(MediaEvent::Removed(session.id)),
+        );
+    }
     for notification in snapshot.notifications {
         apply_backend_event(
             state,
@@ -114,12 +145,27 @@ fn log_change(change: StateChange) {
     match change {
         StateChange::Device(change) => log_device_change(change),
         StateChange::Notification(change) => log_notification_change(change),
+        StateChange::Media(change) => log_media_change(change),
         StateChange::ShareReceived(share) => {
             let kind = match share.resource {
                 SharedResource::File { .. } => "file",
                 SharedResource::Url { .. } => "url",
             };
             info!(device_id = %share.device_id, kind, "share received");
+        }
+    }
+}
+
+fn log_media_change(change: MediaChange) {
+    match change {
+        MediaChange::Added(id) => {
+            info!(device_id = %id.device_id, player_id = %id.player_id, "media session added")
+        }
+        MediaChange::Updated(id) => {
+            tracing::debug!(device_id = %id.device_id, player_id = %id.player_id, "media session updated")
+        }
+        MediaChange::Removed(id) => {
+            info!(device_id = %id.device_id, player_id = %id.player_id, "media session removed")
         }
     }
 }

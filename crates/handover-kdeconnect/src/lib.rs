@@ -4,12 +4,13 @@
 //! signal formats stay in this crate. Consumers receive normalized
 //! [`handover_core::StateEvent`] values.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use futures_util::StreamExt;
 use handover_core::{
-    BatteryState, Capability, Device, DeviceEvent, DeviceId, Notification, NotificationCommand,
-    NotificationEvent, NotificationId, ReceivedShare, SharedResource, StateEvent,
+    BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
+    MediaEvent, MediaSession, MediaSessionId, Notification, NotificationCommand, NotificationEvent,
+    NotificationId, PlaybackState, ReceivedShare, SharedResource, StateEvent,
 };
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -17,6 +18,7 @@ use url::Url;
 use zbus::fdo::DBusProxy;
 use zbus::message::Type;
 use zbus::names::{BusName, WellKnownName};
+use zbus::zvariant::OwnedValue;
 use zbus::{Connection, MatchRule, Message, MessageStream};
 
 const SERVICE: &str = "org.kde.kdeconnect";
@@ -25,6 +27,9 @@ const DEVICES_PATH: &str = "/modules/kdeconnect/devices";
 const BATTERY_PLUGIN: &str = "kdeconnect_battery";
 const NOTIFICATIONS_PLUGIN: &str = "kdeconnect_notifications";
 const SHARE_PLUGIN: &str = "kdeconnect_share";
+const MEDIA_PLUGIN: &str = "kdeconnect_mprisremote";
+const MPRIS_SERVICE_PREFIX: &str = "org.mpris.MediaPlayer2.kdeconnect.mpris_";
+const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
 
 #[zbus::proxy(
     default_service = "org.kde.kdeconnect",
@@ -58,6 +63,75 @@ trait KdeDevice {
 trait Share {
     #[zbus(name = "shareUrl")]
     fn share_url(&self, url: &str) -> zbus::Result<()>;
+}
+
+#[zbus::proxy(interface = "org.kde.kdeconnect.device.mprisremote")]
+trait MprisRemote {
+    #[zbus(property, name = "playerList")]
+    fn player_list(&self) -> zbus::Result<Vec<String>>;
+
+    #[zbus(name = "requestPlayerList")]
+    fn request_player_list(&self) -> zbus::Result<()>;
+
+    #[zbus(property, name = "player")]
+    fn player(&self) -> zbus::Result<String>;
+
+    #[zbus(property, name = "player")]
+    fn set_player(&self, player: &str) -> zbus::Result<()>;
+
+    #[zbus(name = "sendAction")]
+    fn send_action(&self, action: &str) -> zbus::Result<()>;
+
+    #[zbus(name = "seek")]
+    fn seek(&self, offset_ms: i32) -> zbus::Result<()>;
+
+    #[zbus(property, name = "position")]
+    fn set_position(&self, position_ms: i32) -> zbus::Result<()>;
+}
+
+#[zbus::proxy(interface = "org.mpris.MediaPlayer2")]
+trait MprisRoot {
+    #[zbus(property, name = "Identity")]
+    fn identity(&self) -> zbus::Result<String>;
+}
+
+#[zbus::proxy(interface = "org.mpris.MediaPlayer2.Player")]
+trait MprisPlayer {
+    #[zbus(property, name = "PlaybackStatus")]
+    fn playback_status(&self) -> zbus::Result<String>;
+
+    #[zbus(property, name = "Metadata")]
+    fn metadata(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+
+    #[zbus(property, name = "Position")]
+    fn position(&self) -> zbus::Result<i64>;
+
+    #[zbus(property, name = "Volume")]
+    fn volume(&self) -> zbus::Result<f64>;
+
+    #[zbus(property, name = "CanPlay")]
+    fn can_play(&self) -> zbus::Result<bool>;
+
+    #[zbus(property, name = "CanPause")]
+    fn can_pause(&self) -> zbus::Result<bool>;
+
+    #[zbus(property, name = "CanGoNext")]
+    fn can_go_next(&self) -> zbus::Result<bool>;
+
+    #[zbus(property, name = "CanGoPrevious")]
+    fn can_go_previous(&self) -> zbus::Result<bool>;
+
+    #[zbus(property, name = "CanSeek")]
+    fn can_seek(&self) -> zbus::Result<bool>;
+
+    #[zbus(property, name = "CanControl")]
+    fn can_control(&self) -> zbus::Result<bool>;
+
+    fn play(&self) -> zbus::Result<()>;
+    fn pause(&self) -> zbus::Result<()>;
+    fn play_pause(&self) -> zbus::Result<()>;
+    fn next(&self) -> zbus::Result<()>;
+    fn previous(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(interface = "org.kde.kdeconnect.device.battery")]
@@ -119,6 +193,8 @@ pub struct KdeConnectBackend {
     connection: Connection,
     devices: BTreeMap<DeviceId, Device>,
     notifications: BTreeMap<NotificationId, Notification>,
+    media_sessions: BTreeMap<MediaSessionId, MediaSession>,
+    mpris_owners: BTreeSet<String>,
 }
 
 impl KdeConnectBackend {
@@ -128,6 +204,8 @@ impl KdeConnectBackend {
             connection: Connection::session().await?,
             devices: BTreeMap::new(),
             notifications: BTreeMap::new(),
+            media_sessions: BTreeMap::new(),
+            mpris_owners: BTreeSet::new(),
         })
     }
 
@@ -144,7 +222,9 @@ impl KdeConnectBackend {
         let mut owner_changes = dbus
             .receive_name_owner_changed_with_args(&[(0, SERVICE)])
             .await?;
+        let mut mpris_owner_changes = dbus.receive_name_owner_changed_with_args(&[]).await?;
         let mut kde_signals = self.kde_signal_stream().await?;
+        let mut mpris_signals = self.mpris_signal_stream().await?;
 
         self.try_start_service(&dbus).await;
         if self.service_has_owner(&dbus).await? {
@@ -172,6 +252,16 @@ impl KdeConnectBackend {
                         self.remove_all(&mut emit);
                     }
                 }
+                owner_change = mpris_owner_changes.next() => {
+                    let Some(owner_change) = owner_change else {
+                        return Err(BackendError::SignalStreamClosed("D-Bus MPRIS owner"));
+                    };
+                    if let Ok(args) = owner_change.args()
+                        && args.name().as_str().starts_with(MPRIS_SERVICE_PREFIX)
+                    {
+                        self.reconcile_all_media(&mut emit).await;
+                    }
+                }
                 message = kde_signals.next() => {
                     let Some(message) = message else {
                         return Err(BackendError::SignalStreamClosed("KDE Connect"));
@@ -179,6 +269,19 @@ impl KdeConnectBackend {
                     match message {
                         Ok(message) => self.handle_signal(&message, &mut emit).await,
                         Err(error) => warn!(%error, "failed to receive KDE Connect signal"),
+                    }
+                }
+                message = mpris_signals.next() => {
+                    let Some(message) = message else {
+                        return Err(BackendError::SignalStreamClosed("MPRIS"));
+                    };
+                    match message {
+                        Ok(message) => {
+                            if message.header().sender().is_some_and(|sender| self.mpris_owners.contains(sender.as_str())) {
+                                self.reconcile_all_media(&mut emit).await;
+                            }
+                        }
+                        Err(error) => warn!(%error, "failed to receive MPRIS signal"),
                     }
                 }
             }
@@ -190,6 +293,16 @@ impl KdeConnectBackend {
             .msg_type(Type::Signal)
             .sender(SERVICE)?
             .path_namespace(DAEMON_PATH)?
+            .build();
+        Ok(MessageStream::for_match_rule(rule, &self.connection, Some(64)).await?)
+    }
+
+    async fn mpris_signal_stream(&self) -> Result<MessageStream, BackendError> {
+        let rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .path(MPRIS_PATH)?
+            .interface("org.freedesktop.DBus.Properties")?
+            .member("PropertiesChanged")?
             .build();
         Ok(MessageStream::for_match_rule(rule, &self.connection, Some(64)).await?)
     }
@@ -286,6 +399,13 @@ impl KdeConnectBackend {
             return;
         }
 
+        if let Some(device_id) = media_device_id_from_path(path) {
+            if member == "propertiesChanged" || member == "PropertiesChanged" {
+                self.reconcile_media(device_id, emit).await;
+            }
+            return;
+        }
+
         if let Some(id) = device_id_from_path(path) {
             match member {
                 "reachableChanged" | "pairStateChanged" | "nameChanged" | "pluginsChanged"
@@ -342,11 +462,19 @@ impl KdeConnectBackend {
                 let notification_available = device.connected
                     && device.paired
                     && device.capabilities.contains(&Capability::Notifications);
+                let media_available = device.connected
+                    && device.paired
+                    && device.capabilities.contains(&Capability::Media);
                 self.publish_device(device, emit);
                 if notification_available {
                     self.reconcile_notifications(id, emit).await;
                 } else {
                     self.remove_device_notifications(id, emit);
+                }
+                if media_available {
+                    self.reconcile_media(id, emit).await;
+                } else {
+                    self.remove_device_media(id, emit);
                 }
             }
             Err(error) => {
@@ -375,6 +503,11 @@ impl KdeConnectBackend {
                 .is_plugin_enabled(SHARE_PLUGIN)
                 .await
                 .unwrap_or(false);
+        let media_supported = supported_plugins.iter().any(|name| name == MEDIA_PLUGIN)
+            && device
+                .is_plugin_enabled(MEDIA_PLUGIN)
+                .await
+                .unwrap_or(false);
         let battery = if connected && paired && battery_supported {
             self.read_battery(id).await
         } else {
@@ -389,6 +522,7 @@ impl KdeConnectBackend {
             battery_supported,
             notifications_supported,
             share_supported,
+            media_supported,
             battery,
         })
     }
@@ -433,6 +567,183 @@ impl KdeConnectBackend {
                 debug!(device_id = id, %error, "KDE Connect battery object is unavailable");
                 None
             }
+        }
+    }
+
+    async fn reconcile_all_media<F>(&mut self, emit: &mut F)
+    where
+        F: FnMut(StateEvent),
+    {
+        let devices: Vec<String> = self
+            .devices
+            .values()
+            .filter(|device| {
+                device.connected
+                    && device.paired
+                    && device.capabilities.contains(&Capability::Media)
+            })
+            .map(|device| device.id.as_str().to_owned())
+            .collect();
+        for device_id in devices {
+            self.reconcile_media(&device_id, emit).await;
+        }
+    }
+
+    async fn reconcile_media<F>(&mut self, device_id: &str, emit: &mut F)
+    where
+        F: FnMut(StateEvent),
+    {
+        let device = match self.devices.get(&DeviceId::new(device_id)) {
+            Some(device) if device.connected && device.paired => device,
+            _ => {
+                self.remove_device_media(device_id, emit);
+                return;
+            }
+        };
+        let device_name = device.name.clone();
+        let remote = match self.media_proxy(device_id).await {
+            Ok(remote) => remote,
+            Err(error) => {
+                debug!(device_id, %error, "KDE Connect media object is unavailable");
+                self.remove_device_media(device_id, emit);
+                return;
+            }
+        };
+        let players = match remote.player_list().await {
+            Ok(players) => players,
+            Err(error) => {
+                debug!(device_id, %error, "failed to enumerate KDE Connect media players");
+                self.remove_device_media(device_id, emit);
+                return;
+            }
+        };
+        if players.is_empty() {
+            self.remove_device_media(device_id, emit);
+            return;
+        }
+
+        let services = match mpris_services(&self.connection).await {
+            Ok(services) => services,
+            Err(error) => {
+                debug!(device_id, %error, "failed to enumerate KDE Connect MPRIS services");
+                self.remove_device_media(device_id, emit);
+                return;
+            }
+        };
+        let mpris_owners = services
+            .iter()
+            .map(|service| service.owner.clone())
+            .collect();
+        if self
+            .devices
+            .values()
+            .any(|other| other.id.as_str() != device_id && other.name == device_name)
+        {
+            warn!(
+                device_id,
+                "cannot safely associate media players with a duplicate device name"
+            );
+            self.remove_device_media(device_id, emit);
+            return;
+        }
+        let mut current = BTreeMap::new();
+        for player_name in players {
+            let expected_identity = mpris_identity(&player_name, &device_name);
+            let matching: Vec<_> = services
+                .iter()
+                .filter(|service| service.identity == expected_identity)
+                .collect();
+            if matching.len() != 1 {
+                if !matching.is_empty() {
+                    warn!(
+                        device_id,
+                        player = player_name,
+                        "ambiguous KDE Connect MPRIS player identity"
+                    );
+                }
+                continue;
+            }
+            let position_is_valid = remote
+                .player()
+                .await
+                .ok()
+                .is_some_and(|selected| selected == player_name);
+            match read_mpris_session(
+                &self.connection,
+                DeviceId::new(device_id),
+                player_name.clone(),
+                matching[0].service.clone(),
+                position_is_valid,
+            )
+            .await
+            {
+                Ok(session) => {
+                    current.insert(session.id.clone(), session);
+                }
+                Err(error) => {
+                    debug!(device_id, player = player_name, %error, "failed to read KDE Connect media player")
+                }
+            }
+        }
+
+        let stale: Vec<_> = self
+            .media_sessions
+            .keys()
+            .filter(|id| id.device_id.as_str() == device_id && !current.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in stale {
+            self.remove_media(&id, emit);
+        }
+        for session in current.into_values() {
+            self.publish_media(session, emit);
+        }
+        self.mpris_owners = mpris_owners;
+    }
+
+    async fn media_proxy(&self, device_id: &str) -> Result<MprisRemoteProxy<'_>, zbus::Error> {
+        let path = format!("{DEVICES_PATH}/{device_id}/mprisremote");
+        MprisRemoteProxy::builder(&self.connection)
+            .destination(SERVICE)?
+            .path(path)?
+            .build()
+            .await
+    }
+
+    fn publish_media<F>(&mut self, session: MediaSession, emit: &mut F)
+    where
+        F: FnMut(StateEvent),
+    {
+        let event = match self.media_sessions.get(&session.id) {
+            None => MediaEvent::Added(session.clone()),
+            Some(previous) if previous != &session => MediaEvent::Updated(session.clone()),
+            Some(_) => return,
+        };
+        self.media_sessions.insert(session.id.clone(), session);
+        emit(StateEvent::Media(event));
+    }
+
+    fn remove_device_media<F>(&mut self, device_id: &str, emit: &mut F)
+    where
+        F: FnMut(StateEvent),
+    {
+        let ids: Vec<_> = self
+            .media_sessions
+            .keys()
+            .filter(|id| id.device_id.as_str() == device_id)
+            .cloned()
+            .collect();
+        for id in ids {
+            self.remove_media(&id, emit);
+        }
+    }
+
+    fn remove_media<F>(&mut self, id: &MediaSessionId, emit: &mut F)
+    where
+        F: FnMut(StateEvent),
+    {
+        if self.media_sessions.remove(id).is_some() {
+            emit(StateEvent::Media(MediaEvent::Removed(id.clone())));
         }
     }
 
@@ -581,6 +892,7 @@ impl KdeConnectBackend {
         F: FnMut(StateEvent),
     {
         self.remove_device_notifications(id.as_str(), emit);
+        self.remove_device_media(id.as_str(), emit);
         if self.devices.remove(id).is_some() {
             emit(StateEvent::Device(DeviceEvent::Removed(id.clone())));
         }
@@ -590,8 +902,12 @@ impl KdeConnectBackend {
     where
         F: FnMut(StateEvent),
     {
+        self.mpris_owners.clear();
         while let Some((id, _notification)) = self.notifications.pop_first() {
             emit(StateEvent::Notification(NotificationEvent::Removed(id)));
+        }
+        while let Some((id, _media)) = self.media_sessions.pop_first() {
+            emit(StateEvent::Media(MediaEvent::Removed(id)));
         }
         while let Some((id, _device)) = self.devices.pop_first() {
             emit(StateEvent::Device(DeviceEvent::Removed(id)));
@@ -692,6 +1008,74 @@ impl KdeConnectBackend {
         share.share_url(url).await?;
         Ok(())
     }
+
+    /// Execute a normalized media command. A successful return means that KDE
+    /// Connect accepted the request; authoritative playback state arrives via
+    /// a subsequent media update.
+    pub async fn execute_media(command: &MediaCommand) -> Result<(), CommandError> {
+        let connection = Connection::session().await?;
+        let session = command.id();
+        let device_path = format!("{DEVICES_PATH}/{}", session.device_id);
+        let device = KdeDeviceProxy::builder(&connection)
+            .destination(SERVICE)?
+            .path(device_path.as_str())?
+            .build()
+            .await?;
+        let device_name = device.name().await?;
+        let daemon = DaemonProxy::new(&connection).await?;
+        for other_id in daemon.devices(false, false).await? {
+            if other_id == session.device_id.as_str() {
+                continue;
+            }
+            let other_path = format!("{DEVICES_PATH}/{other_id}");
+            let other = KdeDeviceProxy::builder(&connection)
+                .destination(SERVICE)?
+                .path(other_path.as_str())?
+                .build()
+                .await?;
+            if other.name().await? == device_name {
+                return Err(CommandError::MediaUnavailable);
+            }
+        }
+        let service = find_mpris_service(&connection, session, &device_name)
+            .await?
+            .ok_or(CommandError::MediaUnavailable)?;
+        let player = MprisPlayerProxy::builder(&connection)
+            .destination(service.as_str())?
+            .path(MPRIS_PATH)?
+            .build()
+            .await?;
+
+        match command {
+            MediaCommand::Play { .. } => player.play().await?,
+            MediaCommand::Pause { .. } => player.pause().await?,
+            MediaCommand::PlayPause { .. } => player.play_pause().await?,
+            MediaCommand::Next { .. } => player.next().await?,
+            MediaCommand::Previous { .. } => player.previous().await?,
+            MediaCommand::Seek { offset_ms, .. } => {
+                let offset = i32::try_from(*offset_ms).map_err(|_| CommandError::InvalidValue)?;
+                let remote = MprisRemoteProxy::builder(&connection)
+                    .destination(SERVICE)?
+                    .path(format!("{DEVICES_PATH}/{}/mprisremote", session.device_id))?
+                    .build()
+                    .await?;
+                remote.set_player(&session.player_id).await?;
+                remote.seek(offset).await?;
+            }
+            MediaCommand::SetPosition { position_ms, .. } => {
+                let position =
+                    i32::try_from(*position_ms).map_err(|_| CommandError::InvalidValue)?;
+                let remote = MprisRemoteProxy::builder(&connection)
+                    .destination(SERVICE)?
+                    .path(format!("{DEVICES_PATH}/{}/mprisremote", session.device_id))?
+                    .build()
+                    .await?;
+                remote.set_player(&session.player_id).await?;
+                remote.set_position(position).await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -712,6 +1096,10 @@ pub enum CommandError {
     NoLongerSupported,
     #[error("KDE Connect service is unavailable")]
     BackendUnavailable,
+    #[error("media player is no longer available")]
+    MediaUnavailable,
+    #[error("media command value is invalid")]
+    InvalidValue,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -723,6 +1111,7 @@ struct ExternalDevice {
     battery_supported: bool,
     notifications_supported: bool,
     share_supported: bool,
+    media_supported: bool,
     battery: Option<ExternalBattery>,
 }
 
@@ -783,6 +1172,9 @@ fn normalize(raw: ExternalDevice) -> (Device, Option<InvalidExternalData>) {
     if raw.share_supported {
         capabilities.insert(Capability::FileTransfer);
     }
+    if raw.media_supported {
+        capabilities.insert(Capability::Media);
+    }
 
     (
         Device {
@@ -838,6 +1230,162 @@ fn normalize_received_share(device_id: &str, value: &str) -> Option<ReceivedShar
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MprisService {
+    service: String,
+    identity: String,
+    owner: String,
+}
+
+async fn mpris_services(connection: &Connection) -> Result<Vec<MprisService>, zbus::Error> {
+    let dbus = DBusProxy::new(connection).await?;
+    let mut services = Vec::new();
+    for name in dbus.list_names().await? {
+        let service = name.as_str();
+        if !service.starts_with(MPRIS_SERVICE_PREFIX) {
+            continue;
+        }
+        let root = MprisRootProxy::builder(connection)
+            .destination(service)?
+            .path(MPRIS_PATH)?
+            .build()
+            .await?;
+        if let (Ok(identity), Ok(owner)) = (
+            root.identity().await,
+            dbus.get_name_owner(name.clone().into()).await,
+        ) {
+            services.push(MprisService {
+                service: service.to_owned(),
+                identity,
+                owner: owner.to_string(),
+            });
+        }
+    }
+    Ok(services)
+}
+
+async fn find_mpris_service(
+    connection: &Connection,
+    id: &MediaSessionId,
+    device_name: &str,
+) -> Result<Option<String>, CommandError> {
+    let expected = mpris_identity(&id.player_id, device_name);
+    let services = mpris_services(connection)
+        .await
+        .map_err(CommandError::Dbus)?;
+    let matches: Vec<_> = services
+        .into_iter()
+        .filter(|service| service.identity == expected)
+        .collect();
+    Ok((matches.len() == 1).then(|| matches[0].service.clone()))
+}
+
+fn mpris_identity(player: &str, device: &str) -> String {
+    format!("{player} - {device}")
+}
+
+async fn read_mpris_session(
+    connection: &Connection,
+    device_id: DeviceId,
+    player_id: String,
+    service: String,
+    position_is_valid: bool,
+) -> Result<MediaSession, zbus::Error> {
+    let player = MprisPlayerProxy::builder(connection)
+        .destination(service.as_str())?
+        .path(MPRIS_PATH)?
+        .build()
+        .await?;
+    let metadata = player.metadata().await?;
+    let playback = normalize_playback_state(&player.playback_status().await?);
+    let position_ms = if position_is_valid {
+        normalize_micros(player.position().await?)
+    } else {
+        None
+    };
+    let duration_ms = metadata
+        .get("mpris:length")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| i64::try_from(value).ok())
+        .and_then(normalize_micros);
+    let volume_percent = normalize_volume(player.volume().await?);
+    let mut controls = BTreeSet::new();
+    if player.can_play().await.unwrap_or(false) {
+        controls.insert(MediaControl::Play);
+    }
+    if player.can_pause().await.unwrap_or(false) {
+        controls.insert(MediaControl::Pause);
+    }
+    if player.can_go_next().await.unwrap_or(false) {
+        controls.insert(MediaControl::Next);
+    }
+    if player.can_go_previous().await.unwrap_or(false) {
+        controls.insert(MediaControl::Previous);
+    }
+    if player.can_seek().await.unwrap_or(false) {
+        controls.insert(MediaControl::Seek);
+        controls.insert(MediaControl::SetPosition);
+    }
+    if player.can_play().await.unwrap_or(false) && player.can_pause().await.unwrap_or(false) {
+        controls.insert(MediaControl::PlayPause);
+    }
+    Ok(MediaSession {
+        id: MediaSessionId::new(device_id, player_id.clone()),
+        application: player_id,
+        title: metadata_string(&metadata, "xesam:title"),
+        artist: metadata_artist(&metadata),
+        album: metadata_string(&metadata, "xesam:album"),
+        playback,
+        position_ms,
+        duration_ms,
+        volume_percent,
+        controls,
+    })
+}
+
+fn metadata_string(metadata: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| String::try_from(value).ok())
+        .filter(|value| !value.is_empty())
+}
+
+fn metadata_artist(metadata: &HashMap<String, OwnedValue>) -> Option<String> {
+    metadata
+        .get("xesam:artist")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| Vec::<String>::try_from(value).ok())
+        .and_then(|values| values.into_iter().next())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_playback_state(value: &str) -> PlaybackState {
+    match value {
+        "Playing" => PlaybackState::Playing,
+        "Paused" => PlaybackState::Paused,
+        "Stopped" => PlaybackState::Stopped,
+        _ => PlaybackState::Unknown,
+    }
+}
+
+fn normalize_micros(value: i64) -> Option<u64> {
+    (value >= 0).then_some(value as u64 / 1_000)
+}
+
+fn normalize_volume(value: f64) -> Option<u8> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return None;
+    }
+    Some((value * 100.0).round() as u8)
+}
+
+fn media_device_id_from_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(DEVICES_PATH)?.strip_prefix('/')?;
+    let (device_id, suffix) = rest.split_once('/')?;
+    (suffix == "mprisremote" && !device_id.is_empty()).then_some(device_id)
+}
+
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 enum InvalidExternalData {
     #[error("battery percentage must be between 0 and 100, got {0}")]
@@ -857,6 +1405,7 @@ mod tests {
             battery_supported: true,
             notifications_supported: true,
             share_supported: true,
+            media_supported: true,
             battery,
         }
     }
@@ -875,6 +1424,7 @@ mod tests {
                 Capability::Battery,
                 Capability::Notifications,
                 Capability::FileTransfer,
+                Capability::Media,
             ])
         );
         assert_eq!(warning, None);
@@ -1018,5 +1568,23 @@ mod tests {
             share_device_id_from_path("/modules/kdeconnect/devices/phone-a/share"),
             Some("phone-a")
         );
+    }
+
+    #[test]
+    fn media_identity_is_exact_and_namespaced_by_device_name() {
+        assert_eq!(mpris_identity("Spotify", "Phone"), "Spotify - Phone");
+        assert_ne!(mpris_identity("Spotify", "Phone"), "Spotify");
+    }
+
+    #[test]
+    fn normalizes_media_values_without_accepting_invalid_external_data() {
+        assert_eq!(normalize_playback_state("Playing"), PlaybackState::Playing);
+        assert_eq!(normalize_playback_state("Paused"), PlaybackState::Paused);
+        assert_eq!(normalize_playback_state("bogus"), PlaybackState::Unknown);
+        assert_eq!(normalize_micros(2_500_000), Some(2_500));
+        assert_eq!(normalize_micros(-1), None);
+        assert_eq!(normalize_volume(0.5), Some(50));
+        assert_eq!(normalize_volume(f64::NAN), None);
+        assert_eq!(normalize_volume(1.1), None);
     }
 }

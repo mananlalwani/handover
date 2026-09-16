@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
 use handover_core::{
-    BatteryState, Device, DeviceEvent, DeviceId, Notification, NotificationCommand,
-    NotificationEvent, NotificationId, ReceivedShare, StateEvent,
+    BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent,
+    MediaSession, MediaSessionId, Notification, NotificationCommand, NotificationEvent,
+    NotificationId, ReceivedShare, StateEvent,
 };
 
 #[derive(Default)]
 pub(crate) struct StateStore {
     devices: BTreeMap<DeviceId, Device>,
     notifications: BTreeMap<NotificationId, Notification>,
+    media_sessions: BTreeMap<MediaSessionId, MediaSession>,
 }
 
 impl StateStore {
@@ -16,6 +18,7 @@ impl StateStore {
         match event {
             StateEvent::Device(event) => self.apply_device(event),
             StateEvent::Notification(event) => self.apply_notification(event),
+            StateEvent::Media(event) => self.apply_media(event),
             StateEvent::ShareReceived(share) => ApplyOutcome {
                 changed: true,
                 changes: vec![StateChange::ShareReceived(share)],
@@ -27,6 +30,7 @@ impl StateStore {
         StateSnapshot {
             devices: self.devices.values().cloned().collect(),
             notifications: self.notifications.values().cloned().collect(),
+            media_sessions: self.media_sessions.values().cloned().collect(),
         }
     }
 
@@ -57,6 +61,66 @@ impl StateStore {
                 Err(CommandValidationError::EmptyReply)
             }
             _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn validate_media_command(
+        &self,
+        command: &MediaCommand,
+    ) -> Result<(), MediaValidationError> {
+        let session = self
+            .media_sessions
+            .get(command.id())
+            .ok_or(MediaValidationError::NotFound)?;
+        let device = self
+            .devices
+            .get(&session.id.device_id)
+            .ok_or(MediaValidationError::DeviceUnavailable)?;
+        if !device.connected || !device.paired {
+            return Err(MediaValidationError::DeviceUnavailable);
+        }
+        if !device.capabilities.contains(&Capability::Media)
+            || !session.controls.contains(&command.control())
+        {
+            return Err(MediaValidationError::UnsupportedControl);
+        }
+        match command {
+            MediaCommand::SetPosition { position_ms, .. }
+                if i32::try_from(*position_ms).is_err() =>
+            {
+                Err(MediaValidationError::InvalidValue)
+            }
+            MediaCommand::Seek { offset_ms, .. } if i32::try_from(*offset_ms).is_err() => {
+                Err(MediaValidationError::InvalidValue)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn apply_media(&mut self, event: MediaEvent) -> ApplyOutcome {
+        match event {
+            MediaEvent::Added(session) | MediaEvent::Updated(session) => {
+                let change = match self.media_sessions.get(&session.id) {
+                    None => MediaChange::Added(session.id.clone()),
+                    Some(previous) if previous == &session => return ApplyOutcome::unchanged(),
+                    Some(_) => MediaChange::Updated(session.id.clone()),
+                };
+                self.media_sessions.insert(session.id.clone(), session);
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::Media(change)],
+                }
+            }
+            MediaEvent::Removed(id) => {
+                if self.media_sessions.remove(&id).is_some() {
+                    ApplyOutcome {
+                        changed: true,
+                        changes: vec![StateChange::Media(MediaChange::Removed(id))],
+                    }
+                } else {
+                    ApplyOutcome::unchanged()
+                }
+            }
         }
     }
 
@@ -142,6 +206,7 @@ impl StateStore {
 pub(crate) struct StateSnapshot {
     pub(crate) devices: Vec<Device>,
     pub(crate) notifications: Vec<Notification>,
+    pub(crate) media_sessions: Vec<MediaSession>,
 }
 
 pub(crate) struct ApplyOutcome {
@@ -208,7 +273,23 @@ pub(crate) enum NotificationChange {
 pub(crate) enum StateChange {
     Device(DeviceChange),
     Notification(NotificationChange),
+    Media(MediaChange),
     ShareReceived(ReceivedShare),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum MediaChange {
+    Added(MediaSessionId),
+    Updated(MediaSessionId),
+    Removed(MediaSessionId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MediaValidationError {
+    NotFound,
+    DeviceUnavailable,
+    UnsupportedControl,
+    InvalidValue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -285,7 +366,7 @@ fn updated_changes(previous: &Device, current: &Device) -> Vec<StateChange> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use handover_core::Capability;
+    use handover_core::{Capability, MediaControl, PlaybackState};
 
     use super::*;
 
@@ -313,6 +394,113 @@ mod tests {
             actions: vec![],
             reply_supported: true,
         }
+    }
+
+    fn media(device_id: &str, player_id: &str, title: &str) -> MediaSession {
+        MediaSession {
+            id: MediaSessionId::new(DeviceId::new(device_id), player_id),
+            application: "Player".into(),
+            title: Some(title.into()),
+            artist: None,
+            album: None,
+            playback: PlaybackState::Playing,
+            position_ms: Some(1000),
+            duration_ms: Some(5000),
+            volume_percent: Some(50),
+            controls: std::collections::BTreeSet::from([MediaControl::Play, MediaControl::Seek]),
+        }
+    }
+
+    #[test]
+    fn media_sessions_are_scoped_updated_and_removed() {
+        let mut store = StateStore::default();
+        let first = media("phone-a", "Player", "First");
+        let second = media("phone-b", "Player", "Second");
+        assert!(
+            store
+                .apply(StateEvent::Media(MediaEvent::Added(first.clone())))
+                .changed
+        );
+        assert!(
+            store
+                .apply(StateEvent::Media(MediaEvent::Added(second.clone())))
+                .changed
+        );
+        assert!(
+            !store
+                .apply(StateEvent::Media(MediaEvent::Updated(first.clone())))
+                .changed
+        );
+        let updated = media("phone-a", "Player", "Changed");
+        assert!(
+            store
+                .apply(StateEvent::Media(MediaEvent::Updated(updated.clone())))
+                .changed
+        );
+        assert!(
+            store
+                .apply(StateEvent::Media(MediaEvent::Removed(updated.id.clone())))
+                .changed
+        );
+        assert!(
+            !store
+                .apply(StateEvent::Media(MediaEvent::Removed(updated.id)))
+                .changed
+        );
+        assert_eq!(store.snapshot().media_sessions, vec![second]);
+    }
+
+    #[test]
+    fn media_commands_require_current_session_device_and_capability() {
+        let mut store = StateStore::default();
+        let session = media("phone-123", "Player", "First");
+        let play = MediaCommand::Play {
+            id: session.id.clone(),
+        };
+        assert_eq!(
+            store.validate_media_command(&play),
+            Err(MediaValidationError::NotFound)
+        );
+        store.apply(StateEvent::Media(MediaEvent::Added(session.clone())));
+        assert_eq!(
+            store.validate_media_command(&play),
+            Err(MediaValidationError::DeviceUnavailable)
+        );
+        let mut source = device(true, None);
+        source.capabilities.insert(Capability::Media);
+        store.apply(StateEvent::Device(DeviceEvent::Added(source)));
+        assert!(store.validate_media_command(&play).is_ok());
+        assert_eq!(
+            store.validate_media_command(&MediaCommand::Pause {
+                id: session.id.clone()
+            }),
+            Err(MediaValidationError::UnsupportedControl)
+        );
+        assert_eq!(
+            store.validate_media_command(&MediaCommand::Seek {
+                id: session.id.clone(),
+                offset_ms: i64::MAX
+            }),
+            Err(MediaValidationError::InvalidValue)
+        );
+        let mut offline = device(false, None);
+        offline.capabilities.insert(Capability::Media);
+        store.apply(StateEvent::Device(DeviceEvent::Updated(offline)));
+        assert_eq!(
+            store.validate_media_command(&play),
+            Err(MediaValidationError::DeviceUnavailable)
+        );
+    }
+
+    #[test]
+    fn media_rebuild_after_backend_restart_has_one_current_session() {
+        let mut store = StateStore::default();
+        let before = media("phone-a", "Player", "Old track");
+        store.apply(StateEvent::Media(MediaEvent::Added(before.clone())));
+        store.apply(StateEvent::Media(MediaEvent::Removed(before.id.clone())));
+        let after = media("phone-a", "Player", "New track");
+        store.apply(StateEvent::Media(MediaEvent::Added(after.clone())));
+        assert_eq!(store.snapshot().media_sessions, vec![after]);
     }
 
     #[test]

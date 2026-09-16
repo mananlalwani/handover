@@ -4,7 +4,8 @@ use std::env;
 use std::path::PathBuf;
 
 use handover_core::{
-    Device, DeviceEvent, DeviceId, Notification, NotificationEvent, NotificationId, ReceivedShare,
+    Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent, MediaSession, MediaSessionId,
+    Notification, NotificationEvent, NotificationId, ReceivedShare,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -43,10 +44,14 @@ pub enum Method {
     DevicesList,
     #[serde(rename = "notifications.list")]
     NotificationsList,
+    #[serde(rename = "media.list")]
+    MediaList,
     #[serde(rename = "subscribe")]
     Subscribe {
         #[serde(default)]
         shares: bool,
+        #[serde(default)]
+        media: bool,
     },
     #[serde(rename = "notification.dismiss")]
     NotificationDismiss { notification_id: NotificationId },
@@ -66,6 +71,11 @@ pub enum Method {
     ShareFile {
         device_id: DeviceId,
         file_url: String,
+    },
+    #[serde(rename = "media.control")]
+    MediaControl {
+        #[serde(flatten)]
+        command: MediaCommand,
     },
 }
 
@@ -108,6 +118,17 @@ impl ServerMessage {
         Self::new(payload)
     }
 
+    pub fn from_media_event(event: MediaEvent) -> Self {
+        let payload = match event {
+            MediaEvent::Added(media_session) => ServerPayload::MediaAdded { media_session },
+            MediaEvent::Updated(media_session) => ServerPayload::MediaUpdated { media_session },
+            MediaEvent::Removed(media_session_id) => {
+                ServerPayload::MediaRemoved { media_session_id }
+            }
+        };
+        Self::new(payload)
+    }
+
     pub fn protocol_error(code: ErrorCode, message: impl Into<String>) -> Self {
         Self::new(ServerPayload::Error {
             code,
@@ -128,15 +149,22 @@ pub enum ServerPayload {
     Notifications {
         notifications: Vec<Notification>,
     },
+    Media {
+        media_sessions: Vec<MediaSession>,
+    },
     Subscribed {
         devices: Vec<Device>,
         #[serde(default)]
         notifications: Vec<Notification>,
+        #[serde(default)]
+        media_sessions: Vec<MediaSession>,
     },
     Snapshot {
         devices: Vec<Device>,
         #[serde(default)]
         notifications: Vec<Notification>,
+        #[serde(default)]
+        media_sessions: Vec<MediaSession>,
     },
     DeviceAdded {
         device: Device,
@@ -156,11 +184,23 @@ pub enum ServerPayload {
     NotificationRemoved {
         notification_id: NotificationId,
     },
+    MediaAdded {
+        media_session: MediaSession,
+    },
+    MediaUpdated {
+        media_session: MediaSession,
+    },
+    MediaRemoved {
+        media_session_id: MediaSessionId,
+    },
     ShareReceived {
         share: ReceivedShare,
     },
     ShareAccepted {
         device_id: DeviceId,
+    },
+    MediaAccepted {
+        id: MediaSessionId,
     },
     CommandCompleted {
         notification_id: NotificationId,
@@ -186,6 +226,8 @@ pub enum ErrorCode {
     UnsupportedCapability,
     InvalidResource,
     ResourceNotFound,
+    MediaSessionNotFound,
+    InvalidMediaCommand,
 }
 
 #[derive(Debug, Error)]
@@ -309,6 +351,23 @@ impl Client {
         }
     }
 
+    pub async fn media_sessions(&mut self) -> Result<Vec<MediaSession>, IpcError> {
+        self.send(Method::MediaList).await?;
+        match self.receive().await?.payload {
+            ServerPayload::Media { media_sessions } => Ok(media_sessions),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn media_command(&mut self, command: MediaCommand) -> Result<(), IpcError> {
+        let id = command.id().clone();
+        self.send(Method::MediaControl { command }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MediaAccepted { id: accepted } if accepted == id => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     pub async fn dismiss_notification(
         &mut self,
         notification_id: NotificationId,
@@ -390,14 +449,20 @@ impl Client {
     }
 
     pub async fn subscribe(mut self) -> Result<Subscription, IpcError> {
-        self.send(Method::Subscribe { shares: true }).await?;
+        self.send(Method::Subscribe {
+            shares: true,
+            media: true,
+        })
+        .await?;
         match self.receive().await?.payload {
             ServerPayload::Subscribed {
                 devices,
                 notifications,
+                media_sessions,
             } => Ok(Subscription {
                 devices,
                 notifications,
+                media_sessions,
                 reader: self.reader,
                 _writer: self.writer,
             }),
@@ -417,6 +482,7 @@ impl Client {
 pub struct Subscription {
     pub devices: Vec<Device>,
     pub notifications: Vec<Notification>,
+    pub media_sessions: Vec<MediaSession>,
     reader: BufReader<OwnedReadHalf>,
     _writer: OwnedWriteHalf,
 }
@@ -524,6 +590,21 @@ mod tests {
         }
     }
 
+    fn media_session() -> MediaSession {
+        MediaSession {
+            id: MediaSessionId::new(DeviceId::new("phone-123"), "player-1"),
+            application: "Music".into(),
+            title: Some("Song".into()),
+            artist: Some("Artist".into()),
+            album: None,
+            playback: handover_core::PlaybackState::Playing,
+            position_ms: Some(1_000),
+            duration_ms: Some(120_000),
+            volume_percent: Some(80),
+            controls: BTreeSet::from([handover_core::MediaControl::Play]),
+        }
+    }
+
     #[test]
     fn notification_request_uses_versioned_method_names() {
         let request = Request::new(Method::NotificationReply {
@@ -578,12 +659,57 @@ mod tests {
         let message = ServerMessage::new(ServerPayload::Snapshot {
             devices: vec![device()],
             notifications: vec![notification()],
+            media_sessions: vec![],
         });
         let decoded: ServerMessage =
             serde_json::from_str(&serde_json::to_string(&message).expect("serializes"))
                 .expect("deserializes");
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn media_request_uses_flattened_versioned_command() {
+        let request = Request::new(Method::MediaControl {
+            command: MediaCommand::Play {
+                id: media_session().id,
+            },
+        });
+        let json = serde_json::to_string(&request).expect("request serializes");
+
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"media.control","action":"play","id":{"device_id":"phone-123","player_id":"player-1"}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            request
+        );
+    }
+
+    #[test]
+    fn media_request_rejects_unknown_action_and_missing_identity() {
+        let unknown = r#"{"protocol":1,"method":"media.control","action":"explode","id":{"device_id":"phone","player_id":"Player"}}"#;
+        let missing = r#"{"protocol":1,"method":"media.control","action":"play"}"#;
+        assert!(serde_json::from_str::<Request>(unknown).is_err());
+        assert!(serde_json::from_str::<Request>(missing).is_err());
+    }
+
+    #[test]
+    fn media_snapshot_and_events_round_trip() {
+        let session = media_session();
+        let snapshot = ServerMessage::new(ServerPayload::Snapshot {
+            devices: vec![device()],
+            notifications: vec![],
+            media_sessions: vec![session.clone()],
+        });
+        let decoded: ServerMessage =
+            serde_json::from_str(&serde_json::to_string(&snapshot).expect("snapshot serializes"))
+                .expect("snapshot deserializes");
+        assert_eq!(decoded, snapshot);
+
+        let event = ServerMessage::from_media_event(MediaEvent::Updated(session));
+        assert!(matches!(event.payload, ServerPayload::MediaUpdated { .. }));
     }
 
     #[test]
@@ -635,11 +761,20 @@ mod tests {
     fn share_subscription_is_opt_in_for_older_protocol_one_clients() {
         let legacy: Request = serde_json::from_str(r#"{"protocol":1,"method":"subscribe"}"#)
             .expect("old subscription still decodes");
-        assert_eq!(legacy.method, Method::Subscribe { shares: false });
-        let current = Request::new(Method::Subscribe { shares: true });
+        assert_eq!(
+            legacy.method,
+            Method::Subscribe {
+                shares: false,
+                media: false,
+            }
+        );
+        let current = Request::new(Method::Subscribe {
+            shares: true,
+            media: true,
+        });
         assert_eq!(
             serde_json::to_string(&current).expect("serializes"),
-            r#"{"protocol":1,"method":"subscribe","shares":true}"#
+            r#"{"protocol":1,"method":"subscribe","shares":true,"media":true}"#
         );
     }
 }
