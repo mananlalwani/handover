@@ -7,7 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 
-/** Lifecycle shell for the future native transport. It owns no protocol or pairing state yet. */
+/** Owns the native transport while the user has enabled Handover connectivity. */
 class HandoverForegroundService : Service() {
     private lateinit var batteryObserver: BatteryObserver
     private lateinit var transport: NativeTransport

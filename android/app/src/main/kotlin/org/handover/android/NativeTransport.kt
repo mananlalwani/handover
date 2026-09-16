@@ -18,7 +18,6 @@ import java.util.concurrent.Executors
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
-import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 import org.handover.android.DeviceIdentityStore.Companion.fingerprint
 
@@ -29,8 +28,12 @@ class NativeTransport(private val context: Context) {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
     private var socket: SSLSocket? = null
+    private var output: BufferedOutputStream? = null
+    private val outputLock = Any()
     private var serverId: String? = null
     private var serverFingerprint: String? = null
+    @Volatile private var pendingCode: String? = null
+    @Volatile private var approvalGranted = false
     private var discovery: NsdManager.DiscoveryListener? = null
 
     fun start() {
@@ -55,10 +58,15 @@ class NativeTransport(private val context: Context) {
         discovery = null
         socket?.close()
         socket = null
+        output = null
         executor.shutdownNow()
     }
 
-    fun approvePair(code: String) = send(JSONObject().put("type", "pair_confirm").put("protocol", 1).put("code", code))
+    fun approvePair(code: String) {
+        if (code != pendingCode || serverId == null) return
+        approvalGranted = true
+        send(JSONObject().put("type", "pair_confirm").put("protocol", 1).put("code", code))
+    }
 
     fun revoke() {
         send(JSONObject().put("type", "revoke").put("protocol", 1))
@@ -80,27 +88,37 @@ class NativeTransport(private val context: Context) {
     }
 
     private fun connect(host: InetAddress, port: Int) {
-        runCatching {
-            socket?.close()
-            val raw = Socket(host, port)
-            val ssl = sslContext().socketFactory.createSocket(raw, host.hostAddress, port, true) as SSLSocket
-            ssl.enabledProtocols = arrayOf("TLSv1.3")
-            ssl.startHandshake()
-            socket = ssl
-            val input = BufferedInputStream(ssl.inputStream)
-            val output = BufferedOutputStream(ssl.outputStream)
-            write(output, hello())
-            while (!ssl.isClosed) {
-                val message = read(input) ?: break
-                handle(message, output)
+        while (discovery != null) {
+            try {
+                socket?.close()
+                val raw = Socket(host, port)
+                val ssl = sslContext().socketFactory.createSocket(raw, host.hostAddress, port, true) as SSLSocket
+                ssl.enabledProtocols = arrayOf("TLSv1.3")
+                ssl.startHandshake()
+                socket = ssl
+                val input = BufferedInputStream(ssl.inputStream)
+                output = BufferedOutputStream(ssl.outputStream)
+                send(hello())
+                while (!ssl.isClosed) {
+                    val message = read(input) ?: break
+                    handle(message)
+                }
+            } catch (_: Exception) {
+                // Discovery remains active; retry the resolved endpoint after a bounded delay.
+            } finally {
+                output = null
+                socket?.close()
+                socket = null
             }
+            if (discovery != null) try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) { return }
         }
     }
 
-    private fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
-        .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
-
-    private fun handle(message: JSONObject, output: BufferedOutputStream) {
+    private fun handle(message: JSONObject) {
+        if (message.optInt("protocol", -1) != 1) {
+            socket?.close()
+            return
+        }
         when (message.optString("type")) {
             "hello" -> {
                 val presentedFingerprint = peerFingerprint()
@@ -111,34 +129,40 @@ class NativeTransport(private val context: Context) {
                 }
                 serverId = advertisedId.takeIf { it.isNotEmpty() }
                 val code = pairingCode(identity.deviceId, serverId ?: return)
-                broadcast(ACTION_PAIR_REQUEST, JSONObject().put("code", code).put("server_id", serverId))
+                pendingCode = code
+                approvalGranted = serverFingerprint != null
+                if (serverFingerprint == null) {
+                    broadcast(ACTION_PAIR_REQUEST, JSONObject().put("code", code).put("server_id", serverId))
+                }
             }
             "paired" -> {
+                if (!approvalGranted && serverFingerprint == null) return
                 val fingerprint = peerFingerprint() ?: return
                 preferences.edit().putString(PIN_KEY, fingerprint).apply()
                 serverFingerprint = fingerprint
                 broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
-                sendBattery(output)
+                sendBattery()
             }
             "revoke" -> {
                 preferences.edit().remove(PIN_KEY).apply()
                 serverFingerprint = null
                 broadcast(ACTION_REVOKED, JSONObject())
             }
-            "battery_request" -> sendBattery(output)
+            "battery_request" -> sendBattery()
         }
     }
 
-    private fun sendBattery(output: BufferedOutputStream) {
+    private fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
+        .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
+
+    private fun sendBattery() {
         val intent = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val reading = intent?.let(BatteryObserver::reading) ?: return
-        write(output, JSONObject().put("type", "battery").put("protocol", 1)
+        send(JSONObject().put("type", "battery").put("protocol", 1)
             .put("percentage", reading.percentage).put("charging", reading.charging))
     }
 
-    private fun send(message: JSONObject) = executor.execute { socket?.outputStream?.let {
-        write(BufferedOutputStream(it), message)
-    } }
+    private fun send(message: JSONObject) = synchronized(outputLock) { output?.let { write(it, message) } }
 
     private fun sslContext(): SSLContext {
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
@@ -188,6 +212,7 @@ class NativeTransport(private val context: Context) {
         private const val SERVICE_TYPE = "_handover._tcp"
         private const val PIN_KEY = "server_cert_sha256"
         private const val MAX_FRAME = 64 * 1024
+        private const val RECONNECT_DELAY_MS = 2_000L
 
         fun pairingCode(first: String, second: String): String {
             val low = minOf(first, second)
