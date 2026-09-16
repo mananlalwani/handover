@@ -121,6 +121,62 @@ accepted the call, not that Android or the app confirmed delivery. Commands
 do not optimistically remove daemon state; subsequent KDE Connect signals
 update it.
 
+## Media sessions
+
+Media state follows the same backend boundary:
+
+```text
+Android media sessions
+    -> KDE Connect mprisremote D-Bus object
+    -> existing KDE Connect MPRIS player objects
+    -> handover-kdeconnect
+    -> normalized MediaSession events
+    -> handoverd media-session map
+    -> Unix socket clients
+```
+
+`handover-core` exposes `MediaSessionId`, `MediaSession`, `PlaybackState`,
+`MediaControl`, `MediaEvent`, and `MediaCommand`. A session ID is the pair of
+the source `DeviceId` and a device-local opaque player identifier. The KDE
+adapter currently uses KDE Connect's player name as that device-local value,
+so the same name on two phones cannot collide. Position and duration are milliseconds;
+available volume is normalized to an integer percentage. Album art is not
+copied into the Handover model or ordinary IPC messages.
+
+The KDE adapter treats the `mprisremote` `playerList` as the authoritative set
+of current players. It reads per-player metadata, playback state, position,
+duration, volume, and control capabilities from KDE Connect's dynamically
+created standard MPRIS services. KDE service names, object paths, and action
+details remain inside `handover-kdeconnect`; clients treat `player_id` as opaque.
+KDE's synthesized MPRIS identity combines player and device display names.
+If two devices share a name, the adapter withholds their sessions rather than
+risk routing a command to the wrong phone. KDE's MPRIS position getter uses
+the selected player, so Handover reports position only for that player.
+KDE does not expose trustworthy stop or volume-control capability flags, so
+Handover keeps volume read-only and does not expose those commands yet.
+
+`handoverd` owns the authoritative in-memory media-session map. It removes
+sessions when KDE Connect no longer advertises them or when their device
+disconnects, and rebuilds them after KDE Connect restarts. Media state is not
+persisted. Snapshots include all current media sessions, and subscriptions
+receive `media_added`, `media_updated`, and `media_removed` events through the
+existing bounded channel and snapshot-recovery behavior.
+
+Media controls are validated against the current session, connected paired
+device, advertised media capability, and the session's normalized controls.
+The D-Bus call is a request: `media_accepted` means KDE Connect accepted it,
+not that Android has already changed playback. The subsequent media update is
+the source of truth. Unsupported controls, unknown sessions, disconnected
+devices, and invalid numeric values return controlled protocol errors.
+
+KDE Connect already exports remote Android players through standard MPRIS
+services named `org.mpris.MediaPlayer2.kdeconnect.mpris_<id>`. Handover should
+not expose another MPRIS player for the same sessions because that would
+duplicate players in desktop media menus. The current public integration is
+the Handover IPC API and its CLI/Quickshell clients; a future MPRIS bridge, if
+needed for a backend-independent use case, should be a separate deliberate
+integration rather than daemon-owned duplicate export.
+
 ## User service
 
 The installed daemon runs as a systemd user service enabled under

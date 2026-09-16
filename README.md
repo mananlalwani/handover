@@ -23,6 +23,7 @@ current user:
 make install-user
 handoverctl devices
 handoverctl notifications
+handoverctl media
 ```
 
 The install target builds release binaries, installs them under `~/.local`,
@@ -49,6 +50,18 @@ button when KDE Connect exposes those operations. It connects directly to
 `handoverd`; reloading Quickshell reconstructs the current view from the daemon.
 KDE Connect currently does not expose notification action labels through
 D-Bus, so Handover cannot show action buttons for that backend yet.
+
+The same example includes a small media card. It displays the first currently
+playing (or otherwise available) remote session and sends supported play,
+pause, previous, and next requests through `handoverd`. The CLI equivalent is
+`handoverctl media`; for example, run
+`handoverctl media pause "YouTube ReVanced"` when that application name is
+unique, or use the printed `DEVICE_ID:PLAYER_ID` session ID. A successful control
+command means KDE Connect accepted the request. The later media state update
+is authoritative. On the development phone, Handover discovered simultaneous
+Spotify and YouTube ReVanced sessions and observed YouTube pause/resume state
+changes after Linux controls. A relative seek was accepted and the reported
+position advanced. Other controls have not been verified on a phone.
 
 ### File and URL handoff
 
@@ -83,6 +96,12 @@ Android-to-Linux direction therefore needs KDE Connect's foreground "Send
 clipboard" action unless the user grants KDE Connect its optional privileged
 `READ_LOGS` path through ADB. Linux-to-Android can be automatic when the KDE
 Connect clipboard plugin is enabled. Device and OEM behavior can vary.
+
+Media sessions are normalized by Handover and remain in the daemon while
+Quickshell is reloaded. KDE Connect's current desktop backend already exports
+each remote player as an MPRIS service, so Handover does not add a second MPRIS
+bridge; doing so would create duplicate players. Handover clients use the
+versioned Unix-socket API instead.
 
 Use `make uninstall-user` to stop and remove the user-local installation.
 `cargo install --locked --path handoverd --root "$HOME/.local"` and the

@@ -8,6 +8,8 @@ connects directly to `$XDG_RUNTIME_DIR/handover/handoverd.sock`; it does not run
 
 - `devices`: the current normalized device array
 - `notifications`: current active phone notifications
+- `mediaSessions`: current remote media sessions, including metadata, playback
+  state, and supported controls
 - `connected`: whether the daemon socket is connected
 - `lastError`: the most recent connection or protocol error
 - `lastReceivedShare`: the most recent transient incoming file/URL event in this shell instance
@@ -25,6 +27,15 @@ it does not indicate delivery. The example includes a one-file chooser and a
 URL field. Incoming share events carry the source device, but KDE Connect
 already saved the file or handled the URL before the signal reaches Handover.
 
+`mediaCommand(session, action, value)` sends a supported media control such as
+`play`, `pause`, `play_pause`, `previous`, `next`, `seek`, or `set_position`.
+The service validates the command on the daemon side; playback
+state is updated only when the backend reports it. `mediaFinished` reports
+whether a command was accepted. The example includes a small media card with
+previous, play/pause, and next controls, gated by each session's advertised
+capabilities. When seeking is supported, the card offers ten-second back and
+forward requests; it does not animate a progress bar from sparse backend updates.
+
 The service requests a snapshot and subscribes after every connection. If the
 daemon is absent or restarts, it clears its local view and retries after two
 seconds.
@@ -35,7 +46,8 @@ With `handoverd` running, launch the minimal example from the repository root:
 quickshell --path quickshell/example.qml
 ```
 
-The window displays the first connected device as `Name · 69%` and one phone
-notification card. Repliable notifications have a text field and clearable
-notifications have a Dismiss button. The card is intentionally not a full
-notification center and does not take over Quickshell's `NotificationServer`.
+The window displays the first connected device as `Name · 69%`, a compact media
+card, and one phone notification card. Repliable notifications have a text
+field and clearable notifications have a Dismiss button. The cards are
+intentionally not a full media or notification center and do not take over
+Quickshell's `NotificationServer`.
