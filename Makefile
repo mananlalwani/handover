@@ -1,0 +1,34 @@
+PREFIX := $(HOME)/.local
+USER_DATA_HOME := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
+USER_UNIT_DIR := $(USER_DATA_HOME)/systemd/user
+QUICKSHELL_INSTALL_DIR := $(USER_DATA_HOME)/handover/quickshell
+
+.PHONY: install-user uninstall-user
+
+install-user:
+	cargo build --release --locked -p handoverd -p handoverctl
+	install -Dm755 target/release/handoverd $(PREFIX)/bin/handoverd
+	install -Dm755 target/release/handoverctl $(PREFIX)/bin/handoverctl
+	install -Dm644 packaging/systemd/handoverd.service $(USER_UNIT_DIR)/handoverd.service
+	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
+	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
+	install -Dm644 quickshell/README.md $(QUICKSHELL_INSTALL_DIR)/README.md
+	systemctl --user daemon-reload
+	systemctl --user reenable handoverd.service
+	systemctl --user restart handoverd.service
+	@for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+		if test -S "$$XDG_RUNTIME_DIR/handover/handoverd.sock"; then exit 0; fi; \
+		sleep 0.1; \
+	done; \
+	echo "handoverd did not create its socket; check: systemctl --user status handoverd" >&2; \
+	exit 1
+
+uninstall-user:
+	-systemctl --user disable --now handoverd.service
+	rm -f $(USER_UNIT_DIR)/handoverd.service
+	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
+	rm -f $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/README.md
+	-rmdir $(QUICKSHELL_INSTALL_DIR)
+	-systemctl --user daemon-reload

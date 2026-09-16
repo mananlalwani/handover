@@ -1,0 +1,16 @@
+[Unit]
+Description=Handover Android device integration daemon
+After=dbus.socket
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/handoverd
+Restart=on-failure
+RestartSec=3s
+RuntimeDirectory=handover
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
