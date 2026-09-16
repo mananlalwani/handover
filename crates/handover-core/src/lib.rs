@@ -186,6 +186,22 @@ impl NotificationCommand {
 pub enum StateEvent {
     Device(DeviceEvent),
     Notification(NotificationEvent),
+    ShareReceived(ReceivedShare),
+}
+
+/// A resource made available on Linux after a remote share.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharedResource {
+    File { path: String },
+    Url { url: String },
+}
+
+/// A transient incoming share event, not a transfer-progress record.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReceivedShare {
+    pub device_id: DeviceId,
+    pub resource: SharedResource,
 }
 
 #[cfg(test)]
@@ -251,5 +267,24 @@ mod tests {
 
         assert_ne!(first, second);
         assert_eq!(first.to_string(), "phone-a:42");
+    }
+
+    #[test]
+    fn received_share_is_backend_independent() {
+        let share = ReceivedShare {
+            device_id: DeviceId::new("phone-a"),
+            resource: SharedResource::File {
+                path: "/tmp/handover test ✓.txt".into(),
+            },
+        };
+        let encoded = serde_json::to_string(&share).expect("share serializes");
+        assert_eq!(
+            encoded,
+            r#"{"device_id":"phone-a","resource":{"kind":"file","path":"/tmp/handover test ✓.txt"}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ReceivedShare>(&encoded).expect("share deserializes"),
+            share
+        );
     }
 }

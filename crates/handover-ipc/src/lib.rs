@@ -4,7 +4,7 @@ use std::env;
 use std::path::PathBuf;
 
 use handover_core::{
-    Device, DeviceEvent, DeviceId, Notification, NotificationEvent, NotificationId,
+    Device, DeviceEvent, DeviceId, Notification, NotificationEvent, NotificationId, ReceivedShare,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,10 @@ pub enum Method {
     #[serde(rename = "notifications.list")]
     NotificationsList,
     #[serde(rename = "subscribe")]
-    Subscribe,
+    Subscribe {
+        #[serde(default)]
+        shares: bool,
+    },
     #[serde(rename = "notification.dismiss")]
     NotificationDismiss { notification_id: NotificationId },
     #[serde(rename = "notification.action")]
@@ -56,6 +59,13 @@ pub enum Method {
     NotificationReply {
         notification_id: NotificationId,
         text: String,
+    },
+    #[serde(rename = "share.url")]
+    ShareUrl { device_id: DeviceId, url: String },
+    #[serde(rename = "share.file")]
+    ShareFile {
+        device_id: DeviceId,
+        file_url: String,
     },
 }
 
@@ -146,6 +156,12 @@ pub enum ServerPayload {
     NotificationRemoved {
         notification_id: NotificationId,
     },
+    ShareReceived {
+        share: ReceivedShare,
+    },
+    ShareAccepted {
+        device_id: DeviceId,
+    },
     CommandCompleted {
         notification_id: NotificationId,
     },
@@ -164,6 +180,12 @@ pub enum ErrorCode {
     InvalidNotificationCommand,
     BackendUnavailable,
     BackendRejected,
+    UnknownDevice,
+    DeviceDisconnected,
+    DeviceNotPaired,
+    UnsupportedCapability,
+    InvalidResource,
+    ResourceNotFound,
 }
 
 #[derive(Debug, Error)]
@@ -324,6 +346,37 @@ impl Client {
         self.expect_command_completed(notification_id).await
     }
 
+    pub async fn send_url(&mut self, device_id: DeviceId, url: String) -> Result<(), IpcError> {
+        self.send(Method::ShareUrl {
+            device_id: device_id.clone(),
+            url,
+        })
+        .await?;
+        self.expect_share_accepted(device_id).await
+    }
+
+    pub async fn send_file_url(
+        &mut self,
+        device_id: DeviceId,
+        file_url: String,
+    ) -> Result<(), IpcError> {
+        self.send(Method::ShareFile {
+            device_id: device_id.clone(),
+            file_url,
+        })
+        .await?;
+        self.expect_share_accepted(device_id).await
+    }
+
+    async fn expect_share_accepted(&mut self, device_id: DeviceId) -> Result<(), IpcError> {
+        match self.receive().await?.payload {
+            ServerPayload::ShareAccepted {
+                device_id: accepted,
+            } if accepted == device_id => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     async fn expect_command_completed(
         &mut self,
         notification_id: NotificationId,
@@ -337,7 +390,7 @@ impl Client {
     }
 
     pub async fn subscribe(mut self) -> Result<Subscription, IpcError> {
-        self.send(Method::Subscribe).await?;
+        self.send(Method::Subscribe { shares: true }).await?;
         match self.receive().await?.payload {
             ServerPayload::Subscribed {
                 devices,
@@ -531,5 +584,62 @@ mod tests {
                 .expect("deserializes");
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn share_requests_use_protocol_one_without_backend_details() {
+        let request = Request::new(Method::ShareUrl {
+            device_id: DeviceId::new("phone-a"),
+            url: "https://example.com/path".into(),
+        });
+        let encoded = serde_json::to_string(&request).expect("serializes");
+        assert_eq!(
+            encoded,
+            r#"{"protocol":1,"method":"share.url","device_id":"phone-a","url":"https://example.com/path"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&encoded).expect("deserializes"),
+            request
+        );
+
+        let file = Request::new(Method::ShareFile {
+            device_id: DeviceId::new("phone-a"),
+            file_url: "file:///tmp/handover%20test.txt".into(),
+        });
+        assert_eq!(
+            serde_json::from_str::<Request>(&serde_json::to_string(&file).expect("serializes"))
+                .expect("deserializes"),
+            file
+        );
+    }
+
+    #[test]
+    fn incoming_share_event_round_trips() {
+        let message = ServerMessage::new(ServerPayload::ShareReceived {
+            share: ReceivedShare {
+                device_id: DeviceId::new("phone-a"),
+                resource: handover_core::SharedResource::Url {
+                    url: "https://example.com".into(),
+                },
+            },
+        });
+        let encoded = serde_json::to_string(&message).expect("serializes");
+        assert!(encoded.contains(r#""type":"share_received""#));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            message
+        );
+    }
+
+    #[test]
+    fn share_subscription_is_opt_in_for_older_protocol_one_clients() {
+        let legacy: Request = serde_json::from_str(r#"{"protocol":1,"method":"subscribe"}"#)
+            .expect("old subscription still decodes");
+        assert_eq!(legacy.method, Method::Subscribe { shares: false });
+        let current = Request::new(Method::Subscribe { shares: true });
+        assert_eq!(
+            serde_json::to_string(&current).expect("serializes"),
+            r#"{"protocol":1,"method":"subscribe","shares":true}"#
+        );
     }
 }

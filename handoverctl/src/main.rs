@@ -1,9 +1,12 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use handover_core::{Device, Notification};
+use handover_core::{Device, DeviceId, Notification, SharedResource};
 use handover_ipc::{Client, IpcError, PROTOCOL_VERSION, ServerPayload};
+use thiserror::Error;
+use url::Url;
 
 #[derive(Debug, Parser)]
 #[command(about = "Inspect and control Handover", version)]
@@ -20,6 +23,22 @@ enum Command {
     Notifications,
     /// Print live normalized device and notification changes
     Monitor,
+    /// Send a URL to one paired device
+    SendUrl { device: String, url: String },
+    /// Send one local file to a paired device
+    SendFile { device: String, path: PathBuf },
+}
+
+#[derive(Debug, Error)]
+enum CliError {
+    #[error(transparent)]
+    Ipc(#[from] IpcError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    DeviceSelection(String),
+    #[error("cannot convert local path to a file URL")]
+    InvalidFilePath,
 }
 
 #[tokio::main]
@@ -30,6 +49,8 @@ async fn main() -> ExitCode {
         Some(Command::Devices) => list_devices().await,
         Some(Command::Notifications) => list_notifications().await,
         Some(Command::Monitor) => monitor().await,
+        Some(Command::SendUrl { device, url }) => send_url(&device, url).await,
+        Some(Command::SendFile { device, path }) => send_file(&device, path).await,
         None => {
             Cli::command()
                 .print_help()
@@ -48,14 +69,14 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn list_devices() -> Result<(), IpcError> {
+async fn list_devices() -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let devices = client.devices().await?;
     print_table(&devices);
     Ok(())
 }
 
-async fn list_notifications() -> Result<(), IpcError> {
+async fn list_notifications() -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let devices = client.devices().await?;
     let notifications = client.notifications().await?;
@@ -63,7 +84,7 @@ async fn list_notifications() -> Result<(), IpcError> {
     Ok(())
 }
 
-async fn monitor() -> Result<(), IpcError> {
+async fn monitor() -> Result<(), CliError> {
     loop {
         match connected_client().await {
             Ok(client) => match client.subscribe().await {
@@ -104,6 +125,40 @@ async fn monitor() -> Result<(), IpcError> {
             }
         }
     }
+}
+
+async fn send_url(selector: &str, url: String) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let device_id = select_device(&client.devices().await?, selector)?;
+    client.send_url(device_id, url).await?;
+    println!("URL accepted by KDE Connect; delivery is not confirmed");
+    Ok(())
+}
+
+async fn send_file(selector: &str, path: PathBuf) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let device_id = select_device(&client.devices().await?, selector)?;
+    let absolute = tokio::fs::canonicalize(path).await?;
+    let file_url = Url::from_file_path(absolute).map_err(|_| CliError::InvalidFilePath)?;
+    client.send_file_url(device_id, file_url.into()).await?;
+    println!("File accepted by KDE Connect; delivery is not confirmed");
+    Ok(())
+}
+
+fn select_device(devices: &[Device], selector: &str) -> Result<DeviceId, CliError> {
+    if let Some(device) = devices.iter().find(|device| device.id.as_str() == selector) {
+        return Ok(device.id.clone());
+    }
+    let mut matches = devices.iter().filter(|device| device.name == selector);
+    let first = matches.next().ok_or_else(|| {
+        CliError::DeviceSelection(format!("no device named or identified by {selector:?}"))
+    })?;
+    if matches.next().is_some() {
+        return Err(CliError::DeviceSelection(format!(
+            "multiple devices are named {selector:?}; use a device ID"
+        )));
+    }
+    Ok(first.id.clone())
 }
 
 async fn connected_client() -> Result<Client, IpcError> {
@@ -187,6 +242,13 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::NotificationRemoved { notification_id } => {
             println!("notification removed: {notification_id}");
         }
+        ServerPayload::ShareReceived { share } => {
+            let kind = match share.resource {
+                SharedResource::File { .. } => "local file available",
+                SharedResource::Url { .. } => "URL handled",
+            };
+            println!("share received: {kind} from {}", share.device_id);
+        }
         ServerPayload::Snapshot {
             devices,
             notifications,
@@ -204,6 +266,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::Devices { .. }
         | ServerPayload::Notifications { .. }
         | ServerPayload::CommandCompleted { .. }
+        | ServerPayload::ShareAccepted { .. }
         | ServerPayload::Subscribed { .. } => {}
     }
 }
@@ -242,5 +305,39 @@ mod tests {
             describe_device(&device),
             "Phone id=phone-123 connected=true paired=true battery=55% charging=false"
         );
+    }
+
+    #[test]
+    fn selects_id_or_unique_exact_name_without_guessing() {
+        let mut first = Device {
+            id: DeviceId::new("phone-a"),
+            name: "Phone".into(),
+            connected: true,
+            paired: true,
+            battery: None,
+            capabilities: BTreeSet::new(),
+        };
+        let second = Device {
+            id: DeviceId::new("phone-b"),
+            name: "Tablet".into(),
+            ..first.clone()
+        };
+        assert_eq!(
+            select_device(&[first.clone(), second.clone()], "Tablet").expect("unique name"),
+            second.id
+        );
+        assert_eq!(
+            select_device(&[first.clone(), second], "phone-a").expect("ID"),
+            first.id
+        );
+        first.id = DeviceId::new("phone-c");
+        assert!(matches!(
+            select_device(&[first.clone(), Device { id: DeviceId::new("phone-a"), ..first }], "Phone"),
+            Err(CliError::DeviceSelection(message)) if message.contains("multiple")
+        ));
+        assert!(matches!(
+            select_device(&[], "missing"),
+            Err(CliError::DeviceSelection(message)) if message.contains("no device")
+        ));
     }
 }

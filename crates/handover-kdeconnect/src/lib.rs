@@ -9,10 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use futures_util::StreamExt;
 use handover_core::{
     BatteryState, Capability, Device, DeviceEvent, DeviceId, Notification, NotificationCommand,
-    NotificationEvent, NotificationId, StateEvent,
+    NotificationEvent, NotificationId, ReceivedShare, SharedResource, StateEvent,
 };
 use thiserror::Error;
 use tracing::{debug, info, warn};
+use url::Url;
 use zbus::fdo::DBusProxy;
 use zbus::message::Type;
 use zbus::names::{BusName, WellKnownName};
@@ -23,6 +24,7 @@ const DAEMON_PATH: &str = "/modules/kdeconnect";
 const DEVICES_PATH: &str = "/modules/kdeconnect/devices";
 const BATTERY_PLUGIN: &str = "kdeconnect_battery";
 const NOTIFICATIONS_PLUGIN: &str = "kdeconnect_notifications";
+const SHARE_PLUGIN: &str = "kdeconnect_share";
 
 #[zbus::proxy(
     default_service = "org.kde.kdeconnect",
@@ -47,6 +49,15 @@ trait KdeDevice {
 
     #[zbus(property, name = "supportedPlugins")]
     fn supported_plugins(&self) -> zbus::Result<Vec<String>>;
+
+    #[zbus(name = "isPluginEnabled")]
+    fn is_plugin_enabled(&self, plugin: &str) -> zbus::Result<bool>;
+}
+
+#[zbus::proxy(interface = "org.kde.kdeconnect.device.share")]
+trait Share {
+    #[zbus(name = "shareUrl")]
+    fn share_url(&self, url: &str) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(interface = "org.kde.kdeconnect.device.battery")]
@@ -72,6 +83,7 @@ trait Notifications {
 
 #[zbus::proxy(interface = "org.kde.kdeconnect.device.notifications.notification")]
 trait KdeNotification {
+    #[zbus(name = "dismiss")]
     fn dismiss(&self) -> zbus::Result<()>;
 
     #[zbus(name = "sendReply")]
@@ -240,6 +252,18 @@ impl KdeConnectBackend {
             return;
         }
 
+        if let Some(device_id) = share_device_id_from_path(path) {
+            if member == "shareReceived"
+                && let Ok((resource,)) = message.body().deserialize::<(String,)>()
+            {
+                match normalize_received_share(device_id, &resource) {
+                    Some(share) => emit(StateEvent::ShareReceived(share)),
+                    None => warn!(device_id, "ignored invalid KDE Connect shareReceived value"),
+                }
+            }
+            return;
+        }
+
         if let Some(device_id) = notifications_device_id_from_path(path) {
             match member {
                 "notificationPosted" | "notificationUpdated" => {
@@ -346,6 +370,11 @@ impl KdeConnectBackend {
         let notifications_supported = supported_plugins
             .iter()
             .any(|name| name == NOTIFICATIONS_PLUGIN);
+        let share_supported = supported_plugins.iter().any(|name| name == SHARE_PLUGIN)
+            && device
+                .is_plugin_enabled(SHARE_PLUGIN)
+                .await
+                .unwrap_or(false);
         let battery = if connected && paired && battery_supported {
             self.read_battery(id).await
         } else {
@@ -359,6 +388,7 @@ impl KdeConnectBackend {
             paired,
             battery_supported,
             notifications_supported,
+            share_supported,
             battery,
         })
     }
@@ -635,6 +665,33 @@ impl KdeConnectBackend {
         }
         Ok(())
     }
+
+    /// Ask KDE Connect to send one URL or local-file URL to a device.
+    /// A successful return means accepted by D-Bus, not transfer completion.
+    pub async fn share_url(device_id: &DeviceId, url: &str) -> Result<(), CommandError> {
+        let connection = Connection::session()
+            .await
+            .map_err(|_| CommandError::BackendUnavailable)?;
+        let dbus = DBusProxy::new(&connection)
+            .await
+            .map_err(|_| CommandError::BackendUnavailable)?;
+        let service = BusName::try_from(SERVICE).expect("constant service name is valid");
+        if !dbus
+            .name_has_owner(service)
+            .await
+            .map_err(|_| CommandError::BackendUnavailable)?
+        {
+            return Err(CommandError::BackendUnavailable);
+        }
+        let path = format!("{DEVICES_PATH}/{device_id}/share");
+        let share = ShareProxy::builder(&connection)
+            .destination(SERVICE)?
+            .path(path.as_str())?
+            .build()
+            .await?;
+        share.share_url(url).await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -653,6 +710,8 @@ pub enum CommandError {
     Dbus(#[from] zbus::Error),
     #[error("notification no longer supports this command")]
     NoLongerSupported,
+    #[error("KDE Connect service is unavailable")]
+    BackendUnavailable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -663,6 +722,7 @@ struct ExternalDevice {
     paired: bool,
     battery_supported: bool,
     notifications_supported: bool,
+    share_supported: bool,
     battery: Option<ExternalBattery>,
 }
 
@@ -720,6 +780,9 @@ fn normalize(raw: ExternalDevice) -> (Device, Option<InvalidExternalData>) {
     if raw.notifications_supported {
         capabilities.insert(Capability::Notifications);
     }
+    if raw.share_supported {
+        capabilities.insert(Capability::FileTransfer);
+    }
 
     (
         Device {
@@ -753,6 +816,28 @@ fn notification_id_from_path(path: &str) -> Option<(&str, &str)> {
         .then_some((device_id, notification_id))
 }
 
+fn share_device_id_from_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(DEVICES_PATH)?.strip_prefix('/')?;
+    let (device_id, suffix) = rest.split_once('/')?;
+    (!device_id.is_empty() && suffix == "share").then_some(device_id)
+}
+
+fn normalize_received_share(device_id: &str, value: &str) -> Option<ReceivedShare> {
+    let parsed = Url::parse(value).ok()?;
+    let resource = if parsed.scheme() == "file" {
+        let path = parsed.to_file_path().ok()?;
+        SharedResource::File {
+            path: path.to_str()?.to_owned(),
+        }
+    } else {
+        SharedResource::Url { url: parsed.into() }
+    };
+    Some(ReceivedShare {
+        device_id: DeviceId::new(device_id),
+        resource,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 enum InvalidExternalData {
     #[error("battery percentage must be between 0 and 100, got {0}")]
@@ -771,6 +856,7 @@ mod tests {
             paired: true,
             battery_supported: true,
             notifications_supported: true,
+            share_supported: true,
             battery,
         }
     }
@@ -785,7 +871,11 @@ mod tests {
         assert!(device.paired);
         assert_eq!(
             device.capabilities,
-            BTreeSet::from([Capability::Battery, Capability::Notifications])
+            BTreeSet::from([
+                Capability::Battery,
+                Capability::Notifications,
+                Capability::FileTransfer,
+            ])
         );
         assert_eq!(warning, None);
     }
@@ -895,5 +985,38 @@ mod tests {
 
         assert!(!notification.clearable);
         assert!(!notification.reply_supported);
+    }
+
+    #[test]
+    fn translates_received_file_and_url_with_source_device() {
+        let file = normalize_received_share("phone-a", "file:///tmp/handover%20%E2%9C%93.txt")
+            .expect("valid local file URL");
+        assert_eq!(file.device_id, DeviceId::new("phone-a"));
+        assert_eq!(
+            file.resource,
+            SharedResource::File {
+                path: "/tmp/handover ✓.txt".into()
+            }
+        );
+
+        let url = normalize_received_share("phone-b", "https://example.com/a?q=1")
+            .expect("valid remote URL");
+        assert_eq!(url.device_id, DeviceId::new("phone-b"));
+        assert_eq!(
+            url.resource,
+            SharedResource::Url {
+                url: "https://example.com/a?q=1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_received_share() {
+        assert!(normalize_received_share("phone-a", "not a URL").is_none());
+        assert!(normalize_received_share("phone-a", "file://other-host/tmp/a").is_none());
+        assert_eq!(
+            share_device_id_from_path("/modules/kdeconnect/devices/phone-a/share"),
+            Some("phone-a")
+        );
     }
 }

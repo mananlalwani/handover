@@ -4,7 +4,7 @@ mod state;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use handover_core::{DeviceEvent, NotificationEvent, StateEvent};
+use handover_core::{DeviceEvent, NotificationEvent, SharedResource, StateEvent};
 use handover_kdeconnect::KdeConnectBackend;
 use ipc_server::{EVENT_CAPACITY, IpcServer};
 use state::{DeviceChange, NotificationChange, StateChange, StateStore};
@@ -114,6 +114,13 @@ fn log_change(change: StateChange) {
     match change {
         StateChange::Device(change) => log_device_change(change),
         StateChange::Notification(change) => log_notification_change(change),
+        StateChange::ShareReceived(share) => {
+            let kind = match share.resource {
+                SharedResource::File { .. } => "file",
+                SharedResource::Url { .. } => "url",
+            };
+            info!(device_id = %share.device_id, kind, "share received");
+        }
     }
 }
 

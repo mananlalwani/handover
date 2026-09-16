@@ -11,3 +11,5 @@ clap.workspace = true
 handover-core = { path = "../crates/handover-core" }
 handover-ipc = { path = "../crates/handover-ipc" }
 tokio.workspace = true
+thiserror.workspace = true
+url.workspace = true

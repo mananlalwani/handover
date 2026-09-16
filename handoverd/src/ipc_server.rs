@@ -3,7 +3,7 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use handover_core::{NotificationCommand, StateEvent};
+use handover_core::{Capability, DeviceId, NotificationCommand, StateEvent};
 use handover_ipc::{
     ErrorCode, IpcError, Method, PROTOCOL_VERSION, Request, ServerMessage, ServerPayload,
     read_json_line, runtime_directory, socket_path, write_json_line,
@@ -13,6 +13,7 @@ use tokio::io::{AsyncWrite, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
+use url::Url;
 
 use crate::state::{CommandValidationError, StateSnapshot, StateStore};
 
@@ -112,17 +113,19 @@ async fn handle_client(
     let (read_half, mut writer) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut subscription: Option<broadcast::Receiver<StateEvent>> = None;
+    let mut include_share_events = false;
 
     loop {
         if let Some(receiver) = subscription.as_mut() {
             tokio::select! {
                 request = read_json_line::<_, Request>(&mut reader) => {
-                    if !handle_request_result(request, &mut writer, &state, &events, &mut subscription).await? {
+                    if !handle_request_result(request, &mut writer, &state, &events, &mut subscription, &mut include_share_events).await? {
                         return Ok(());
                     }
                 }
                 event = receiver.recv() => {
                     match event {
+                        Ok(event) if matches!(event, StateEvent::ShareReceived(_)) && !include_share_events => {}
                         Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             debug!(skipped, "IPC client lagged; sending current snapshot");
@@ -137,8 +140,15 @@ async fn handle_client(
             }
         } else {
             let request = read_json_line::<_, Request>(&mut reader).await;
-            if !handle_request_result(request, &mut writer, &state, &events, &mut subscription)
-                .await?
+            if !handle_request_result(
+                request,
+                &mut writer,
+                &state,
+                &events,
+                &mut subscription,
+                &mut include_share_events,
+            )
+            .await?
             {
                 return Ok(());
             }
@@ -152,6 +162,7 @@ async fn handle_request_result<W>(
     state: &Arc<RwLock<StateStore>>,
     events: &broadcast::Sender<StateEvent>,
     subscription: &mut Option<broadcast::Receiver<StateEvent>>,
+    include_share_events: &mut bool,
 ) -> Result<bool, IpcError>
 where
     W: AsyncWrite + Unpin,
@@ -200,8 +211,9 @@ where
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,
         },
-        Method::Subscribe => {
+        Method::Subscribe { shares } => {
             *subscription = Some(events.subscribe());
+            *include_share_events = shares;
             let snapshot = snapshot(state);
             ServerPayload::Subscribed {
                 devices: snapshot.devices,
@@ -243,6 +255,15 @@ where
                 state,
             )
             .await;
+        }
+        Method::ShareUrl { device_id, url } => {
+            return handle_share_command(device_id, url, false, writer, state).await;
+        }
+        Method::ShareFile {
+            device_id,
+            file_url,
+        } => {
+            return handle_share_command(device_id, file_url, true, writer, state).await;
         }
     };
     write_json_line(writer, &ServerMessage::new(response)).await?;
@@ -312,6 +333,123 @@ where
     Ok(true)
 }
 
+async fn handle_share_command<W>(
+    device_id: DeviceId,
+    value: String,
+    is_file: bool,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let target = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_device(&device_id)
+        .cloned();
+    let rejected = match target {
+        None => Some((ErrorCode::UnknownDevice, "device is not known")),
+        Some(device) if !device.connected => {
+            Some((ErrorCode::DeviceDisconnected, "device is disconnected"))
+        }
+        Some(device) if !device.paired => {
+            Some((ErrorCode::DeviceNotPaired, "device is not paired"))
+        }
+        Some(device) if !device.capabilities.contains(&Capability::FileTransfer) => Some((
+            ErrorCode::UnsupportedCapability,
+            "device does not provide file and URL sharing",
+        )),
+        Some(_) => None,
+    };
+    if let Some((code, message)) = rejected {
+        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        return Ok(true);
+    }
+
+    let resource = if is_file {
+        validate_file_url(&value).await
+    } else {
+        validate_outgoing_url(&value)
+    };
+    let url = match resource {
+        Ok(url) => url,
+        Err(code) => {
+            let message = match code {
+                ErrorCode::ResourceNotFound => "file does not exist",
+                _ => "invalid or unreadable share resource",
+            };
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+
+    match handover_kdeconnect::KdeConnectBackend::share_url(&device_id, &url).await {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::ShareAccepted { device_id }),
+            )
+            .await?;
+        }
+        Err(error) => {
+            let unavailable =
+                matches!(error, handover_kdeconnect::CommandError::BackendUnavailable);
+            warn!(%device_id, is_file, unavailable, "KDE Connect rejected share request");
+            write_json_line(
+                writer,
+                &ServerMessage::protocol_error(
+                    if unavailable {
+                        ErrorCode::BackendUnavailable
+                    } else {
+                        ErrorCode::BackendRejected
+                    },
+                    if unavailable {
+                        "sharing backend is unavailable"
+                    } else {
+                        "sharing backend could not accept the request"
+                    },
+                ),
+            )
+            .await?;
+        }
+    }
+    Ok(true)
+}
+
+fn validate_outgoing_url(input: &str) -> Result<String, ErrorCode> {
+    if input.is_empty() || input.trim() != input || input.chars().any(char::is_control) {
+        return Err(ErrorCode::InvalidResource);
+    }
+    let url = Url::parse(input).map_err(|_| ErrorCode::InvalidResource)?;
+    if matches!(url.scheme(), "file" | "javascript" | "data") {
+        return Err(ErrorCode::InvalidResource);
+    }
+    Ok(url.into())
+}
+
+async fn validate_file_url(input: &str) -> Result<String, ErrorCode> {
+    let url = Url::parse(input).map_err(|_| ErrorCode::InvalidResource)?;
+    if url.scheme() != "file" || url.query().is_some() || url.fragment().is_some() {
+        return Err(ErrorCode::InvalidResource);
+    }
+    let path = url.to_file_path().map_err(|_| ErrorCode::InvalidResource)?;
+    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ErrorCode::ResourceNotFound
+        } else {
+            ErrorCode::InvalidResource
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(ErrorCode::InvalidResource);
+    }
+    tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| ErrorCode::InvalidResource)?;
+    Ok(url.into())
+}
+
 fn snapshot(state: &Arc<RwLock<StateStore>>) -> StateSnapshot {
     state
         .read()
@@ -331,6 +469,9 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
     match event {
         StateEvent::Device(event) => ServerMessage::from_device_event(event),
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
+        StateEvent::ShareReceived(share) => {
+            ServerMessage::new(ServerPayload::ShareReceived { share })
+        }
     }
 }
 
@@ -617,5 +758,243 @@ mod tests {
             receiver.recv().await,
             Err(broadcast::error::RecvError::Lagged(1))
         ));
+    }
+
+    #[test]
+    fn outgoing_url_validation_accepts_real_urls_and_rejects_unsafe_values() {
+        assert_eq!(
+            validate_outgoing_url("https://example.com/a?q=1"),
+            Ok("https://example.com/a?q=1".into())
+        );
+        assert!(validate_outgoing_url("mailto:someone@example.com").is_ok());
+        for input in [
+            "",
+            "example.com",
+            " https://example.com",
+            "javascript:alert(1)",
+            "file:///tmp/x",
+            "https://example.com\n",
+        ] {
+            assert_eq!(
+                validate_outgoing_url(input),
+                Err(ErrorCode::InvalidResource)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_validation_accepts_regular_unicode_file_and_rejects_other_paths() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("handover ✓ test.txt");
+        tokio::fs::write(&path, b"harmless test content")
+            .await
+            .expect("test file");
+        let file_url = Url::from_file_path(&path).expect("file URL").to_string();
+        assert_eq!(validate_file_url(&file_url).await, Ok(file_url.clone()));
+        let link = directory.path().join("linked file.txt");
+        std::os::unix::fs::symlink(&path, &link).expect("create test symlink");
+        let link_url = Url::from_file_path(&link).expect("file URL").to_string();
+        assert_eq!(validate_file_url(&link_url).await, Ok(link_url));
+        let missing = Url::from_file_path(directory.path().join("missing.txt"))
+            .expect("file URL")
+            .to_string();
+        assert_eq!(
+            validate_file_url(&missing).await,
+            Err(ErrorCode::ResourceNotFound)
+        );
+        assert_eq!(
+            validate_file_url(Url::from_file_path(directory.path()).unwrap().as_ref()).await,
+            Err(ErrorCode::InvalidResource)
+        );
+        assert_eq!(
+            validate_file_url(&format!("{file_url}?unexpected=1")).await,
+            Err(ErrorCode::InvalidResource)
+        );
+    }
+
+    #[tokio::test]
+    async fn share_preflight_rejects_unknown_device_and_unsupported_plugin() {
+        let (_directory, path, _state, _events, task) = server_with_device().await;
+        let mut client = Client::connect_to(path).await.expect("client connects");
+        let unknown = client
+            .send_url(DeviceId::new("unknown"), "https://example.com".into())
+            .await
+            .expect_err("unknown target");
+        assert!(matches!(
+            unknown,
+            IpcError::Server {
+                code: ErrorCode::UnknownDevice,
+                ..
+            }
+        ));
+        let unsupported = client
+            .send_url(DeviceId::new("phone"), "https://example.com".into())
+            .await
+            .expect_err("unsupported plugin");
+        assert!(matches!(
+            unsupported,
+            IpcError::Server {
+                code: ErrorCode::UnsupportedCapability,
+                ..
+            }
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn share_preflight_rejects_missing_file_before_dbus() {
+        let (_directory, path, state, _events, task) = server_with_device().await;
+        let mut capable = device("Phone", 72);
+        capable.capabilities.insert(Capability::FileTransfer);
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Device(DeviceEvent::Updated(capable)));
+        let mut client = Client::connect_to(path).await.expect("client connects");
+        let missing =
+            Url::from_file_path("/tmp/handover-definitely-missing-test.txt").expect("file URL");
+        let error = client
+            .send_file_url(DeviceId::new("phone"), missing.into())
+            .await
+            .expect_err("missing file");
+        assert!(matches!(
+            error,
+            IpcError::Server {
+                code: ErrorCode::ResourceNotFound,
+                ..
+            }
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn share_preflight_rejects_disconnected_unpaired_and_invalid_url() {
+        let (_directory, path, state, _events, task) = server_with_device().await;
+        let mut client = Client::connect_to(path).await.expect("client connects");
+        let mut target = device("Phone", 72);
+        target.capabilities.insert(Capability::FileTransfer);
+        target.connected = false;
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Device(DeviceEvent::Updated(target.clone())));
+        assert!(matches!(
+            client
+                .send_url(target.id.clone(), "https://example.com".into())
+                .await,
+            Err(IpcError::Server {
+                code: ErrorCode::DeviceDisconnected,
+                ..
+            })
+        ));
+
+        target.connected = true;
+        target.paired = false;
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Device(DeviceEvent::Updated(target.clone())));
+        assert!(matches!(
+            client
+                .send_url(target.id.clone(), "https://example.com".into())
+                .await,
+            Err(IpcError::Server {
+                code: ErrorCode::DeviceNotPaired,
+                ..
+            })
+        ));
+
+        target.paired = true;
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Device(DeviceEvent::Updated(target.clone())));
+        assert!(matches!(
+            client.send_url(target.id, "not a URL".into()).await,
+            Err(IpcError::Server {
+                code: ErrorCode::InvalidResource,
+                ..
+            })
+        ));
+        assert!(matches!(
+            client
+                .send_url(DeviceId::new("phone"), "not a URL".into())
+                .await,
+            Err(IpcError::Server {
+                code: ErrorCode::InvalidResource,
+                ..
+            })
+        ));
+        assert_eq!(
+            client
+                .devices()
+                .await
+                .expect("connection stays usable")
+                .len(),
+            1
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn incoming_share_reaches_subscriber_without_entering_snapshot() {
+        let (_directory, path, state, events, task) = server_with_device().await;
+        let client = Client::connect_to(path).await.expect("client connects");
+        let mut subscription = client.subscribe().await.expect("subscription succeeds");
+        let share = handover_core::ReceivedShare {
+            device_id: DeviceId::new("phone"),
+            resource: handover_core::SharedResource::Url {
+                url: "https://example.com".into(),
+            },
+        };
+        let event = StateEvent::ShareReceived(share.clone());
+        state.write().unwrap().apply(event.clone());
+        events.send(event).expect("subscriber exists");
+        assert_eq!(
+            subscription
+                .next_message()
+                .await
+                .expect("share event")
+                .payload,
+            ServerPayload::ShareReceived { share }
+        );
+        assert!(state.read().unwrap().snapshot().notifications.is_empty());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn legacy_subscriber_does_not_receive_new_share_event() {
+        let (_directory, path, _state, events, task) = server_with_device().await;
+        let mut stream = UnixStream::connect(path).await.expect("connect");
+        stream
+            .write_all(b"{\"protocol\":1,\"method\":\"subscribe\"}\n")
+            .await
+            .expect("subscribe");
+        let (reader, _writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        let initial: ServerMessage = read_json_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("response");
+        assert!(matches!(initial.payload, ServerPayload::Subscribed { .. }));
+        events
+            .send(StateEvent::ShareReceived(handover_core::ReceivedShare {
+                device_id: DeviceId::new("phone"),
+                resource: handover_core::SharedResource::Url {
+                    url: "https://example.com".into(),
+                },
+            }))
+            .expect("subscriber");
+        events
+            .send(StateEvent::Device(DeviceEvent::Updated(device(
+                "Phone", 71,
+            ))))
+            .expect("subscriber");
+        let next: ServerMessage = read_json_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("event");
+        assert!(matches!(next.payload, ServerPayload::DeviceUpdated { .. }));
+        task.abort();
     }
 }

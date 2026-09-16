@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use handover_core::{
     BatteryState, Device, DeviceEvent, DeviceId, Notification, NotificationCommand,
-    NotificationEvent, NotificationId, StateEvent,
+    NotificationEvent, NotificationId, ReceivedShare, StateEvent,
 };
 
 #[derive(Default)]
@@ -16,6 +16,10 @@ impl StateStore {
         match event {
             StateEvent::Device(event) => self.apply_device(event),
             StateEvent::Notification(event) => self.apply_notification(event),
+            StateEvent::ShareReceived(share) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::ShareReceived(share)],
+            },
         }
     }
 
@@ -125,8 +129,7 @@ impl StateStore {
         }
     }
 
-    #[cfg(test)]
-    fn get_device(&self, id: &DeviceId) -> Option<&Device> {
+    pub(crate) fn get_device(&self, id: &DeviceId) -> Option<&Device> {
         self.devices.get(id)
     }
 
@@ -205,6 +208,7 @@ pub(crate) enum NotificationChange {
 pub(crate) enum StateChange {
     Device(DeviceChange),
     Notification(NotificationChange),
+    ShareReceived(ReceivedShare),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -497,5 +501,26 @@ mod tests {
             }),
             Err(CommandValidationError::ReplyUnsupported)
         );
+    }
+
+    #[test]
+    fn incoming_share_is_transient_and_does_not_enter_snapshot() {
+        let mut store = StateStore::default();
+        let share = ReceivedShare {
+            device_id: DeviceId::new("phone-a"),
+            resource: handover_core::SharedResource::Url {
+                url: "https://example.com".into(),
+            },
+        };
+
+        let outcome = store.apply(StateEvent::ShareReceived(share.clone()));
+
+        assert!(outcome.changed);
+        assert!(matches!(
+            outcome.changes.as_slice(),
+            [StateChange::ShareReceived(received)] if received == &share
+        ));
+        assert!(store.snapshot().devices.is_empty());
+        assert!(store.snapshot().notifications.is_empty());
     }
 }
