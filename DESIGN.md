@@ -29,6 +29,60 @@ properties, and signal decoding. It converts each D-Bus snapshot into a
 validated `handover-core::Device`. It watches KDE Connect's D-Bus owner and
 re-enumerates after a restart.
 
+## Native Android backend
+
+The native backend is a second provider of the same normalized device events.
+`handoverd` starts the native listener alongside the KDE Connect adapter and
+merges both event streams into its existing `StateStore`. Native device IDs are
+namespaced as `native:<certificate fingerprint>`, while KDE Connect IDs remain
+unchanged. Clients continue to consume `Device`, `BatteryState`, capabilities,
+and the existing snapshot/event IPC; no client selects or identifies a backend.
+
+The Linux native adapter persists its self-signed identity certificate and key,
+plus a peer allowlist, below `${XDG_STATE_HOME:-~/.local/state}/handover/native`
+with restrictive permissions. The Android companion persists its installation
+identity in app-private storage and keeps the private key in Android Keystore
+when the transport implementation is enabled. A peer is only trusted after the
+two users compare the displayed eight-digit code and explicitly approve it on
+their respective sides. A discovery result alone never creates a device or
+trust record.
+
+The native listener advertises `_handover._tcp.local.` through DNS-SD and binds
+TCP port `24837`. The Android app also accepts an explicit `address:port` when
+multicast discovery is unavailable, including over a user-managed Tailscale
+connection. TLS 1.3 with peer certificates authenticates and
+encrypts the stream; the stored certificate fingerprint supplies the pairing
+decision. Discovery addresses and TXT values are treated as untrusted hints.
+The application protocol uses a four-byte big-endian length followed by a
+versioned JSON message, with a 64 KiB maximum frame. The native messages are
+`hello`, `pair_confirm`, `paired`, `battery`, `revoke`, `ping`, and `pong`.
+An Android `hello` may include the previously trusted server ID. If Linux has
+revoked that phone, it replies with `revoke` so Android clears its stale pin
+before presenting a new pairing request.
+Unknown versions, oversized frames, malformed identities, and unpaired
+fingerprints are rejected. Session count, read/write timeouts, and frame size
+are bounded. The daemon accepts a battery update only after `BatteryState`
+validation, then publishes the ordinary device update to all clients.
+
+Native peer administration is exposed through the existing daemon IPC as
+`native.peers`, `native.pending`, `native.pair`, and `native.unpair`. Unpairing
+removes the local allowlist entry, closes the active stream, and prevents a
+stale peer from reconnecting. Revocation is local to each endpoint and must be
+performed on both sides when both trust stores need to be cleared.
+
+The Android app uses an explicit user action to start its
+`connectedDevice` foreground service. The service owns the active transport,
+DNS-SD registration/discovery, reconnect attempts, and event-driven battery
+observation. Android lifecycle restarts and network changes recreate the
+connection from the persisted identity and allowlist; they do not bypass
+pairing. The API constraints and source links are recorded in
+[`docs/research/native-backend-apis.md`](docs/research/native-backend-apis.md).
+
+KDE Connect remains optional and independent. Its disappearance removes only
+KDE-derived runtime entries; a native paired phone remains present and can
+continue reporting state. Re-enabling KDE Connect may restore its own device
+entry alongside the native entry.
+
 ## Clipboard boundary
 
 The current clipboard path is owned by KDE Connect itself:

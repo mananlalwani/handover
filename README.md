@@ -5,12 +5,16 @@ Make your Android devices part of your Linux desktop.
 Handover is in early development. It aims to provide Linux desktops with a
 shared, desktop-level view of nearby Android devices and their capabilities.
 
-The first backend uses KDE Connect. KDE Connect details stay behind
-Handover's own domain model and APIs so frontends do not depend on its D-Bus
-interfaces and other backends can be added later.
+Handover currently supports KDE Connect and an early native Android backend.
+KDE Connect details stay behind Handover's own domain model and APIs, so
+frontends do not depend on its D-Bus interfaces or on the native LAN protocol.
 
 `handoverd` discovers devices through KDE Connect's session D-Bus service and
-keeps their normalized connection, pairing, and battery state in memory.
+the native backend's authenticated local-network transport. It keeps their
+normalized connection, pairing, and battery state in the same daemon-owned
+model. The native link currently covers presence and battery percentage with
+charging state; other features remain on the KDE Connect path until separately
+migrated.
 It also tracks active Android notifications and their reply/dismissal support.
 Clients read that state through a local Unix socket.
 
@@ -29,6 +33,24 @@ handoverctl media
 The install target builds release binaries, installs them under `~/.local`,
 and enables the `handoverd` user service under `default.target`. Ensure
 `~/.local/bin` is on `PATH`.
+
+For native pairing, build and install `android/app` on the phone, then open
+Handover and tap "Enable Handover connection" while both devices are on the
+same LAN. On Linux run `handoverctl native pending`. Compare its eight-digit
+code with the phone, tap "Pair" on Android, and run
+`handoverctl native pair <id> <code>` using the pending ID. Use
+`handoverctl native peers` to list trusted phones and
+`handoverctl native unpair <id>` to revoke one. The phone's "Unpair this
+desktop" button clears its own trust record. `handoverctl devices` and the
+Quickshell example then read the same normalized state for native and KDE
+Connect devices.
+
+If the LAN blocks multicast discovery, enter the Linux address and port
+`24837` in the app's manual address field. This also works with a Tailscale
+address when both devices can reach each other through Tailscale.
+
+From `android/`, run `./gradlew testDebugUnitTest assembleDebug` to build the
+companion. The debug APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 Inspect or control the service with:
 
