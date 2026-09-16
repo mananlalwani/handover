@@ -50,6 +50,20 @@ button when KDE Connect exposes those operations. It connects directly to
 KDE Connect currently does not expose notification action labels through
 D-Bus, so Handover cannot show action buttons for that backend yet.
 
+### Clipboard
+
+KDE Connect's clipboard plugin currently owns text clipboard synchronization
+between Linux and Android. Handover does not add a second clipboard engine or
+store clipboard contents. Its public KDE Connect D-Bus interface can request a
+Linux-to-device send, but it does not expose remote clipboard text or update
+signals.
+
+On Android 10 and later, Android restricts background clipboard reads. The
+Android-to-Linux direction therefore needs KDE Connect's foreground "Send
+clipboard" action unless the user grants KDE Connect its optional privileged
+`READ_LOGS` path through ADB. Linux-to-Android can be automatic when the KDE
+Connect clipboard plugin is enabled. Device and OEM behavior can vary.
+
 Use `make uninstall-user` to stop and remove the user-local installation.
 `cargo install --locked --path handoverd --root "$HOME/.local"` and the
 equivalent command for `handoverctl` also work, but do not install or enable

@@ -29,6 +29,44 @@ properties, and signal decoding. It converts each D-Bus snapshot into a
 validated `handover-core::Device`. It watches KDE Connect's D-Bus owner and
 re-enumerates after a restart.
 
+## Clipboard boundary
+
+The current clipboard path is owned by KDE Connect itself:
+
+```text
+Android Clipboard
+    <-> KDE Connect clipboard plugin and transport
+    <-> Linux system clipboard
+```
+
+The desktop plugin reads and writes the Linux system clipboard and exchanges
+text packets with the Android plugin. The per-device D-Bus interface exposes a
+`sendClipboard()` request for Linux-to-device transfer, but it does not expose
+remote clipboard text or a signal for remote text updates. Those updates are
+handled internally by `kdeconnectd`.
+
+Handover therefore does not duplicate this transport or add a separate
+clipboard engine at present. It does not persist clipboard contents, log them,
+or include them in normal IPC snapshots. KDE Connect's clipboard plugin must
+be enabled for the device.
+
+KDE Connect suppresses clipboard write-back by comparing content and type,
+without a timer. Its enabled per-device plugins receive local changes, so a
+Linux copy can reach multiple connected devices. Remote writes share one Linux
+clipboard; differing simultaneous updates are last-writer-wins. Handover does
+not select a default device or maintain a clipboard history.
+
+Android 10 and later restrict background clipboard reads. KDE Connect can use
+its foreground "Send clipboard" action for the Android-to-Linux direction; its
+automatic path requires the user-granted privileged `READ_LOGS` setup. Linux-
+to-Android transfer can remain automatic when the plugin is enabled. This is an
+Android platform restriction, not a Handover protocol workaround.
+
+For future work that needs daemon-owned Wayland clipboard access, the platform
+boundary belongs outside `handover-core`. The current Wayland options are the
+event-driven `ext-data-control-v1` protocol, with `wlr-data-control` as a
+compatibility path. No such Handover provider is implemented yet.
+
 `handoverd` owns the authoritative in-memory device and active notification
 maps. It applies normalized events synchronously, logs meaningful state
 transitions, and publishes the result to clients. No Handover state is
