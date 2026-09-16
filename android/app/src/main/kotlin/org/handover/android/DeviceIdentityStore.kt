@@ -29,7 +29,7 @@ class DeviceIdentityStore(context: Context) {
             KEY_ALIAS,
             KeyProperties.PURPOSE_SIGN
         ).setAlgorithmParameterSpec(java.security.spec.ECGenParameterSpec("secp256r1"))
-            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setDigests(KeyProperties.DIGEST_NONE, KeyProperties.DIGEST_SHA256)
             .setCertificateSubject(X500Principal("CN=Handover Android"))
             .setCertificateSerialNumber(java.math.BigInteger.ONE)
             .setCertificateNotBefore(java.util.Date())
@@ -40,7 +40,7 @@ class DeviceIdentityStore(context: Context) {
 
     companion object {
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        private const val KEY_ALIAS = "handover-native-p256"
+        private const val KEY_ALIAS = "handover-native-p256-v2"
 
         fun X509Certificate.fingerprint(): String = MessageDigest.getInstance("SHA-256")
             .digest(encoded).joinToString("") { "%02x".format(it) }

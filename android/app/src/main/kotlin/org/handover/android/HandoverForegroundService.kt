@@ -18,6 +18,7 @@ class HandoverForegroundService : Service() {
         startForeground(NOTIFICATION_ID, notification())
         transport = NativeTransport(this)
         transport.start()
+        transport.connectToSavedEndpoint()
         batteryObserver = BatteryObserver(this) { reading ->
             transport.publishBattery(reading)
         }
@@ -27,6 +28,7 @@ class HandoverForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = when (intent?.action) {
         ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
+        ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
         else -> START_STICKY
     }
 
@@ -53,7 +55,9 @@ class HandoverForegroundService : Service() {
     companion object {
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"
+        const val ACTION_CONNECT = "org.handover.android.CONNECT"
         const val EXTRA_CODE = "code"
+        const val EXTRA_ADDRESS = "address"
         private const val CHANNEL_ID = "handover_connection"
         private const val NOTIFICATION_ID = 1
     }

@@ -4,17 +4,26 @@ import android.content.Context
 import android.content.Intent
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.DataInputStream
+import java.io.EOFException
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
@@ -25,41 +34,93 @@ import org.handover.android.DeviceIdentityStore.Companion.fingerprint
 class NativeTransport(private val context: Context) {
     private val identity = DeviceIdentityStore(context)
     private val nsd = context.getSystemService(NsdManager::class.java)
+    private val multicastLock = context.getSystemService(WifiManager::class.java)
+        .createMulticastLock("handover-discovery").apply { setReferenceCounted(false) }
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val writerExecutor = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(32)) { _, _ -> Thread { runCatching { socket?.close() } }.start() }
     private val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
-    private var socket: SSLSocket? = null
-    private var output: BufferedOutputStream? = null
+    @Volatile private var socket: SSLSocket? = null
+    @Volatile private var output: BufferedOutputStream? = null
     private val outputLock = Any()
-    private var serverId: String? = null
-    private var serverFingerprint: String? = null
+    @Volatile private var serverId: String? = null
+    @Volatile private var serverFingerprint: String? = null
     @Volatile private var pendingCode: String? = null
     @Volatile private var approvalGranted = false
-    private var discovery: NsdManager.DiscoveryListener? = null
+    @Volatile private var discovery: NsdManager.DiscoveryListener? = null
+    @Volatile private var endpoint: Pair<InetAddress, Int>? = null
+    @Volatile private var manualEndpoint = false
+    @Volatile private var workerStarted = false
+
+    /** Reconnects to the stored manual endpoint; used after reinstall/restart when already paired. */
+    fun connectToSavedEndpoint() {
+        if (trustedPeerFingerprint(context) == null) return
+        preferences.getString(MANUAL_ENDPOINT_KEY, null)?.let(::connectTo)
+    }
 
     fun start() {
         serverFingerprint = preferences.getString(PIN_KEY, null)
+        multicastLock.acquire()
         discovery = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(serviceType: String) = Unit
+            override fun onDiscoveryStarted(serviceType: String) { Log.i(TAG, "LAN discovery started") }
             override fun onDiscoveryStopped(serviceType: String) = Unit
             override fun onServiceFound(info: NsdServiceInfo) {
-                if (info.serviceType == SERVICE_TYPE) nsd.resolveService(info, resolver)
+                if (info.serviceType.startsWith(SERVICE_TYPE)) {
+                    Log.i(TAG, "Handover LAN service found")
+                    nsd.resolveService(info, resolver)
+                }
             }
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) = Unit
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                if (!manualEndpoint && serviceInfo.serviceType.startsWith(SERVICE_TYPE)) {
+                    endpoint = null
+                    socket?.close()
+                }
+            }
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.w(TAG, "LAN discovery failed: $errorCode")
                 runCatching { discovery?.let { nsd.stopServiceDiscovery(it) } }
             }
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
         }
         nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discovery)
+        preferences.getString(MANUAL_ENDPOINT_KEY, null)?.let(::connectTo)
     }
 
     fun stop() {
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         discovery = null
+        if (multicastLock.isHeld) multicastLock.release()
+        endpoint = null
         socket?.close()
         socket = null
         output = null
         executor.shutdownNow()
+        writerExecutor.shutdownNow()
+    }
+
+    fun connectTo(rawAddress: String): Boolean {
+        Log.i(TAG, "Manual LAN endpoint requested")
+        val address = rawAddress.trim()
+        val separator = address.lastIndexOf(':')
+        if (separator <= 0) { Log.w(TAG, "Manual endpoint format invalid"); return false }
+        val port = address.substring(separator + 1).toIntOrNull()?.takeIf { it in 1..65535 }
+            ?: return false.also { Log.w(TAG, "Manual endpoint port invalid") }
+        val host = runCatching { InetAddress.getByName(address.substring(0, separator)) }.getOrNull()
+            ?: return false.also { Log.w(TAG, "Manual endpoint address invalid") }
+        Log.i(TAG, "Manual endpoint accepted")
+        manualEndpoint = true
+        endpoint = host to port
+        preferences.edit().putString(MANUAL_ENDPOINT_KEY, address).apply()
+        writerExecutor.execute { runCatching { socket?.close() } }
+        startWorker()
+        return true
+    }
+
+    private fun startWorker() {
+        if (!workerStarted) {
+            workerStarted = true
+            executor.execute { connectionLoop() }
+        }
     }
 
     fun approvePair(code: String) {
@@ -82,33 +143,60 @@ class NativeTransport(private val context: Context) {
 
     private val resolver = object : NsdManager.ResolveListener {
         override fun onServiceResolved(info: NsdServiceInfo) {
-            executor.execute { connect(info.host, info.port) }
+            Log.i(TAG, "Handover LAN service resolved")
+            if (!manualEndpoint) {
+                endpoint = info.host to info.port
+                startWorker()
+            }
         }
-        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+            Log.w(TAG, "LAN service resolution failed: $errorCode")
+        }
     }
 
-    private fun connect(host: InetAddress, port: Int) {
+    private fun connectionLoop() {
         while (discovery != null) {
+            val target = endpoint
             try {
+                if (target == null) {
+                    Thread.sleep(RECONNECT_DELAY_MS)
+                    continue
+                }
+                pendingCode = null
+                preferences.edit().remove(PENDING_CODE_KEY).apply()
+                approvalGranted = false
+                serverId = null
                 socket?.close()
-                val raw = Socket(host, port)
-                val ssl = sslContext().socketFactory.createSocket(raw, host.hostAddress, port, true) as SSLSocket
+                val raw = Socket().apply { connect(InetSocketAddress(target.first, target.second), 5_000) }
+                val ssl = sslContext().socketFactory.createSocket(raw, target.first.hostAddress, target.second, true) as SSLSocket
                 ssl.enabledProtocols = arrayOf("TLSv1.3")
+                ssl.soTimeout = 30_000
                 ssl.startHandshake()
                 socket = ssl
                 val input = BufferedInputStream(ssl.inputStream)
                 output = BufferedOutputStream(ssl.outputStream)
-                send(hello())
+                writeNow(hello())
+                var missedPongs = 0
                 while (!ssl.isClosed) {
-                    val message = read(input) ?: break
+                    val message = try { read(input) } catch (_: SocketTimeoutException) {
+                        if (++missedPongs > 1) break
+                        send(JSONObject().put("type", "ping").put("protocol", 1))
+                        continue
+                    } ?: break
+                    missedPongs = 0
                     handle(message)
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
                 output = null
                 socket?.close()
                 socket = null
+                pendingCode = null
+                preferences.edit().remove(PENDING_CODE_KEY).apply()
+                approvalGranted = false
+                serverId = null
             }
             if (discovery != null) try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) { return }
         }
@@ -132,6 +220,7 @@ class NativeTransport(private val context: Context) {
                 pendingCode = code
                 approvalGranted = serverFingerprint != null
                 if (serverFingerprint == null) {
+                    preferences.edit().putString(PENDING_CODE_KEY, code).apply()
                     broadcast(ACTION_PAIR_REQUEST, JSONObject().put("code", code).put("server_id", serverId))
                 }
             }
@@ -140,6 +229,7 @@ class NativeTransport(private val context: Context) {
                 val fingerprint = peerFingerprint() ?: return
                 preferences.edit().putString(PIN_KEY, fingerprint).apply()
                 serverFingerprint = fingerprint
+                preferences.edit().remove(PENDING_CODE_KEY).apply()
                 broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
                 sendBattery()
             }
@@ -147,6 +237,7 @@ class NativeTransport(private val context: Context) {
                 preferences.edit().remove(PIN_KEY).apply()
                 serverFingerprint = null
                 broadcast(ACTION_REVOKED, JSONObject())
+                socket?.close()
             }
             "battery_request" -> sendBattery()
         }
@@ -154,6 +245,7 @@ class NativeTransport(private val context: Context) {
 
     private fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
         .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
+        .apply { serverFingerprint?.let { put("trusted_server_id", it) } }
 
     private fun sendBattery() {
         val intent = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -162,7 +254,12 @@ class NativeTransport(private val context: Context) {
             .put("percentage", reading.percentage).put("charging", reading.charging))
     }
 
-    private fun send(message: JSONObject) = synchronized(outputLock) { output?.let { write(it, message) } }
+    private fun writeNow(message: JSONObject) = synchronized(outputLock) {
+        output?.let { stream -> runCatching { write(stream, message) }.onFailure { socket?.close() } }
+    }
+    private fun send(message: JSONObject) {
+        if (!writerExecutor.isShutdown) writerExecutor.execute { writeNow(message) }
+    }
 
     private fun sslContext(): SSLContext {
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
@@ -191,12 +288,16 @@ class NativeTransport(private val context: Context) {
     }
 
     private fun read(input: BufferedInputStream): JSONObject? {
-        val header = input.readNBytes(4)
-        if (header.size != 4) return null
+        val data = DataInputStream(input)
+        val header = ByteArray(4)
+        val first = input.read()
+        if (first < 0) return null
+        header[0] = first.toByte()
+        try { data.readFully(header, 1, 3) } catch (_: EOFException) { return null }
         val size = ByteBuffer.wrap(header).int
         if (size !in 1..MAX_FRAME) return null
-        val payload = input.readNBytes(size)
-        if (payload.size != size) return null
+        val payload = ByteArray(size)
+        try { data.readFully(payload) } catch (_: EOFException) { return null }
         return runCatching { JSONObject(String(payload, Charsets.UTF_8)) }.getOrNull()
     }
 
@@ -210,9 +311,17 @@ class NativeTransport(private val context: Context) {
         const val ACTION_REVOKED = "org.handover.android.REVOKED"
         const val EXTRA_JSON = "json"
         private const val SERVICE_TYPE = "_handover._tcp"
+        private const val TAG = "HandoverNative"
         private const val PIN_KEY = "server_cert_sha256"
+        private const val PENDING_CODE_KEY = "pending_pair_code"
+        private const val MANUAL_ENDPOINT_KEY = "manual_endpoint"
         private const val MAX_FRAME = 64 * 1024
         private const val RECONNECT_DELAY_MS = 2_000L
+
+        fun trustedPeerFingerprint(context: Context): String? =
+            context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PIN_KEY, null)
+        fun pendingPairingCode(context: Context): String? =
+            context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PENDING_CODE_KEY, null)
 
         fun pairingCode(first: String, second: String): String {
             val low = minOf(first, second)
