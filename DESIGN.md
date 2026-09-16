@@ -72,6 +72,41 @@ maps. It applies normalized events synchronously, logs meaningful state
 transitions, and publishes the result to clients. No Handover state is
 persisted to disk. KDE Connect remains responsible for its pairing data.
 
+## File and URL handoff
+
+The KDE Connect share plugin accepts outgoing URLs and local-file URLs through
+its per-device D-Bus object. Handover validates an explicit paired, connected,
+share-capable target, then forwards one resource through that adapter. A
+successful D-Bus return means the request was accepted, not delivered.
+
+KDE Connect owns incoming file writes, destination naming, and incoming URL
+handling. Its `shareReceived` signal gives Handover a coarse event with the
+source device after an incoming file has been saved or a URL has been handed
+to the desktop handler. The signal exposes no active transfer ID, progress,
+failure, or cancellation. Handover therefore has `ReceivedShare` and
+`SharedResource` types but no speculative `Transfer` state machine. These
+events are transient: the daemon broadcasts them without adding a transfer
+history to snapshots. Slow or disconnected clients may miss the display event,
+but KDE Connect's file write or URL handling does not depend on a UI client.
+
+KDE Connect also emits this signal for a temporary file when the user chooses
+to open shared text in an editor. A file event alone does not prove that
+Android sent a file payload.
+
+KDE Connect may open an incoming file when the sender sets its `open` flag;
+Handover does not open files and cannot override that upstream behavior through
+the current D-Bus interface.
+
+The socket's `share.url` and `share.file` requests use protocol 1. `share.file`
+contains a standard local `file://` URL, which preserves spaces and Unicode
+without shell parsing; the daemon checks that it identifies a readable regular
+file. `share_accepted` confirms only D-Bus acceptance. Incoming events use
+`share_received`. Subscribers request these new transient events with
+`"shares": true`; older protocol-1 subscribers omit the flag and continue to
+receive only device and notification events. Normal logs and
+`handoverctl monitor` report resource kind and source device, not file
+contents, full paths, or URL queries.
+
 Notifications use an ID made from the source `DeviceId` and a device-local
 notification ID. This prevents collisions between phones. The normalized
 record carries app name, title, body, optional icon path, clearable state,

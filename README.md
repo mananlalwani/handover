@@ -50,6 +50,26 @@ button when KDE Connect exposes those operations. It connects directly to
 KDE Connect currently does not expose notification action labels through
 D-Bus, so Handover cannot show action buttons for that backend yet.
 
+### File and URL handoff
+
+```sh
+handoverctl send-url "Phone name" https://example.com
+handoverctl send-file "Phone name" /path/to/an/existing-file.txt
+```
+
+`send-url` and `send-file` target one device by exact name or ID. The daemon
+validates the target and file, then asks KDE Connect to send it. An accepted
+command is not proof of delivery; KDE Connect does not expose outgoing
+transfer progress or completion over D-Bus. The Quickshell example has the
+same one-file chooser and URL field.
+
+KDE Connect saves files shared from Android to its configured download folder.
+Handover reports a transient received-share event after a file is saved. KDE
+Connect opens incoming URLs with the desktop's default handler before Handover
+receives the event. Handover does not execute received files or keep transfer
+history. KDE Connect may itself open an incoming file when the sender requests
+that behavior; Handover cannot prevent it through the current D-Bus API.
+
 ### Clipboard
 
 KDE Connect's clipboard plugin currently owns text clipboard synchronization
