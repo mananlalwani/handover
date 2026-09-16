@@ -15,9 +15,11 @@ Singleton {
         : false
     property var devices: []
     property var notifications: []
+    property var lastReceivedShare: null
     property string lastError: ""
     property var pendingCommand: null
     signal commandFinished(string method, var notificationId, bool success, string error)
+    signal shareFinished(string method, string deviceId, bool success, string error)
 
     function sendRequest(method, fields, socketOverride) {
         const socket = socketOverride || socketLoader.item;
@@ -60,20 +62,43 @@ Singleton {
         });
     }
 
+    function sendShare(method, device, fields) {
+        if (pendingCommand) {
+            lastError = "another command is still pending";
+            return false;
+        }
+        if (!sendRequest(method, Object.assign({ device_id: device.id }, fields))) {
+            lastError = "handoverd is disconnected";
+            return false;
+        }
+        pendingCommand = { method: method, deviceId: device.id };
+        lastError = "";
+        return true;
+    }
+
+    function sendUrl(device, url) {
+        return sendShare("share.url", device, { url: url });
+    }
+
+    function sendFile(device, fileUrl) {
+        return sendShare("share.file", device, { file_url: fileUrl });
+    }
+
     function onConnected(socket) {
         retryTimer.stop();
         lastError = "";
         sendRequest("hello", null, socket);
         sendRequest("devices.list", null, socket);
-        sendRequest("subscribe", null, socket);
+        sendRequest("subscribe", { shares: true }, socket);
     }
 
     function scheduleReconnect(message) {
         lastError = message;
         devices = [];
         notifications = [];
+        lastReceivedShare = null;
         if (pendingCommand) {
-            commandFinished(pendingCommand.method, pendingCommand.notificationId, false, message);
+            finishPending(false, message);
             pendingCommand = null;
         }
         retryTimer.restart();
@@ -101,6 +126,16 @@ Singleton {
 
     function removeNotification(notificationId) {
         notifications = notifications.filter(notification => !sameNotificationId(notification.id, notificationId));
+    }
+
+    function finishPending(success, error) {
+        if (!pendingCommand)
+            return;
+        if (pendingCommand.deviceId)
+            shareFinished(pendingCommand.method, pendingCommand.deviceId, success, error);
+        else
+            commandFinished(pendingCommand.method, pendingCommand.notificationId, success, error);
+        pendingCommand = null;
     }
 
     function handleLine(line) {
@@ -147,19 +182,21 @@ Singleton {
         case "notification_removed":
             removeNotification(message.notification_id);
             break;
+        case "share_received":
+            lastReceivedShare = message.share;
+            break;
+        case "share_accepted":
+            if (pendingCommand && pendingCommand.deviceId === message.device_id)
+                finishPending(true, "");
+            break;
         case "command_completed":
-            if (pendingCommand) {
-                commandFinished(pendingCommand.method, pendingCommand.notificationId, true, "");
-                pendingCommand = null;
-            }
+            if (pendingCommand && pendingCommand.notificationId)
+                finishPending(true, "");
             break;
         case "error":
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
-            if (pendingCommand) {
-                commandFinished(pendingCommand.method, pendingCommand.notificationId, false, lastError);
-                pendingCommand = null;
-            }
+            finishPending(false, lastError);
             break;
         default:
             console.warn("Handover: unknown daemon message type", message.type);

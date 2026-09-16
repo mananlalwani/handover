@@ -1,15 +1,31 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import Quickshell
 
 ShellRoot {
     FloatingWindow {
+        id: window
         visible: true
         implicitWidth: 420
-        implicitHeight: 330
+        implicitHeight: 470
         color: "#20242b"
         title: "Handover"
+        property var shareDevices: HandoverService.devices.filter(device =>
+            device.connected && device.paired && device.capabilities.includes("file_transfer"))
+        property string shareStatus: ""
+
+        FileDialog {
+            id: fileDialog
+            title: "Send one file to phone"
+            fileMode: FileDialog.OpenFile
+            onAccepted: {
+                const device = window.shareDevices[devicePicker.currentIndex];
+                if (device && !HandoverService.sendFile(device, selectedFile.toString()))
+                    window.shareStatus = HandoverService.lastError;
+            }
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -30,6 +46,52 @@ ShellRoot {
                         : "battery unavailable";
                     return device.name + " · " + battery;
                 }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                ComboBox {
+                    id: devicePicker
+                    Layout.fillWidth: true
+                    model: window.shareDevices.map(device => device.name)
+                    enabled: window.shareDevices.length > 0
+                }
+
+                Button {
+                    text: "Send file"
+                    enabled: devicePicker.enabled && !HandoverService.pendingCommand
+                    onClicked: fileDialog.open()
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                TextField {
+                    id: urlField
+                    Layout.fillWidth: true
+                    placeholderText: "URL to send"
+                }
+
+                Button {
+                    text: "Send URL"
+                    enabled: devicePicker.enabled && urlField.text.length > 0
+                        && !HandoverService.pendingCommand
+                    onClicked: {
+                        const device = window.shareDevices[devicePicker.currentIndex];
+                        if (device && !HandoverService.sendUrl(device, urlField.text))
+                            window.shareStatus = HandoverService.lastError;
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                color: "#b9c2cf"
+                textFormat: Text.PlainText
+                text: window.shareStatus
+                visible: text.length > 0
             }
 
             Rectangle {
@@ -153,6 +215,11 @@ ShellRoot {
             function onCommandFinished(method, notificationId, success, error) {
                 if (method === "notification.reply" && success)
                     replyField.text = "";
+            }
+            function onShareFinished(method, deviceId, success, error) {
+                window.shareStatus = success
+                    ? "Accepted by KDE Connect; delivery is not confirmed"
+                    : error;
             }
         }
     }

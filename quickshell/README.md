@@ -10,6 +10,7 @@ connects directly to `$XDG_RUNTIME_DIR/handover/handoverd.sock`; it does not run
 - `notifications`: current active phone notifications
 - `connected`: whether the daemon socket is connected
 - `lastError`: the most recent connection or protocol error
+- `lastReceivedShare`: the most recent transient incoming file/URL event in this shell instance
 
 `dismiss(notification)`, `invokeAction(notification, action)`, and
 `reply(notification, text)` send commands over the socket. `commandFinished`
@@ -17,6 +18,12 @@ reports whether the daemon accepted each command; `lastError` shows failures.
 The KDE Connect backend currently exposes no action list over D-Bus, so
 `invokeAction` is ready for advertised actions but there are no action buttons
 for current KDE Connect notifications.
+
+`sendFile(device, fileUrl)` and `sendUrl(device, url)` address one device from
+`devices`. `shareFinished` reports whether KDE Connect accepted the request;
+it does not indicate delivery. The example includes a one-file chooser and a
+URL field. Incoming share events carry the source device, but KDE Connect
+already saved the file or handled the URL before the signal reaches Handover.
 
 The service requests a snapshot and subscribes after every connection. If the
 daemon is absent or restarts, it clears its local view and retries after two
