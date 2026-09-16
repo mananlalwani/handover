@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/handover-core",
     "crates/handover-kdeconnect",
+    "crates/handover-native",
     "crates/handover-ipc",
     "handoverd",
     "handoverctl",

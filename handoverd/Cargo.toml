@@ -10,6 +10,7 @@ description = "Handover daemon"
 handover-core = { path = "../crates/handover-core" }
 handover-ipc = { path = "../crates/handover-ipc" }
 handover-kdeconnect = { path = "../crates/handover-kdeconnect" }
+handover-native = { path = "../crates/handover-native" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -1,16 +1,25 @@
 mod ipc_server;
 mod state;
 
+use std::sync::OnceLock;
+
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use handover_core::{DeviceEvent, MediaEvent, NotificationEvent, SharedResource, StateEvent};
 use handover_kdeconnect::KdeConnectBackend;
+use handover_native::NativeBackend;
 use ipc_server::{EVENT_CAPACITY, IpcServer};
 use state::{DeviceChange, MediaChange, NotificationChange, StateChange, StateStore};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
+
+static NATIVE: OnceLock<NativeBackend> = OnceLock::new();
+
+pub(crate) fn native_backend() -> Option<&'static NativeBackend> {
+    NATIVE.get()
+}
 
 #[tokio::main]
 async fn main() {
@@ -19,6 +28,29 @@ async fn main() {
 
     let state = Arc::new(RwLock::new(StateStore::default()));
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
+    match NativeBackend::default_directory().and_then(NativeBackend::open) {
+        Ok(native) => {
+            for device in native.remembered_devices() {
+                apply_backend_event(
+                    &state,
+                    &events,
+                    StateEvent::Device(DeviceEvent::Added(device)),
+                );
+            }
+            let _ = NATIVE.set(native.clone());
+            let native_state = Arc::clone(&state);
+            let native_events = events.clone();
+            std::thread::spawn(move || {
+                let callback = Arc::new(move |event| {
+                    apply_backend_event(&native_state, &native_events, event)
+                });
+                if let Err(error) = native.run(callback) {
+                    warn!(%error, "native backend stopped");
+                }
+            });
+        }
+        Err(error) => warn!(%error, "native backend unavailable"),
+    }
     let server = match IpcServer::bind(Arc::clone(&state), events.clone()).await {
         Ok(server) => server,
         Err(error) => {
@@ -133,6 +165,9 @@ fn clear_backend_state(state: &Arc<RwLock<StateStore>>, events: &broadcast::Send
         );
     }
     for device in snapshot.devices {
+        if device.id.as_str().starts_with("native:") {
+            continue;
+        }
         apply_backend_event(
             state,
             events,
@@ -223,5 +258,35 @@ fn log_notification_change(change: NotificationChange) {
             app_name,
             "notification removed"
         ),
+    }
+}
+
+#[cfg(test)]
+mod native_coexistence_tests {
+    use super::*;
+    use handover_core::{Capability, Device, DeviceId};
+
+    #[test]
+    fn kde_loss_keeps_native_device() {
+        let state = Arc::new(RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        for id in ["kde-device", "native:cert"] {
+            apply_backend_event(
+                &state,
+                &events,
+                StateEvent::Device(DeviceEvent::Added(Device {
+                    id: DeviceId::new(id),
+                    name: id.into(),
+                    connected: true,
+                    paired: true,
+                    battery: None,
+                    capabilities: [Capability::Battery].into(),
+                })),
+            );
+        }
+        clear_backend_state(&state, &events);
+        let devices = state.read().unwrap().snapshot().devices;
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id.as_str(), "native:cert");
     }
 }

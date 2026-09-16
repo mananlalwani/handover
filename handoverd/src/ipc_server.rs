@@ -16,6 +16,8 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::state::{CommandValidationError, MediaValidationError, StateSnapshot, StateStore};
+use crate::{apply_backend_event, native_backend};
+use handover_core::DeviceEvent;
 
 pub(crate) const EVENT_CAPACITY: usize = 64;
 
@@ -211,6 +213,67 @@ where
         },
         Method::DevicesList => ServerPayload::Devices {
             devices: snapshot(state).devices,
+        },
+        Method::NativePeers => ServerPayload::NativePeers {
+            peers: native_backend().map_or_else(Vec::new, |native| {
+                native
+                    .peers()
+                    .into_iter()
+                    .map(|peer| handover_ipc::NativePeer {
+                        id: peer.id,
+                        name: peer.name,
+                        fingerprint: peer.fingerprint,
+                    })
+                    .collect()
+            }),
+        },
+        Method::NativePending => ServerPayload::NativePending {
+            pending: native_backend().map_or_else(Vec::new, |native| {
+                native
+                    .pending()
+                    .into_iter()
+                    .map(|peer| handover_ipc::NativePendingPeer {
+                        id: peer.id,
+                        name: peer.name,
+                        code: peer.code,
+                    })
+                    .collect()
+            }),
+        },
+        Method::NativePair { id, code } => {
+            match native_backend().map(|native| native.approve(&id, &code)) {
+                Some(Ok(())) => ServerPayload::NativeAccepted,
+                Some(Err(_)) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: "unknown pending peer or comparison code".into(),
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "native backend unavailable".into(),
+                },
+            }
+        }
+        Method::NativeUnpair { id } => match native_backend().map(|native| native.unpair(&id)) {
+            Some(Ok(true)) => {
+                apply_backend_event(
+                    state,
+                    events,
+                    StateEvent::Device(DeviceEvent::Removed(DeviceId::new(format!("native:{id}")))),
+                );
+                ServerPayload::NativeAccepted
+            }
+            Some(Ok(false)) => ServerPayload::Error {
+                code: ErrorCode::UnknownDevice,
+                message: "unknown native peer".into(),
+            },
+            Some(Err(_)) => ServerPayload::Error {
+                code: ErrorCode::BackendRejected,
+                message: "native unpair failed".into(),
+            },
+            None => ServerPayload::Error {
+                code: ErrorCode::BackendUnavailable,
+                message: "native backend unavailable".into(),
+            },
         },
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,

@@ -42,6 +42,14 @@ pub enum Method {
     Hello,
     #[serde(rename = "devices.list")]
     DevicesList,
+    #[serde(rename = "native.peers")]
+    NativePeers,
+    #[serde(rename = "native.pending")]
+    NativePending,
+    #[serde(rename = "native.pair")]
+    NativePair { id: String, code: String },
+    #[serde(rename = "native.unpair")]
+    NativeUnpair { id: String },
     #[serde(rename = "notifications.list")]
     NotificationsList,
     #[serde(rename = "media.list")]
@@ -146,6 +154,13 @@ pub enum ServerPayload {
     Devices {
         devices: Vec<Device>,
     },
+    NativePeers {
+        peers: Vec<NativePeer>,
+    },
+    NativePending {
+        pending: Vec<NativePendingPeer>,
+    },
+    NativeAccepted,
     Notifications {
         notifications: Vec<Notification>,
     },
@@ -209,6 +224,20 @@ pub enum ServerPayload {
         code: ErrorCode,
         message: String,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativePeer {
+    pub id: String,
+    pub name: String,
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativePendingPeer {
+    pub id: String,
+    pub name: String,
+    pub code: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -339,6 +368,38 @@ impl Client {
         self.send(Method::DevicesList).await?;
         match self.receive().await?.payload {
             ServerPayload::Devices { devices } => Ok(devices),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_peers(&mut self) -> Result<Vec<NativePeer>, IpcError> {
+        self.send(Method::NativePeers).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativePeers { peers } => Ok(peers),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_pending(&mut self) -> Result<Vec<NativePendingPeer>, IpcError> {
+        self.send(Method::NativePending).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativePending { pending } => Ok(pending),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_pair(&mut self, id: String, code: String) -> Result<(), IpcError> {
+        self.send(Method::NativePair { id, code }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_unpair(&mut self, id: String) -> Result<(), IpcError> {
+        self.send(Method::NativeUnpair { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }

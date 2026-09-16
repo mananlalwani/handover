@@ -21,6 +21,11 @@ struct Cli {
 enum Command {
     /// List devices known to handoverd
     Devices,
+    /// Inspect and manage native Android pairing
+    Native {
+        #[command(subcommand)]
+        command: NativeCommand,
+    },
     /// List active remote notifications
     Notifications,
     /// List and control active remote media sessions
@@ -34,6 +39,14 @@ enum Command {
     SendUrl { device: String, url: String },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+enum NativeCommand {
+    Peers,
+    Pending,
+    Pair { id: String, code: String },
+    Unpair { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -71,6 +84,7 @@ async fn main() -> ExitCode {
 
     let result = match cli.command {
         Some(Command::Devices) => list_devices().await,
+        Some(Command::Native { command }) => native(command).await,
         Some(Command::Notifications) => list_notifications().await,
         Some(Command::Media { command }) => media(command).await,
         Some(Command::Monitor) => monitor().await,
@@ -92,6 +106,31 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn native(command: NativeCommand) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    match command {
+        NativeCommand::Peers => {
+            for peer in client.native_peers().await? {
+                println!("{}\t{}\t{}", peer.id, peer.name, peer.fingerprint);
+            }
+        }
+        NativeCommand::Pending => {
+            for peer in client.native_pending().await? {
+                println!("{}\t{}\t{}", peer.id, peer.name, peer.code);
+            }
+        }
+        NativeCommand::Pair { id, code } => {
+            client.native_pair(id, code).await?;
+            println!("Pair approval recorded; waiting for phone confirmation");
+        }
+        NativeCommand::Unpair { id } => {
+            client.native_unpair(id).await?;
+            println!("Native peer revoked");
+        }
+    }
+    Ok(())
 }
 
 async fn list_devices() -> Result<(), CliError> {
@@ -351,7 +390,10 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::CommandCompleted { .. }
         | ServerPayload::ShareAccepted { .. }
         | ServerPayload::MediaAccepted { .. }
-        | ServerPayload::Subscribed { .. } => {}
+        | ServerPayload::Subscribed { .. }
+        | ServerPayload::NativePeers { .. }
+        | ServerPayload::NativePending { .. }
+        | ServerPayload::NativeAccepted => {}
     }
 }
 
