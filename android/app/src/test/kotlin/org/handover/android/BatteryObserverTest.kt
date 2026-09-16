@@ -4,6 +4,7 @@ import android.os.BatteryManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.io.File
 
 class BatteryObserverTest {
     @Test fun parsesBatteryAndChargingState() {
@@ -12,5 +13,15 @@ class BatteryObserverTest {
 
     @Test fun rejectsMissingScale() {
         assertNull(BatteryObserver.reading(42, 0, BatteryManager.BATTERY_STATUS_UNKNOWN))
+    }
+
+    @Test fun sharedNativeProtocolFixtureContainsVersionedMessages() {
+        val fixture = File("../../tests/fixtures/native-protocol.json")
+        check(fixture.isFile) { "shared protocol fixture is missing: ${fixture.absolutePath}" }
+        val text = fixture.readText()
+        val types = Regex("\\\"type\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+            .findAll(text).map { it.groupValues[1] }.toList()
+        assertEquals(listOf("hello", "pair_confirm", "paired", "battery", "revoke", "ping", "pong"), types)
+        assertEquals(7, Regex("\\\"protocol\\\"\\s*:\\s*1").findAll(text).count())
     }
 }

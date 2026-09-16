@@ -10,23 +10,29 @@ import android.os.IBinder
 /** Lifecycle shell for the future native transport. It owns no protocol or pairing state yet. */
 class HandoverForegroundService : Service() {
     private lateinit var batteryObserver: BatteryObserver
+    private lateinit var transport: NativeTransport
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, notification())
+        transport = NativeTransport(this)
+        transport.start()
         batteryObserver = BatteryObserver(this) { reading ->
-            // Transport integration will publish this normalized reading to handoverd.
-            // Keep the callback intentionally side effect free until that boundary exists.
-            @Suppress("UNUSED_VARIABLE") val current = reading
+            transport.publishBattery(reading)
         }
         batteryObserver.start()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = when (intent?.action) {
+        ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
+        ACTION_REVOKE -> transport.revoke().let { START_STICKY }
+        else -> START_STICKY
+    }
 
     override fun onDestroy() {
         batteryObserver.stop()
+        transport.stop()
         super.onDestroy()
     }
 
@@ -45,6 +51,9 @@ class HandoverForegroundService : Service() {
         .build()
 
     companion object {
+        const val ACTION_PAIR = "org.handover.android.PAIR"
+        const val ACTION_REVOKE = "org.handover.android.REVOKE"
+        const val EXTRA_CODE = "code"
         private const val CHANNEL_ID = "handover_connection"
         private const val NOTIFICATION_ID = 1
     }
