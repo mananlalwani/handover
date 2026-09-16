@@ -1,4 +1,6 @@
 /target/
+/android/.gradle/
+/android/app/build/
 *.swp
 *.swo
 .DS_Store
