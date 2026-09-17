@@ -151,7 +151,7 @@ Singleton {
             fields.limit = limit;
         if (cursor)
             fields.cursor = cursor;
-        sendRequest("messages.history", fields);
+        return sendRequest("messages.history", fields);
     }
 
     function loadAllHistory(conversationId) {
@@ -160,10 +160,15 @@ Singleton {
         loads[key] = true;
         exhaustiveHistoryLoads = loads;
         const cursor = conversationCursors[key];
-        if (cursor)
-            loadHistory(conversationId, 100, cursor);
-        else
-            loadHistory(conversationId, 100);
+        const sent = cursor
+            ? loadHistory(conversationId, 100, cursor)
+            : loadHistory(conversationId, 100);
+        if (!sent) {
+            delete loads[key];
+            exhaustiveHistoryLoads = loads;
+            lastError = "history request could not be sent";
+        }
+        return sent;
     }
 
     function isLoadingAllHistory(conversationId) {

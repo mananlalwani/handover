@@ -1076,8 +1076,11 @@ ShellRoot {
                                 enabled: !HandoverService.isLoadingAllHistory(
                                     messagesCard.selectedConversation)
                                     && !HandoverService.pendingMessaging
-                                onClicked: HandoverService.loadAllHistory(
-                                    messagesCard.selectedConversation)
+                                onClicked: {
+                                    if (!HandoverService.loadAllHistory(
+                                        messagesCard.selectedConversation))
+                                        messagesCard.status = HandoverService.lastError;
+                                }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
