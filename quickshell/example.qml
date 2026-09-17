@@ -1077,6 +1077,7 @@ ShellRoot {
                                     messagesCard.selectedConversation)
                                     && !HandoverService.pendingMessaging
                                 onClicked: {
+                                    messagesCard.status = "requesting complete history…";
                                     if (!HandoverService.loadAllHistory(
                                         messagesCard.selectedConversation))
                                         messagesCard.status = HandoverService.lastError;
@@ -1125,6 +1126,13 @@ ShellRoot {
                                         && !HandoverService.pendingMessaging
                                     onClicked: attachmentDialog.open()
                                 }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: messagesCard.status.length > 0
+                                text: messagesCard.status
+                                color: "#9fb7d0"
+                                elide: Text.ElideRight
                             }
                         }
                     }
