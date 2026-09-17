@@ -143,6 +143,25 @@ class NativeTransport(private val context: Context) {
             .put("percentage", reading.percentage).put("charging", reading.charging))
     }
 
+    /** Never send notification content before the peer is authenticated. */
+    fun publishNotification(notification: WireNotification) {
+        if (serverFingerprint == null) return
+        if (!HandoverNotificationService.isValidKey(notification.key)) return
+        send(HandoverNotificationService.postJson(notification))
+    }
+
+    fun retractNotification(key: String) {
+        if (serverFingerprint == null) return
+        if (!HandoverNotificationService.isValidKey(key)) return
+        send(JSONObject().put("type", "notification_removed").put("protocol", 1).put("key", key))
+    }
+
+    fun syncNotifications(enabled: Boolean, notifications: List<WireNotification>) {
+        if (serverFingerprint == null) return
+        if (!enabled && notifications.isNotEmpty()) return
+        send(HandoverNotificationService.syncJson(enabled, notifications.take(64)))
+    }
+
     private val resolver = object : NsdManager.ResolveListener {
         override fun onServiceResolved(info: NsdServiceInfo) {
             Log.i(TAG, "Handover LAN service resolved")
@@ -265,6 +284,11 @@ class NativeTransport(private val context: Context) {
                 preferences.edit().remove(PENDING_CODE_KEY).apply()
                 broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
                 sendBattery()
+                // Proactively share the current notification list; the server
+                // also requests it, so a lost frame is recovered on request.
+                HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
+                    syncNotifications(enabled, list)
+                }
             }
             "revoke" -> {
                 preferences.edit().remove(PIN_KEY).apply()
@@ -273,6 +297,26 @@ class NativeTransport(private val context: Context) {
                 socket?.close()
             }
             "battery_request" -> sendBattery()
+            "notifications_request" -> {
+                if (serverFingerprint == null) return
+                HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
+                    syncNotifications(enabled, list)
+                }
+            }
+            "notification_dismiss" -> {
+                if (serverFingerprint == null) return
+                HandoverNotificationService.dismiss(message.optString("key"))
+            }
+            "notification_reply" -> {
+                if (serverFingerprint == null) return
+                HandoverNotificationService.reply(message.optString("key"), message.optString("text"))
+            }
+            "notification_action" -> {
+                if (serverFingerprint == null) return
+                HandoverNotificationService.invokeAction(
+                    message.optString("key"), message.optString("action_id"),
+                )
+            }
         }
     }
 

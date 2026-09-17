@@ -16,7 +16,8 @@ class HandoverForegroundService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, notification())
-        transport = NativeTransport(this)
+        transport = NativeTransport(applicationContext)
+        HandoverNotificationService.transport = transport
         transport.start()
         transport.connectToSavedEndpoint()
         batteryObserver = BatteryObserver(this) { reading ->
@@ -35,6 +36,9 @@ class HandoverForegroundService : Service() {
     override fun onDestroy() {
         batteryObserver.stop()
         transport.stop()
+        if (HandoverNotificationService.transport === transport) {
+            HandoverNotificationService.transport = null
+        }
         super.onDestroy()
     }
 

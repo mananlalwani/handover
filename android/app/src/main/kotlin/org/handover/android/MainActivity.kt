@@ -9,19 +9,33 @@ import android.widget.EditText
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import android.app.AlertDialog
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.RemoteInput
+import android.provider.Settings
 
 class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
+    private lateinit var notificationStatus: TextView
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
+    private var testCounter = 1
     private fun refreshStatus() {
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
         status.text = "Handover\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
+        val listener = if (HandoverNotificationService.isEnabled(this)) "granted" else "not granted"
+        val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
+        notificationStatus.text = "Notification access: $listener$reply"
     }
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
             if (intent.action == NativeTransport.ACTION_PAIRED || intent.action == NativeTransport.ACTION_REVOKED) {
                 dismissPairDialog()
+                refreshStatus()
+                return
+            }
+            if (intent.action == TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED) {
                 refreshStatus()
                 return
             }
@@ -53,12 +67,25 @@ class MainActivity : android.app.Activity() {
         shownPairCode = null
     }
 
+    /** Harmless local notification exercising the native post/update/remove
+     * path. It carries a genuine RemoteInput reply action so the desktop
+     * inline-reply path has something real to target. */
+    private fun postTestNotification(updated: Boolean) {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), POST_NOTIFICATIONS_REQUEST)
+        }
+        TestNotifications.post(this, updated, testCounter++)
+    }
+
     override fun onStart() {
         super.onStart()
         registerReceiver(pairReceiver, IntentFilter().apply {
             addAction(NativeTransport.ACTION_PAIR_REQUEST)
             addAction(NativeTransport.ACTION_PAIRED)
             addAction(NativeTransport.ACTION_REVOKED)
+            addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
         }, RECEIVER_NOT_EXPORTED)
         refreshStatus()
         NativeTransport.pendingPairingCode(this)?.let(::showPairDialog)
@@ -77,6 +104,9 @@ class MainActivity : android.app.Activity() {
         }
         status = TextView(this).apply {
             setPadding(32, 48, 32, 24)
+        }
+        notificationStatus = TextView(this).apply {
+            setPadding(32, 0, 32, 24)
         }
         val start = Button(this).apply {
             text = "Enable Handover connection"
@@ -103,15 +133,39 @@ class MainActivity : android.app.Activity() {
                 startForegroundService(service)
             }
         }
+        val notificationAccess = Button(this).apply {
+            text = "Enable notification access"
+            setOnClickListener { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        }
+        val postTest = Button(this).apply {
+            text = "Post test notification"
+            setOnClickListener { postTestNotification(false) }
+        }
+        val updateTest = Button(this).apply {
+            text = "Update test notification"
+            setOnClickListener { postTestNotification(true) }
+        }
+        val removeTest = Button(this).apply {
+            text = "Remove test notification"
+            setOnClickListener { TestNotifications.remove(this@MainActivity) }
+        }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(notificationStatus, LinearLayout.LayoutParams(-1, -2))
             addView(start, LinearLayout.LayoutParams(-1, -2))
             addView(address, LinearLayout.LayoutParams(-1, -2))
             addView(manualConnect, LinearLayout.LayoutParams(-1, -2))
+            addView(notificationAccess, LinearLayout.LayoutParams(-1, -2))
+            addView(postTest, LinearLayout.LayoutParams(-1, -2))
+            addView(updateTest, LinearLayout.LayoutParams(-1, -2))
+            addView(removeTest, LinearLayout.LayoutParams(-1, -2))
             addView(revoke, LinearLayout.LayoutParams(-1, -2))
         })
     }
 
-    companion object { private const val LOCAL_NETWORK_REQUEST = 42 }
+    companion object {
+        private const val LOCAL_NETWORK_REQUEST = 42
+        private const val POST_NOTIFICATIONS_REQUEST = 43
+    }
 }

@@ -25,5 +25,26 @@
             android:name=".HandoverForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service
+            android:name=".HandoverNotificationService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <!-- Exported so the scripted live run can post/update/remove the
+             harmless test notification over adb without screen taps. The
+             actions only manage this app's own test notification. -->
+        <receiver
+            android:name=".TestNotificationReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.handover.android.TEST_REPLY" />
+                <action android:name="org.handover.android.TEST_POST" />
+                <action android:name="org.handover.android.TEST_UPDATE" />
+                <action android:name="org.handover.android.TEST_REMOVE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
