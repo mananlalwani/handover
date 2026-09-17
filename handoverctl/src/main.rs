@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use handover_core::{
-    Device, DeviceId, MediaCommand, MediaSession, MediaSessionId, Notification, SharedResource,
+    ConversationId, Device, DeviceId, MediaCommand, MediaSession, MediaSessionId, MessageId,
+    MessagingAccountId, Notification, SharedResource,
 };
 use handover_ipc::{Client, IpcError, PROTOCOL_VERSION, ServerPayload};
 use thiserror::Error;
@@ -39,6 +40,11 @@ enum Command {
     SendUrl { device: String, url: String },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
+    /// Inspect and use messaging accounts and conversations
+    Messages {
+        #[command(subcommand)]
+        command: MessagesCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -47,6 +53,60 @@ enum NativeCommand {
     Pending,
     Pair { id: String, code: String },
     Unpair { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum MessagesCommand {
+    /// List messaging accounts
+    Accounts,
+    /// List conversations for one account
+    Conversations { account: String },
+    /// Show message history for one conversation (ACCOUNT:THREAD or THREAD)
+    History {
+        conversation: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Send a text message (accepted, not delivered)
+    Send { conversation: String, text: String },
+    /// Send a file attachment with an optional caption
+    SendFile {
+        conversation: String,
+        path: PathBuf,
+        #[arg(long)]
+        caption: Option<String>,
+    },
+    /// Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)
+    Reply {
+        message: String,
+        text: String,
+    },
+    /// Add a reaction to a message
+    React { message: String, emoji: String },
+    /// Remove a reaction from a message
+    Unreact { message: String, emoji: String },
+    /// Mark a conversation read (optionally up to one message)
+    Read {
+        conversation: String,
+        #[arg(long)]
+        message: Option<String>,
+    },
+    /// Send a typing-start ping (no typing-stop exists upstream)
+    Typing { conversation: String },
+    /// Delete one own message
+    Delete { message: String },
+    /// Open or create a conversation with addresses (phone numbers/emails)
+    Open { account: String, addresses: Vec<String> },
+    /// Log in: read a credential bundle from a file or stdin, never argv
+    Login {
+        account: String,
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+    },
+    /// Log out and revoke helper access
+    Logout { account: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -74,8 +134,12 @@ enum CliError {
     DeviceSelection(String),
     #[error("{0}")]
     MediaSelection(String),
+    #[error("{0}")]
+    MessagingSelection(String),
     #[error("cannot convert local path to a file URL")]
     InvalidFilePath,
+    #[error("credential bundle is empty or too large (max 256 KiB)")]
+    InvalidBundle,
 }
 
 #[tokio::main]
@@ -90,6 +154,7 @@ async fn main() -> ExitCode {
         Some(Command::Monitor) => monitor().await,
         Some(Command::SendUrl { device, url }) => send_url(&device, url).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
+        Some(Command::Messages { command }) => messages(command).await,
         None => {
             Cli::command()
                 .print_help()
@@ -263,6 +328,383 @@ async fn send_file(selector: &str, path: PathBuf) -> Result<(), CliError> {
     Ok(())
 }
 
+async fn messages(command: MessagesCommand) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    match command {
+        MessagesCommand::Accounts => {
+            println!("ACCOUNT  LABEL  STATE");
+            for account in client.messaging_accounts().await? {
+                let state = match (account.connected, account.authenticated) {
+                    (true, true) => "online",
+                    (true, false) => "pairing",
+                    (false, _) => "offline",
+                };
+                println!("{}\t{}\t{state}", account.id, account.label);
+            }
+        }
+        MessagesCommand::Conversations { account } => {
+            let account_id = MessagingAccountId::new(account);
+            let conversations = client.messaging_conversations(account_id).await?;
+            println!("CONVERSATION  KIND  TRANSPORT  TITLE/PARTICIPANTS  UNREAD");
+            for conversation in conversations {
+                let title = conversation_title(&conversation);
+                let unread = conversation
+                    .unread_count
+                    .map_or("-".into(), |count| count.to_string());
+                println!(
+                    "{}\t{:?}\t{:?}\t{title}\t{unread}",
+                    conversation.id, conversation.kind, conversation.transport
+                );
+            }
+        }
+        MessagesCommand::History {
+            conversation,
+            limit,
+            cursor,
+        } => {
+            let conversation_id = resolve_conversation(&mut client, &conversation).await?;
+            let (messages, next) = client
+                .messaging_history(conversation_id.clone(), limit, cursor)
+                .await?;
+            for message in &messages {
+                print_message_record(&conversation_id, message);
+            }
+            match next {
+                Some(cursor) => println!("-- older available: --cursor {cursor}"),
+                None => println!("-- start of stored window --"),
+            }
+        }
+        MessagesCommand::Send {
+            conversation,
+            text,
+        } => {
+            let conversation_id = resolve_conversation(&mut client, &conversation).await?;
+            let request_id = client.send_message_text(conversation_id, text).await?;
+            println!("send accepted: request {request_id}; delivery is not confirmed");
+        }
+        MessagesCommand::SendFile {
+            conversation,
+            path,
+            caption,
+        } => {
+            let conversation_id = resolve_conversation(&mut client, &conversation).await?;
+            let absolute = tokio::fs::canonicalize(path).await?;
+            let file_url = Url::from_file_path(absolute).map_err(|_| CliError::InvalidFilePath)?;
+            let request_id = client
+                .send_message_file(conversation_id, file_url.into(), caption)
+                .await?;
+            println!("attachment accepted: request {request_id}; delivery is not confirmed");
+        }
+        MessagesCommand::Reply { message, text } => {
+            // Replies address the origin conversation; the daemon validates
+            // that the target message is known before accepting.
+            let message_id = resolve_message(&mut client, &message).await?;
+            let conversation_id = message_id.conversation_id.clone();
+            let request_id = client.send_message_text(conversation_id, text).await?;
+            println!(
+                "reply accepted for {}: request {request_id}; delivery is not confirmed",
+                message_id.local_id
+            );
+        }
+        MessagesCommand::React { message, emoji } => {
+            let message_id = resolve_message(&mut client, &message).await?;
+            let request_id = client.react_to_message(message_id, emoji).await?;
+            println!("reaction accepted: request {request_id}");
+        }
+        MessagesCommand::Unreact { message, emoji } => {
+            let message_id = resolve_message(&mut client, &message).await?;
+            let request_id = client.unreact_to_message(message_id, emoji).await?;
+            println!("reaction removal accepted: request {request_id}");
+        }
+        MessagesCommand::Read {
+            conversation,
+            message,
+        } => {
+            let conversation_id = resolve_conversation(&mut client, &conversation).await?;
+            let message_id = match message {
+                Some(selector) => Some(resolve_message(&mut client, &selector).await?),
+                None => None,
+            };
+            client
+                .mark_conversation_read(conversation_id.clone(), message_id)
+                .await?;
+            println!("read queued for {conversation_id}");
+        }
+        MessagesCommand::Typing { conversation } => {
+            let conversation_id = resolve_conversation(&mut client, &conversation).await?;
+            client.start_typing(conversation_id.clone()).await?;
+            println!("typing-start queued for {conversation_id}");
+        }
+        MessagesCommand::Delete { message } => {
+            let message_id = resolve_message(&mut client, &message).await?;
+            let request_id = client.delete_message(message_id).await?;
+            println!("delete accepted: request {request_id}");
+        }
+        MessagesCommand::Open { account, addresses } => {
+            let request_id = client
+                .open_conversation(MessagingAccountId::new(account), addresses)
+                .await?;
+            println!("open accepted: request {request_id}; watch for the conversation event");
+        }
+        MessagesCommand::Login { account, from_file } => {
+            let bundle = read_bundle(from_file).await?;
+            if bundle.is_empty() || bundle.len() > 256 * 1024 {
+                return Err(CliError::InvalidBundle);
+            }
+            client
+                .messaging_login(
+                    MessagingAccountId::new(account.clone()),
+                    base64_encode(&bundle),
+                )
+                .await?;
+            println!("login accepted for {account}; confirm pairing on the phone");
+        }
+        MessagesCommand::Logout { account } => {
+            client
+                .messaging_logout(MessagingAccountId::new(account.clone()))
+                .await?;
+            println!("logout queued for {account}; access ends on revoke");
+        }
+    }
+    Ok(())
+}
+
+/// Read a credential bundle from a file or stdin. Bundles never travel
+/// through argv and are never printed.
+async fn read_bundle(from_file: Option<PathBuf>) -> Result<Vec<u8>, CliError> {
+    match from_file {
+        Some(path) => tokio::fs::read(path).await.map_err(CliError::Io),
+        None => {
+            let bundle = tokio::task::spawn_blocking(|| {
+                use std::io::Read;
+                let mut bundle = Vec::new();
+                std::io::stdin().read_to_end(&mut bundle).map(|_| bundle)
+            })
+            .await
+            .map_err(|_| CliError::InvalidBundle)?
+            .map_err(CliError::Io)?;
+            Ok(bundle)
+        }
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let mut block = [0u8; 3];
+        block[..chunk.len()].copy_from_slice(chunk);
+        let value =
+            (u32::from(block[0]) << 16) | (u32::from(block[1]) << 8) | u32::from(block[2]);
+        output.push(ALPHABET[(value >> 18) as usize & 63] as char);
+        output.push(ALPHABET[(value >> 12) as usize & 63] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[(value >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[value as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+/// Resolve `ACCOUNT:THREAD` or a bare `THREAD` (when unambiguous across
+/// accounts) to a conversation id. Account ids themselves contain colons,
+/// so qualification matches the longest known account prefix instead of
+/// splitting on the first colon.
+async fn resolve_conversation(
+    client: &mut Client,
+    selector: &str,
+) -> Result<ConversationId, CliError> {
+    let accounts = client.messaging_accounts().await?;
+    let mut qualified: Option<(MessagingAccountId, &str)> = None;
+    for account in &accounts {
+        let prefix = format!("{}:", account.id);
+        if let Some(thread) = selector.strip_prefix(&prefix) {
+            if thread.is_empty() {
+                continue;
+            }
+            match &qualified {
+                Some((_, known)) if known.len() >= thread.len() => {}
+                _ => qualified = Some((account.id.clone(), thread)),
+            }
+        }
+    }
+    if let Some((account_id, thread)) = qualified {
+        return Ok(ConversationId::new(account_id, thread));
+    }
+    if selector.contains(':') {
+        return Err(CliError::MessagingSelection(format!(
+            "no messaging account matches {selector:?}"
+        )));
+    }
+    let mut matches = Vec::new();
+    for account in &accounts {
+        for conversation in client
+            .messaging_conversations(account.id.clone())
+            .await?
+        {
+            if conversation.id.local_id == selector {
+                matches.push(conversation.id);
+            }
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(CliError::MessagingSelection(format!(
+            "no conversation identified by {selector:?}"
+        ))),
+        _ => Err(CliError::MessagingSelection(format!(
+            "multiple conversations match {selector:?}; use ACCOUNT:THREAD"
+        ))),
+    }
+}
+
+/// Resolve `ACCOUNT:THREAD:MESSAGE`, `THREAD:MESSAGE`, or a bare message id
+/// (when unambiguous) to a message id. Qualification strips the longest
+/// known account prefix first; the remainder splits on the last colon.
+async fn resolve_message(client: &mut Client, selector: &str) -> Result<MessageId, CliError> {
+    let accounts = client.messaging_accounts().await?;
+    // Strip the longest known account prefix; account ids contain colons,
+    // so splitting on a fixed position would misparse.
+    let mut rest = selector;
+    let mut remainder_account: Option<MessagingAccountId> = None;
+    for account in &accounts {
+        let prefix = format!("{}:", account.id);
+        if let Some(remainder) = selector.strip_prefix(&prefix) {
+            if remainder.is_empty() {
+                continue;
+            }
+            let longer = remainder_account.as_ref().is_some_and(|known: &MessagingAccountId| {
+                selector
+                    .strip_prefix(format!("{}:", known).as_str())
+                    .is_some_and(|known_rest| known_rest.len() >= remainder.len())
+            });
+            if !longer {
+                remainder_account = Some(account.id.clone());
+                rest = remainder;
+            }
+        }
+    }
+    let (thread, message) = match rest.rsplit_once(':') {
+        Some((thread, message)) if !message.is_empty() => (Some(thread), message),
+        _ => (None, rest),
+    };
+    if message.is_empty() {
+        return Err(CliError::MessagingSelection(format!(
+            "no message identified by {selector:?}"
+        )));
+    }
+    let mut matches = Vec::new();
+    for known_account in client.messaging_accounts().await? {
+        if let Some(expected) = &remainder_account {
+            if &known_account.id != expected {
+                continue;
+            }
+        }
+        for conversation in client
+            .messaging_conversations(known_account.id.clone())
+            .await?
+        {
+            if let Some(thread) = thread {
+                if conversation.id.local_id != thread {
+                    continue;
+                }
+            }
+            let (history, _) = client
+                .messaging_history(conversation.id.clone(), Some(100), None)
+                .await?;
+            for known in history {
+                if known.id.local_id == message {
+                    matches.push(known.id);
+                }
+            }
+        }
+    }
+    // Deduplicate: the same id can surface through overlapping scans.
+    matches.sort();
+    matches.dedup();
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(CliError::MessagingSelection(format!(
+            "no message identified by {selector:?}"
+        ))),
+        _ => Err(CliError::MessagingSelection(format!(
+            "multiple messages match {selector:?}; use ACCOUNT:THREAD:MESSAGE"
+        ))),
+    }
+}
+
+fn conversation_title(conversation: &handover_core::Conversation) -> String {
+    if let Some(title) = &conversation.title {
+        return title.clone();
+    }
+    let others: Vec<String> = conversation
+        .participants
+        .iter()
+        .filter(|participant| !participant.is_self)
+        .map(|participant| {
+            participant
+                .display_name
+                .clone()
+                .or_else(|| participant.address.clone())
+                .unwrap_or_else(|| participant.local_id.clone())
+        })
+        .collect();
+    others.join(", ")
+}
+
+fn print_message_record(conversation_id: &ConversationId, message: &handover_core::Message) {
+    let sender = message
+        .sender
+        .display_name
+        .clone()
+        .or_else(|| message.sender.address.clone())
+        .unwrap_or_else(|| message.sender.local_id.clone());
+    let marker = if message.sender.is_self { "me" } else { "them" };
+    let body = message.text.as_deref().unwrap_or("");
+    let attachments: Vec<String> = message
+        .attachments
+        .iter()
+        .map(|attachment| {
+            attachment
+                .name
+                .clone()
+                .unwrap_or_else(|| attachment.local_id.clone())
+        })
+        .collect();
+    let attachment_suffix = if attachments.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", attachments.join(", "))
+    };
+    let reply_suffix = message
+        .reply_to
+        .as_ref()
+        .map(|reply| format!(" (reply to {})", reply.local_id))
+        .unwrap_or_default();
+    let reaction_suffix = if message.reactions.is_empty() {
+        String::new()
+    } else {
+        let reactions: Vec<String> = message
+            .reactions
+            .iter()
+            .map(|reaction| format!("{}×{}", reaction.emoji, reaction.count))
+            .collect();
+        format!(" {{{}}}", reactions.join(" "))
+    };
+    let deleted = if message.deleted { " [deleted]" } else { "" };
+    println!(
+        "{} [{}] {sender} ({marker}): {body}{attachment_suffix}{reply_suffix}{reaction_suffix}{deleted}",
+        message.id.local_id, conversation_id.local_id
+    );
+}
+
 fn select_device(devices: &[Device], selector: &str) -> Result<DeviceId, CliError> {
     if let Some(device) = devices.iter().find(|device| device.id.as_str() == selector) {
         return Ok(device.id.clone());
@@ -394,6 +836,7 @@ fn print_message(payload: ServerPayload) {
             devices,
             notifications,
             media_sessions,
+            ..
         } => {
             println!(
                 "state resynchronized: {} device(s), {} notification(s), {} media session(s)",
@@ -402,6 +845,58 @@ fn print_message(payload: ServerPayload) {
                 media_sessions.len()
             );
         }
+        ServerPayload::AccountAdded { account } => {
+            println!("messaging account added: {}", account.id);
+        }
+        ServerPayload::AccountUpdated { account } => {
+            println!(
+                "messaging account updated: {} connected={} authenticated={}",
+                account.id, account.connected, account.authenticated
+            );
+        }
+        ServerPayload::AccountRemoved { account_id } => {
+            println!("messaging account removed: {account_id}");
+        }
+        ServerPayload::ConversationAdded { conversation } => {
+            println!("conversation added: {}", conversation.id);
+        }
+        ServerPayload::ConversationUpdated { conversation } => {
+            println!("conversation updated: {}", conversation.id);
+        }
+        ServerPayload::ConversationRemoved { conversation_id } => {
+            println!("conversation removed: {conversation_id}");
+        }
+        ServerPayload::MessageAdded { message } => {
+            println!("message added: {}", message.id);
+        }
+        ServerPayload::MessageUpdated { message } => {
+            println!("message updated: {}", message.id);
+        }
+        ServerPayload::MessageRemoved { message_id } => {
+            println!("message removed: {message_id}");
+        }
+        ServerPayload::MessageStatus { update } => {
+            println!(
+                "message status: {} {:?}",
+                update.message_id, update.status
+            );
+        }
+        ServerPayload::Typing { state } => {
+            println!(
+                "typing in {}: {}",
+                state.conversation_id,
+                state.participant_ids.join(", ")
+            );
+        }
+        ServerPayload::ReadState { state } => {
+            println!(
+                "read state for {}: unread={}",
+                state.conversation_id, state.unread
+            );
+        }
+        ServerPayload::Pairing { account_id, prompt } => {
+            println!("pairing for {account_id}: {prompt}");
+        }
         ServerPayload::Error { code, message } => {
             eprintln!("daemon error ({code:?}): {message}");
         }
@@ -409,9 +904,17 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::Devices { .. }
         | ServerPayload::Notifications { .. }
         | ServerPayload::Media { .. }
+        | ServerPayload::Accounts { .. }
+        | ServerPayload::Conversations { .. }
+        | ServerPayload::History { .. }
+        | ServerPayload::TypingStates { .. }
+        | ServerPayload::ReadStates { .. }
         | ServerPayload::CommandCompleted { .. }
         | ServerPayload::ShareAccepted { .. }
         | ServerPayload::MediaAccepted { .. }
+        | ServerPayload::MessageAccepted { .. }
+        | ServerPayload::ConversationAccepted { .. }
+        | ServerPayload::AccountAccepted { .. }
         | ServerPayload::Subscribed { .. }
         | ServerPayload::NativePeers { .. }
         | ServerPayload::NativePending { .. }
@@ -611,5 +1114,39 @@ mod tests {
             describe_media(&session),
             "phone-a:player-1 Spotify state=paused title=-"
         );
+    }
+}
+
+#[cfg(test)]
+mod messaging_tests {
+    use super::*;
+
+    #[test]
+    fn base64_encode_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b" OPAQUE-BUNDLE:42/+"), "IE9QQVFVRS1CVU5ETEU6NDIvKw==");
+    }
+
+    #[test]
+    fn conversation_selector_prefers_longest_account_prefix() {
+        // Account ids contain colons (`gmessages:default`), so the
+        // qualified form `gmessages:default:thread-1` must match the full
+        // account prefix, not the first colon.
+        let selector = "gmessages:default:thread-1";
+        let accounts = ["gmessages", "gmessages:default"];
+        let mut best: Option<&str> = None;
+        for account in accounts {
+            let prefix = format!("{account}:");
+            if let Some(rest) = selector.strip_prefix(&prefix) {
+                if best.is_none_or(|known: &str| known.len() > rest.len()) {
+                    best = Some(rest);
+                }
+            }
+        }
+        assert_eq!(best, Some("thread-1"));
+        assert_eq!("thread-1".split_once(':'), None);
     }
 }
