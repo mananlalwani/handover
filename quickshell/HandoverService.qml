@@ -29,6 +29,7 @@ Singleton {
     property var conversations: []
     property var conversationMessages: ({})
     property var conversationCursors: ({})
+    property var exhaustiveHistoryLoads: ({})
     property var typingStates: []
     property var readStates: []
     property var pairingPrompt: null
@@ -151,6 +152,24 @@ Singleton {
         if (cursor)
             fields.cursor = cursor;
         sendRequest("messages.history", fields);
+    }
+
+    function loadAllHistory(conversationId) {
+        const key = conversationKey(conversationId);
+        const loads = Object.assign({}, exhaustiveHistoryLoads);
+        loads[key] = true;
+        exhaustiveHistoryLoads = loads;
+        const cursor = conversationCursors[key];
+        if (cursor)
+            loadHistory(conversationId, 100, cursor);
+        else
+            loadHistory(conversationId, 100);
+    }
+
+    function isLoadingAllHistory(conversationId) {
+        if (!conversationId)
+            return false;
+        return !!exhaustiveHistoryLoads[conversationKey(conversationId)];
     }
 
     function sendText(conversationId, text, replyTo) {
@@ -462,6 +481,18 @@ Singleton {
             break;
         case "history":
             replaceMessages(message.conversation_id, message.messages || [], message.cursor_next);
+            {
+                const key = conversationKey(message.conversation_id);
+                if (exhaustiveHistoryLoads[key]) {
+                    if (message.cursor_next) {
+                        loadHistory(message.conversation_id, 100, message.cursor_next);
+                    } else {
+                        const loads = Object.assign({}, exhaustiveHistoryLoads);
+                        delete loads[key];
+                        exhaustiveHistoryLoads = loads;
+                    }
+                }
+            }
             break;
         case "typing_states":
             typingStates = message.states || [];
@@ -535,6 +566,7 @@ Singleton {
                 finishPending(true, "");
             break;
         case "error":
+            exhaustiveHistoryLoads = ({});
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
             finishPending(false, lastError);

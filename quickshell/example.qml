@@ -396,6 +396,13 @@ ShellRoot {
                     item.id.account_id === selectedAccount.id).slice().sort((a, b) =>
                         (b.last_activity_at || 0) - (a.last_activity_at || 0))
                 : []
+            onAccountConversationsChanged: {
+                if (selectedConversation === null && accountConversations.length > 0) {
+                    selectedConversation = accountConversations[0].id;
+                    HandoverService.loadHistory(selectedConversation, 20);
+                    HandoverService.markRead(selectedConversation);
+                }
+            }
             property string selectedKey: selectedConversation
                 ? HandoverService.conversationKey(selectedConversation) : ""
             property var selectedMessages: selectedKey
@@ -1059,6 +1066,18 @@ ShellRoot {
                                 onClicked: HandoverService.loadHistory(
                                     messagesCard.selectedConversation, 20,
                                     HandoverService.conversationCursors[messagesCard.selectedKey])
+                            }
+                            Button {
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: messagesCard.selectedConversation !== null
+                                text: HandoverService.isLoadingAllHistory(
+                                    messagesCard.selectedConversation)
+                                    ? "Loading all messages…" : "Load all messages"
+                                enabled: !HandoverService.isLoadingAllHistory(
+                                    messagesCard.selectedConversation)
+                                    && !HandoverService.pendingMessaging
+                                onClicked: HandoverService.loadAllHistory(
+                                    messagesCard.selectedConversation)
                             }
                             RowLayout {
                                 Layout.fillWidth: true
