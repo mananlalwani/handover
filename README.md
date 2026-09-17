@@ -38,7 +38,9 @@ For native pairing, build and install `android/app` on the phone, then open
 Handover and tap "Enable Handover connection" while both devices are on the
 same LAN. On Linux run `handoverctl native pending`. Compare its eight-digit
 code with the phone, tap "Pair" on Android, and run
-`handoverctl native pair <id> <code>` using the pending ID. Use
+`handoverctl native pair <id> <code>` using the pending ID. The code is fresh
+for every pairing attempt: if a ceremony times out or is aborted, reconnect
+and compare the new code. Use
 `handoverctl native peers` to list trusted phones and
 `handoverctl native unpair <id>` to revoke one. The phone's "Unpair this
 desktop" button clears its own trust record. `handoverctl devices` and the

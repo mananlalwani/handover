@@ -1,5 +1,6 @@
 [
-  {"type":"hello","protocol":1,"id":"android-device-01","name":"Pixel Test"},
+  {"type":"hello","protocol":1,"id":"android-device-01","name":"Pixel Test","pair_commit":"a8faed6abbf35c12a4b26e40f6feb19d736d90045c83b9f9a31f638d323e6811"},
+  {"type":"pair_open","protocol":1,"nonce":"00112233445566778899aabbccddeeff"},
   {"type":"pair_confirm","protocol":1,"code":"12345678"},
   {"type":"paired","protocol":1},
   {"type":"battery","protocol":1,"percentage":87,"charging":true},

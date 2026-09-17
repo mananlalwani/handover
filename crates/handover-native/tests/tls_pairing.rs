@@ -139,24 +139,77 @@ fn harness() -> Harness {
 
 fn wait_pending_code(harness: &Harness, id: &str) -> String {
     for _ in 0..100 {
-        if let Some(candidate) = harness.backend.pending().into_iter().find(|p| p.id == id) {
+        if let Some(candidate) = harness
+            .backend
+            .pending()
+            .into_iter()
+            .find(|p| p.id == id && !p.code.is_empty())
+        {
             return candidate.code;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("peer {id} never appeared in pending");
+    panic!("peer {id} never reached the code stage of pairing");
 }
 
-/// v1 ceremony code: SHA-256 over the domain label plus the two sorted
-/// certificate fingerprints, truncated to eight decimal digits. The Android
-/// `pairingCode` implementation must produce the identical value for the same
-/// inputs; the shared cross-language vector lives in the crate unit tests.
-fn comparison_code(a: &str, b: &str) -> String {
-    let mut ids = [a, b];
-    ids.sort_unstable();
-    let digest = Sha256::digest(format!("handover-pair-v1:{}:{}", ids[0], ids[1]).as_bytes());
+/// v2 ceremony code: SHA-256 over the domain label plus the two certificate
+/// fingerprints with each side's fresh nonce bound to its fingerprint owner,
+/// truncated to eight decimal digits. The Android `pairingCode`
+/// implementation must produce the identical value for the same inputs; the
+/// shared cross-language vector lives in the crate unit tests.
+fn comparison_code(own_fp: &str, own_nonce: &str, peer_fp: &str, peer_nonce: &str) -> String {
+    let ((low_fp, low_nonce), (high_fp, high_nonce)) = if own_fp <= peer_fp {
+        ((own_fp, own_nonce), (peer_fp, peer_nonce))
+    } else {
+        ((peer_fp, peer_nonce), (own_fp, own_nonce))
+    };
+    let digest = Sha256::digest(
+        format!("handover-pair-v2:{low_fp}:{high_fp}:{low_nonce}:{high_nonce}").as_bytes(),
+    );
     let number = u32::from_be_bytes(digest[..4].try_into().unwrap()) % 100_000_000;
     format!("{number:08}")
+}
+
+fn fresh_nonce() -> [u8; 16] {
+    let mut nonce = [0u8; 16];
+    openssl::rand::rand_bytes(&mut nonce).unwrap();
+    nonce
+}
+
+/// Runs the opening phase of the ceremony: both sides commit in hello, then
+/// reveal. Returns the ceremony code as the test client derives it.
+fn exchange_openings(harness: &Harness, peer: &mut TlsPeer, client: &ClientIdentity) -> String {
+    let nonce = fresh_nonce();
+    let commit = hex::encode(Sha256::digest(nonce));
+    send(
+        peer,
+        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","pair_commit":commit}),
+    );
+    let hello = recv(peer);
+    assert_eq!(hello["type"], "hello");
+    assert_eq!(hello["protocol"], 1);
+    // The server must advertise the fingerprint of the certificate it
+    // presented during the TLS handshake, not an unverified string.
+    assert_eq!(hello["id"].as_str().unwrap(), peer.server_fingerprint);
+    assert_eq!(hello["id"].as_str().unwrap(), harness.backend.identity());
+
+    let opening = recv(peer);
+    assert_eq!(opening["type"], "pair_open");
+    let server_nonce = opening["nonce"].as_str().unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(hex::decode(server_nonce).unwrap())),
+        hello["pair_commit"].as_str().unwrap()
+    );
+    send(
+        peer,
+        serde_json::json!({"type":"pair_open","protocol":1,"nonce":hex::encode(nonce)}),
+    );
+    comparison_code(
+        &client.fingerprint,
+        &hex::encode(nonce),
+        &peer.server_fingerprint,
+        server_nonce,
+    )
 }
 
 #[test]
@@ -165,23 +218,9 @@ fn pairing_succeeds_over_real_tls() {
     let client = test_identity();
     let mut peer = connect(harness.port, &client);
 
-    send(
-        &mut peer,
-        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone"}),
-    );
-    let hello = recv(&mut peer);
-    assert_eq!(hello["type"], "hello");
-    assert_eq!(hello["protocol"], 1);
-    // The server must advertise the fingerprint of the certificate it
-    // presented during the TLS handshake, not an unverified string.
-    assert_eq!(hello["id"].as_str().unwrap(), peer.server_fingerprint);
-    assert_eq!(hello["id"].as_str().unwrap(), harness.backend.identity());
-
+    let derived = exchange_openings(&harness, &mut peer, &client);
     let code = wait_pending_code(&harness, &client.fingerprint);
-    assert_eq!(
-        code,
-        comparison_code(&client.fingerprint, &peer.server_fingerprint)
-    );
+    assert_eq!(code, derived);
 
     harness.backend.approve(&client.fingerprint, &code).unwrap();
     send(
@@ -216,11 +255,7 @@ fn wrong_confirmation_code_aborts_pairing() {
     let client = test_identity();
     let mut peer = connect(harness.port, &client);
 
-    send(
-        &mut peer,
-        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone"}),
-    );
-    let _ = recv(&mut peer);
+    exchange_openings(&harness, &mut peer, &client);
     let code = wait_pending_code(&harness, &client.fingerprint);
     harness.backend.approve(&client.fingerprint, &code).unwrap();
 
@@ -236,13 +271,9 @@ fn wrong_confirmation_code_aborts_pairing() {
     // The aborted ceremony must not poison future attempts: the same client
     // identity can immediately start a fresh ceremony.
     let mut peer = connect(harness.port, &client);
-    send(
-        &mut peer,
-        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone"}),
-    );
-    let hello = recv(&mut peer);
-    assert_eq!(hello["type"], "hello");
+    let derived = exchange_openings(&harness, &mut peer, &client);
     let code = wait_pending_code(&harness, &client.fingerprint);
+    assert_eq!(code, derived);
     harness.backend.approve(&client.fingerprint, &code).unwrap();
     send(
         &mut peer,
@@ -250,4 +281,28 @@ fn wrong_confirmation_code_aborts_pairing() {
     );
     assert_eq!(recv(&mut peer)["type"], "paired");
     assert_eq!(harness.backend.peers().len(), 1);
+}
+
+#[test]
+fn tampered_opening_aborts_pairing() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+
+    let nonce = fresh_nonce();
+    send(
+        &mut peer,
+        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","pair_commit":hex::encode(Sha256::digest(nonce))}),
+    );
+    let _ = recv(&mut peer);
+    let _ = recv(&mut peer);
+    // Reveal a different nonce than the hello committed to.
+    let mut tampered = nonce;
+    tampered[0] ^= 0xff;
+    send(
+        &mut peer,
+        serde_json::json!({"type":"pair_open","protocol":1,"nonce":hex::encode(tampered)}),
+    );
+    recv_err(&mut peer);
+    assert!(harness.backend.peers().is_empty());
 }

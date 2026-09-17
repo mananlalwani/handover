@@ -13,6 +13,7 @@ import android.app.AlertDialog
 class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private var shownPairCode: String? = null
+    private var pairDialog: AlertDialog? = null
     private fun refreshStatus() {
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
         status.text = "Handover\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
@@ -20,6 +21,7 @@ class MainActivity : android.app.Activity() {
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
             if (intent.action == NativeTransport.ACTION_PAIRED || intent.action == NativeTransport.ACTION_REVOKED) {
+                dismissPairDialog()
                 refreshStatus()
                 return
             }
@@ -30,15 +32,25 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun showPairDialog(code: String) {
-        if (code.isEmpty() || shownPairCode == code) return
+        if (code.isEmpty()) return
+        if (shownPairCode == code && pairDialog?.isShowing == true) return
+        // Each ceremony derives a fresh code, so a new ceremony replaces the
+        // previous dialog instead of stacking prompts.
         shownPairCode = code
-        AlertDialog.Builder(this).setTitle("Pair Handover device")
+        pairDialog?.dismiss()
+        pairDialog = AlertDialog.Builder(this).setTitle("Pair Handover device")
             .setMessage("Confirm this code on Linux:\n\n$code")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Pair") { _, _ ->
                 startService(Intent(this, HandoverForegroundService::class.java)
                     .setAction(HandoverForegroundService.ACTION_PAIR).putExtra(HandoverForegroundService.EXTRA_CODE, code))
-            }.setOnDismissListener { shownPairCode = null }.show()
+            }.setOnDismissListener { shownPairCode = null; pairDialog = null }.show()
+    }
+
+    private fun dismissPairDialog() {
+        pairDialog?.dismiss()
+        pairDialog = null
+        shownPairCode = null
     }
 
     override fun onStart() {

@@ -44,24 +44,33 @@ with restrictive permissions. The Android companion persists its installation
 identity in app-private storage and keeps the private key in Android Keystore
 when the transport implementation is enabled. A peer is only trusted after the
 two users compare the displayed eight-digit code and explicitly approve it on
-their respective sides. A discovery result alone never creates a device or
-trust record.
+their respective sides. The code is fresh for every ceremony: each hello
+carries a SHA-256 commitment to a random 16-byte nonce, both sides reveal
+their nonces in `pair_open`, and the code is derived from the two certificate
+fingerprints with each nonce bound to its fingerprint owner. A discovery
+result alone never creates a device or trust record.
 
 The native listener advertises `_handover._tcp.local.` through DNS-SD and binds
-TCP port `24837`. The Android app also accepts an explicit `address:port` when
+TCP port `24837`. The advertisement record has unit-test coverage, but no live
+multicast discovery verification has been performed; manual `address:port`
+entry is the verified path. The Android app also accepts an explicit `address:port` when
 multicast discovery is unavailable, including over a user-managed Tailscale
 connection. TLS 1.3 with peer certificates authenticates and
 encrypts the stream; the stored certificate fingerprint supplies the pairing
 decision. Discovery addresses and TXT values are treated as untrusted hints.
 The application protocol uses a four-byte big-endian length followed by a
 versioned JSON message, with a 64 KiB maximum frame. The native messages are
-`hello`, `pair_confirm`, `paired`, `battery`, `revoke`, `ping`, and `pong`.
+`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `revoke`, `ping`,
+and `pong`.
 An Android `hello` may include the previously trusted server ID. If Linux has
 revoked that phone, it replies with `revoke` so Android clears its stale pin
 before presenting a new pairing request.
-Unknown versions, oversized frames, malformed identities, and unpaired
-fingerprints are rejected. Session count, read/write timeouts, and frame size
-are bounded. The daemon accepts a battery update only after `BatteryState`
+Unknown versions, oversized frames, malformed identities, unpaired
+fingerprints, commitment-less hellos from unknown peers, openings that do not
+match the committed nonce, and confirmations that do not repeat the displayed
+code are rejected; a failed ceremony drops the session so a retry starts a
+fresh, user-visible ceremony. Session count, read/write timeouts, and frame
+size are bounded. The daemon accepts a battery update only after `BatteryState`
 validation, then publishes the ordinary device update to all clients.
 
 Native peer administration is exposed through the existing daemon IPC as
@@ -123,8 +132,11 @@ compatibility path. No such Handover provider is implemented yet.
 
 `handoverd` owns the authoritative in-memory device and active notification
 maps. It applies normalized events synchronously, logs meaningful state
-transitions, and publishes the result to clients. No Handover state is
-persisted to disk. KDE Connect remains responsible for its pairing data.
+transitions, and publishes the result to clients. The runtime device,
+notification, and media-session maps are in-memory only. The native backend's
+own identity certificate/key and peer allowlist are persisted as described in
+the native section above; KDE Connect remains responsible for its pairing
+data.
 
 ## File and URL handoff
 

@@ -66,6 +66,7 @@ struct PeerFile {
 struct Candidate {
     peer: Peer,
     code: String,
+    commit: String,
     approved: bool,
     created: Instant,
 }
@@ -126,6 +127,16 @@ enum Message {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trusted_server_id: Option<String>,
+        // Hex SHA-256 commitment to the sender's fresh pairing nonce. Present
+        // on every hello; required from unknown peers so the comparison code
+        // binds this ceremony instead of only the long-lived certificates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pair_commit: Option<String>,
+    },
+    PairOpen {
+        protocol: u32,
+        // Hex 16-byte nonce revealing the hello's commitment.
+        nonce: String,
     },
     PairConfirm {
         protocol: u32,
@@ -158,6 +169,7 @@ impl Message {
     fn version(&self) -> u32 {
         match self {
             Self::Hello { protocol, .. }
+            | Self::PairOpen { protocol, .. }
             | Self::PairConfirm { protocol, .. }
             | Self::Paired { protocol }
             | Self::Battery { protocol, .. }
@@ -266,7 +278,9 @@ impl NativeBackend {
             .pending
             .get_mut(id)
             .ok_or(NativeError::UnknownPending)?;
-        if candidate.code != code {
+        if candidate.code.is_empty() || candidate.code != code {
+            // The code only exists after both sides reveal their pairing
+            // nonces; there is nothing to approve before that.
             return Err(NativeError::UnknownPending);
         }
         candidate.approved = true;
@@ -365,6 +379,7 @@ impl NativeBackend {
             id,
             name,
             trusted_server_id,
+            pair_commit,
         } = hello
         else {
             return Err(NativeError::InvalidFrame);
@@ -372,6 +387,13 @@ impl NativeBackend {
         if id != peer_fp || name.is_empty() || name.len() > 128 {
             return Err(NativeError::InvalidFrame);
         }
+        // Every ceremony gets a fresh nonce. The hello carries only its
+        // commitment; the opening follows, so a middlebox that committed to
+        // its certificates at the TLS handshake cannot grind the displayed
+        // code offline before the users compare it.
+        let mut nonce = [0u8; 16];
+        openssl::rand::rand_bytes(&mut nonce)?;
+        let nonce_hex = hex::encode(nonce);
         write_frame(
             &mut tls,
             &Message::Hello {
@@ -379,6 +401,7 @@ impl NativeBackend {
                 id: self.id.clone(),
                 name: "Linux desktop".into(),
                 trusted_server_id: None,
+                pair_commit: Some(hex::encode(Sha256::digest(nonce))),
             },
         )?;
         let peer = Peer {
@@ -417,11 +440,24 @@ impl NativeBackend {
                     inner.connecting.remove(&id);
                     return Err(NativeError::InvalidFrame);
                 }
+                let Some(commit) = pair_commit else {
+                    // Unknown peers must commit to a fresh nonce; without it
+                    // the ceremony code would be a static function of the
+                    // certificates and grindable offline by a middlebox.
+                    inner.connecting.remove(&id);
+                    return Err(NativeError::InvalidFrame);
+                };
+                if !hex::decode(&commit).is_ok_and(|bytes| bytes.len() == 32) {
+                    inner.connecting.remove(&id);
+                    return Err(NativeError::InvalidFrame);
+                }
                 inner.pending.insert(
                     id.clone(),
                     Candidate {
                         peer: peer.clone(),
-                        code: comparison_code(&self.id, &peer_fp),
+                        // Computed once the phone reveals its nonce.
+                        code: String::new(),
+                        commit,
                         approved: false,
                         created: Instant::now(),
                     },
@@ -436,17 +472,56 @@ impl NativeBackend {
             published: false,
         };
         if !known {
-            // Both users compare the same eight-digit code out of band, then
-            // approve on their own side: Linux through local IPC, the phone
-            // by repeating the code it displayed. Pairing completes only when
-            // the local approval and the matching phone confirmation meet.
+            // Created after the session guard so a failed opening write
+            // still releases the identity slot for a fresh ceremony.
+            write_frame(
+                &mut tls,
+                &Message::PairOpen {
+                    protocol: WIRE_VERSION,
+                    nonce: nonce_hex.clone(),
+                },
+            )?;
+        }
+        if !known {
+            // Both sides committed to a fresh nonce in their hellos and have
+            // now revealed the openings. Each side verifies the peer's
+            // opening against its commitment, then both users compare the
+            // resulting code out of band and approve on their own side: Linux
+            // through local IPC, the phone by repeating the code it
+            // displayed. Pairing completes only when the local approval and
+            // the matching phone confirmation meet within one ceremony.
             let started = Instant::now();
+            let mut opened = false;
             let mut phone_confirmed = false;
             loop {
                 if started.elapsed() > Duration::from_secs(120) {
                     return Err(NativeError::InvalidFrame);
                 }
                 match read_frame(&mut tls) {
+                    Ok(Message::PairOpen {
+                        protocol: WIRE_VERSION,
+                        nonce: peer_nonce,
+                    }) => {
+                        if opened {
+                            return Err(NativeError::InvalidFrame);
+                        }
+                        let Some(bytes) = parse_nonce(&peer_nonce) else {
+                            return Err(NativeError::InvalidFrame);
+                        };
+                        let mut inner = self.inner.lock().unwrap();
+                        let Some(candidate) = inner.pending.get_mut(&id) else {
+                            return Err(NativeError::InvalidFrame);
+                        };
+                        if hex::encode(Sha256::digest(bytes)) != candidate.commit {
+                            // The opening does not match the hello's
+                            // commitment: drop the ceremony instead of
+                            // displaying a code the peer did not commit to.
+                            return Err(NativeError::InvalidFrame);
+                        }
+                        candidate.code =
+                            comparison_code(&self.id, &nonce_hex, &peer_fp, &peer_nonce);
+                        opened = true;
+                    }
                     Ok(Message::PairConfirm {
                         protocol: WIRE_VERSION,
                         code,
@@ -641,12 +716,22 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), NativeError> {
 fn fingerprint(cert: &X509) -> Result<String, NativeError> {
     Ok(hex::encode(Sha256::digest(cert.to_der()?)))
 }
-fn comparison_code(a: &str, b: &str) -> String {
-    let mut ids = [a, b];
-    ids.sort();
-    let digest = Sha256::digest(format!("handover-pair-v1:{}:{}", ids[0], ids[1]).as_bytes());
+fn comparison_code(own_fp: &str, own_nonce: &str, peer_fp: &str, peer_nonce: &str) -> String {
+    // Each nonce stays bound to its fingerprint owner, so both sides derive
+    // the same code without roles while a middlebox cannot swap openings.
+    let ((low_fp, low_nonce), (high_fp, high_nonce)) = if own_fp <= peer_fp {
+        ((own_fp, own_nonce), (peer_fp, peer_nonce))
+    } else {
+        ((peer_fp, peer_nonce), (own_fp, own_nonce))
+    };
+    let digest = Sha256::digest(
+        format!("handover-pair-v2:{low_fp}:{high_fp}:{low_nonce}:{high_nonce}").as_bytes(),
+    );
     let number = u32::from_be_bytes(digest[..4].try_into().unwrap()) % 100_000_000;
     format!("{number:08}")
+}
+fn parse_nonce(hex_nonce: &str) -> Option<[u8; 16]> {
+    hex::decode(hex_nonce).ok()?.try_into().ok()
 }
 fn read_frame<R: Read>(reader: &mut R) -> Result<Message, NativeError> {
     let mut len = [0u8; 4];
@@ -737,8 +822,18 @@ mod tests {
         }
     }
     #[test]
-    fn code_is_order_independent() {
-        assert_eq!(comparison_code("a", "b"), comparison_code("b", "a"));
+    fn code_matches_cross_language_vector_and_is_order_independent() {
+        // Shared with NativeTransportTest on the Kotlin side: the same
+        // fingerprints and nonces must produce this code in both languages.
+        let fp_a = "aa".repeat(32);
+        let fp_b = "bb".repeat(32);
+        let nonce_a = "00112233445566778899aabbccddeeff";
+        let nonce_b = "ffeeddccbbaa99887766554433221100";
+        assert_eq!(comparison_code(&fp_a, nonce_a, &fp_b, nonce_b), "18954386");
+        assert_eq!(
+            comparison_code(&fp_a, nonce_a, &fp_b, nonce_b),
+            comparison_code(&fp_b, nonce_b, &fp_a, nonce_a)
+        );
     }
     #[test]
     fn identity_persists() {

@@ -47,12 +47,14 @@ class NativeTransport(private val context: Context) {
     @Volatile private var serverFingerprint: String? = null
     @Volatile private var pendingCode: String? = null
     @Volatile private var approvalGranted = false
+    @Volatile private var ownNonce: String? = null
+    @Volatile private var serverCommit: String? = null
     @Volatile private var discovery: NsdManager.DiscoveryListener? = null
     @Volatile private var endpoint: Pair<InetAddress, Int>? = null
     @Volatile private var manualEndpoint = false
     @Volatile private var workerStarted = false
 
-    /** Reconnects to the stored manual endpoint; used after reinstall/restart when already paired. */
+    /** Reconnects to the stored manual endpoint after a restart when already paired. */
     fun connectToSavedEndpoint() {
         if (trustedPeerFingerprint(context) == null) return
         preferences.getString(MANUAL_ENDPOINT_KEY, null)?.let(::connectTo)
@@ -166,6 +168,8 @@ class NativeTransport(private val context: Context) {
                 preferences.edit().remove(PENDING_CODE_KEY).apply()
                 approvalGranted = false
                 serverId = null
+                ownNonce = generatePairingNonce()
+                serverCommit = null
                 socket?.close()
                 val raw = Socket().apply { connect(InetSocketAddress(target.first, target.second), 5_000) }
                 val ssl = sslContext().socketFactory.createSocket(raw, target.first.hostAddress, target.second, true) as SSLSocket
@@ -197,6 +201,8 @@ class NativeTransport(private val context: Context) {
                 preferences.edit().remove(PENDING_CODE_KEY).apply()
                 approvalGranted = false
                 serverId = null
+                ownNonce = null
+                serverCommit = null
             }
             if (discovery != null) try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) { return }
         }
@@ -216,13 +222,40 @@ class NativeTransport(private val context: Context) {
                     return
                 }
                 serverId = advertisedId.takeIf { it.isNotEmpty() }
-                val code = pairingCode(identity.deviceId, serverId ?: return)
-                pendingCode = code
-                approvalGranted = serverFingerprint != null
-                if (serverFingerprint == null) {
-                    preferences.edit().putString(PENDING_CODE_KEY, code).apply()
-                    broadcast(ACTION_PAIR_REQUEST, JSONObject().put("code", code).put("server_id", serverId))
+                if (serverFingerprint != null) {
+                    approvalGranted = true
+                    return
                 }
+                // Unknown server: require a well-formed nonce commitment, then
+                // reveal our own opening. The displayed code is derived after
+                // both openings arrive, so it binds this ceremony rather than
+                // only the long-lived certificates.
+                val commit = message.optString("pair_commit")
+                if (commit.isEmpty() || !isSha256Hex(commit)) {
+                    socket?.close()
+                    return
+                }
+                serverCommit = commit
+                approvalGranted = false
+                val nonce = ownNonce ?: return
+                send(JSONObject().put("type", "pair_open").put("protocol", 1).put("nonce", nonce))
+            }
+            "pair_open" -> {
+                if (serverFingerprint != null) return
+                val commit = serverCommit
+                val peer = serverId
+                val nonce = ownNonce
+                val serverNonce = message.optString("nonce")
+                if (commit == null || peer == null || nonce == null
+                    || !isPairingNonce(serverNonce) || pairingCommitment(serverNonce) != commit
+                ) {
+                    socket?.close()
+                    return
+                }
+                val code = pairingCode(identity.deviceId, nonce, peer, serverNonce)
+                pendingCode = code
+                preferences.edit().putString(PENDING_CODE_KEY, code).apply()
+                broadcast(ACTION_PAIR_REQUEST, JSONObject().put("code", code).put("server_id", peer))
             }
             "paired" -> {
                 if (!approvalGranted && serverFingerprint == null) return
@@ -245,7 +278,10 @@ class NativeTransport(private val context: Context) {
 
     private fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
         .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
-        .apply { serverFingerprint?.let { put("trusted_server_id", it) } }
+        .apply {
+            serverFingerprint?.let { put("trusted_server_id", it) }
+            ownNonce?.let { put("pair_commit", pairingCommitment(it)) }
+        }
 
     private fun sendBattery() {
         val intent = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -323,13 +359,41 @@ class NativeTransport(private val context: Context) {
         fun pendingPairingCode(context: Context): String? =
             context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PENDING_CODE_KEY, null)
 
-        fun pairingCode(first: String, second: String): String {
-            val low = minOf(first, second)
-            val high = maxOf(first, second)
-            val data = "handover-pair-v1:$low:$high".toByteArray(Charsets.UTF_8)
+        fun pairingCode(ownFingerprint: String, ownNonce: String, peerFingerprint: String, peerNonce: String): String {
+            // Each nonce stays bound to its fingerprint owner, so both sides
+            // derive the same code without roles while a middlebox cannot
+            // swap openings. Must match handover-native's comparison_code.
+            val (lowFp, lowNonce, highFp, highNonce) = if (ownFingerprint <= peerFingerprint)
+                Quad(ownFingerprint, ownNonce, peerFingerprint, peerNonce)
+            else Quad(peerFingerprint, peerNonce, ownFingerprint, ownNonce)
+            val data = "handover-pair-v2:$lowFp:$highFp:$lowNonce:$highNonce".toByteArray(Charsets.UTF_8)
             val digest = java.security.MessageDigest.getInstance("SHA-256").digest(data)
             val value = ByteBuffer.wrap(digest.copyOfRange(0, 4)).int.toLong() and 0xffffffffL
             return "%08d".format(value % 100000000L)
         }
+
+        fun generatePairingNonce(): String {
+            val bytes = ByteArray(16)
+            SecureRandom().nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
+
+        fun pairingCommitment(nonceHex: String): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(nonceHex.hexBytes())
+            return digest.joinToString("") { "%02x".format(it) }
+        }
+
+        private data class Quad(val first: String, val second: String, val third: String, val fourth: String)
+
+        private fun String.hexBytes(): ByteArray {
+            check(length % 2 == 0)
+            return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+        }
+
+        private fun isSha256Hex(value: String) =
+            value.length == 64 && runCatching { value.hexBytes() }.isSuccess
+
+        private fun isPairingNonce(value: String) =
+            value.length == 32 && runCatching { value.hexBytes() }.isSuccess
     }
 }
