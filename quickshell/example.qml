@@ -396,13 +396,6 @@ ShellRoot {
                     item.id.account_id === selectedAccount.id).slice().sort((a, b) =>
                         (b.last_activity_at || 0) - (a.last_activity_at || 0))
                 : []
-            onAccountConversationsChanged: {
-                if (selectedConversation === null && accountConversations.length > 0) {
-                    selectedConversation = accountConversations[0].id;
-                    HandoverService.loadHistory(selectedConversation, 20);
-                    HandoverService.markRead(selectedConversation);
-                }
-            }
             property string selectedKey: selectedConversation
                 ? HandoverService.conversationKey(selectedConversation) : ""
             property var selectedMessages: selectedKey
