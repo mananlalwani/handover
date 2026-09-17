@@ -416,10 +416,10 @@ Singleton {
             conversations = message.conversations || [];
             typingStates = message.typing_states || [];
             readStates = message.read_states || [];
-            if (message.conversations) {
-                for (const conversation of message.conversations)
-                    loadHistory(conversation.id, 20);
-            } else {
+            // History is loaded when the user selects a conversation. Do
+            // not fan out one RPC per conversation on every snapshot: large
+            // accounts can have hundreds of threads and flood the relay.
+            if (!message.conversations) {
                 refreshMessaging();
             }
             break;
