@@ -407,6 +407,14 @@ class NativeTransport(private val context: Context) {
                     message.optString("key"), message.optString("action_id"),
                 )
             }
+            "call_control" -> {
+                if (serverFingerprint == null) return
+                when (message.optString("action")) {
+                    "place" -> CallController.place(context, message.optString("address"))
+                    "answer" -> CallController.answer(context)
+                    "decline", "hangup" -> CallController.hangup(context)
+                }
+            }
             "media_request" -> {
                 if (serverFingerprint == null) return
                 MediaObserver.activePushSync()

@@ -218,6 +218,18 @@ class MainActivity : android.app.Activity() {
                     .setData(Uri.parse("package:$packageName")))
             }
         }
+        val callAccess = Button(this).apply {
+            text = "Enable call controls"
+            setOnClickListener {
+                requestPermissions(
+                    arrayOf(
+                        android.Manifest.permission.READ_PHONE_STATE,
+                        android.Manifest.permission.CALL_PHONE,
+                        android.Manifest.permission.ANSWER_PHONE_CALLS,
+                    ), CALL_PERMISSIONS_REQUEST,
+                )
+            }
+        }
         val postTest = Button(this).apply {
             text = "Post test notification"
             setOnClickListener { postTestNotification(false) }
@@ -258,6 +270,7 @@ class MainActivity : android.app.Activity() {
             addView(localNetworkAccess, LinearLayout.LayoutParams(-1, -2))
             addView(batteryAccess, LinearLayout.LayoutParams(-1, -2))
             addView(backgroundAccess, LinearLayout.LayoutParams(-1, -2))
+            addView(callAccess, LinearLayout.LayoutParams(-1, -2))
             addView(postTest, LinearLayout.LayoutParams(-1, -2))
             addView(updateTest, LinearLayout.LayoutParams(-1, -2))
             addView(removeTest, LinearLayout.LayoutParams(-1, -2))
@@ -311,5 +324,6 @@ class MainActivity : android.app.Activity() {
     companion object {
         private const val LOCAL_NETWORK_REQUEST = 42
         private const val POST_NOTIFICATIONS_REQUEST = 43
+        private const val CALL_PERMISSIONS_REQUEST = 45
     }
 }

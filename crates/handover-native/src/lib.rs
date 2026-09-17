@@ -368,6 +368,12 @@ enum Message {
         key: String,
         action_id: String,
     },
+    CallControl {
+        protocol: u32,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
+    },
     // Phone-to-Linux media state. `media_post` upserts one player session;
     // `media_removed` retracts it; `media_sync` carries the phone's full
     // current session list so a (re)connect reconciles stale entries.
@@ -456,6 +462,7 @@ impl Message {
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
+            | Self::CallControl { protocol, .. }
             | Self::MediaPost { protocol, .. }
             | Self::MediaRemoved { protocol, .. }
             | Self::MediaSync { protocol, .. }
@@ -667,6 +674,31 @@ impl NativeBackend {
             protocol: WIRE_VERSION,
         });
         true
+    }
+
+    pub fn call_control(
+        &self,
+        peer_id: &str,
+        action: &str,
+        address: Option<String>,
+    ) -> Result<(), NativeCommandError> {
+        if !matches!(action, "place" | "answer" | "decline" | "hangup") {
+            return Err(NativeCommandError::QueueFull);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return Err(NativeCommandError::Offline);
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return Err(NativeCommandError::QueueFull);
+        }
+        queue.push(Message::CallControl {
+            protocol: WIRE_VERSION,
+            action: action.into(),
+            address,
+        });
+        Ok(())
     }
 
     /// Queue a validated media command for the live native session. Success
