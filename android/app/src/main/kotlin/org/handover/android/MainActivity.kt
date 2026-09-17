@@ -29,6 +29,8 @@ class MainActivity : android.app.Activity() {
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
     private lateinit var capabilitiesStatus: TextView
+    private lateinit var pageHost: LinearLayout
+    private var homePage: View? = null
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
@@ -64,6 +66,39 @@ class MainActivity : android.app.Activity() {
     private fun secondary(button: Button) = button.apply {
         isAllCaps = false
         textSize = 14f
+    }
+
+    private fun menuButton(title: String, description: String, action: () -> Unit) =
+        TextView(this).apply {
+            text = "$title\n$description"
+            textSize = 16f
+            setTextColor(Color.rgb(28, 34, 48))
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), Color.rgb(224, 227, 235))
+            }
+            isClickable = true
+            isFocusable = true
+            foreground = getDrawable(android.R.drawable.list_selector_background)
+            setOnClickListener { action() }
+        }
+
+    private fun showPage(page: View) {
+        pageHost.removeAllViews()
+        (page.parent as? android.view.ViewGroup)?.removeView(page)
+        pageHost.addView(page, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        val home = homePage
+        if (home != null && pageHost.childCount > 0 && pageHost.getChildAt(0) !== home) {
+            showPage(home)
+        } else {
+            super.onBackPressed()
+        }
     }
     private fun permissionLabel(permission: String): String =
         if (CallController.hasPermission(this, permission)) "granted" else "not granted"
@@ -332,50 +367,101 @@ class MainActivity : android.app.Activity() {
             backgroundAccess, callAccess, postTest, updateTest, removeTest, startTestMedia,
             stopTestMedia, revoke).forEach(::secondary)
 
-        val diagnostics = panel(
-            sectionTitle("Diagnostics"), postTest, updateTest, removeTest,
-            startTestMedia, stopTestMedia,
-        ).apply { visibility = View.GONE }
-        val diagnosticsToggle = secondary(Button(this).apply {
-            text = "Show diagnostics"
-            setOnClickListener {
-                diagnostics.visibility = if (diagnostics.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-                text = if (diagnostics.visibility == View.VISIBLE) "Hide diagnostics" else "Show diagnostics"
+        fun page(title: String, description: String, vararg sections: View) =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                val back = secondary(Button(this@MainActivity).apply {
+                    text = "‹  Back"
+                    setOnClickListener { homePage?.let(::showPage) }
+                })
+                addView(back, LinearLayout.LayoutParams(-2, -2))
+                addView(TextView(this@MainActivity).apply {
+                    text = title
+                    textSize = 28f
+                    setTextColor(Color.rgb(24, 30, 44))
+                    setTypeface(typeface, Typeface.BOLD)
+                    setPadding(0, dp(10), 0, dp(4))
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = description
+                    textSize = 15f
+                    setTextColor(Color.rgb(92, 99, 116))
+                    setPadding(0, 0, 0, dp(10))
+                })
+                sections.forEach { section ->
+                    addView(section, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+                }
             }
-        })
-        val title = TextView(this).apply {
-            text = "Handover"
-            textSize = 32f
-            setTextColor(Color.rgb(24, 30, 44))
-            setTypeface(typeface, Typeface.BOLD)
-        }
-        val subtitle = TextView(this).apply {
-            text = "Your phone, available on Linux"
-            textSize = 16f
-            setTextColor(Color.rgb(92, 99, 116))
-            setPadding(0, dp(2), 0, dp(18))
-        }
-        val content = LinearLayout(this).apply {
+
+        val connectionPage = page(
+            "Connection", "Connect this phone to your trusted Linux desktop.",
+            panel(sectionTitle("Handover service"), start),
+            panel(sectionTitle("Manual connection"), address, manualConnect),
+            panel(sectionTitle("Pairing"), revoke),
+        )
+        val permissionsPage = page(
+            "Permissions", "Enable only the capabilities you want Handover to provide.",
+            panel(sectionTitle("Current access"), capabilitiesStatus),
+            panel(sectionTitle("Notifications"), notificationAccess, appNotificationAccess),
+            panel(sectionTitle("Calls"), callAccess),
+            panel(sectionTitle("Connectivity & background"), localNetworkAccess,
+                batteryAccess, backgroundAccess),
+        )
+        val activityPage = page(
+            "Activity", "Current phone-side Handover activity.",
+            panel(sectionTitle("Notifications"), notificationStatus),
+            panel(sectionTitle("Media"), mediaStatus),
+        )
+        val diagnosticsPage = page(
+            "Diagnostics", "Local test tools. These do not contact anyone.",
+            panel(sectionTitle("Notification test"), postTest, updateTest, removeTest),
+            panel(sectionTitle("Media test"), startTestMedia, stopTestMedia),
+        )
+
+        val home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(32))
-            addView(title)
-            addView(subtitle)
+            addView(TextView(this@MainActivity).apply {
+                text = "Handover"
+                textSize = 34f
+                setTextColor(Color.rgb(24, 30, 44))
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Your phone, available on Linux"
+                textSize = 16f
+                setTextColor(Color.rgb(92, 99, 116))
+                setPadding(0, dp(2), 0, dp(16))
+            })
+            addView(panel(sectionTitle("Status"), status), LinearLayout.LayoutParams(-1, -2))
             listOf(
-                panel(sectionTitle("Connection"), status, start, address, manualConnect),
-                panel(sectionTitle("Permissions & capabilities"), capabilitiesStatus,
-                    notificationAccess, appNotificationAccess, callAccess, localNetworkAccess,
-                    batteryAccess, backgroundAccess),
-                panel(sectionTitle("Activity"), notificationStatus, mediaStatus),
-                diagnosticsToggle,
-                diagnostics,
-                panel(sectionTitle("Pairing"), revoke),
-            ).forEach { view ->
-                addView(view, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+                menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
+                menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
+                menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
+                menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
+            ).forEach { item ->
+                addView(item, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             }
+        }
+        homePage = home
+        pageHost = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(32))
+        }
+        showPage(home)
+
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
+            View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.statusBarColor = Color.rgb(238, 241, 247)
+        window.navigationBarColor = Color.rgb(238, 241, 247)
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(true)
         }
         setContentView(ScrollView(this).apply {
+            fitsSystemWindows = true
+            clipToPadding = false
             setBackgroundColor(Color.rgb(238, 241, 247))
-            addView(content)
+            addView(pageHost)
         })
     }
 
