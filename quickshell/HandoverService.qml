@@ -159,10 +159,11 @@ Singleton {
         const loads = Object.assign({}, exhaustiveHistoryLoads);
         loads[key] = true;
         exhaustiveHistoryLoads = loads;
-        const cursor = conversationCursors[key];
-        const sent = cursor
-            ? loadHistory(conversationId, 100, cursor)
-            : loadHistory(conversationId, 100);
+        // Start from the newest page. A cursor held by the UI may belong to
+        // an older daemon window after reconnect/sync and would force an
+        // unnecessary slow recovery request. Subsequent pages use only
+        // cursors returned by the current request chain.
+        const sent = loadHistory(conversationId, 100);
         if (!sent) {
             delete loads[key];
             exhaustiveHistoryLoads = loads;
