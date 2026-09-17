@@ -34,9 +34,11 @@ ShellRoot {
         }
 
         ColumnLayout {
+            id: mainLayout
             anchors.fill: parent
             anchors.margins: 16
             spacing: 12
+            z: 2
 
             Text {
                 Layout.fillWidth: true
@@ -382,14 +384,8 @@ ShellRoot {
 
         Rectangle {
             id: messagesCard
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.topMargin: pageTabs.mapToItem(messagesCard.parent, 0, pageTabs.height).y + 12
-            anchors.leftMargin: 16
-            anchors.rightMargin: 16
-            anchors.bottomMargin: 16
+            anchors.fill: parent
+            anchors.margins: 16
             radius: 8
             color: "#303741"
             visible: window.page === "messages"
