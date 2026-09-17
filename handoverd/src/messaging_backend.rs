@@ -206,6 +206,14 @@ impl MessagingHub {
         }
     }
 
+    async fn fail_fetches(&self) {
+        for (_, waiters) in self.inner.fetches.lock().await.drain() {
+            for waiter in waiters {
+                let _ = waiter.send(());
+            }
+        }
+    }
+
     async fn fail_all(&self) {
         for (_, sender) in self.inner.pending.lock().await.drain() {
             let _ = sender.send(Err("helper disconnected".into()));
@@ -621,6 +629,7 @@ async fn ingest_event(
             // log the length-bounded message without assuming its shape.
             let clipped: String = message.chars().take(256).collect();
             warn!(error = %clipped, "messaging helper error");
+            hub.fail_fetches().await;
         }
     }
 }
