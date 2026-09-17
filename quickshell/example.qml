@@ -411,6 +411,10 @@ ShellRoot {
                     item.conversation_id.account_id === selectedConversation.account_id
                     && item.conversation_id.local_id === selectedConversation.local_id)
                 : null
+            onSelectedConversationChanged: {
+                modernMessageList.followTail = true;
+                Qt.callLater(() => modernMessageList.positionViewAtEnd());
+            }
 
             function conversationLabel(conversation) {
                 if (!conversation)
@@ -935,11 +939,27 @@ ShellRoot {
                             }
                             ListView {
                                 id: modernMessageList
+                                property bool followTail: true
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 clip: true
                                 spacing: 8
                                 model: messagesCard.selectedMessages
+                                onCountChanged: {
+                                    if (followTail)
+                                        Qt.callLater(() => positionViewAtEnd());
+                                }
+                                onContentHeightChanged: {
+                                    if (followTail)
+                                        Qt.callLater(() => positionViewAtEnd());
+                                }
+                                onContentYChanged: {
+                                    if (moving && !atYEnd)
+                                        followTail = false;
+                                    else if (atYEnd)
+                                        followTail = true;
+                                }
+                                onMovementEnded: followTail = atYEnd
                                 ScrollBar.vertical: ScrollBar {
                                     policy: ScrollBar.AsNeeded
                                     implicitWidth: 14
