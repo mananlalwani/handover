@@ -60,8 +60,10 @@ encrypts the stream; the stored certificate fingerprint supplies the pairing
 decision. Discovery addresses and TXT values are treated as untrusted hints.
 The application protocol uses a four-byte big-endian length followed by a
 versioned JSON message, with a 64 KiB maximum frame. The native messages are
-`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `revoke`, `ping`,
-and `pong`.
+`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `notification_post`,
+`notification_removed`, `notifications_sync`, `notifications_request`,
+`notification_dismiss`, `notification_reply`, `notification_action`, `revoke`,
+`ping`, and `pong`.
 An Android `hello` may include the previously trusted server ID. If Linux has
 revoked that phone, it replies with `revoke` so Android clears its stale pin
 before presenting a new pairing request.
@@ -70,8 +72,11 @@ fingerprints, commitment-less hellos from unknown peers, openings that do not
 match the committed nonce, and confirmations that do not repeat the displayed
 code are rejected; a failed ceremony drops the session so a retry starts a
 fresh, user-visible ceremony. Session count, read/write timeouts, and frame
-size are bounded. The daemon accepts a battery update only after `BatteryState`
-validation, then publishes the ordinary device update to all clients.
+size are bounded. The daemon accepts battery and notification updates only
+after `BatteryState` validation (battery) or field/action bound checks
+(notifications), then publishes the ordinary device/notification updates to
+all clients. Notification content is never sent before the peer is paired,
+and titles/bodies are excluded from normal logs on both endpoints.
 
 Native peer administration is exposed through the existing daemon IPC as
 `native.peers`, `native.pending`, `native.pair`, and `native.unpair`. Unpairing
@@ -186,6 +191,24 @@ KDE adapter makes a D-Bus call. A successful response means KDE Connect
 accepted the call, not that Android or the app confirmed delivery. Commands
 do not optimistically remove daemon state; subsequent KDE Connect signals
 update it.
+
+The native path carries the same normalized records over the paired TLS
+session. The Android app reads the platform notification stream through its
+notification-listener service (permission-gated; a denied permission reports
+`enabled: false` so the daemon clears stale entries instead of showing
+ghosts) and sends `notification_post` upserts, `notification_removed`
+retractions, and full `notifications_sync` snapshots after pairing, on
+listener reconnect, and on daemon request. The phone's notification key
+becomes the Handover `local_id` inside the existing `native:<fingerprint>`
+device scope, so native and KDE Connect entries coexist without collisions
+and clients never select a backend. Android actions map by index to the
+existing id/label pairs with no invented capabilities; the first
+free-form-input action advertises `reply_supported`, and `clearable` follows
+the platform flag. Desktop dismissal, action, and reply commands are queued
+for the live session and report IPC acceptance exactly like the KDE path:
+success means the command reached the session, not that Android confirmed
+the effect. A disconnect removes the peer's native notifications so a
+reconnect resyncs from current phone state.
 
 ## Media sessions
 
