@@ -151,6 +151,12 @@ pub fn normalize_message(
             address: None,
             is_self: false,
         },
+        transport: wire.transport.map(|transport| match transport {
+            WireTransport::Rcs => TransportKind::Rcs,
+            WireTransport::Sms => TransportKind::Sms,
+            WireTransport::Mms => TransportKind::Mms,
+            WireTransport::Unknown => TransportKind::Unknown,
+        }),
         sent_at: wire.sent_at,
         text: wire.text,
         attachments: wire

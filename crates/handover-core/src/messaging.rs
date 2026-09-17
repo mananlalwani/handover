@@ -176,6 +176,7 @@ impl fmt::Display for MessageId {
 pub struct Message {
     pub id: MessageId,
     pub sender: Participant,
+    pub transport: Option<TransportKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

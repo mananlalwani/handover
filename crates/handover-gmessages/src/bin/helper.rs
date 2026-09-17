@@ -266,6 +266,7 @@ impl LoopbackRelay {
             rcs.messages.push_back(WireMessage {
                 local_id: "m4".into(),
                 sender: "peer".into(),
+                transport: Some(WireTransport::Rcs),
                 sent_at: Some(1_758_000_003_000_000),
                 text: Some("A file for you".into()),
                 attachments: vec![WireAttachment {
@@ -422,6 +423,7 @@ fn text_message(local_id: &str, sender: &str, sent_at: i64, text: &str) -> WireM
     WireMessage {
         local_id: local_id.into(),
         sender: sender.into(),
+        transport: Some(WireTransport::Rcs),
         sent_at: Some(sent_at),
         text: Some(text.into()),
         attachments: vec![],
@@ -601,6 +603,7 @@ impl Relay for LoopbackRelay {
         thread.messages.push_back(WireMessage {
             local_id: local_id.clone(),
             sender: "self".into(),
+            transport: Some(WireTransport::Rcs),
             sent_at: Some(1_758_000_100_000_000 + thread.counter as i64),
             text: Some(text.into()),
             attachments: vec![],
@@ -678,6 +681,7 @@ impl Relay for LoopbackRelay {
         thread.messages.push_back(WireMessage {
             local_id: local_id.clone(),
             sender: "self".into(),
+            transport: Some(WireTransport::Sms),
             sent_at: Some(1_758_000_100_000_000 + thread.counter as i64),
             text: caption.map(str::to_string),
             attachments: vec![WireAttachment {

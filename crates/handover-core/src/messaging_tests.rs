@@ -32,6 +32,7 @@ fn sample_conversation() -> Conversation {
             sample_participant("peer", false),
         ],
         latest_message_id: None,
+        last_activity_at: None,
         unread_count: Some(2),
         cursor: Some("cursor-9".into()),
         capabilities: BTreeSet::from([
@@ -52,6 +53,7 @@ fn sample_message() -> Message {
     Message {
         id: MessageId::new(sample_conversation_id(), "msg-1"),
         sender: sample_participant("peer", false),
+        transport: None,
         sent_at: Some(1_758_000_000_000_000),
         text: Some("Hello".into()),
         attachments: vec![],

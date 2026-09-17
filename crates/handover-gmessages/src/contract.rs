@@ -248,6 +248,8 @@ pub struct WireMessage {
     pub local_id: String,
     pub sender: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<WireTransport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,

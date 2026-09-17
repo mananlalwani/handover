@@ -1494,7 +1494,32 @@ where
             .history(&conversation_id, limit, cursor.as_deref())
     };
     match read() {
-        Ok((messages, cursor_next)) => {
+        Ok((mut messages, mut cursor_next)) => {
+            // A successful local read may still be only a bounded live-event
+            // window. If the caller asks for more than we currently hold,
+            // give the helper one chance to fill the newest page before
+            // declaring that history is exhausted. This is what makes a
+            // larger "load all" request materially different from rereading
+            // the same local window.
+            if cursor.is_none() && messages.len() < limit {
+                if let Some(hub) = messaging {
+                    if hub
+                        .fetch_through_helper(
+                            conversation_id.account_id.as_str(),
+                            &conversation_id.local_id,
+                            limit as u32,
+                            None,
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        if let Ok((fetched_messages, fetched_cursor)) = read() {
+                            messages = fetched_messages;
+                            cursor_next = fetched_cursor;
+                        }
+                    }
+                }
+            }
             write_json_line(
                 writer,
                 &ServerMessage::new(ServerPayload::History {
