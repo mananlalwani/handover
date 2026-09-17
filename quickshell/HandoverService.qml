@@ -153,8 +153,11 @@ Singleton {
         sendRequest("messages.history", fields);
     }
 
-    function sendText(conversationId, text) {
-        return sendMessaging("messages.send", { conversation_id: conversationId, text: text });
+    function sendText(conversationId, text, replyTo) {
+        const fields = { conversation_id: conversationId, text: text };
+        if (replyTo)
+            fields.reply_to = { conversation_id: conversationId, local_id: replyTo };
+        return sendMessaging("messages.send", fields);
     }
 
     function sendAttachment(conversationId, fileUrl, caption) {

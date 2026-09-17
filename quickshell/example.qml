@@ -615,7 +615,8 @@ ShellRoot {
                             if (!messagesCard.selectedConversation || text.trim().length === 0)
                                 return;
                             if (HandoverService.sendText(
-                                messagesCard.selectedConversation, text)) {
+                                messagesCard.selectedConversation, text,
+                                messagesCard.replyingTo)) {
                                 text = "";
                                 messagesCard.replyingTo = null;
                             } else {
