@@ -1,9 +1,14 @@
 package org.handover.android
 
 import android.content.Intent
+import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.EditText
 import android.content.BroadcastReceiver
@@ -19,6 +24,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
+    private lateinit var capabilitiesStatus: TextView
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
@@ -29,6 +35,21 @@ class MainActivity : android.app.Activity() {
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
         mediaStatus.text = if (TestMediaSession.isActive()) "Test media: playing" else "Test media: stopped"
+        val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
+        val localNetwork = if (android.os.Build.VERSION.SDK_INT < 37 ||
+            checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") == PackageManager.PERMISSION_GRANTED
+        ) "granted" else "not granted"
+        val battery = getSystemService(PowerManager::class.java)
+            .isIgnoringBatteryOptimizations(packageName)
+        capabilitiesStatus.text = buildString {
+            append("Permissions & capabilities\n\n")
+            append("Notification access: $listener\n")
+            append("App notifications: ${if (notifications) "granted" else "not granted"}\n")
+            append("Local network: $localNetwork\n")
+            append("Battery optimization: ${if (battery) "unrestricted" else "optimized"}\n")
+            append("Files/photos: system picker (on demand)\n")
+            append("Media controls: notification access")
+        }
     }
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
@@ -93,6 +114,11 @@ class MainActivity : android.app.Activity() {
         NativeTransport.pendingPairingCode(this)?.let(::showPairDialog)
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshStatus()
+    }
+
     override fun onStop() {
         unregisterReceiver(pairReceiver)
         super.onStop()
@@ -113,6 +139,9 @@ class MainActivity : android.app.Activity() {
         }
         mediaStatus = TextView(this).apply {
             setPadding(32, 0, 32, 24)
+        }
+        capabilitiesStatus = TextView(this).apply {
+            setPadding(32, 16, 32, 16)
         }
         val start = Button(this).apply {
             text = "Enable Handover connection"
@@ -141,7 +170,53 @@ class MainActivity : android.app.Activity() {
         }
         val notificationAccess = Button(this).apply {
             text = "Enable notification access"
-            setOnClickListener { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            setOnClickListener {
+                val component = ComponentName(
+                    this@MainActivity, HandoverNotificationService::class.java,
+                )
+                val detail = Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                    .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, component.flattenToString())
+                runCatching { startActivity(detail) }.getOrElse {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                }
+            }
+        }
+        val appNotificationAccess = Button(this).apply {
+            text = "Enable app notifications"
+            setOnClickListener {
+                if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                    checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    requestPermissions(
+                        arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                        POST_NOTIFICATIONS_REQUEST,
+                    )
+                } else {
+                    startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                }
+            }
+        }
+        val localNetworkAccess = Button(this).apply {
+            text = "Enable local network"
+            setOnClickListener {
+                if (android.os.Build.VERSION.SDK_INT >= 37) {
+                    requestPermissions(arrayOf("android.permission.ACCESS_LOCAL_NETWORK"), LOCAL_NETWORK_REQUEST)
+                }
+            }
+        }
+        val batteryAccess = Button(this).apply {
+            text = "Review battery optimization"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
+        val backgroundAccess = Button(this).apply {
+            text = "Review background data and app access"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$packageName")))
+            }
         }
         val postTest = Button(this).apply {
             text = "Post test notification"
@@ -169,22 +244,28 @@ class MainActivity : android.app.Activity() {
                 refreshStatus()
             }
         }
-        setContentView(LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(status, LinearLayout.LayoutParams(-1, -2))
             addView(notificationStatus, LinearLayout.LayoutParams(-1, -2))
             addView(mediaStatus, LinearLayout.LayoutParams(-1, -2))
+            addView(capabilitiesStatus, LinearLayout.LayoutParams(-1, -2))
             addView(start, LinearLayout.LayoutParams(-1, -2))
             addView(address, LinearLayout.LayoutParams(-1, -2))
             addView(manualConnect, LinearLayout.LayoutParams(-1, -2))
             addView(notificationAccess, LinearLayout.LayoutParams(-1, -2))
+            addView(appNotificationAccess, LinearLayout.LayoutParams(-1, -2))
+            addView(localNetworkAccess, LinearLayout.LayoutParams(-1, -2))
+            addView(batteryAccess, LinearLayout.LayoutParams(-1, -2))
+            addView(backgroundAccess, LinearLayout.LayoutParams(-1, -2))
             addView(postTest, LinearLayout.LayoutParams(-1, -2))
             addView(updateTest, LinearLayout.LayoutParams(-1, -2))
             addView(removeTest, LinearLayout.LayoutParams(-1, -2))
             addView(startTestMedia, LinearLayout.LayoutParams(-1, -2))
             addView(stopTestMedia, LinearLayout.LayoutParams(-1, -2))
             addView(revoke, LinearLayout.LayoutParams(-1, -2))
-        })
+        }
+        setContentView(ScrollView(this).apply { addView(content) })
     }
 
     override fun onNewIntent(intent: Intent?) {
