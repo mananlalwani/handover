@@ -135,10 +135,15 @@ impl MessagingStore {
         limit: usize,
         cursor: Option<&str>,
     ) -> Result<(Vec<Message>, Option<String>), HistoryGap> {
-        let window = self
-            .messages
-            .get(conversation_id)
-            .ok_or(HistoryGap::UnknownConversation)?;
+        if !self.conversations.contains_key(conversation_id) {
+            return Err(HistoryGap::UnknownConversation);
+        }
+        let Some(window) = self.messages.get(conversation_id) else {
+            // The conversation list is intentionally synced separately from
+            // message windows. A missing window means history has not been
+            // fetched yet, not that the conversation is unknown.
+            return Err(HistoryGap::CursorOutsideWindow);
+        };
         let end = match cursor {
             None => window.len(),
             Some(cursor) => window
@@ -666,6 +671,15 @@ mod tests {
         assert!(end.is_none());
         assert_eq!(
             store.history(&conversation_id(), 2, Some("missing")),
+            Err(HistoryGap::CursorOutsideWindow)
+        );
+    }
+
+    #[test]
+    fn known_conversation_without_window_requests_helper_history() {
+        let store = live_store();
+        assert_eq!(
+            store.history(&conversation_id(), 20, None),
             Err(HistoryGap::CursorOutsideWindow)
         );
     }
