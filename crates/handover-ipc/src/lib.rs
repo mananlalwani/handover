@@ -58,6 +58,12 @@ pub enum Method {
     NativePair { id: String, code: String },
     #[serde(rename = "native.unpair")]
     NativeUnpair { id: String },
+    #[serde(rename = "native.call")]
+    NativeCall {
+        id: String,
+        action: String,
+        address: Option<String>,
+    },
     #[serde(rename = "notifications.list")]
     NotificationsList,
     #[serde(rename = "media.list")]
@@ -614,6 +620,24 @@ impl Client {
 
     pub async fn native_unpair(&mut self, id: String) -> Result<(), IpcError> {
         self.send(Method::NativeUnpair { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_call(
+        &mut self,
+        id: String,
+        action: String,
+        address: Option<String>,
+    ) -> Result<(), IpcError> {
+        self.send(Method::NativeCall {
+            id,
+            action,
+            address,
+        })
+        .await?;
         match self.receive().await?.payload {
             ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),

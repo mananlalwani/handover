@@ -295,6 +295,21 @@ where
                 message: "native backend unavailable".into(),
             },
         },
+        Method::NativeCall {
+            id,
+            action,
+            address,
+        } => match native_backend().map(|native| native.call_control(&id, &action, address)) {
+            Some(Ok(())) => ServerPayload::NativeAccepted,
+            Some(Err(_)) => ServerPayload::Error {
+                code: ErrorCode::BackendRejected,
+                message: "call control was not accepted".into(),
+            },
+            None => ServerPayload::Error {
+                code: ErrorCode::BackendUnavailable,
+                message: "native backend unavailable".into(),
+            },
+        },
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,
         },

@@ -51,8 +51,18 @@ enum Command {
 enum NativeCommand {
     Peers,
     Pending,
-    Pair { id: String, code: String },
-    Unpair { id: String },
+    Pair {
+        id: String,
+        code: String,
+    },
+    Unpair {
+        id: String,
+    },
+    Call {
+        id: String,
+        action: String,
+        address: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -195,6 +205,14 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
         NativeCommand::Unpair { id } => {
             client.native_unpair(id).await?;
             println!("Native peer revoked");
+        }
+        NativeCommand::Call {
+            id,
+            action,
+            address,
+        } => {
+            client.native_call(id, action, address).await?;
+            println!("Call command accepted; effect is not confirmed");
         }
     }
     Ok(())
