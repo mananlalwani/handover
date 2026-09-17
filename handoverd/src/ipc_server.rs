@@ -2951,6 +2951,7 @@ mod messaging_failure_tests {
                     address: None,
                     is_self: false,
                 },
+                transport: None,
                 sent_at: Some(10),
                 text: Some("hello".into()),
                 attachments: vec![],

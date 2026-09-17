@@ -590,6 +590,7 @@ mod tests {
                 address: None,
                 is_self: false,
             },
+            transport: None,
             sent_at: Some(sent_at),
             text: Some(text.into()),
             attachments: vec![],
