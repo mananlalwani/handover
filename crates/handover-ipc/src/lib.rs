@@ -4,10 +4,10 @@ use std::env;
 use std::path::PathBuf;
 
 use handover_core::{
-    Conversation, ConversationId, Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent,
-    MediaSession, MediaSessionId, Message, MessageId, MessageStatusUpdate, MessagingAccount,
-    MessagingAccountId, MessagingEvent, Notification, NotificationEvent, NotificationId, ReadState,
-    ReceivedShare, ShareResult, TypingState,
+    CallEvent, CallState, Conversation, ConversationId, Device, DeviceEvent, DeviceId,
+    MediaCommand, MediaEvent, MediaSession, MediaSessionId, Message, MessageId,
+    MessageStatusUpdate, MessagingAccount, MessagingAccountId, MessagingEvent, Notification,
+    NotificationEvent, NotificationId, ReadState, ReceivedShare, ShareResult, TypingState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,12 @@ pub enum Method {
     NativePair { id: String, code: String },
     #[serde(rename = "native.unpair")]
     NativeUnpair { id: String },
+    #[serde(rename = "calls.control")]
+    CallsControl {
+        device_id: DeviceId,
+        action: handover_core::CallAction,
+        address: Option<String>,
+    },
     #[serde(rename = "native.call")]
     NativeCall {
         id: String,
@@ -66,6 +72,8 @@ pub enum Method {
     },
     #[serde(rename = "notifications.list")]
     NotificationsList,
+    #[serde(rename = "calls.list")]
+    CallsList,
     #[serde(rename = "media.list")]
     MediaList,
     #[serde(rename = "subscribe")]
@@ -217,6 +225,13 @@ impl ServerMessage {
         Self::new(payload)
     }
 
+    pub fn from_call_event(event: CallEvent) -> Self {
+        Self::new(match event {
+            CallEvent::Updated(call) => ServerPayload::CallUpdated { call },
+            CallEvent::Removed(device_id) => ServerPayload::CallRemoved { device_id },
+        })
+    }
+
     pub fn from_messaging_event(event: MessagingEvent) -> Self {
         let payload = match event {
             MessagingEvent::Account(event) => match event {
@@ -290,6 +305,9 @@ pub enum ServerPayload {
     Notifications {
         notifications: Vec<Notification>,
     },
+    Calls {
+        calls: Vec<CallState>,
+    },
     Media {
         media_sessions: Vec<MediaSession>,
     },
@@ -299,6 +317,8 @@ pub enum ServerPayload {
         notifications: Vec<Notification>,
         #[serde(default)]
         media_sessions: Vec<MediaSession>,
+        #[serde(default)]
+        calls: Vec<CallState>,
         #[serde(default)]
         messaging_accounts: Vec<MessagingAccount>,
         #[serde(default)]
@@ -314,6 +334,8 @@ pub enum ServerPayload {
         notifications: Vec<Notification>,
         #[serde(default)]
         media_sessions: Vec<MediaSession>,
+        #[serde(default)]
+        calls: Vec<CallState>,
         #[serde(default)]
         messaging_accounts: Vec<MessagingAccount>,
         #[serde(default)]
@@ -349,6 +371,12 @@ pub enum ServerPayload {
     },
     MediaRemoved {
         media_session_id: MediaSessionId,
+    },
+    CallUpdated {
+        call: CallState,
+    },
+    CallRemoved {
+        device_id: DeviceId,
     },
     ShareReceived {
         share: ReceivedShare,
@@ -626,6 +654,34 @@ impl Client {
         }
     }
 
+    pub async fn call_control(
+        &mut self,
+        device_id: DeviceId,
+        action: handover_core::CallAction,
+        address: Option<String>,
+    ) -> Result<(), IpcError> {
+        self.send(Method::CallsControl {
+            device_id,
+            action,
+            address,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    /// Current normalized call states. Absence of a device means no call
+    /// state is attested, not that the phone is idle.
+    pub async fn calls(&mut self) -> Result<Vec<CallState>, IpcError> {
+        self.send(Method::CallsList).await?;
+        match self.receive().await?.payload {
+            ServerPayload::Calls { calls } => Ok(calls),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     pub async fn native_call(
         &mut self,
         id: String,
@@ -783,11 +839,13 @@ impl Client {
                 devices,
                 notifications,
                 media_sessions,
+                calls,
                 ..
             } => Ok(Subscription {
                 devices,
                 notifications,
                 media_sessions,
+                calls,
                 reader: self.reader,
                 _writer: self.writer,
             }),
@@ -1016,6 +1074,7 @@ pub struct Subscription {
     pub devices: Vec<Device>,
     pub notifications: Vec<Notification>,
     pub media_sessions: Vec<MediaSession>,
+    pub calls: Vec<CallState>,
     reader: BufReader<OwnedReadHalf>,
     _writer: OwnedWriteHalf,
 }
@@ -1193,6 +1252,7 @@ mod tests {
             devices: vec![device()],
             notifications: vec![notification()],
             media_sessions: vec![],
+            calls: vec![],
             messaging_accounts: vec![],
             conversations: vec![],
             typing_states: vec![],
@@ -1239,6 +1299,7 @@ mod tests {
             devices: vec![device()],
             notifications: vec![],
             media_sessions: vec![session.clone()],
+            calls: vec![],
             messaging_accounts: vec![],
             conversations: vec![],
             typing_states: vec![],

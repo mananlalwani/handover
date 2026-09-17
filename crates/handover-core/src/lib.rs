@@ -105,6 +105,58 @@ pub enum Capability {
     Notifications,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallPhase {
+    Unknown,
+    Idle,
+    Ringing,
+    /// Dialing or an ongoing call; does not attest that the remote party answered.
+    OffHook,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallAction {
+    Place,
+    Answer,
+    Decline,
+    Hangup,
+}
+
+impl CallAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Place => "place",
+            Self::Answer => "answer",
+            Self::Decline => "decline",
+            Self::Hangup => "hangup",
+        }
+    }
+}
+
+/// Deliberately excludes service codes, extensions, pauses and URI syntax.
+/// The phone must additionally reject locally recognized emergency numbers.
+pub fn valid_call_address(address: &str) -> bool {
+    let digits = address.strip_prefix('+').unwrap_or(address);
+    !digits.is_empty() && digits.len() <= 15 && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Current phone-call state attested by a device.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CallState {
+    pub device_id: DeviceId,
+    pub phase: CallPhase,
+    #[serde(default)]
+    pub controls: BTreeSet<CallAction>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CallEvent {
+    Updated(CallState),
+    Removed(DeviceId),
+}
+
 /// A change to the set of devices or to a device's normalized state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DeviceEvent {
@@ -199,6 +251,7 @@ pub enum StateEvent {
     Device(DeviceEvent),
     Notification(NotificationEvent),
     Media(MediaEvent),
+    Call(CallEvent),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
     Messaging(MessagingEvent),
@@ -366,6 +419,72 @@ mod messaging_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_address_accepts_one_to_fifteen_ascii_digits_with_optional_leading_plus() {
+        for length in 1..=15 {
+            let digits = "012345678901234"[..length].to_string();
+            assert!(valid_call_address(&digits), "rejected {digits:?}");
+            let international = format!("+{digits}");
+            assert!(
+                valid_call_address(&international),
+                "rejected {international:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_address_rejects_empty_overlong_and_non_ascii_digits() {
+        for address in [
+            "",
+            "+",
+            "0123456789012345",
+            "+0123456789012345",
+            "١٢٣",
+            "+１２３",
+            "1٢3",
+            "abc",
+            "1a2",
+            "++123",
+            "12+3",
+            "123+",
+        ] {
+            assert!(!valid_call_address(address), "accepted {address:?}");
+        }
+    }
+
+    #[test]
+    fn call_address_rejects_service_codes_uris_and_separators() {
+        for address in [
+            "*123#",
+            "*123",
+            "123#",
+            "tel:123",
+            "tel:+123",
+            "sip:123@example.com",
+            "123@example.com",
+            "%2B123",
+            " 123",
+            "123 ",
+            "1 23",
+            "1-23",
+            "(123)",
+            "1.23",
+            "1/23",
+            "1,23",
+            "1;23",
+            "123x4",
+            "123;ext=4",
+            "123p4",
+            "123w4",
+            "1\t23",
+            "123\n",
+            "123\r",
+            "123\0",
+        ] {
+            assert!(!valid_call_address(address), "accepted {address:?}");
+        }
+    }
 
     #[test]
     fn device_id_preserves_backend_identifier() {

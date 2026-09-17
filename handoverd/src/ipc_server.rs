@@ -299,19 +299,37 @@ where
             id,
             action,
             address,
-        } => match native_backend().map(|native| native.call_control(&id, &action, address)) {
-            Some(Ok(())) => ServerPayload::NativeAccepted,
-            Some(Err(_)) => ServerPayload::Error {
-                code: ErrorCode::BackendRejected,
-                message: "call control was not accepted".into(),
-            },
-            None => ServerPayload::Error {
-                code: ErrorCode::BackendUnavailable,
-                message: "native backend unavailable".into(),
-            },
-        },
+        } => {
+            let action = match action.as_str() {
+                "place" => Some(handover_core::CallAction::Place),
+                "answer" => Some(handover_core::CallAction::Answer),
+                "decline" => Some(handover_core::CallAction::Decline),
+                "hangup" => Some(handover_core::CallAction::Hangup),
+                _ => None,
+            };
+            match action {
+                Some(action) => route_call(
+                    state,
+                    DeviceId::new(format!("native:{id}")),
+                    action,
+                    address,
+                ),
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: "unknown call action".into(),
+                },
+            }
+        }
+        Method::CallsControl {
+            device_id,
+            action,
+            address,
+        } => route_call(state, device_id, action, address),
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,
+        },
+        Method::CallsList => ServerPayload::Calls {
+            calls: snapshot(state).calls,
         },
         Method::MediaList => ServerPayload::Media {
             media_sessions: snapshot(state).media_sessions,
@@ -329,6 +347,7 @@ where
             let messaging = messaging_snapshot(state);
             ServerPayload::Subscribed {
                 devices: snapshot.devices,
+                calls: snapshot.calls,
                 notifications: snapshot.notifications,
                 media_sessions: if media {
                     snapshot.media_sessions
@@ -1304,6 +1323,49 @@ async fn validate_file_url(input: &str) -> Result<String, ErrorCode> {
     Ok(url.into())
 }
 
+fn route_call(
+    state: &Arc<RwLock<StateStore>>,
+    device_id: DeviceId,
+    action: handover_core::CallAction,
+    address: Option<String>,
+) -> ServerPayload {
+    let current = snapshot(state);
+    let allowed = current
+        .devices
+        .iter()
+        .any(|d| d.id == device_id && d.connected && d.paired)
+        && current
+            .calls
+            .iter()
+            .any(|call| call.device_id == device_id && call.controls.contains(&action))
+        && match action {
+            handover_core::CallAction::Place => address
+                .as_deref()
+                .is_some_and(handover_core::valid_call_address),
+            _ => address.is_none(),
+        };
+    if !allowed {
+        return ServerPayload::Error {
+            code: ErrorCode::BackendRejected,
+            message: "call action unavailable in current phone state or invalid address".into(),
+        };
+    }
+    let result = device_id.as_str().strip_prefix("native:").and_then(|id| {
+        native_backend().map(|native| native.call_control(id, action.as_str(), address))
+    });
+    match result {
+        Some(Ok(())) => ServerPayload::NativeAccepted,
+        Some(Err(_)) => ServerPayload::Error {
+            code: ErrorCode::BackendRejected,
+            message: "call command could not be queued".into(),
+        },
+        None => ServerPayload::Error {
+            code: ErrorCode::BackendUnavailable,
+            message: "call backend unavailable".into(),
+        },
+    }
+}
+
 fn snapshot(state: &Arc<RwLock<StateStore>>) -> StateSnapshot {
     state
         .read()
@@ -1339,6 +1401,7 @@ fn snapshot_payload(
     let messaging = messaging_snapshot(state);
     ServerPayload::Snapshot {
         devices: snapshot.devices,
+        calls: snapshot.calls,
         notifications: snapshot.notifications,
         media_sessions: if include_media {
             snapshot.media_sessions
@@ -1373,6 +1436,7 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Device(event) => ServerMessage::from_device_event(event),
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
         StateEvent::Media(event) => ServerMessage::from_media_event(event),
+        StateEvent::Call(event) => ServerMessage::from_call_event(event),
         StateEvent::Messaging(event) => ServerMessage::from_messaging_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })
@@ -2095,6 +2159,7 @@ mod tests {
                 devices: vec![device("Phone", 72)],
                 notifications: vec![current],
                 media_sessions: vec![media],
+                calls: vec![],
                 messaging_accounts: vec![],
                 conversations: vec![],
                 typing_states: vec![],

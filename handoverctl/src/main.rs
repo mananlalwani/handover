@@ -40,6 +40,8 @@ enum Command {
     SendUrl { device: String, url: String },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
+    /// Print current normalized call state for one device
+    Calls { device: String },
     /// Inspect and use messaging accounts and conversations
     Messages {
         #[command(subcommand)]
@@ -167,6 +169,7 @@ async fn main() -> ExitCode {
         Some(Command::SendUrl { device, url }) => send_url(&device, url).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
         Some(Command::Messages { command }) => messages(command).await,
+        Some(Command::Calls { device }) => calls(device).await,
         None => {
             Cli::command()
                 .print_help()
@@ -222,6 +225,35 @@ async fn list_devices() -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let devices = client.devices().await?;
     print_table(&devices);
+    Ok(())
+}
+
+async fn calls(device: String) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let devices = client.devices().await?;
+    let id = select_device(&devices, &device)?;
+    let calls = client.calls().await?;
+    match calls.into_iter().find(|call| call.device_id == id) {
+        Some(call) => {
+            let mut actions = call
+                .controls
+                .iter()
+                .map(|action| action.as_str())
+                .collect::<Vec<_>>();
+            actions.sort_unstable();
+            println!(
+                "{}\t{:?}\tavailable: {}",
+                call.device_id,
+                call.phase,
+                if actions.is_empty() {
+                    "none".into()
+                } else {
+                    actions.join(", ")
+                }
+            );
+        }
+        None => println!("no call state attested for {id}"),
+    }
     Ok(())
 }
 
@@ -797,6 +829,11 @@ fn print_notification_table(devices: &[Device], notifications: &[Notification]) 
 
 fn print_message(payload: ServerPayload) {
     match payload {
+        ServerPayload::CallUpdated { call } => {
+            println!("call state: {} {:?}", call.device_id, call.phase)
+        }
+        ServerPayload::CallRemoved { device_id } => println!("call state unavailable: {device_id}"),
+        ServerPayload::Calls { .. } => {}
         ServerPayload::DeviceAdded { device } => {
             println!("device added: {}", describe_device(&device));
         }

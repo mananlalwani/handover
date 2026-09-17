@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use handover_core::{
-    BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
-    MediaEvent, MediaSession, MediaSessionId, Notification, NotificationAction,
-    NotificationCommand, NotificationEvent, NotificationId, PlaybackState, ReceivedShare,
-    ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
+    BatteryState, CallEvent, CallPhase, CallState, Capability, Device, DeviceEvent, DeviceId,
+    MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId, Notification,
+    NotificationAction, NotificationCommand, NotificationEvent, NotificationId, PlaybackState,
+    ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -209,6 +209,7 @@ impl Drop for Session<'_> {
             for id in media_removals {
                 (self.event)(StateEvent::Media(MediaEvent::Removed(id)));
             }
+            (self.event)(StateEvent::Call(CallEvent::Removed(device_id)));
             (self.event)(StateEvent::Device(event));
         }
     }
@@ -374,6 +375,14 @@ enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         address: Option<String>,
     },
+    CallState {
+        protocol: u32,
+        phase: CallPhase,
+        controls: BTreeSet<handover_core::CallAction>,
+    },
+    CallRequest {
+        protocol: u32,
+    },
     // Phone-to-Linux media state. `media_post` upserts one player session;
     // `media_removed` retracts it; `media_sync` carries the phone's full
     // current session list so a (re)connect reconciles stale entries.
@@ -463,6 +472,8 @@ impl Message {
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
             | Self::CallControl { protocol, .. }
+            | Self::CallState { protocol, .. }
+            | Self::CallRequest { protocol }
             | Self::MediaPost { protocol, .. }
             | Self::MediaRemoved { protocol, .. }
             | Self::MediaSync { protocol, .. }
@@ -1171,6 +1182,12 @@ impl NativeBackend {
                 protocol: WIRE_VERSION,
             },
         );
+        let _ = write_frame(
+            &mut tls,
+            &Message::CallRequest {
+                protocol: WIRE_VERSION,
+            },
+        );
         // Same recovery for media sessions: a daemon restart must not wait
         // for the next playback change to learn the current players.
         let _ = write_frame(
@@ -1468,6 +1485,18 @@ impl NativeBackend {
                         notifications_supported,
                         media_supported,
                     ))));
+                }
+                Ok(Message::CallState {
+                    protocol: WIRE_VERSION,
+                    phase,
+                    controls,
+                }) => {
+                    last_received = Instant::now();
+                    event(StateEvent::Call(CallEvent::Updated(CallState {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        phase,
+                        controls,
+                    })));
                 }
                 Ok(Message::NotificationPost {
                     protocol: WIRE_VERSION,

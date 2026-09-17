@@ -146,6 +146,11 @@ fn apply_backend_event(
         _ => None,
     };
     if let Some(device_id) = media_device {
+        apply_backend_event(
+            state,
+            events,
+            StateEvent::Call(handover_core::CallEvent::Removed(device_id.clone())),
+        );
         let sessions = state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -228,6 +233,10 @@ fn log_change(change: StateChange) {
         StateChange::Device(change) => log_device_change(change),
         StateChange::Notification(change) => log_notification_change(change),
         StateChange::Media(change) => log_media_change(change),
+        StateChange::Call(call) => {
+            tracing::debug!(device_id = %call.device_id, "call state changed")
+        }
+        StateChange::CallRemoved(id) => tracing::debug!(device_id = %id, "call state unavailable"),
         StateChange::ShareReceived(share) => {
             let kind = match share.resource {
                 SharedResource::File { .. } => "file",

@@ -12,7 +12,8 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use handover_core::{
-    DeviceEvent, MediaEvent, NotificationEvent, ShareFailure, ShareStatus, StateEvent,
+    CallAction, CallEvent, CallPhase, DeviceEvent, MediaEvent, NotificationEvent, ShareFailure,
+    ShareStatus, StateEvent,
 };
 use handover_native::NativeBackend;
 use openssl::asn1::Asn1Time;
@@ -325,6 +326,7 @@ fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
     assert_eq!(recv(peer)["type"], "notifications_request");
     // Same recovery for media sessions: a daemon restart must not wait for
     // the next playback change to learn the current players.
+    assert_eq!(recv(peer)["type"], "call_request");
     assert_eq!(recv(peer)["type"], "media_request");
 }
 
@@ -760,6 +762,87 @@ fn native_media_commands_reach_the_phone() {
     assert_eq!(seek["type"], "media_control");
     assert_eq!(seek["action"], "set_position");
     assert_eq!(seek["position_ms"], 60_000);
+}
+
+fn wait_call(harness: &Harness) -> CallEvent {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::Call(event) = harness.events.recv_timeout(remaining).unwrap() {
+            return event;
+        }
+    }
+}
+
+#[test]
+fn native_call_state_updates_and_disconnect_removes_state() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    let device_id = format!("native:{}", client.fingerprint);
+
+    // Each phone-attested state replaces the previous controls; in particular,
+    // unknown must not retain actions from the preceding off-hook state.
+    for (wire_phase, phase, wire_controls, controls) in [
+        (
+            "idle",
+            CallPhase::Idle,
+            vec!["place"],
+            vec![CallAction::Place],
+        ),
+        (
+            "ringing",
+            CallPhase::Ringing,
+            vec!["answer", "decline"],
+            vec![CallAction::Answer, CallAction::Decline],
+        ),
+        (
+            "off_hook",
+            CallPhase::OffHook,
+            vec!["hangup"],
+            vec![CallAction::Hangup],
+        ),
+        ("unknown", CallPhase::Unknown, vec![], vec![]),
+    ] {
+        send(
+            &mut peer,
+            serde_json::json!({"type":"call_state","protocol":1,
+                "phase":wire_phase,"controls":wire_controls}),
+        );
+        match wait_call(&harness) {
+            CallEvent::Updated(state) => {
+                assert_eq!(state.device_id.as_str(), device_id);
+                assert_eq!(state.phase, phase);
+                assert_eq!(state.controls, controls.into_iter().collect());
+            }
+            event => panic!("expected call state update, got {event:?}"),
+        }
+    }
+
+    drop(peer);
+    match wait_call(&harness) {
+        CallEvent::Removed(id) => assert_eq!(id.as_str(), device_id),
+        event => panic!("expected call state removal on disconnect, got {event:?}"),
+    }
+}
+
+#[test]
+fn phone_side_call_commands_are_rejected() {
+    for message in [
+        serde_json::json!({"type":"call_control","protocol":1,"action":"answer"}),
+        serde_json::json!({"type":"call_request","protocol":1}),
+    ] {
+        let harness = harness();
+        let client = test_identity();
+        let mut peer = connect(harness.port, &client);
+        pair_client(&harness, &client, &mut peer);
+
+        // Control and resync requests flow Linux-to-phone only. Even valid
+        // messages in the wrong direction must cause the session to close.
+        send(&mut peer, message);
+        recv_err(&mut peer);
+    }
 }
 
 #[test]

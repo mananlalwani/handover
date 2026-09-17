@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use handover_core::{
-    BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent,
-    MediaSession, MediaSessionId, Notification, NotificationCommand, NotificationEvent,
+    BatteryState, CallEvent, CallState, Capability, Device, DeviceEvent, DeviceId, MediaCommand,
+    MediaEvent, MediaSession, MediaSessionId, Notification, NotificationCommand, NotificationEvent,
     NotificationId, ReceivedShare, ShareResult, StateEvent,
 };
 
@@ -13,6 +13,7 @@ pub(crate) struct StateStore {
     devices: BTreeMap<DeviceId, Device>,
     notifications: BTreeMap<NotificationId, Notification>,
     media_sessions: BTreeMap<MediaSessionId, MediaSession>,
+    calls: BTreeMap<DeviceId, CallState>,
     messaging: MessagingStore,
 }
 
@@ -22,6 +23,7 @@ impl StateStore {
             StateEvent::Device(event) => self.apply_device(event),
             StateEvent::Notification(event) => self.apply_notification(event),
             StateEvent::Media(event) => self.apply_media(event),
+            StateEvent::Call(event) => self.apply_call(event),
             StateEvent::ShareReceived(share) => ApplyOutcome {
                 changed: true,
                 changes: vec![StateChange::ShareReceived(share)],
@@ -57,6 +59,32 @@ impl StateStore {
             devices: self.devices.values().cloned().collect(),
             notifications: self.notifications.values().cloned().collect(),
             media_sessions: self.media_sessions.values().cloned().collect(),
+            calls: self.calls.values().cloned().collect(),
+        }
+    }
+
+    fn apply_call(&mut self, event: CallEvent) -> ApplyOutcome {
+        match event {
+            CallEvent::Updated(call) => {
+                if self.calls.get(&call.device_id) == Some(&call) {
+                    return ApplyOutcome::unchanged();
+                }
+                self.calls.insert(call.device_id.clone(), call.clone());
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::Call(call)],
+                }
+            }
+            CallEvent::Removed(id) => {
+                if self.calls.remove(&id).is_some() {
+                    ApplyOutcome {
+                        changed: true,
+                        changes: vec![StateChange::CallRemoved(id)],
+                    }
+                } else {
+                    ApplyOutcome::unchanged()
+                }
+            }
         }
     }
 
@@ -233,6 +261,7 @@ pub(crate) struct StateSnapshot {
     pub(crate) devices: Vec<Device>,
     pub(crate) notifications: Vec<Notification>,
     pub(crate) media_sessions: Vec<MediaSession>,
+    pub(crate) calls: Vec<CallState>,
 }
 
 pub(crate) struct ApplyOutcome {
@@ -300,6 +329,8 @@ pub(crate) enum StateChange {
     Device(DeviceChange),
     Notification(NotificationChange),
     Media(MediaChange),
+    Call(CallState),
+    CallRemoved(DeviceId),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
     Messaging(MessagingChange),
@@ -394,7 +425,7 @@ fn updated_changes(previous: &Device, current: &Device) -> Vec<StateChange> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use handover_core::{Capability, MediaControl, PlaybackState};
+    use handover_core::{CallAction, CallPhase, Capability, MediaControl, PlaybackState};
 
     use super::*;
 
@@ -437,6 +468,100 @@ mod tests {
             volume_percent: Some(50),
             controls: std::collections::BTreeSet::from([MediaControl::Play, MediaControl::Seek]),
         }
+    }
+
+    #[test]
+    fn call_state_upserts_and_deduplicates_current_state() {
+        let mut store = StateStore::default();
+        let mut call = CallState {
+            device_id: DeviceId::new("phone-a"),
+            phase: CallPhase::Unknown,
+            controls: BTreeSet::new(),
+        };
+        assert!(store.snapshot().calls.is_empty());
+
+        let inserted = store.apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+        assert!(inserted.changed);
+        assert_eq!(inserted.changes, vec![StateChange::Call(call.clone())]);
+        assert_eq!(store.snapshot().calls, vec![call.clone()]);
+
+        let duplicate = store.apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+        assert!(!duplicate.changed);
+        assert!(duplicate.changes.is_empty());
+
+        for phase in [CallPhase::Idle, CallPhase::Ringing, CallPhase::OffHook] {
+            call.phase = phase;
+            let updated = store.apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+            assert!(updated.changed);
+            assert_eq!(updated.changes, vec![StateChange::Call(call.clone())]);
+            assert_eq!(store.snapshot().calls, vec![call.clone()]);
+        }
+
+        call.controls = BTreeSet::from([CallAction::Hangup]);
+        let controls_changed = store.apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+        assert!(controls_changed.changed);
+        assert_eq!(
+            controls_changed.changes,
+            vec![StateChange::Call(call.clone())]
+        );
+        assert_eq!(store.snapshot().calls, vec![call.clone()]);
+
+        let duplicate = store.apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+        assert!(!duplicate.changed);
+        assert!(duplicate.changes.is_empty());
+
+        call.controls.clear();
+        let controls_removed = store.apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+        assert!(controls_removed.changed);
+        assert_eq!(
+            controls_removed.changes,
+            vec![StateChange::Call(call.clone())]
+        );
+        assert_eq!(store.snapshot().calls, vec![call]);
+    }
+
+    #[test]
+    fn call_removal_is_scoped_to_device_and_ignores_unknown_calls() {
+        let mut store = StateStore::default();
+        let first = CallState {
+            device_id: DeviceId::new("phone-a"),
+            phase: CallPhase::Ringing,
+            controls: BTreeSet::from([CallAction::Answer, CallAction::Decline]),
+        };
+        let second = CallState {
+            device_id: DeviceId::new("phone-b"),
+            phase: CallPhase::Idle,
+            controls: BTreeSet::from([CallAction::Place]),
+        };
+        store.apply(StateEvent::Call(CallEvent::Updated(second.clone())));
+        store.apply(StateEvent::Call(CallEvent::Updated(first.clone())));
+        assert_eq!(store.snapshot().calls, vec![first.clone(), second.clone()]);
+
+        let unknown = store.apply(StateEvent::Call(CallEvent::Removed(DeviceId::new(
+            "unknown",
+        ))));
+        assert!(!unknown.changed);
+        assert!(unknown.changes.is_empty());
+        assert_eq!(store.snapshot().calls, vec![first.clone(), second.clone()]);
+
+        let removed = store.apply(StateEvent::Call(CallEvent::Removed(
+            first.device_id.clone(),
+        )));
+        assert!(removed.changed);
+        assert_eq!(
+            removed.changes,
+            vec![StateChange::CallRemoved(first.device_id.clone())]
+        );
+        assert_eq!(store.snapshot().calls, vec![second.clone()]);
+
+        let duplicate = store.apply(StateEvent::Call(CallEvent::Removed(first.device_id)));
+        assert!(!duplicate.changed);
+        assert!(duplicate.changes.is_empty());
+        assert_eq!(store.snapshot().calls, vec![second.clone()]);
+
+        let removed = store.apply(StateEvent::Call(CallEvent::Removed(second.device_id)));
+        assert!(removed.changed);
+        assert!(store.snapshot().calls.is_empty());
     }
 
     #[test]
