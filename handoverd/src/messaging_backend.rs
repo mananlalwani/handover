@@ -61,7 +61,7 @@ pub(crate) struct MessagingHub {
     inner: Arc<HubInner>,
 }
 
-type FetchWaiters = HashMap<(String, String), Vec<oneshot::Sender<()>>>;
+type FetchWaiters = HashMap<(String, String), Vec<oneshot::Sender<Result<(), ()>>>>;
 
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
@@ -172,18 +172,24 @@ impl MessagingHub {
             if fetches.len() >= MAX_IN_FLIGHT {
                 return Err(HelperCallError::Busy);
             }
-            fetches.entry(key).or_default().push(tx);
+            fetches.entry(key.clone()).or_default().push(tx);
         }
-        self.submit(HelperCommand::FetchHistory {
-            account: account.into(),
-            conversation: conversation.into(),
-            limit,
-            cursor,
-        })
-        .await?;
+        if let Err(error) = self
+            .submit(HelperCommand::FetchHistory {
+                account: account.into(),
+                conversation: conversation.into(),
+                limit,
+                cursor,
+            })
+            .await
+        {
+            self.inner.fetches.lock().await.remove(&key);
+            return Err(error);
+        }
         match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) | Err(_) => Err(HelperCallError::Timeout),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(()))) | Ok(Err(_)) => Err(HelperCallError::Unavailable),
+            Err(_) => Err(HelperCallError::Timeout),
         }
     }
 
@@ -202,14 +208,14 @@ impl MessagingHub {
             .remove(&(account.to_string(), conversation.to_string()))
             .unwrap_or_default();
         for waiter in waiters {
-            let _ = waiter.send(());
+            let _ = waiter.send(Ok(()));
         }
     }
 
     async fn fail_fetches(&self) {
         for (_, waiters) in self.inner.fetches.lock().await.drain() {
             for waiter in waiters {
-                let _ = waiter.send(());
+                let _ = waiter.send(Err(()));
             }
         }
     }
@@ -220,7 +226,7 @@ impl MessagingHub {
         }
         for (_, waiters) in self.inner.fetches.lock().await.drain() {
             for waiter in waiters {
-                let _ = waiter.send(());
+                let _ = waiter.send(Err(()));
             }
         }
     }
@@ -457,13 +463,15 @@ async fn ingest_event(
                 MessagingAccountId::new(account.clone()),
                 conversation.clone(),
             );
-            if let Some(mut record) = state
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .messaging()
-                .conversation(&conversation_id)
-                .cloned()
-            {
+            let conversation_record = {
+                state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .conversation(&conversation_id)
+                    .cloned()
+            };
+            if let Some(mut record) = conversation_record {
                 record.cursor = cursor_next.filter(|cursor| !cursor.is_empty());
                 apply_backend_event(
                     state,
@@ -749,4 +757,91 @@ pub(crate) fn validate_login_bundle(bundle_b64: &str) -> Result<(), HelperCallEr
         return Err(HelperCallError::BadBundle);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use handover_gmessages::contract::{
+        WireConversation, WireConversationKind, WireParticipant, WireTransport,
+    };
+
+    #[tokio::test]
+    async fn message_page_cursor_update_does_not_hold_state_read_lock() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(8);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: "personal".into(),
+                conversations: vec![WireConversation {
+                    local_id: "thread".into(),
+                    kind: WireConversationKind::Direct,
+                    transport: WireTransport::Rcs,
+                    title: None,
+                    participants: vec![WireParticipant {
+                        local_id: "other".into(),
+                        display_name: None,
+                        address: Some("+15550000000".into()),
+                        is_self: false,
+                    }],
+                    latest_message: None,
+                    last_activity_at: None,
+                    unread_count: None,
+                    cursor: None,
+                    capabilities: vec!["text".into()],
+                }],
+                full: true,
+            },
+        )
+        .await;
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::Messages {
+                    account: "personal".into(),
+                    conversation: "thread".into(),
+                    messages: Vec::new(),
+                    cursor_next: Some("older:123".into()),
+                    full: false,
+                },
+            ),
+        )
+        .await
+        .expect("cursor update must not deadlock");
+
+        let id = ConversationId::new(MessagingAccountId::new("personal"), "thread");
+        let cursor = state
+            .read()
+            .unwrap()
+            .messaging()
+            .conversation(&id)
+            .and_then(|conversation| conversation.cursor.as_deref())
+            .map(str::to_owned);
+        assert_eq!(cursor.as_deref(), Some("older:123"));
+    }
 }
