@@ -6,6 +6,16 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+pub mod messaging;
+
+pub use messaging::{
+    Attachment, AttachmentKind, Conversation, ConversationEvent, ConversationId, ConversationKind,
+    Message, MessageEvent, MessageId, MessageStatus, MessageStatusUpdate, MessagingAccount,
+    MessagingAccountEvent, MessagingAccountId, MessagingCapability, MessagingCommand,
+    MessagingEvent, Participant, Reaction, ReadState, SendFailure, TransportKind, TypingState,
+    ValidationError,
+};
+
 /// A stable identifier assigned to a device by a backend.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -182,7 +192,7 @@ impl NotificationCommand {
     }
 }
 
-/// A normalized device or notification state transition.
+/// A normalized device, notification, media, share, or messaging transition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StateEvent {
     Device(DeviceEvent),
@@ -190,6 +200,7 @@ pub enum StateEvent {
     Media(MediaEvent),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
+    Messaging(MessagingEvent),
 }
 
 /// A media player identity scoped to its source device.
@@ -349,6 +360,8 @@ pub enum ShareFailure {
     Transport,
 }
 
+#[cfg(test)]
+mod messaging_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
