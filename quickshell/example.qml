@@ -517,50 +517,68 @@ ShellRoot {
                     clip: true
                     spacing: 8
                     model: messagesCard.selectedMessages
-                    delegate: ColumnLayout {
+                    delegate: Item {
                         required property var modelData
                         width: messageList.width
-                        spacing: 2
+                        property var message: modelData
+                        implicitHeight: bubble.implicitHeight + 8
 
-                        Text {
-                            Layout.fillWidth: true
-                            color: modelData.sender.is_self ? "#9ecaff" : "#ffffff"
-                            font.pixelSize: 14
-                            textFormat: Text.PlainText
-                            wrapMode: Text.Wrap
-                            text: (modelData.deleted ? "[deleted] " : "")
-                                + messagesCard.senderLabel(modelData.sender) + ": "
-                                + (modelData.text || "")
-                                + (modelData.attachments.length > 0
-                                    ? " [" + modelData.attachments.map(item =>
-                                        item.name || item.local_id).join(", ") + "]" : "")
+                        Rectangle {
+                            anchors.left: message.sender.is_self ? undefined : parent.left
+                            anchors.right: message.sender.is_self ? parent.right : undefined
+                            width: Math.min(parent.width * 0.82, 520)
+                            height: bubble.implicitHeight
+                            radius: 14
+                            color: message.sender.is_self ? "#245b8f" : "#252d39"
                         }
 
-                        Text {
-                            Layout.fillWidth: true
-                            color: "#8b95a5"
-                            font.pixelSize: 12
-                            textFormat: Text.PlainText
-                            visible: modelData.reply_to !== undefined && modelData.reply_to !== null
-                                || modelData.reactions.length > 0
-                            text: {
-                                const reply = modelData.reply_to
-                                    ? "reply to " + modelData.reply_to.local_id + " " : "";
-                                const reactions = modelData.reactions.map(item =>
-                                    item.emoji + "×" + item.count).join(" ");
-                                return reply + reactions;
-                            }
-                        }
+                        ColumnLayout {
+                            id: bubble
+                            anchors.left: message.sender.is_self ? undefined : parent.left
+                            anchors.right: message.sender.is_self ? parent.right : undefined
+                            width: Math.min(parent.width * 0.82, 520)
+                            spacing: 3
+                            anchors.margins: 10
 
-                        Row {
-                            spacing: 4
-                            visible: {
-                                const conversation = messagesCard.accountConversations.find(item =>
-                                    HandoverService.sameConversationId(
-                                        item.id, modelData.id.conversation_id));
-                                return conversation
-                                    && conversation.capabilities.includes("reactions");
+                            Text {
+                                Layout.fillWidth: true
+                                color: "#ffffff"
+                                font.pixelSize: 14
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                text: (message.deleted ? "[deleted] " : "")
+                                    + messagesCard.senderLabel(message.sender) + ": "
+                                    + (message.text || "")
+                                    + (message.attachments.length > 0
+                                        ? " [" + message.attachments.map(item =>
+                                            item.name || item.local_id).join(", ") + "]" : "")
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                color: "#b7c6d9"
+                                font.pixelSize: 12
+                                textFormat: Text.PlainText
+                                visible: message.reply_to !== undefined && message.reply_to !== null
+                                    || message.reactions.length > 0
+                                text: {
+                                    const reply = message.reply_to
+                                        ? "reply to " + message.reply_to.local_id + " " : "";
+                                    const reactions = message.reactions.map(item =>
+                                        item.emoji + "×" + item.count).join(" ");
+                                    return reply + reactions;
+                                }
+                            }
+
+                            Row {
+                                spacing: 4
+                                visible: {
+                                    const conversation = messagesCard.accountConversations.find(item =>
+                                        HandoverService.sameConversationId(
+                                            item.id, message.id.conversation_id));
+                                    return conversation
+                                        && conversation.capabilities.includes("reactions");
+                                }
                             Repeater {
                                 model: ["❤", "👍", "😂"]
                                 Button {
@@ -569,7 +587,6 @@ ShellRoot {
                                     flat: true
                                     enabled: !HandoverService.pendingMessaging
                                     onClicked: {
-                                        const message = parent.parent.parent.modelData;
                                         const reacted = message.reactions.some(item =>
                                             item.emoji === modelData
                                             && item.participant_ids.includes("self"));
@@ -588,23 +605,22 @@ ShellRoot {
                                 text: "Reply"
                                 flat: true
                                 enabled: !HandoverService.pendingMessaging
-                                onClicked: messagesCard.replyingTo =
-                                    parent.parent.parent.modelData.id.local_id
+                                onClicked: messagesCard.replyingTo = message.id.local_id
                             }
                             Button {
                                 text: "Delete"
                                 flat: true
-                                visible: parent.parent.parent.modelData.sender.is_self
+                                visible: message.sender.is_self
                                 enabled: !HandoverService.pendingMessaging
                                 onClicked: {
-                                    const message = parent.parent.parent.modelData;
                                     HandoverService.deleteMessage(
                                         message.id.conversation_id, message.id.local_id);
                                 }
                             }
                         }
+                            }
+                        }
                     }
-                }
 
                 Text {
                     Layout.fillWidth: true
