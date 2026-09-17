@@ -146,6 +146,9 @@ pub enum HelperEvent {
         messages: Vec<WireMessage>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor_next: Option<String>,
+        /// Marks the final chunk of one requested history page.
+        #[serde(default)]
+        page_complete: bool,
         /// `true` means this page is the authoritative window: the daemon
         /// reconciles its stored window against it.
         full: bool,

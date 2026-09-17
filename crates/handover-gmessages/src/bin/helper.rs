@@ -506,6 +506,7 @@ impl Relay for LoopbackRelay {
                 conversation: local_id.clone(),
                 messages: self.full_window(conversation),
                 cursor_next: None,
+                page_complete: false,
                 full: true,
             });
             events.push(HelperEvent::Read {
@@ -568,6 +569,7 @@ impl Relay for LoopbackRelay {
             conversation: conversation.into(),
             messages: page,
             cursor_next: next,
+            page_complete: true,
             full: false,
         }]
     }
@@ -635,6 +637,7 @@ impl Relay for LoopbackRelay {
                 conversation: conversation.into(),
                 messages: vec![thread.messages.back().cloned().expect("just pushed")],
                 cursor_next: None,
+                page_complete: false,
                 full: false,
             },
         ]
@@ -715,6 +718,7 @@ impl Relay for LoopbackRelay {
                 conversation: conversation.into(),
                 messages: vec![thread.messages.back().cloned().expect("just pushed")],
                 cursor_next: None,
+                page_complete: false,
                 full: false,
             },
         ]
@@ -778,6 +782,7 @@ impl Relay for LoopbackRelay {
                 conversation: conversation.into(),
                 messages: vec![updated],
                 cursor_next: None,
+                page_complete: false,
                 full: false,
             },
         ]
@@ -895,6 +900,7 @@ impl Relay for LoopbackRelay {
                         conversation: local_id,
                         messages: vec![],
                         cursor_next: None,
+                        page_complete: false,
                         full: false,
                     },
                 ];

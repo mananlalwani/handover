@@ -430,6 +430,14 @@ ShellRoot {
                 return sender.display_name || sender.address || sender.local_id;
             }
 
+            function messageTimestamp(message) {
+                if (!message || !message.sent_at)
+                    return "";
+                return Qt.formatDateTime(
+                    new Date(Number(message.sent_at) / 1000),
+                    "MMM d, yyyy · h:mm AP");
+            }
+
             ColumnLayout {
                 id: legacyMessagesLayout
                 anchors.fill: parent
@@ -1052,6 +1060,12 @@ ShellRoot {
                                             Layout.rightMargin: 8
                                             Layout.bottomMargin: 6
                                             spacing: 4
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: messagesCard.messageTimestamp(modelData)
+                                                color: "#aebed0"
+                                                font.pixelSize: 10
+                                            }
                                             Button {
                                                 text: "Reply"
                                                 flat: true
@@ -1072,6 +1086,15 @@ ShellRoot {
                                         }
                                     }
                                 }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: messagesCard.selectedConversation !== null
+                                    && messagesCard.selectedMessages.length > 0
+                                text: messagesCard.selectedMessages.length + " messages loaded"
+                                color: "#9caec5"
+                                horizontalAlignment: Text.AlignHCenter
                             }
                             Text {
                                 Layout.fillWidth: true

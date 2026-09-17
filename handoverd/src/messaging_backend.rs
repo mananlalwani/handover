@@ -458,6 +458,7 @@ async fn ingest_event(
             messages,
             full,
             cursor_next,
+            page_complete,
         } => {
             let conversation_id = ConversationId::new(
                 MessagingAccountId::new(account.clone()),
@@ -558,7 +559,9 @@ async fn ingest_event(
                     .messaging_mut()
                     .sort_window(&conversation_id);
             }
-            hub.complete_fetch(&account, &conversation).await;
+            if page_complete {
+                hub.complete_fetch(&account, &conversation).await;
+            }
         }
         HelperEvent::MessageRemoved {
             account,
@@ -853,6 +856,7 @@ mod tests {
                         deleted: false,
                     }],
                     cursor_next: Some("older:123".into()),
+                    page_complete: true,
                     full: false,
                 },
             ),
