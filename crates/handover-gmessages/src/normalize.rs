@@ -104,6 +104,7 @@ pub fn normalize_conversation(
                 local_id,
             )
         }),
+        last_activity_at: wire.last_activity_at,
         unread_count: wire.unread_count,
         cursor: wire.cursor,
         capabilities,

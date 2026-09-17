@@ -132,6 +132,7 @@ pub struct Conversation {
     pub title: Option<String>,
     pub participants: Vec<Participant>,
     pub latest_message_id: Option<MessageId>,
+    pub last_activity_at: Option<i64>,
     pub unread_count: Option<u64>,
     pub cursor: Option<String>,
     pub capabilities: BTreeSet<MessagingCapability>,

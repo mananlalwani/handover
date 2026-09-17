@@ -2936,6 +2936,7 @@ mod messaging_failure_tests {
                     },
                 ],
                 latest_message_id: Some(MessageId::new(conversation_id.clone(), "m1")),
+                last_activity_at: None,
                 unread_count: None,
                 cursor: None,
                 capabilities: BTreeSet::from([handover_core::MessagingCapability::Text]),

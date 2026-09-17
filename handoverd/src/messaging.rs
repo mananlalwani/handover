@@ -568,6 +568,7 @@ mod tests {
             title: None,
             participants: vec![participant("self", true), participant("peer", false)],
             latest_message_id: None,
+            last_activity_at: None,
             unread_count: None,
             cursor: None,
             capabilities: BTreeSet::from([

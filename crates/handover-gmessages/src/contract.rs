@@ -202,6 +202,8 @@ pub struct WireConversation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,

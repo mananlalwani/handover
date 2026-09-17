@@ -247,6 +247,7 @@ impl LoopbackRelay {
                     },
                 ],
                 latest_message: Some("m3".into()),
+                last_activity_at: None,
                 unread_count: Some(1),
                 cursor: Some("m1".into()),
                 capabilities: full_caps.clone(),
@@ -304,6 +305,7 @@ impl LoopbackRelay {
                         },
                     ],
                     latest_message: Some("s1".into()),
+                    last_activity_at: None,
                     unread_count: Some(0),
                     cursor: None,
                     capabilities: vec!["text".into()],
@@ -349,6 +351,7 @@ impl LoopbackRelay {
                         },
                     ],
                     latest_message: Some("g1".into()),
+                    last_activity_at: None,
                     unread_count: Some(0),
                     cursor: None,
                     capabilities: {
@@ -923,6 +926,7 @@ impl Relay for LoopbackRelay {
                     title: None,
                     participants,
                     latest_message: None,
+                    last_activity_at: None,
                     unread_count: Some(0),
                     cursor: None,
                     capabilities: vec![

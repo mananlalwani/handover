@@ -393,7 +393,8 @@ ShellRoot {
                 ? HandoverService.messagingAccounts[modernAccountPicker.currentIndex] : null
             property var accountConversations: selectedAccount
                 ? HandoverService.conversations.filter(item =>
-                    item.id.account_id === selectedAccount.id)
+                    item.id.account_id === selectedAccount.id).slice().sort((a, b) =>
+                        (b.last_activity_at || 0) - (a.last_activity_at || 0))
                 : []
             property string selectedKey: selectedConversation
                 ? HandoverService.conversationKey(selectedConversation) : ""
