@@ -812,6 +812,14 @@ ShellRoot {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 clip: true
+                                onModelChanged: {
+                                    if (messagesCard.selectedConversation === null && count > 0) {
+                                        const first = model[0];
+                                        messagesCard.selectedConversation = first.id;
+                                        HandoverService.loadHistory(first.id, 20);
+                                        HandoverService.markRead(first.id);
+                                    }
+                                }
                                 model: messagesCard.accountConversations.filter(item =>
                                     !conversationSearch.text.trim()
                                     || messagesCard.conversationLabel(item).toLowerCase().includes(
