@@ -460,6 +460,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "url",
 ]
 
 [[package]]

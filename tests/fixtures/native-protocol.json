@@ -17,6 +17,8 @@
   {"type":"media_request","protocol":1},
   {"type":"media_control","protocol":1,"player":"com.example.music","action":"pause"},
   {"type":"media_control","protocol":1,"player":"com.example.music","action":"set_position","position_ms":60000},
+  {"type":"share_url","protocol":1,"url":"https://example.test/path%20with%20spaces?q=unicode%E2%9C%93"},
+  {"type":"share_file","protocol":1,"name":"report final ☃.txt","size":18},
   {"type":"revoke","protocol":1},
   {"type":"ping","protocol":1},
   {"type":"pong","protocol":1}

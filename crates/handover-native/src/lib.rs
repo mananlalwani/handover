@@ -1,6 +1,6 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use handover_core::{
     BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
     MediaEvent, MediaSession, MediaSessionId, Notification, NotificationAction,
-    NotificationCommand, NotificationEvent, NotificationId, PlaybackState, StateEvent,
+    NotificationCommand, NotificationEvent, NotificationId, PlaybackState, ReceivedShare,
+    SharedResource, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -51,6 +52,8 @@ const MAX_MEDIA_TEXT: usize = 512;
 const MAX_MEDIA_SESSIONS_PER_SYNC: usize = 16;
 const MAX_MEDIA_POSITION_MS: u64 = i32::MAX as u64;
 const MAX_OUTBOX_PER_PEER: usize = 32;
+const MAX_SHARE_SIZE: u64 = 100 * 1024 * 1024;
+const SHARE_BUFFER: usize = 32 * 1024;
 
 #[derive(Debug, Error)]
 pub enum NativeCommandError {
@@ -392,6 +395,17 @@ enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         position_ms: Option<u64>,
     },
+    ShareUrl {
+        protocol: u32,
+        url: String,
+    },
+    ShareFile {
+        protocol: u32,
+        name: String,
+        size: u64,
+        #[serde(skip)]
+        path: PathBuf,
+    },
     Revoke {
         protocol: u32,
     },
@@ -423,6 +437,8 @@ impl Message {
             | Self::MediaSync { protocol, .. }
             | Self::MediaRequest { protocol }
             | Self::MediaControl { protocol, .. }
+            | Self::ShareUrl { protocol, .. }
+            | Self::ShareFile { protocol, .. }
             | Self::Revoke { protocol }
             | Self::Ping { protocol }
             | Self::Pong { protocol } => *protocol,
@@ -683,6 +699,104 @@ impl NativeBackend {
             protocol: WIRE_VERSION,
         });
         true
+    }
+
+    /// Accept one share for a live paired peer. Delivery is asynchronous; a
+    /// later disconnect or I/O failure can prevent completion.
+    pub fn share_url(&self, peer_id: &str, url: String) -> Result<(), NativeCommandError> {
+        if !valid_share_url(&url) {
+            return Err(NativeCommandError::QueueFull);
+        }
+        self.queue_share(
+            peer_id,
+            Message::ShareUrl {
+                protocol: WIRE_VERSION,
+                url,
+            },
+        )
+    }
+
+    pub fn share_file(&self, peer_id: &str, path: PathBuf) -> Result<(), NativeCommandError> {
+        let file = File::open(&path).map_err(|_| NativeCommandError::QueueFull)?;
+        let metadata = file.metadata().map_err(|_| NativeCommandError::QueueFull)?;
+        if !metadata.is_file() {
+            return Err(NativeCommandError::QueueFull);
+        }
+        let size = metadata.len();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| safe_share_name(n) && n.len() <= 255)
+            .ok_or(NativeCommandError::QueueFull)?
+            .to_owned();
+        if size > MAX_SHARE_SIZE {
+            return Err(NativeCommandError::QueueFull);
+        }
+        self.queue_share(
+            peer_id,
+            Message::ShareFile {
+                protocol: WIRE_VERSION,
+                name,
+                size,
+                path,
+            },
+        )
+    }
+
+    fn queue_share(&self, peer_id: &str, message: Message) -> Result<(), NativeCommandError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return Err(NativeCommandError::Offline);
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return Err(NativeCommandError::QueueFull);
+        }
+        queue.push(message);
+        Ok(())
+    }
+
+    fn receive_share_file<R: Read>(
+        &self,
+        input: &mut R,
+        name: &str,
+        size: u64,
+    ) -> Result<PathBuf, NativeError> {
+        if !safe_share_name(name) || name.len() > 255 || size > MAX_SHARE_SIZE {
+            return Err(NativeError::InvalidFrame);
+        }
+        let directory = self.directory.join("received");
+        fs::create_dir_all(&directory)?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        let mut random = [0u8; 8];
+        openssl::rand::rand_bytes(&mut random)?;
+        let suffix = random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let transfer_directory = directory.join(suffix);
+        fs::create_dir(&transfer_directory)?;
+        let destination = transfer_directory.join(name);
+        let partial = transfer_directory.join(".partial");
+        let mut guard = PartialShare(partial.clone(), transfer_directory);
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?;
+        output.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let mut remaining = size;
+        let mut buffer = [0u8; SHARE_BUFFER];
+        while remaining > 0 {
+            let amount = usize::try_from(remaining.min(SHARE_BUFFER as u64)).unwrap();
+            input.read_exact(&mut buffer[..amount])?;
+            output.write_all(&buffer[..amount])?;
+            remaining -= amount as u64;
+        }
+        output.sync_all()?;
+        drop(output);
+        fs::rename(&partial, &destination)?;
+        guard.0 = PathBuf::new();
+        Ok(destination)
     }
     fn save_peers(&self, peers: &PeerFile) -> Result<(), NativeError> {
         let path = self.directory.join("peers.json");
@@ -1014,8 +1128,48 @@ impl NativeBackend {
                     tracing::debug!(peer = %id, %error, "native notification command write failed");
                     return Err(error);
                 }
+                if let Message::ShareFile { path, size, .. } = &message {
+                    let file = File::open(path)?;
+                    let metadata = file.metadata()?;
+                    if !metadata.is_file() || metadata.len() != *size {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    let mut limited = file.take(*size);
+                    if std::io::copy(&mut limited, &mut tls)? != *size {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    tls.flush()?;
+                }
             }
             match read_frame(&mut tls) {
+                Ok(Message::ShareUrl {
+                    protocol: WIRE_VERSION,
+                    url,
+                }) => {
+                    last_received = Instant::now();
+                    if !valid_share_url(&url) {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    event(StateEvent::ShareReceived(ReceivedShare {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        resource: SharedResource::Url { url },
+                    }));
+                }
+                Ok(Message::ShareFile {
+                    protocol: WIRE_VERSION,
+                    name,
+                    size,
+                    ..
+                }) => {
+                    last_received = Instant::now();
+                    let path = self.receive_share_file(&mut tls, &name, size)?;
+                    event(StateEvent::ShareReceived(ReceivedShare {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        resource: SharedResource::File {
+                            path: path.to_string_lossy().into_owned(),
+                        },
+                    }));
+                }
                 Ok(Message::Battery {
                     protocol: WIRE_VERSION,
                     percentage,
@@ -1150,6 +1304,40 @@ impl NativeBackend {
     }
 }
 
+struct PartialShare(PathBuf, PathBuf);
+
+impl Drop for PartialShare {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.0);
+            let _ = fs::remove_dir(&self.1);
+        }
+    }
+}
+
+fn safe_share_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
+}
+
+fn valid_share_url(url: &str) -> bool {
+    if url.is_empty()
+        || url.len() > 8192
+        || url.trim() != url
+        || url.chars().any(char::is_whitespace)
+        || url.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    !matches!(parsed.scheme(), "file" | "javascript" | "data")
+}
+
 fn device(
     peer: &Peer,
     connected: bool,
@@ -1157,7 +1345,7 @@ fn device(
     notifications_supported: bool,
     media_supported: bool,
 ) -> Device {
-    let mut capabilities = BTreeSet::from([Capability::Battery]);
+    let mut capabilities = BTreeSet::from([Capability::Battery, Capability::FileTransfer]);
     if notifications_supported {
         capabilities.insert(Capability::Notifications);
     }
@@ -1680,6 +1868,41 @@ fn write_frame<W: Write>(writer: &mut W, message: &Message) -> Result<(), Native
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn received_file_streams_and_cleans_interruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let bytes = vec![42u8; SHARE_BUFFER * 2 + 7];
+        let path = backend
+            .receive_share_file(&mut bytes.as_slice(), "space ✓.txt", bytes.len() as u64)
+            .unwrap();
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        assert!(
+            backend
+                .receive_share_file(&mut [1u8; 3].as_slice(), "cut.txt", 4)
+                .is_err()
+        );
+        let received = backend.directory.join("received");
+        let entries = fs::read_dir(received)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            !fs::read_dir(entries[0].path())
+                .unwrap()
+                .any(|entry| { entry.unwrap().file_name().to_string_lossy() == ".partial" })
+        );
+        for name in ["../bad", "a/b", "a\\b", ".", "..", "bad\nname"] {
+            assert!(!safe_share_name(name));
+        }
+        assert!(
+            backend
+                .receive_share_file(&mut [].as_slice(), "big", MAX_SHARE_SIZE + 1)
+                .is_err()
+        );
+    }
     #[test]
     fn discovery_record_matches_advertised_service() {
         // Code-level coverage for the DNS-SD advertisement. Multicast

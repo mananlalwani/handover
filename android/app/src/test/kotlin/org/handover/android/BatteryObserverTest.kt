@@ -21,7 +21,7 @@ class BatteryObserverTest {
         val text = fixture.readText()
         val types = Regex("\\\"type\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
             .findAll(text).map { it.groupValues[1] }.toList()
-        assertEquals(listOf("hello", "pair_open", "pair_confirm", "paired", "battery", "notification_post", "notification_removed", "notifications_sync", "notifications_request", "notification_dismiss", "notification_reply", "notification_action", "media_post", "media_removed", "media_sync", "media_request", "media_control", "media_control", "revoke", "ping", "pong"), types)
-        assertEquals(21, Regex("\\\"protocol\\\"\\s*:\\s*1").findAll(text).count())
+        assertEquals(listOf("hello", "pair_open", "pair_confirm", "paired", "battery", "notification_post", "notification_removed", "notifications_sync", "notifications_request", "notification_dismiss", "notification_reply", "notification_action", "media_post", "media_removed", "media_sync", "media_request", "media_control", "media_control", "share_url", "share_file", "revoke", "ping", "pong"), types)
+        assertEquals(23, Regex("\\\"protocol\\\"\\s*:\\s*1").findAll(text).count())
     }
 }

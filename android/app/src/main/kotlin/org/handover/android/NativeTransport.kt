@@ -2,6 +2,11 @@ package org.handover.android
 
 import android.content.Context
 import android.content.Intent
+import android.content.ContentResolver
+import android.net.Uri
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -12,11 +17,15 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.EOFException
+import java.io.File
+import java.io.FileOutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.concurrent.ExecutorService
@@ -180,6 +189,45 @@ class NativeTransport(private val context: Context) {
         send(MediaObserver.syncJson(sessions.take(16)))
     }
 
+    /** Sends a URL to the one explicitly paired desktop. */
+    fun shareUrl(url: String): Boolean {
+        if (serverFingerprint == null || !validShareUrl(url)) return false
+        return enqueue { writeNow(JSONObject().put("type", "share_url").put("protocol", 1).put("url", url)) }
+    }
+
+    /**
+     * Streams a content URI after its JSON header. The operation is serialized
+     * with every other writer so raw bytes can never be mistaken for a frame.
+     */
+    fun shareFile(uri: Uri, requestedName: String? = null): Boolean {
+        if (serverFingerprint == null) return false
+        val metadata = runCatching { fileMetadata(context.contentResolver, uri, requestedName) }.getOrNull() ?: return false
+        return enqueue {
+            try {
+                val resolver = context.contentResolver
+                resolver.openInputStream(uri)?.use { input ->
+                    writeNow(JSONObject().put("type", "share_file").put("protocol", 1)
+                        .put("name", metadata.first).put("size", metadata.second))
+                    val buffer = ByteArray(STREAM_BUFFER_BYTES)
+                    var remaining = metadata.second
+                    while (remaining > 0) {
+                        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                        if (count < 0) throw java.io.EOFException("file changed while sharing")
+                        if (count == 0) continue
+                        synchronized(outputLock) { output?.write(buffer, 0, count) ?: throw java.io.IOException("disconnected") }
+                        remaining -= count
+                    }
+                    synchronized(outputLock) { output?.flush() ?: throw java.io.IOException("disconnected") }
+                } ?: throw java.io.FileNotFoundException(uri.toString())
+            } catch (error: Exception) {
+                // A partial raw stream cannot be resynchronized as JSON. Drop
+                // the authenticated session so the receiver deletes its temp.
+                Log.w(TAG, "native file share failed: ${error.javaClass.simpleName}")
+                socket?.close()
+            }
+        }
+    }
+
     private val resolver = object : NsdManager.ResolveListener {
         override fun onServiceResolved(info: NsdServiceInfo) {
             Log.i(TAG, "Handover LAN service resolved")
@@ -225,7 +273,7 @@ class NativeTransport(private val context: Context) {
                         continue
                     } ?: break
                     missedPongs = 0
-                    handle(message)
+                    handle(message, input)
                 }
             } catch (error: Exception) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
@@ -245,7 +293,7 @@ class NativeTransport(private val context: Context) {
         }
     }
 
-    private fun handle(message: JSONObject) {
+    private fun handle(message: JSONObject, input: BufferedInputStream) {
         if (message.optInt("protocol", -1) != 1) {
             socket?.close()
             return
@@ -348,7 +396,78 @@ class NativeTransport(private val context: Context) {
                     message.optString("player"), message.optString("action"), position,
                 )
             }
+            "share_url" -> {
+                if (serverFingerprint == null) return
+                val url = message.optString("url")
+                if (validShareUrl(url)) {
+                    notifyReceived("url", url, url)
+                    broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "url").put("url", url)
+                        .put("source", serverId ?: serverFingerprint))
+                }
+            }
+            "share_file" -> {
+                if (serverFingerprint == null) return
+                val name = safeFileName(message.optString("name")) ?: run { socket?.close(); return }
+                val size = message.optLong("size", -1L)
+                if (size !in 0..MAX_FILE_BYTES) { socket?.close(); return }
+                receiveFile(input, name, size)
+            }
         }
+    }
+
+    private fun receiveFile(input: BufferedInputStream, name: String, size: Long) {
+        val root = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "Handover")
+        if (!root.exists() && !root.mkdirs()) { socket?.close(); return }
+        val destination = uniqueDestination(root, name)
+        val temporary = File(root, ".${name}.${java.util.UUID.randomUUID()}.part")
+        try {
+            FileOutputStream(temporary).use { outputStream ->
+                val buffer = ByteArray(STREAM_BUFFER_BYTES)
+                var remaining = size
+                while (remaining > 0) {
+                    val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                    if (count < 0) throw EOFException("interrupted file transfer")
+                    if (count == 0) continue
+                    outputStream.write(buffer, 0, count)
+                    remaining -= count
+                }
+                outputStream.fd.sync()
+            }
+            try {
+                Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(temporary.toPath(), destination.toPath())
+            }
+            notifyReceived("file", name, null)
+            broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
+                .put("path", destination.absolutePath).put("source", serverId ?: serverFingerprint))
+        } catch (error: Exception) {
+            temporary.delete()
+            Log.w(TAG, "native file receive failed: ${error.javaClass.simpleName}")
+            socket?.close()
+        }
+    }
+
+    private fun notifyReceived(kind: String, value: String, url: String?) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(SHARE_CHANNEL, "Received shares", NotificationManager.IMPORTANCE_DEFAULT))
+        val source = (serverId ?: serverFingerprint ?: "unknown desktop").take(12)
+        val builder = android.app.Notification.Builder(context, SHARE_CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setAutoCancel(true)
+        if (kind == "url") {
+            builder.setContentTitle("URL received from $source")
+                .setContentText("Tap to open the received URL")
+            val parsed = url?.let { Uri.parse(it) }
+            if (parsed != null && parsed.scheme?.lowercase() in setOf("http", "https")) {
+                val intent = Intent(Intent.ACTION_VIEW, parsed)
+                builder.setContentIntent(PendingIntent.getActivity(context, 0, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+            }
+        } else {
+            builder.setContentTitle("File received from $source").setContentText(value)
+        }
+        manager.notify((System.currentTimeMillis() and 0x7fffffff).toInt(), builder.build())
     }
 
     private fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
@@ -369,8 +488,12 @@ class NativeTransport(private val context: Context) {
         output?.let { stream -> runCatching { write(stream, message) }.onFailure { socket?.close() } }
     }
     private fun send(message: JSONObject) {
-        if (!writerExecutor.isShutdown) writerExecutor.execute { writeNow(message) }
+        enqueue { writeNow(message) }
     }
+
+    private fun enqueue(operation: () -> Unit): Boolean = try {
+        if (writerExecutor.isShutdown) false else { writerExecutor.execute(operation); true }
+    } catch (_: java.util.concurrent.RejectedExecutionException) { false }
 
     private fun sslContext(): SSLContext {
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
@@ -427,12 +550,66 @@ class NativeTransport(private val context: Context) {
         private const val PENDING_CODE_KEY = "pending_pair_code"
         private const val MANUAL_ENDPOINT_KEY = "manual_endpoint"
         private const val MAX_FRAME = 64 * 1024
+        private const val MAX_FILE_BYTES = 100L * 1024 * 1024
+        private const val MAX_URL_BYTES = 8 * 1024
+        private const val MAX_NAME_BYTES = 255
+        private const val STREAM_BUFFER_BYTES = 32 * 1024
+        private const val SHARE_CHANNEL = "handover_received_shares"
         private const val RECONNECT_DELAY_MS = 2_000L
+
+        const val ACTION_SHARE_RECEIVED = "org.handover.android.SHARE_RECEIVED"
+        const val EXTRA_SHARE_URI = "uri"
+        const val EXTRA_SHARE_TEXT = "text"
 
         fun trustedPeerFingerprint(context: Context): String? =
             context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PIN_KEY, null)
         fun pendingPairingCode(context: Context): String? =
             context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PENDING_CODE_KEY, null)
+
+        private fun fileMetadata(resolver: ContentResolver, uri: Uri, requestedName: String?): Pair<String, Long>? {
+            val name = requestedName ?: resolver.query(uri, arrayOf("_display_name"), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "shared-file"
+            val safe = safeFileName(name) ?: return null
+            val queriedSize = resolver.query(uri, arrayOf("_size"), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
+            } ?: -1L
+            val size = if (queriedSize >= 0) queriedSize else
+                resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            if (size !in 0..MAX_FILE_BYTES) return null
+            return safe to size
+        }
+
+        private fun safeFileName(raw: String): String? {
+            val basename = raw.replace('\\', '/').substringAfterLast('/').trim()
+            if (basename.isEmpty() || basename == "." || basename == ".." || basename.any { it.code < 0x20 || it == '\u0000' }) return null
+            val bytes = basename.toByteArray(Charsets.UTF_8)
+            if (bytes.size <= MAX_NAME_BYTES) return basename
+            var end = MAX_NAME_BYTES
+            while (end > 0 && (bytes[end].toInt() and 0xc0) == 0x80) end--
+            return String(bytes, 0, end, Charsets.UTF_8).ifEmpty { null }
+        }
+
+        private fun validShareUrl(value: String): Boolean {
+            if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > MAX_URL_BYTES ||
+                value.trim() != value || value.any { it.isISOControl() || it.isWhitespace() }) return false
+            val parsed = runCatching { java.net.URI(value) }.getOrNull() ?: return false
+            return !parsed.scheme.isNullOrBlank() &&
+                parsed.scheme.lowercase() !in setOf("file", "javascript", "data")
+        }
+
+        private fun uniqueDestination(root: File, name: String): File {
+            var candidate = File(root, name)
+            var suffix = 1
+            while (candidate.exists()) {
+                val dot = name.lastIndexOf('.')
+                val stem = if (dot > 0) name.substring(0, dot) else name
+                val extension = if (dot > 0) name.substring(dot) else ""
+                candidate = File(root, "$stem ($suffix)$extension")
+                suffix++
+            }
+            return candidate
+        }
 
         fun pairingCode(ownFingerprint: String, ownNonce: String, peerFingerprint: String, peerNonce: String): String {
             // Each nonce stays bound to its fingerprint owner, so both sides

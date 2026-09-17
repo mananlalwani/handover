@@ -241,7 +241,7 @@ async fn send_url(selector: &str, url: String) -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let device_id = select_device(&client.devices().await?, selector)?;
     client.send_url(device_id, url).await?;
-    println!("URL accepted by KDE Connect; delivery is not confirmed");
+    println!("URL share accepted; delivery is not confirmed");
     Ok(())
 }
 
@@ -251,7 +251,7 @@ async fn send_file(selector: &str, path: PathBuf) -> Result<(), CliError> {
     let absolute = tokio::fs::canonicalize(path).await?;
     let file_url = Url::from_file_path(absolute).map_err(|_| CliError::InvalidFilePath)?;
     client.send_file_url(device_id, file_url.into()).await?;
-    println!("File accepted by KDE Connect; delivery is not confirmed");
+    println!("File share accepted; delivery is not confirmed");
     Ok(())
 }
 
@@ -364,7 +364,7 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::ShareReceived { share } => {
             let kind = match share.resource {
                 SharedResource::File { .. } => "local file available",
-                SharedResource::Url { .. } => "URL handled",
+                SharedResource::Url { .. } => "URL",
             };
             println!("share received: {kind} from {}", share.device_id);
         }

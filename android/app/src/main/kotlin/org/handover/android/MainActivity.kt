@@ -100,6 +100,7 @@ class MainActivity : android.app.Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleShareIntent(intent)
         if (android.os.Build.VERSION.SDK_INT >= 37 &&
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf("android.permission.ACCESS_LOCAL_NETWORK"), LOCAL_NETWORK_REQUEST)
@@ -184,6 +185,46 @@ class MainActivity : android.app.Activity() {
             addView(stopTestMedia, LinearLayout.LayoutParams(-1, -2))
             addView(revoke, LinearLayout.LayoutParams(-1, -2))
         })
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent != null) handleShareIntent(intent)
+    }
+
+    private fun handleShareIntent(intent: Intent) {
+        if (intent.action != Intent.ACTION_SEND) return
+        val service = Intent(this, HandoverForegroundService::class.java)
+        when {
+            intent.type == "text/plain" -> {
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
+                service.action = HandoverForegroundService.ACTION_SHARE_URL
+                service.putExtra(HandoverForegroundService.EXTRA_URL, text)
+            }
+            intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM) != null -> {
+                service.action = HandoverForegroundService.ACTION_SHARE_FILE
+                service.putExtra(HandoverForegroundService.EXTRA_URI,
+                    intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM))
+                addUriPermission(intent, service)
+            }
+            else -> return
+        }
+        val target = NativeTransport.trustedPeerFingerprint(this) ?: return
+        AlertDialog.Builder(this)
+            .setTitle("Send with Handover")
+            .setMessage("Send to paired desktop $target?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Send") { _, _ ->
+                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+            }.show()
+    }
+
+    private fun addUriPermission(source: Intent, destination: Intent) {
+        val uri = source.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM) ?: return
+        if ((source.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+            destination.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            destination.clipData = android.content.ClipData.newUri(contentResolver, "Shared file", uri)
+        }
     }
 
     companion object {

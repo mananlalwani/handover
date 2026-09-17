@@ -181,6 +181,38 @@ receive only device and notification events. Normal logs and
 `handoverctl monitor` report resource kind and source device, not file
 contents, full paths, or URL queries.
 
+Native sharing uses these same daemon, CLI, and Quickshell APIs. The daemon
+selects the explicitly requested paired device and routes the request to its
+available backend; a native and a KDE Connect representation may therefore
+coexist without exposing backend names to clients. Native share messages are
+sent only on an already authenticated, paired TLS 1.3 session. A URL is one
+bounded control frame, `{"type":"share_url","protocol":1,"url":"..."}`.
+For a file, the sender first sends
+`{"type":"share_file","protocol":1,"name":"...","size":N}` and then
+exactly `N` raw bytes on the same TLS stream. The JSON frame remains subject to
+the 64 KiB control-frame limit; file bytes never enter a JSON frame.
+
+Native file transfers are limited to 100 MiB and use at most a 32 KiB transfer
+buffer. The advertised name must be one safe basename, at most 255 UTF-8
+bytes: path separators, `.` and `..`, NUL, control characters, and invalid
+UTF-8 are rejected. The receiver writes into a private temporary file below
+`${XDG_STATE_HOME:-~/.local/state}/handover/received`, then atomically renames
+it to the sanitized final name only after all bytes arrive and the size matches.
+Temporary files are removed on cancellation, EOF, timeout, size mismatch,
+authentication failure, or any other transfer error; an interrupted transfer
+never leaves a usable partial file. Received files are never opened or executed
+automatically.
+
+The native sender's `share_accepted` result means only that the authenticated
+peer queued the request. Completion is represented by a transient
+`share_received` event after a URL is accepted or a file is fully committed;
+there is no completion acknowledgement in the wire protocol, and failures are
+reported as failed command/transfer results where the existing API supports
+them. The event includes the normalized source-device identity, so clients do
+not infer it from a path or transport. Native and KDE Connect incoming shares
+both use the existing transient event subscription and do not create transfer
+history.
+
 Notifications use an ID made from the source `DeviceId` and a device-local
 notification ID. This prevents collisions between phones. The normalized
 record carries app name, title, body, optional icon path, clearable state,

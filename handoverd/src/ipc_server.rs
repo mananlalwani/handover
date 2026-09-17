@@ -638,6 +638,35 @@ where
         }
     };
 
+    if let Some(peer_id) = device_id.as_str().strip_prefix("native:") {
+        let result = native_backend()
+            .ok_or(handover_native::NativeCommandError::Offline)
+            .and_then(|native| {
+                if is_file {
+                    let path = Url::parse(&url)
+                        .ok()
+                        .and_then(|url| url.to_file_path().ok())
+                        .ok_or(handover_native::NativeCommandError::QueueFull)?;
+                    native.share_file(peer_id, path)
+                } else {
+                    native.share_url(peer_id, url)
+                }
+            });
+        let payload = match result {
+            Ok(()) => ServerMessage::new(ServerPayload::ShareAccepted { device_id }),
+            Err(handover_native::NativeCommandError::Offline) => ServerMessage::protocol_error(
+                ErrorCode::DeviceDisconnected,
+                "native device is disconnected",
+            ),
+            Err(handover_native::NativeCommandError::QueueFull) => ServerMessage::protocol_error(
+                ErrorCode::BackendRejected,
+                "native backend could not accept the share",
+            ),
+        };
+        write_json_line(writer, &payload).await?;
+        return Ok(true);
+    }
+
     match handover_kdeconnect::KdeConnectBackend::share_url(&device_id, &url).await {
         Ok(()) => {
             write_json_line(

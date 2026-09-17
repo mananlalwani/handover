@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.net.Uri
 import android.os.IBinder
 
 /** Owns the native transport while the user has enabled Handover connectivity. */
@@ -34,6 +35,8 @@ class HandoverForegroundService : Service() {
         ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
+        ACTION_SHARE_URL -> transport.shareUrl(intent.getStringExtra(EXTRA_URL).orEmpty()).let { START_STICKY }
+        ACTION_SHARE_FILE -> intent.getParcelableExtra<Uri>(EXTRA_URI)?.let { transport.shareFile(it) }.let { START_STICKY }
         else -> START_STICKY
     }
 
@@ -70,6 +73,10 @@ class HandoverForegroundService : Service() {
         const val ACTION_CONNECT = "org.handover.android.CONNECT"
         const val EXTRA_CODE = "code"
         const val EXTRA_ADDRESS = "address"
+        const val ACTION_SHARE_URL = "org.handover.android.SHARE_URL"
+        const val ACTION_SHARE_FILE = "org.handover.android.SHARE_FILE"
+        const val EXTRA_URL = "url"
+        const val EXTRA_URI = "uri"
         private const val CHANNEL_ID = "handover_connection"
         private const val NOTIFICATION_ID = 1
     }
