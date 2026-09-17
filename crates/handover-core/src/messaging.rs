@@ -349,6 +349,8 @@ pub enum MessagingCommand {
     SendText {
         conversation_id: ConversationId,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<MessageId>,
     },
     SendMedia {
         conversation_id: ConversationId,
@@ -536,10 +538,18 @@ pub fn validate_command(
         MessagingCommand::SendText {
             conversation_id,
             text,
+            reply_to,
         } => {
             let conversation = conversation.ok_or(ValidationError::UnknownConversation)?;
             require_conversation_match(&conversation.id, conversation_id)?;
             require_capability(conversation, MessagingCapability::Text)?;
+            if let Some(reply_to) = reply_to {
+                let target = message.ok_or(ValidationError::UnknownMessage)?;
+                if target.id != *reply_to || target.deleted {
+                    return Err(ValidationError::UnknownMessage);
+                }
+                require_capability(conversation, MessagingCapability::Replies)?;
+            }
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 return Err(ValidationError::EmptyText);

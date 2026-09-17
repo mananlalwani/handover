@@ -115,6 +115,8 @@ pub enum Method {
     MessagesSend {
         conversation_id: ConversationId,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<MessageId>,
     },
     #[serde(rename = "messages.send_file")]
     MessagesSendFile {
@@ -850,6 +852,22 @@ impl Client {
         self.send(Method::MessagesSend {
             conversation_id,
             text,
+            reply_to: None,
+        })
+        .await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn send_message_reply(
+        &mut self,
+        message_id: MessageId,
+        text: String,
+    ) -> Result<String, IpcError> {
+        let conversation_id = message_id.conversation_id.clone();
+        self.send(Method::MessagesSend {
+            conversation_id,
+            text,
+            reply_to: Some(message_id),
         })
         .await?;
         self.expect_message_accepted().await
@@ -1286,6 +1304,7 @@ mod tests {
         let request = Request::new(Method::MessagesSend {
             conversation_id: conversation.clone(),
             text: "hello".into(),
+            reply_to: None,
         });
         let json = serde_json::to_string(&request).expect("serializes");
         assert_eq!(

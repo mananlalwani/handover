@@ -398,8 +398,7 @@ async fn messages(command: MessagesCommand) -> Result<(), CliError> {
             // Replies address the origin conversation; the daemon validates
             // that the target message is known before accepting.
             let message_id = resolve_message(&mut client, &message).await?;
-            let conversation_id = message_id.conversation_id.clone();
-            let request_id = client.send_message_text(conversation_id, text).await?;
+            let request_id = client.send_message_reply(message_id.clone(), text).await?;
             println!(
                 "reply accepted for {}: request {request_id}; delivery is not confirmed",
                 message_id.local_id

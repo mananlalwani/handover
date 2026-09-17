@@ -117,6 +117,7 @@ fn text_bounds_are_enforced() {
             &MessagingCommand::SendText {
                 conversation_id: sample_conversation_id(),
                 text: "   ".into(),
+                reply_to: None,
             },
             Some(&sample_conversation()),
             None,
@@ -205,6 +206,7 @@ fn commands_require_attested_capabilities() {
             &MessagingCommand::SendText {
                 conversation_id: sample_conversation_id(),
                 text: "hi".into(),
+                reply_to: None,
             },
             Some(&conversation),
             None,
@@ -337,6 +339,7 @@ fn messaging_wire_forms_carry_no_device_or_protocol_names() {
     let command = MessagingCommand::SendText {
         conversation_id: sample_conversation_id(),
         text: "hello".into(),
+        reply_to: None,
     };
     let json = serde_json::to_string(&command).expect("command serializes");
     assert!(!json.contains("kdeconnect"));

@@ -189,7 +189,16 @@ impl MessagingStore {
                 if !account.connected || !account.authenticated {
                     return Err(MessagingValidationError::AccountUnavailable);
                 }
-                validate_command(command, Some(conversation), None)?;
+                let reply_target = match command {
+                    MessagingCommand::SendText {
+                        reply_to: Some(message_id),
+                        ..
+                    } => Some(self.message(message_id).ok_or(
+                        MessagingValidationError::Invalid(ValidationError::UnknownMessage),
+                    )?),
+                    _ => None,
+                };
+                validate_command(command, Some(conversation), reply_target)?;
                 Ok(())
             }
             MessagingCommand::React { message_id, .. }
@@ -785,6 +794,7 @@ mod tests {
                 .validate_messaging_command(&MessagingCommand::SendText {
                     conversation_id: conversation_id(),
                     text: "hi".into(),
+                    reply_to: None,
                 })
                 .is_ok()
         );
@@ -817,6 +827,7 @@ mod tests {
             offline.validate_messaging_command(&MessagingCommand::SendText {
                 conversation_id: conversation_id(),
                 text: "hi".into(),
+                reply_to: None,
             }),
             Err(MessagingValidationError::AccountUnavailable)
         );

@@ -114,6 +114,7 @@ trait Relay {
         account: &str,
         conversation: &str,
         text: &str,
+        reply_to: Option<&str>,
     ) -> Vec<HelperEvent>;
     fn send_media(
         &mut self,
@@ -572,6 +573,7 @@ impl Relay for LoopbackRelay {
         account: &str,
         conversation: &str,
         text: &str,
+        _reply_to: Option<&str>,
     ) -> Vec<HelperEvent> {
         let Some(stored) = self.account_mut(account) else {
             return vec![Self::result(request_id, false, Some("unknown account"))];
@@ -1072,9 +1074,14 @@ impl LoopbackHelper {
                 account,
                 conversation,
                 text,
-            } => self
-                .relay
-                .send_text(&request_id, &account, &conversation, &text),
+                reply_to,
+            } => self.relay.send_text(
+                &request_id,
+                &account,
+                &conversation,
+                &text,
+                reply_to.as_deref(),
+            ),
             HelperCommand::SendMedia {
                 request_id,
                 account,

@@ -54,6 +54,8 @@ pub enum HelperCommand {
         account: String,
         conversation: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
     },
     SendMedia {
         request_id: String,

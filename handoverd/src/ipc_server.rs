@@ -408,8 +408,17 @@ where
         Method::MessagesSend {
             conversation_id,
             text,
+            reply_to,
         } => {
-            return handle_messaging_send(conversation_id, text, writer, state, messaging).await;
+            return handle_messaging_send(
+                conversation_id,
+                text,
+                reply_to,
+                writer,
+                state,
+                messaging,
+            )
+            .await;
         }
         Method::MessagesSendFile {
             conversation_id,
@@ -820,6 +829,7 @@ where
 async fn handle_messaging_send<W>(
     conversation_id: ConversationId,
     text: String,
+    reply_to: Option<MessageId>,
     writer: &mut W,
     state: &Arc<RwLock<StateStore>>,
     messaging: &Option<MessagingHub>,
@@ -833,12 +843,14 @@ where
         MessagingCommand::SendText {
             conversation_id,
             text: text.clone(),
+            reply_to: reply_to.clone(),
         },
         move |request_id| handover_gmessages::contract::HelperCommand::SendText {
             request_id,
             account,
             conversation,
             text,
+            reply_to: reply_to.map(|id| id.local_id),
         },
         writer,
         state,
