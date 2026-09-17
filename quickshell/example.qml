@@ -942,6 +942,14 @@ ShellRoot {
                                 model: messagesCard.selectedMessages
                                 ScrollBar.vertical: ScrollBar {
                                     policy: ScrollBar.AsNeeded
+                                    implicitWidth: 14
+                                    minimumSize: 0.1
+                                    contentItem: Rectangle {
+                                        implicitWidth: 10
+                                        radius: 5
+                                        color: parent.pressed ? "#b8c8dc"
+                                            : parent.hovered ? "#91a6c0" : "#647991"
+                                    }
                                 }
                                 delegate: Item {
                                     required property var modelData
