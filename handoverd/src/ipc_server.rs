@@ -17,7 +17,12 @@ use url::Url;
 
 use crate::state::{CommandValidationError, MediaValidationError, StateSnapshot, StateStore};
 use crate::{apply_backend_event, native_backend};
+use crate::messaging_backend::{HelperCallError, MessagingHub};
+use crate::messaging::{HistoryGap, MessagingValidationError};
 use handover_core::DeviceEvent;
+use handover_core::{
+    ConversationId, MessageId, MessagingAccountId, MessagingCommand,
+};
 
 pub(crate) const EVENT_CAPACITY: usize = 64;
 
@@ -26,6 +31,7 @@ pub(crate) struct IpcServer {
     socket_path: PathBuf,
     state: Arc<RwLock<StateStore>>,
     events: broadcast::Sender<StateEvent>,
+    messaging: Option<MessagingHub>,
 }
 
 impl IpcServer {
@@ -36,13 +42,19 @@ impl IpcServer {
         let directory = runtime_directory()?;
         tokio::fs::create_dir_all(&directory).await?;
         tokio::fs::set_permissions(&directory, Permissions::from_mode(0o700)).await?;
-        Self::bind_at(socket_path()?, state, events).await
+        Self::bind_at(socket_path()?, state, events, None).await
+    }
+
+    pub(crate) fn with_messaging(mut self, hub: MessagingHub) -> Self {
+        self.messaging = Some(hub);
+        self
     }
 
     async fn bind_at(
         path: PathBuf,
         state: Arc<RwLock<StateStore>>,
         events: broadcast::Sender<StateEvent>,
+        messaging: Option<MessagingHub>,
     ) -> Result<Self, ServerError> {
         remove_stale_socket(&path).await?;
         let listener = UnixListener::bind(&path)?;
@@ -52,6 +64,7 @@ impl IpcServer {
             socket_path: path,
             state,
             events,
+            messaging,
         })
     }
 
@@ -60,8 +73,9 @@ impl IpcServer {
             let (stream, _address) = self.listener.accept().await?;
             let state = Arc::clone(&self.state);
             let events = self.events.clone();
+            let messaging = self.messaging.clone();
             tokio::spawn(async move {
-                if let Err(error) = handle_client(stream, state, events).await {
+                if let Err(error) = handle_client(stream, state, events, messaging).await {
                     debug!(%error, "IPC client disconnected");
                 }
             });
@@ -111,18 +125,20 @@ async fn handle_client(
     stream: UnixStream,
     state: Arc<RwLock<StateStore>>,
     events: broadcast::Sender<StateEvent>,
+    messaging: Option<MessagingHub>,
 ) -> Result<(), IpcError> {
     let (read_half, mut writer) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut subscription: Option<broadcast::Receiver<StateEvent>> = None;
     let mut include_share_events = false;
     let mut include_media_events = false;
+    let mut include_message_events = false;
 
     loop {
         if let Some(receiver) = subscription.as_mut() {
             tokio::select! {
                 request = read_json_line::<_, Request>(&mut reader) => {
-                    if !handle_request_result(request, &mut writer, &state, &events, &mut subscription, &mut include_share_events, &mut include_media_events).await? {
+                    if !handle_request_result(request, &mut writer, &state, &events, &messaging, &mut subscription, &mut include_share_events, &mut include_media_events, &mut include_message_events).await? {
                         return Ok(());
                     }
                 }
@@ -130,12 +146,13 @@ async fn handle_client(
                     match event {
                         Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareResult(_)) && !include_share_events => {}
                         Ok(event) if matches!(event, StateEvent::Media(_)) && !include_media_events => {}
+                        Ok(event) if matches!(event, StateEvent::Messaging(_)) && !include_message_events => {}
                         Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             debug!(skipped, "IPC client lagged; sending current snapshot");
                             write_json_line(
                                 &mut writer,
-                                &ServerMessage::new(snapshot_payload(&state, include_media_events)),
+                                &ServerMessage::new(snapshot_payload(&state, include_media_events, include_message_events)),
                             ).await?;
                         }
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
@@ -149,9 +166,11 @@ async fn handle_client(
                 &mut writer,
                 &state,
                 &events,
+                &messaging,
                 &mut subscription,
                 &mut include_share_events,
                 &mut include_media_events,
+                &mut include_message_events,
             )
             .await?
             {
@@ -166,9 +185,11 @@ async fn handle_request_result<W>(
     writer: &mut W,
     state: &Arc<RwLock<StateStore>>,
     events: &broadcast::Sender<StateEvent>,
+    messaging: &Option<MessagingHub>,
     subscription: &mut Option<broadcast::Receiver<StateEvent>>,
     include_share_events: &mut bool,
     include_media_events: &mut bool,
+    include_message_events: &mut bool,
 ) -> Result<bool, IpcError>
 where
     W: AsyncWrite + Unpin,
@@ -281,16 +302,42 @@ where
         Method::MediaList => ServerPayload::Media {
             media_sessions: snapshot(state).media_sessions,
         },
-        Method::Subscribe { shares, media } => {
+        Method::Subscribe {
+            shares,
+            media,
+            messages,
+        } => {
             *subscription = Some(events.subscribe());
             *include_share_events = shares;
             *include_media_events = media;
+            *include_message_events = messages;
             let snapshot = snapshot(state);
+            let messaging = messaging_snapshot(state);
             ServerPayload::Subscribed {
                 devices: snapshot.devices,
                 notifications: snapshot.notifications,
                 media_sessions: if media {
                     snapshot.media_sessions
+                } else {
+                    Vec::new()
+                },
+                messaging_accounts: if messages {
+                    messaging.accounts
+                } else {
+                    Vec::new()
+                },
+                conversations: if messages {
+                    messaging.conversations
+                } else {
+                    Vec::new()
+                },
+                typing_states: if messages {
+                    messaging.typing
+                } else {
+                    Vec::new()
+                },
+                read_states: if messages {
+                    messaging.read
                 } else {
                     Vec::new()
                 },
@@ -343,6 +390,81 @@ where
             file_url,
         } => {
             return handle_share_command(device_id, file_url, true, writer, state).await;
+        }
+        Method::MessagesAccounts => ServerPayload::Accounts {
+            accounts: messaging_snapshot(state).accounts,
+        },
+        Method::MessagesConversations { account_id } => {
+            return handle_conversations(account_id, writer, state).await;
+        }
+        Method::MessagesHistory {
+            conversation_id,
+            limit,
+            cursor,
+        } => {
+            return handle_history(conversation_id, limit, cursor, writer, state, messaging)
+                .await;
+        }
+        Method::MessagesTypingStates => ServerPayload::TypingStates {
+            states: messaging_snapshot(state).typing,
+        },
+        Method::MessagesReadStates => ServerPayload::ReadStates {
+            states: messaging_snapshot(state).read,
+        },
+        Method::MessagesSend {
+            conversation_id,
+            text,
+        } => {
+            return handle_messaging_send(conversation_id, text, writer, state, messaging).await;
+        }
+        Method::MessagesSendFile {
+            conversation_id,
+            file_url,
+            caption,
+        } => {
+            return handle_send_file(
+                conversation_id,
+                file_url,
+                caption,
+                writer,
+                state,
+                messaging,
+            )
+            .await;
+        }
+        Method::MessagesReact { message_id, emoji } => {
+            return handle_react(message_id, emoji, true, writer, state, messaging).await;
+        }
+        Method::MessagesUnreact { message_id, emoji } => {
+            return handle_react(message_id, emoji, false, writer, state, messaging).await;
+        }
+        Method::MessagesRead {
+            conversation_id,
+            message_id,
+        } => {
+            return handle_mark_read(conversation_id, message_id, writer, state, messaging).await;
+        }
+        Method::MessagesTyping { conversation_id } => {
+            return handle_typing(conversation_id, writer, state, messaging).await;
+        }
+        Method::MessagesDelete { message_id } => {
+            return handle_delete_message(message_id, writer, state, messaging).await;
+        }
+        Method::MessagesOpen {
+            account_id,
+            addresses,
+        } => {
+            return handle_open_conversation(account_id, addresses, writer, state, messaging)
+                .await;
+        }
+        Method::MessagesLogin {
+            account_id,
+            bundle_b64,
+        } => {
+            return handle_login(account_id, bundle_b64, writer, messaging).await;
+        }
+        Method::MessagesLogout { account_id } => {
+            return handle_logout(account_id, writer, messaging).await;
         }
     };
     write_json_line(writer, &ServerMessage::new(response)).await?;
@@ -706,6 +828,369 @@ where
     Ok(true)
 }
 
+async fn handle_messaging_send<W>(
+    conversation_id: ConversationId,
+    text: String,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let account = conversation_id.account_id.as_str().to_string();
+    let conversation = conversation_id.local_id.clone();
+    request_messaging(
+        MessagingCommand::SendText {
+            conversation_id,
+            text: text.clone(),
+        },
+        move |request_id| handover_gmessages::contract::HelperCommand::SendText {
+            request_id,
+            account,
+            conversation,
+            text,
+        },
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_send_file<W>(
+    conversation_id: ConversationId,
+    file_url: String,
+    caption: Option<String>,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let url = match validate_file_url(&file_url).await {
+        Ok(url) => url,
+        Err(code) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, "invalid file")).await?;
+            return Ok(true);
+        }
+    };
+    let path = Url::parse(&url)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .and_then(|path| path.to_str().map(str::to_string));
+    let Some(path) = path else {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(ErrorCode::InvalidResource, "invalid file"),
+        )
+        .await?;
+        return Ok(true);
+    };
+    // Bound outbound attachments before the helper ever reads them.
+    let oversized = std::fs::metadata(&path)
+        .map(|metadata| {
+            !metadata.is_file() || metadata.len() > handover_gmessages::staging::MAX_STAGED_BYTES
+        })
+        .unwrap_or(true);
+    if oversized {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(ErrorCode::InvalidMessagingCommand, "file is not usable"),
+        )
+        .await?;
+        return Ok(true);
+    }
+    let account = conversation_id.account_id.as_str().to_string();
+    let conversation = conversation_id.local_id.clone();
+    request_messaging(
+        MessagingCommand::SendMedia {
+            conversation_id,
+            file_url: url.clone(),
+            caption: caption.clone(),
+        },
+        move |request_id| handover_gmessages::contract::HelperCommand::SendMedia {
+            request_id,
+            account,
+            conversation,
+            path,
+            caption,
+        },
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_react<W>(
+    message_id: MessageId,
+    emoji: String,
+    add: bool,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let account = message_id.conversation_id.account_id.as_str().to_string();
+    let conversation = message_id.conversation_id.local_id.clone();
+    let message = message_id.local_id.clone();
+    let command = if add {
+        MessagingCommand::React {
+            message_id: message_id.clone(),
+            emoji: emoji.clone(),
+        }
+    } else {
+        MessagingCommand::Unreact {
+            message_id: message_id.clone(),
+            emoji: emoji.clone(),
+        }
+    };
+    request_messaging(
+        command,
+        move |request_id| handover_gmessages::contract::HelperCommand::React {
+            request_id,
+            account,
+            conversation,
+            message,
+            emoji,
+            add,
+        },
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_mark_read<W>(
+    conversation_id: ConversationId,
+    message_id: Option<MessageId>,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Default to the newest stored message; the helper attests the effect.
+    let resolved = message_id.as_ref().map(|id| id.local_id.clone()).or_else(|| {
+        state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .messaging()
+            .history(&conversation_id, 1, None)
+            .ok()
+            .and_then(|(page, _)| page.last().map(|message| message.id.local_id.clone()))
+    });
+    let account = conversation_id.account_id.as_str().to_string();
+    let conversation = conversation_id.local_id.clone();
+    fire_messaging(
+        MessagingCommand::MarkRead {
+            conversation_id: conversation_id.clone(),
+            message_id: message_id.clone(),
+        },
+        handover_gmessages::contract::HelperCommand::MarkRead {
+            account,
+            conversation,
+            message: resolved,
+        },
+        conversation_id,
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_typing<W>(
+    conversation_id: ConversationId,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let account = conversation_id.account_id.as_str().to_string();
+    let conversation = conversation_id.local_id.clone();
+    fire_messaging(
+        MessagingCommand::TypingStart {
+            conversation_id: conversation_id.clone(),
+        },
+        handover_gmessages::contract::HelperCommand::Typing {
+            account,
+            conversation,
+        },
+        conversation_id,
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_delete_message<W>(
+    message_id: MessageId,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let account = message_id.conversation_id.account_id.as_str().to_string();
+    let conversation = message_id.conversation_id.local_id.clone();
+    let message = message_id.local_id.clone();
+    request_messaging(
+        MessagingCommand::DeleteMessage {
+            message_id: message_id.clone(),
+        },
+        move |request_id| handover_gmessages::contract::HelperCommand::DeleteMessage {
+            request_id,
+            account,
+            conversation,
+            message,
+        },
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_open_conversation<W>(
+    account_id: MessagingAccountId,
+    addresses: Vec<String>,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let account = account_id.as_str().to_string();
+    request_messaging(
+        MessagingCommand::OpenConversation {
+            account_id: account_id.clone(),
+            addresses: addresses.clone(),
+        },
+        move |request_id| handover_gmessages::contract::HelperCommand::OpenConversation {
+            request_id,
+            account,
+            addresses,
+        },
+        writer,
+        state,
+        messaging,
+    )
+    .await
+}
+
+async fn handle_login<W>(
+    account_id: MessagingAccountId,
+    bundle_b64: String,
+    writer: &mut W,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    if account_id.as_str().is_empty() || account_id.as_str().len() > 128 {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::InvalidMessagingCommand,
+                "invalid messaging account",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    }
+    if crate::messaging_backend::validate_login_bundle(&bundle_b64).is_err() {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::CredentialRejected,
+                "credential bundle was rejected",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    }
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    // The bundle travels the local socket and the local helper pipe only.
+    // It is never logged, never stored by the daemon, and never argv.
+    let account = account_id.as_str().to_string();
+    match hub
+        .fire(handover_gmessages::contract::HelperCommand::Login { account, bundle_b64 })
+        .await
+    {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::AccountAccepted { account_id }),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(error) => {
+            let (code, message) = helper_call_error(error);
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            Ok(true)
+        }
+    }
+}
+
+async fn handle_logout<W>(
+    account_id: MessagingAccountId,
+    writer: &mut W,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    // Revocation happens helper-side (remote revoke plus local secret
+    // deletion); the daemon drops its copy when AccountRemoved arrives.
+    // Acceptance here means the request was queued, not that access is gone.
+    match hub
+        .fire(handover_gmessages::contract::HelperCommand::Logout {
+            account: account_id.as_str().into(),
+        })
+        .await
+    {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::AccountAccepted { account_id }),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(error) => {
+            let (code, message) = helper_call_error(error);
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            Ok(true)
+        }
+    }
+}
+
 fn validate_outgoing_url(input: &str) -> Result<String, ErrorCode> {
     if input.is_empty() || input.trim() != input || input.chars().any(char::is_control) {
         return Err(ErrorCode::InvalidResource);
@@ -746,13 +1231,57 @@ fn snapshot(state: &Arc<RwLock<StateStore>>) -> StateSnapshot {
         .snapshot()
 }
 
-fn snapshot_payload(state: &Arc<RwLock<StateStore>>, include_media: bool) -> ServerPayload {
+struct MessagingSnapshot {
+    accounts: Vec<handover_core::MessagingAccount>,
+    conversations: Vec<handover_core::Conversation>,
+    typing: Vec<handover_core::TypingState>,
+    read: Vec<handover_core::ReadState>,
+}
+
+fn messaging_snapshot(state: &Arc<RwLock<StateStore>>) -> MessagingSnapshot {
+    let guard = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    MessagingSnapshot {
+        accounts: guard.messaging().snapshot_accounts(),
+        conversations: guard.messaging().snapshot_conversations(),
+        typing: guard.messaging().snapshot_typing(),
+        read: guard.messaging().snapshot_read(),
+    }
+}
+
+fn snapshot_payload(
+    state: &Arc<RwLock<StateStore>>,
+    include_media: bool,
+    include_messages: bool,
+) -> ServerPayload {
     let snapshot = snapshot(state);
+    let messaging = messaging_snapshot(state);
     ServerPayload::Snapshot {
         devices: snapshot.devices,
         notifications: snapshot.notifications,
         media_sessions: if include_media {
             snapshot.media_sessions
+        } else {
+            Vec::new()
+        },
+        messaging_accounts: if include_messages {
+            messaging.accounts
+        } else {
+            Vec::new()
+        },
+        conversations: if include_messages {
+            messaging.conversations
+        } else {
+            Vec::new()
+        },
+        typing_states: if include_messages {
+            messaging.typing
+        } else {
+            Vec::new()
+        },
+        read_states: if include_messages {
+            messaging.read
         } else {
             Vec::new()
         },
@@ -764,11 +1293,318 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Device(event) => ServerMessage::from_device_event(event),
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
         StateEvent::Media(event) => ServerMessage::from_media_event(event),
+        StateEvent::Messaging(event) => ServerMessage::from_messaging_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })
         }
         StateEvent::ShareResult(result) => {
             ServerMessage::new(ServerPayload::ShareResult { result })
+        }
+    }
+}
+
+fn messaging_validation_error(error: &MessagingValidationError) -> (ErrorCode, &'static str) {
+    match error {
+        MessagingValidationError::UnknownAccount => (
+            ErrorCode::UnknownMessagingAccount,
+            "messaging account is not known",
+        ),
+        MessagingValidationError::UnknownConversation => (
+            ErrorCode::UnknownConversation,
+            "conversation is not known",
+        ),
+        MessagingValidationError::UnknownMessage => (
+            ErrorCode::UnknownMessage,
+            "message is not known",
+        ),
+        MessagingValidationError::AccountUnavailable => (
+            ErrorCode::MessagingUnavailable,
+            "messaging account is unavailable",
+        ),
+        MessagingValidationError::Invalid(
+            handover_core::ValidationError::UnsupportedCapability(_),
+        ) => (
+            ErrorCode::UnsupportedMessagingCapability,
+            "conversation does not attest that capability",
+        ),
+        MessagingValidationError::Invalid(_) => (
+            ErrorCode::InvalidMessagingCommand,
+            "invalid messaging command",
+        ),
+    }
+}
+
+fn helper_call_error(error: HelperCallError) -> (ErrorCode, String) {
+    match error {
+        HelperCallError::Unavailable => (
+            ErrorCode::MessagingUnavailable,
+            "messaging helper is unavailable".into(),
+        ),
+        HelperCallError::Busy => (
+            ErrorCode::BackendRejected,
+            "messaging helper is busy".into(),
+        ),
+        HelperCallError::Timeout => (
+            ErrorCode::BackendRejected,
+            "messaging helper timed out".into(),
+        ),
+        HelperCallError::Rejected(reason) if !reason.is_empty() => {
+            (ErrorCode::BackendRejected, reason)
+        }
+        HelperCallError::Rejected(_) => (
+            ErrorCode::BackendRejected,
+            "messaging helper rejected the command".into(),
+        ),
+        HelperCallError::BadBundle => (
+            ErrorCode::CredentialRejected,
+            "credential bundle was rejected".into(),
+        ),
+    }
+}
+
+fn require_messaging_hub<'a>(
+    messaging: &'a Option<MessagingHub>,
+) -> Result<&'a MessagingHub, (ErrorCode, String)> {
+    messaging
+        .as_ref()
+        .ok_or_else(|| helper_call_error(HelperCallError::Unavailable))
+}
+
+async fn handle_conversations<W>(
+    account_id: MessagingAccountId,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let (known, conversations) = {
+        let guard = state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            guard.messaging().account(&account_id).is_some(),
+            guard
+                .messaging()
+                .snapshot_conversations()
+                .into_iter()
+                .filter(|conversation| conversation.id.account_id == account_id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    if !known {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::UnknownMessagingAccount,
+                "messaging account is not known",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    }
+    write_json_line(
+        writer,
+        &ServerMessage::new(ServerPayload::Conversations { conversations }),
+    )
+    .await?;
+    Ok(true)
+}
+
+async fn handle_history<W>(
+    conversation_id: ConversationId,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let limit = limit.unwrap_or(25).clamp(1, 100) as usize;
+    let read = || {
+        state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .messaging()
+            .history(&conversation_id, limit, cursor.as_deref())
+            .map(|(messages, next)| (messages, next))
+            .map_err(|gap| gap)
+    };
+    match read() {
+        Ok((messages, cursor_next)) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::History {
+                    conversation_id,
+                    messages,
+                    cursor_next,
+                }),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(HistoryGap::UnknownConversation) => {
+            write_json_line(
+                writer,
+                &ServerMessage::protocol_error(
+                    ErrorCode::UnknownConversation,
+                    "conversation is not known",
+                ),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(HistoryGap::CursorOutsideWindow) => {
+            // The cursor aged out of the bounded window: page older history
+            // through the helper, then serve from the merged window.
+            let hub = match require_messaging_hub(messaging) {
+                Ok(hub) => hub,
+                Err((code, message)) => {
+                    write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+                    return Ok(true);
+                }
+            };
+            let fetched = hub
+                .fetch_through_helper(
+                    conversation_id.account_id.as_str(),
+                    &conversation_id.local_id,
+                    limit as u32,
+                    cursor.clone(),
+                )
+                .await;
+            if fetched.is_err() {
+                write_json_line(
+                    writer,
+                    &ServerMessage::protocol_error(
+                        ErrorCode::HistoryUnavailable,
+                        "older history is unavailable",
+                    ),
+                )
+                .await?;
+                return Ok(true);
+            }
+            match read() {
+                Ok((messages, cursor_next)) => {
+                    write_json_line(
+                        writer,
+                        &ServerMessage::new(ServerPayload::History {
+                            conversation_id,
+                            messages,
+                            cursor_next,
+                        }),
+                    )
+                    .await?;
+                    Ok(true)
+                }
+                Err(_) => {
+                    write_json_line(
+                        writer,
+                        &ServerMessage::protocol_error(
+                            ErrorCode::HistoryUnavailable,
+                            "older history is unavailable",
+                        ),
+                    )
+                    .await?;
+                    Ok(true)
+                }
+            }
+        }
+    }
+}
+
+/// Validate a command, forward it for a `CommandResult` acceptance report,
+/// and reply with the acceptance. Acceptance is never delivery.
+async fn request_messaging<W>(
+    command: MessagingCommand,
+    build: impl FnOnce(String) -> handover_gmessages::contract::HelperCommand,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let validation = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .messaging()
+        .validate_messaging_command(&command);
+    if let Err(error) = validation {
+        let (code, message) = messaging_validation_error(&error);
+        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        return Ok(true);
+    }
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    match hub.request(build).await {
+        Ok(outcome) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::MessageAccepted {
+                    request_id: outcome.request_id,
+                }),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(error) => {
+            let (code, message) = helper_call_error(error);
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            Ok(true)
+        }
+    }
+}
+
+/// Validate a fire-and-forget command (read receipts, typing pings) and
+/// queue it for the helper. The reply confirms daemon acceptance only.
+async fn fire_messaging<W>(
+    command: MessagingCommand,
+    helper: handover_gmessages::contract::HelperCommand,
+    conversation_id: ConversationId,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let validation = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .messaging()
+        .validate_messaging_command(&command);
+    if let Err(error) = validation {
+        let (code, message) = messaging_validation_error(&error);
+        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        return Ok(true);
+    }
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    match hub.fire(helper).await {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::ConversationAccepted { conversation_id }),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(error) => {
+            let (code, message) = helper_call_error(error);
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            Ok(true)
         }
     }
 }
@@ -902,7 +1738,7 @@ mod tests {
         store.apply(StateEvent::Device(DeviceEvent::Added(device("Phone", 72))));
         let state = Arc::new(RwLock::new(store));
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let server = IpcServer::bind_at(path.clone(), Arc::clone(&state), events.clone())
+        let server = IpcServer::bind_at(path.clone(), Arc::clone(&state), events.clone(), None)
             .await
             .expect("server binds");
         let task = tokio::spawn(async move {
@@ -1153,11 +1989,15 @@ mod tests {
             .apply(StateEvent::Media(MediaEvent::Added(media.clone())));
 
         assert_eq!(
-            snapshot_payload(&state, true),
+            snapshot_payload(&state, true, false),
             ServerPayload::Snapshot {
                 devices: vec![device("Phone", 72)],
                 notifications: vec![current],
                 media_sessions: vec![media],
+                messaging_accounts: vec![],
+                conversations: vec![],
+                typing_states: vec![],
+                read_states: vec![],
             }
         );
         task.abort();

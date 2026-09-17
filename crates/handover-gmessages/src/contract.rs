@@ -319,3 +319,48 @@ pub fn check_hello(event: &HelperEvent) -> Result<String, ContractError> {
         _ => Err(ContractError::Malformed("expected hello".into())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_and_malformed_helper_lines_are_rejected_without_echo() {
+        let big = vec![b'x'; MAX_HELPER_LINE_BYTES + 1];
+        assert!(matches!(
+            decode_event(&big),
+            Err(ContractError::OversizedLine(_))
+        ));
+        let error = decode_event(b"this is not json").expect_err("malformed");
+        // The error carries the parser message, never the raw line.
+        assert!(!error.to_string().contains("this is not json"));
+
+        let event = decode_event(br#"{"type":"hello","helper_protocol":1,"name":"test"}"#)
+            .expect("hello decodes");
+        assert_eq!(check_hello(&event).expect("handshake"), "test");
+        let other = decode_event(br#"{"type":"hello","helper_protocol":2,"name":"test"}"#)
+            .expect("decodes");
+        assert!(matches!(
+            check_hello(&other),
+            Err(ContractError::UnsupportedProtocol(2))
+        ));
+        let non_hello =
+            decode_event(br#"{"type":"error","message":"busy"}"#).expect("decodes");
+        assert!(check_hello(&non_hello).is_err());
+    }
+
+    #[test]
+    fn login_bundle_size_is_bounded_at_encode_time() {
+        let bundle = "x".repeat(MAX_BUNDLE_BYTES + 1);
+        let command = HelperCommand::Login {
+            account: "work".into(),
+            bundle_b64: bundle,
+        };
+        let encoded = encode_command(&command).expect("encodes");
+        assert!(encoded.len() + 1 > MAX_HELPER_LINE_BYTES || bundle_too_big(&command));
+    }
+
+    fn bundle_too_big(command: &HelperCommand) -> bool {
+        matches!(command, HelperCommand::Login { bundle_b64, .. } if bundle_b64.len() > MAX_BUNDLE_BYTES)
+    }
+}

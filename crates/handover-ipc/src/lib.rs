@@ -4,8 +4,10 @@ use std::env;
 use std::path::PathBuf;
 
 use handover_core::{
-    Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent, MediaSession, MediaSessionId,
-    Notification, NotificationEvent, NotificationId, ReceivedShare, ShareResult,
+    Conversation, ConversationId, Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent,
+    MediaSession, MediaSessionId, Message, MessageId, MessagingAccount, MessagingAccountId,
+    MessagingEvent, MessageStatusUpdate, Notification, NotificationEvent, NotificationId,
+    ReadState, ReceivedShare, ShareResult, TypingState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -60,6 +62,8 @@ pub enum Method {
         shares: bool,
         #[serde(default)]
         media: bool,
+        #[serde(default)]
+        messages: bool,
     },
     #[serde(rename = "notification.dismiss")]
     NotificationDismiss { notification_id: NotificationId },
@@ -84,6 +88,70 @@ pub enum Method {
     MediaControl {
         #[serde(flatten)]
         command: MediaCommand,
+    },
+    #[serde(rename = "messages.accounts")]
+    MessagesAccounts,
+    #[serde(rename = "messages.conversations")]
+    MessagesConversations { account_id: MessagingAccountId },
+    #[serde(rename = "messages.history")]
+    MessagesHistory {
+        conversation_id: ConversationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    #[serde(rename = "messages.typing_states")]
+    MessagesTypingStates,
+    #[serde(rename = "messages.read_states")]
+    MessagesReadStates,
+    #[serde(rename = "messages.send")]
+    MessagesSend {
+        conversation_id: ConversationId,
+        text: String,
+    },
+    #[serde(rename = "messages.send_file")]
+    MessagesSendFile {
+        conversation_id: ConversationId,
+        file_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+    },
+    #[serde(rename = "messages.react")]
+    MessagesReact {
+        message_id: MessageId,
+        emoji: String,
+    },
+    #[serde(rename = "messages.unreact")]
+    MessagesUnreact {
+        message_id: MessageId,
+        emoji: String,
+    },
+    #[serde(rename = "messages.read")]
+    MessagesRead {
+        conversation_id: ConversationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<MessageId>,
+    },
+    #[serde(rename = "messages.typing")]
+    MessagesTyping {
+        conversation_id: ConversationId,
+    },
+    #[serde(rename = "messages.delete")]
+    MessagesDelete { message_id: MessageId },
+    #[serde(rename = "messages.open")]
+    MessagesOpen {
+        account_id: MessagingAccountId,
+        addresses: Vec<String>,
+    },
+    #[serde(rename = "messages.login")]
+    MessagesLogin {
+        account_id: MessagingAccountId,
+        bundle_b64: String,
+    },
+    #[serde(rename = "messages.logout")]
+    MessagesLogout {
+        account_id: MessagingAccountId,
     },
 }
 
@@ -137,6 +205,52 @@ impl ServerMessage {
         Self::new(payload)
     }
 
+    pub fn from_messaging_event(event: MessagingEvent) -> Self {
+        let payload = match event {
+            MessagingEvent::Account(event) => match event {
+                handover_core::MessagingAccountEvent::Added(account) => {
+                    ServerPayload::AccountAdded { account }
+                }
+                handover_core::MessagingAccountEvent::Updated(account) => {
+                    ServerPayload::AccountUpdated { account }
+                }
+                handover_core::MessagingAccountEvent::Removed(account_id) => {
+                    ServerPayload::AccountRemoved { account_id }
+                }
+            },
+            MessagingEvent::Conversation(event) => match event {
+                handover_core::ConversationEvent::Added(conversation) => {
+                    ServerPayload::ConversationAdded { conversation }
+                }
+                handover_core::ConversationEvent::Updated(conversation) => {
+                    ServerPayload::ConversationUpdated { conversation }
+                }
+                handover_core::ConversationEvent::Removed(conversation_id) => {
+                    ServerPayload::ConversationRemoved { conversation_id }
+                }
+            },
+            MessagingEvent::Message(event) => match event {
+                handover_core::MessageEvent::Added(message) => {
+                    ServerPayload::MessageAdded { message }
+                }
+                handover_core::MessageEvent::Updated(message) => {
+                    ServerPayload::MessageUpdated { message }
+                }
+                handover_core::MessageEvent::Removed(message_id) => {
+                    ServerPayload::MessageRemoved { message_id }
+                }
+            },
+            MessagingEvent::Status(update) => ServerPayload::MessageStatus { update },
+            MessagingEvent::Typing(state) => ServerPayload::Typing { state },
+            MessagingEvent::Read(state) => ServerPayload::ReadState { state },
+            MessagingEvent::Pairing(prompt) => ServerPayload::Pairing {
+                account_id: prompt.account_id,
+                prompt: prompt.prompt,
+            },
+        };
+        Self::new(payload)
+    }
+
     pub fn protocol_error(code: ErrorCode, message: impl Into<String>) -> Self {
         Self::new(ServerPayload::Error {
             code,
@@ -173,6 +287,14 @@ pub enum ServerPayload {
         notifications: Vec<Notification>,
         #[serde(default)]
         media_sessions: Vec<MediaSession>,
+        #[serde(default)]
+        messaging_accounts: Vec<MessagingAccount>,
+        #[serde(default)]
+        conversations: Vec<Conversation>,
+        #[serde(default)]
+        typing_states: Vec<TypingState>,
+        #[serde(default)]
+        read_states: Vec<ReadState>,
     },
     Snapshot {
         devices: Vec<Device>,
@@ -180,6 +302,14 @@ pub enum ServerPayload {
         notifications: Vec<Notification>,
         #[serde(default)]
         media_sessions: Vec<MediaSession>,
+        #[serde(default)]
+        messaging_accounts: Vec<MessagingAccount>,
+        #[serde(default)]
+        conversations: Vec<Conversation>,
+        #[serde(default)]
+        typing_states: Vec<TypingState>,
+        #[serde(default)]
+        read_states: Vec<ReadState>,
     },
     DeviceAdded {
         device: Device,
@@ -222,6 +352,73 @@ pub enum ServerPayload {
     MediaAccepted {
         id: MediaSessionId,
     },
+    Accounts {
+        accounts: Vec<MessagingAccount>,
+    },
+    Conversations {
+        conversations: Vec<Conversation>,
+    },
+    History {
+        conversation_id: ConversationId,
+        messages: Vec<Message>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_next: Option<String>,
+    },
+    TypingStates {
+        states: Vec<TypingState>,
+    },
+    ReadStates {
+        states: Vec<ReadState>,
+    },
+    AccountAdded {
+        account: MessagingAccount,
+    },
+    AccountUpdated {
+        account: MessagingAccount,
+    },
+    AccountRemoved {
+        account_id: MessagingAccountId,
+    },
+    ConversationAdded {
+        conversation: Conversation,
+    },
+    ConversationUpdated {
+        conversation: Conversation,
+    },
+    ConversationRemoved {
+        conversation_id: ConversationId,
+    },
+    MessageAdded {
+        message: Message,
+    },
+    MessageUpdated {
+        message: Message,
+    },
+    MessageRemoved {
+        message_id: MessageId,
+    },
+    MessageStatus {
+        update: MessageStatusUpdate,
+    },
+    Typing {
+        state: TypingState,
+    },
+    ReadState {
+        state: ReadState,
+    },
+    Pairing {
+        account_id: MessagingAccountId,
+        prompt: String,
+    },
+    MessageAccepted {
+        request_id: String,
+    },
+    ConversationAccepted {
+        conversation_id: ConversationId,
+    },
+    AccountAccepted {
+        account_id: MessagingAccountId,
+    },
     CommandCompleted {
         notification_id: NotificationId,
     },
@@ -262,6 +459,14 @@ pub enum ErrorCode {
     ResourceNotFound,
     MediaSessionNotFound,
     InvalidMediaCommand,
+    MessagingUnavailable,
+    UnknownMessagingAccount,
+    UnknownConversation,
+    UnknownMessage,
+    UnsupportedMessagingCapability,
+    InvalidMessagingCommand,
+    HistoryUnavailable,
+    CredentialRejected,
 }
 
 #[derive(Debug, Error)]
@@ -540,6 +745,7 @@ impl Client {
         self.send(Method::Subscribe {
             shares: true,
             media: true,
+            messages: true,
         })
         .await?;
         match self.receive().await?.payload {
@@ -547,6 +753,7 @@ impl Client {
                 devices,
                 notifications,
                 media_sessions,
+                ..
             } => Ok(Subscription {
                 devices,
                 notifications,
@@ -556,6 +763,194 @@ impl Client {
             }),
             payload => Err(unexpected(payload)),
         }
+    }
+
+    pub async fn messaging_accounts(&mut self) -> Result<Vec<MessagingAccount>, IpcError> {
+        self.send(Method::MessagesAccounts).await?;
+        match self.receive().await?.payload {
+            ServerPayload::Accounts { accounts } => Ok(accounts),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn messaging_conversations(
+        &mut self,
+        account_id: MessagingAccountId,
+    ) -> Result<Vec<Conversation>, IpcError> {
+        self.send(Method::MessagesConversations { account_id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::Conversations { conversations } => Ok(conversations),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn messaging_history(
+        &mut self,
+        conversation_id: ConversationId,
+        limit: Option<u32>,
+        cursor: Option<String>,
+    ) -> Result<(Vec<Message>, Option<String>), IpcError> {
+        self.send(Method::MessagesHistory {
+            conversation_id,
+            limit,
+            cursor,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::History {
+                messages,
+                cursor_next,
+                ..
+            } => Ok((messages, cursor_next)),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    async fn expect_message_accepted(&mut self) -> Result<String, IpcError> {
+        match self.receive().await?.payload {
+            ServerPayload::MessageAccepted { request_id } => Ok(request_id),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    async fn expect_conversation_accepted(
+        &mut self,
+        conversation_id: ConversationId,
+    ) -> Result<(), IpcError> {
+        match self.receive().await?.payload {
+            ServerPayload::ConversationAccepted { conversation_id: accepted }
+                if accepted == conversation_id =>
+            {
+                Ok(())
+            }
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    async fn expect_account_accepted(
+        &mut self,
+        account_id: MessagingAccountId,
+    ) -> Result<(), IpcError> {
+        match self.receive().await?.payload {
+            ServerPayload::AccountAccepted {
+                account_id: accepted,
+            } if accepted == account_id => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn send_message_text(
+        &mut self,
+        conversation_id: ConversationId,
+        text: String,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesSend {
+            conversation_id,
+            text,
+        })
+        .await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn send_message_file(
+        &mut self,
+        conversation_id: ConversationId,
+        file_url: String,
+        caption: Option<String>,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesSendFile {
+            conversation_id,
+            file_url,
+            caption,
+        })
+        .await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn react_to_message(
+        &mut self,
+        message_id: MessageId,
+        emoji: String,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesReact { message_id, emoji })
+            .await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn unreact_to_message(
+        &mut self,
+        message_id: MessageId,
+        emoji: String,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesUnreact { message_id, emoji })
+            .await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn mark_conversation_read(
+        &mut self,
+        conversation_id: ConversationId,
+        message_id: Option<MessageId>,
+    ) -> Result<(), IpcError> {
+        self.send(Method::MessagesRead {
+            conversation_id: conversation_id.clone(),
+            message_id,
+        })
+        .await?;
+        self.expect_conversation_accepted(conversation_id).await
+    }
+
+    pub async fn start_typing(
+        &mut self,
+        conversation_id: ConversationId,
+    ) -> Result<(), IpcError> {
+        self.send(Method::MessagesTyping {
+            conversation_id: conversation_id.clone(),
+        })
+        .await?;
+        self.expect_conversation_accepted(conversation_id).await
+    }
+
+    pub async fn delete_message(&mut self, message_id: MessageId) -> Result<String, IpcError> {
+        self.send(Method::MessagesDelete { message_id }).await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn open_conversation(
+        &mut self,
+        account_id: MessagingAccountId,
+        addresses: Vec<String>,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesOpen {
+            account_id,
+            addresses,
+        })
+        .await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn messaging_login(
+        &mut self,
+        account_id: MessagingAccountId,
+        bundle_b64: String,
+    ) -> Result<(), IpcError> {
+        self.send(Method::MessagesLogin {
+            account_id: account_id.clone(),
+            bundle_b64,
+        })
+        .await?;
+        self.expect_account_accepted(account_id).await
+    }
+
+    pub async fn messaging_logout(
+        &mut self,
+        account_id: MessagingAccountId,
+    ) -> Result<(), IpcError> {
+        self.send(Method::MessagesLogout {
+            account_id: account_id.clone(),
+        })
+        .await?;
+        self.expect_account_accepted(account_id).await
     }
 
     async fn send(&mut self, method: Method) -> Result<(), IpcError> {
@@ -748,6 +1143,10 @@ mod tests {
             devices: vec![device()],
             notifications: vec![notification()],
             media_sessions: vec![],
+            messaging_accounts: vec![],
+            conversations: vec![],
+            typing_states: vec![],
+            read_states: vec![],
         });
         let decoded: ServerMessage =
             serde_json::from_str(&serde_json::to_string(&message).expect("serializes"))
@@ -790,6 +1189,10 @@ mod tests {
             devices: vec![device()],
             notifications: vec![],
             media_sessions: vec![session.clone()],
+            messaging_accounts: vec![],
+            conversations: vec![],
+            typing_states: vec![],
+            read_states: vec![],
         });
         let decoded: ServerMessage =
             serde_json::from_str(&serde_json::to_string(&snapshot).expect("snapshot serializes"))
@@ -869,6 +1272,70 @@ mod tests {
     }
 
     #[test]
+    fn messaging_methods_use_versioned_names() {
+        let account = MessagingAccountId::new("gmessages:default");
+        let conversation = ConversationId::new(account.clone(), "thread-1");
+        let request = Request::new(Method::MessagesSend {
+            conversation_id: conversation.clone(),
+            text: "hello".into(),
+        });
+        let json = serde_json::to_string(&request).expect("serializes");
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"messages.send","conversation_id":{"account_id":"gmessages:default","local_id":"thread-1"},"text":"hello"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("deserializes"),
+            request
+        );
+
+        let history = Request::new(Method::MessagesHistory {
+            conversation_id: conversation,
+            limit: Some(25),
+            cursor: None,
+        });
+        let json = serde_json::to_string(&history).expect("serializes");
+        assert!(json.contains(r#""method":"messages.history""#));
+        assert!(json.contains(r#""limit":25"#));
+        assert!(!json.contains("cursor"));
+    }
+
+    #[test]
+    fn messaging_events_round_trip_without_backend_details() {
+        let message = ServerMessage::from_messaging_event(MessagingEvent::Typing(TypingState {
+            conversation_id: ConversationId::new(
+                MessagingAccountId::new("gmessages:default"),
+                "thread-1",
+            ),
+            participant_ids: vec!["peer".into()],
+        }));
+        let json = serde_json::to_string(&message).expect("serializes");
+        assert!(json.contains(r#""type":"typing""#));
+        assert!(!json.contains("kdeconnect"));
+        assert!(!json.contains("bugle"));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&json).expect("deserializes"),
+            message
+        );
+    }
+
+    #[test]
+    fn legacy_snapshot_decodes_without_messaging_fields() {
+        let snapshot = serde_json::from_str::<ServerMessage>(
+            r#"{"protocol":1,"type":"snapshot","devices":[]}"#,
+        )
+        .expect("legacy snapshot decodes");
+        assert!(matches!(
+            snapshot.payload,
+            ServerPayload::Snapshot {
+                messaging_accounts,
+                conversations,
+                ..
+            } if messaging_accounts.is_empty() && conversations.is_empty()
+        ));
+    }
+
+    #[test]
     fn share_subscription_is_opt_in_for_older_protocol_one_clients() {
         let legacy: Request = serde_json::from_str(r#"{"protocol":1,"method":"subscribe"}"#)
             .expect("old subscription still decodes");
@@ -877,15 +1344,17 @@ mod tests {
             Method::Subscribe {
                 shares: false,
                 media: false,
+                messages: false,
             }
         );
         let current = Request::new(Method::Subscribe {
             shares: true,
             media: true,
+            messages: true,
         });
         assert_eq!(
             serde_json::to_string(&current).expect("serializes"),
-            r#"{"protocol":1,"method":"subscribe","shares":true,"media":true}"#
+            r#"{"protocol":1,"method":"subscribe","shares":true,"media":true,"messages":true}"#
         );
     }
 }

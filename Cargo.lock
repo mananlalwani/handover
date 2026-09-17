@@ -423,6 +423,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "handover-gmessages"
+version = "0.1.0"
+dependencies = [
+ "handover-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "handover-ipc"
 version = "0.1.0"
 dependencies = [
@@ -480,6 +492,7 @@ name = "handoverd"
 version = "0.1.0"
 dependencies = [
  "handover-core",
+ "handover-gmessages",
  "handover-ipc",
  "handover-kdeconnect",
  "handover-native",

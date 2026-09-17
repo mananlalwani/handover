@@ -1,4 +1,6 @@
 mod ipc_server;
+mod messaging;
+mod messaging_backend;
 mod state;
 
 use std::sync::OnceLock;
@@ -12,7 +14,9 @@ use handover_core::{
 use handover_kdeconnect::KdeConnectBackend;
 use handover_native::NativeBackend;
 use ipc_server::{EVENT_CAPACITY, IpcServer};
+use messaging_backend::{MessagingHub, spawn_supervisor};
 use state::{DeviceChange, MediaChange, NotificationChange, StateChange, StateStore};
+use messaging::MessagingChange;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -60,6 +64,13 @@ async fn main() {
             return;
         }
     };
+    // Messaging helper supervision is optional and isolated: when no helper
+    // binary is configured the subsystem stays dormant and every other
+    // backend keeps working. A dead helper only marks its own accounts
+    // offline.
+    let messaging_hub = MessagingHub::new();
+    spawn_supervisor(Arc::clone(&state), events.clone(), messaging_hub.clone());
+    let server = server.with_messaging(messaging_hub);
     let backend = run_backend(Arc::clone(&state), events);
 
     tokio::select! {
@@ -104,6 +115,12 @@ async fn run_backend(state: Arc<RwLock<StateStore>>, events: broadcast::Sender<S
 
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
+}
+
+/// Publish an event that is already reflected in state (used for
+/// reconciled windows, where re-applying would suppress the broadcast).
+pub(crate) fn publish_event(events: &broadcast::Sender<StateEvent>, event: StateEvent) {
+    let _subscriber_count = events.send(event);
 }
 
 fn apply_backend_event(
@@ -207,6 +224,50 @@ fn log_change(change: StateChange) {
         StateChange::ShareResult(result) => {
             info!(device_id = %result.device_id, transfer_id = %result.transfer_id,
                 status = ?result.status, reason = ?result.reason, "share result");
+        }
+        StateChange::Messaging(change) => log_messaging_change(change),
+    }
+}
+
+/// Messaging log fields are ids, counts, and delivery state only. Message
+/// bodies, titles, names, addresses, and staged paths never enter logs.
+pub(crate) fn log_messaging_change(change: MessagingChange) {
+    match change {
+        MessagingChange::AccountAdded(id) | MessagingChange::AccountUpdated(id) => {
+            info!(account_id = %id, "messaging account updated")
+        }
+        MessagingChange::AccountRemoved(id) => {
+            info!(account_id = %id, "messaging account removed")
+        }
+        MessagingChange::ConversationAdded(id) | MessagingChange::ConversationUpdated(id) => {
+            info!(conversation_id = %id, "conversation updated")
+        }
+        MessagingChange::ConversationRemoved(id) => {
+            info!(conversation_id = %id, "conversation removed")
+        }
+        MessagingChange::MessageAdded(id) => {
+            info!(message_id = %id, "message added")
+        }
+        MessagingChange::MessageUpdated(id) => {
+            tracing::debug!(message_id = %id, "message updated")
+        }
+        MessagingChange::MessageRemoved(id) => {
+            info!(message_id = %id, "message removed")
+        }
+        MessagingChange::Status(update) => {
+            info!(message_id = %update.message_id, status = ?update.status, "message status")
+        }
+        MessagingChange::Typing(id) => {
+            tracing::debug!(conversation_id = %id, "typing state")
+        }
+        MessagingChange::TypingCleared(id) => {
+            tracing::debug!(conversation_id = %id, "typing cleared")
+        }
+        MessagingChange::Read(id) => {
+            tracing::debug!(conversation_id = %id, "read state")
+        }
+        MessagingChange::Pairing(id) => {
+            info!(account_id = %id, "pairing verification requested")
         }
     }
 }

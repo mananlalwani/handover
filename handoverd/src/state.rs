@@ -6,11 +6,14 @@ use handover_core::{
     NotificationId, ReceivedShare, ShareResult, StateEvent,
 };
 
+use crate::messaging::{MessagingChange, MessagingStore};
+
 #[derive(Default)]
 pub(crate) struct StateStore {
     devices: BTreeMap<DeviceId, Device>,
     notifications: BTreeMap<NotificationId, Notification>,
     media_sessions: BTreeMap<MediaSessionId, MediaSession>,
+    messaging: MessagingStore,
 }
 
 impl StateStore {
@@ -27,7 +30,26 @@ impl StateStore {
                 changed: true,
                 changes: vec![StateChange::ShareResult(result)],
             },
+            StateEvent::Messaging(event) => {
+                let outcome = self.messaging.apply(event);
+                ApplyOutcome {
+                    changed: outcome.changed,
+                    changes: outcome
+                        .changes
+                        .into_iter()
+                        .map(StateChange::Messaging)
+                        .collect(),
+                }
+            }
         }
+    }
+
+    pub(crate) fn messaging(&self) -> &MessagingStore {
+        &self.messaging
+    }
+
+    pub(crate) fn messaging_mut(&mut self) -> &mut MessagingStore {
+        &mut self.messaging
     }
 
     pub(crate) fn snapshot(&self) -> StateSnapshot {
@@ -280,6 +302,7 @@ pub(crate) enum StateChange {
     Media(MediaChange),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
+    Messaging(MessagingChange),
 }
 
 #[derive(Debug, Eq, PartialEq)]

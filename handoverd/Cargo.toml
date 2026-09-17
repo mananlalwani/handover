@@ -8,6 +8,7 @@ description = "Handover daemon"
 
 [dependencies]
 handover-core = { path = "../crates/handover-core" }
+handover-gmessages = { path = "../crates/handover-gmessages" }
 handover-ipc = { path = "../crates/handover-ipc" }
 handover-kdeconnect = { path = "../crates/handover-kdeconnect" }
 handover-native = { path = "../crates/handover-native" }

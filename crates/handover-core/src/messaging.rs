@@ -292,6 +292,15 @@ pub struct MessageStatusUpdate {
     pub status: MessageStatus,
 }
 
+/// An opaque human-readable verification prompt from the helper (for
+/// example, an emoji to confirm on the phone during pairing). Transient:
+/// displayed to the user, never stored, never logged with content.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PairingPrompt {
+    pub account_id: MessagingAccountId,
+    pub prompt: String,
+}
+
 /// Read state for the local user in one conversation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ReadState {
@@ -384,6 +393,8 @@ pub enum MessagingEvent {
     Status(MessageStatusUpdate),
     Typing(TypingState),
     Read(ReadState),
+    /// Transient verification prompt. Never enters snapshots.
+    Pairing(PairingPrompt),
 }
 
 impl MessagingCommand {
