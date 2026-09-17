@@ -14,9 +14,9 @@ use handover_core::{
 use handover_kdeconnect::KdeConnectBackend;
 use handover_native::NativeBackend;
 use ipc_server::{EVENT_CAPACITY, IpcServer};
+use messaging::MessagingChange;
 use messaging_backend::{MessagingHub, spawn_supervisor};
 use state::{DeviceChange, MediaChange, NotificationChange, StateChange, StateStore};
-use messaging::MessagingChange;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing::{info, warn};

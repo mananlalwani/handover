@@ -28,9 +28,8 @@ const HELPER_NAME: &str = "handover-gmessages-helper/loopback";
 const HISTORY_DEFAULT: usize = 20;
 
 fn main() {
-    let directory = secrets::default_directory().unwrap_or_else(|_| {
-        std::env::temp_dir().join("handover-gmessages-fallback")
-    });
+    let directory = secrets::default_directory()
+        .unwrap_or_else(|_| std::env::temp_dir().join("handover-gmessages-fallback"));
     let mut helper = LoopbackHelper::new(directory);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -425,11 +424,13 @@ impl Relay for LoopbackRelay {
                 message: format!("login rejected for {account}: empty bundle"),
             }];
         }
-        self.accounts.entry(account.into()).or_insert(StoredAccount {
-            label: format!("Loopback {account}"),
-            authenticated: false,
-            conversations: BTreeMap::new(),
-        });
+        self.accounts
+            .entry(account.into())
+            .or_insert(StoredAccount {
+                label: format!("Loopback {account}"),
+                authenticated: false,
+                conversations: BTreeMap::new(),
+            });
         vec![
             HelperEvent::Account {
                 account: account.into(),
@@ -566,7 +567,11 @@ impl Relay for LoopbackRelay {
             return vec![Self::result(request_id, false, Some("unknown account"))];
         };
         let Some(thread) = stored.conversations.get_mut(conversation) else {
-            return vec![Self::result(request_id, false, Some("unknown conversation"))];
+            return vec![Self::result(
+                request_id,
+                false,
+                Some("unknown conversation"),
+            )];
         };
         if !thread
             .wire
@@ -634,7 +639,11 @@ impl Relay for LoopbackRelay {
             return vec![Self::result(request_id, false, Some("unknown account"))];
         };
         let Some(thread) = stored.conversations.get_mut(conversation) else {
-            return vec![Self::result(request_id, false, Some("unknown conversation"))];
+            return vec![Self::result(
+                request_id,
+                false,
+                Some("unknown conversation"),
+            )];
         };
         if !thread
             .wire
@@ -705,7 +714,11 @@ impl Relay for LoopbackRelay {
             return vec![Self::result(request_id, false, Some("unknown account"))];
         };
         let Some(thread) = stored.conversations.get_mut(conversation) else {
-            return vec![Self::result(request_id, false, Some("unknown conversation"))];
+            return vec![Self::result(
+                request_id,
+                false,
+                Some("unknown conversation"),
+            )];
         };
         let Some(target) = thread
             .messages
@@ -803,7 +816,11 @@ impl Relay for LoopbackRelay {
             return vec![Self::result(request_id, false, Some("unknown account"))];
         };
         let Some(thread) = stored.conversations.get_mut(conversation) else {
-            return vec![Self::result(request_id, false, Some("unknown conversation"))];
+            return vec![Self::result(
+                request_id,
+                false,
+                Some("unknown conversation"),
+            )];
         };
         let position = thread
             .messages
@@ -973,7 +990,10 @@ impl LoopbackHelper {
                 helper_protocol: HELPER_PROTOCOL,
                 name: HELPER_NAME.into(),
             }],
-            HelperCommand::Login { account, bundle_b64 } => {
+            HelperCommand::Login {
+                account,
+                bundle_b64,
+            } => {
                 match decode_base64(&bundle_b64) {
                     Ok(bundle) => {
                         if bundle.is_empty() || bundle.len() > MAX_BUNDLE_BYTES {

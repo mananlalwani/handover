@@ -41,9 +41,9 @@ impl MessagingStore {
             MessagingEvent::Typing(state) => self.apply_typing(state),
             MessagingEvent::Read(state) => self.apply_read(state),
             // Transient prompt: visible to subscribers, never stored.
-            MessagingEvent::Pairing(prompt) => MessagingOutcome::changed(MessagingChange::Pairing(
-                prompt.account_id,
-            )),
+            MessagingEvent::Pairing(prompt) => {
+                MessagingOutcome::changed(MessagingChange::Pairing(prompt.account_id))
+            }
         }
     }
 
@@ -68,10 +68,7 @@ impl MessagingStore {
             let outcome = self.upsert_message(message);
             changes.extend(outcome.changes);
         }
-        let window = self
-            .messages
-            .entry(conversation_id.clone())
-            .or_default();
+        let window = self.messages.entry(conversation_id.clone()).or_default();
         let before: Vec<MessageId> = window.iter().map(|message| message.id.clone()).collect();
         window.retain(|message| seen.contains(&message.id.local_id));
         for id in before {
@@ -82,14 +79,9 @@ impl MessagingStore {
         }
         // Rebuild order by (sent_at, local_id) so reconciled windows read
         // oldest-first regardless of arrival order.
-        let window = self
-            .messages
-            .entry(conversation_id.clone())
-            .or_default();
+        let window = self.messages.entry(conversation_id.clone()).or_default();
         let mut sorted: Vec<Message> = window.drain(..).collect();
-        sorted.sort_by(|a, b| {
-            (a.sent_at, &a.id.local_id).cmp(&(b.sent_at, &b.id.local_id))
-        });
+        sorted.sort_by(|a, b| (a.sent_at, &a.id.local_id).cmp(&(b.sent_at, &b.id.local_id)));
         *window = sorted.into_iter().collect();
         MessagingOutcome {
             changed: !changes.is_empty(),
@@ -127,6 +119,7 @@ impl MessagingStore {
             .and_then(|window| window.iter().find(|message| message.id == *id))
     }
 
+    #[cfg(test)]
     pub(crate) fn status(&self, id: &MessageId) -> Option<&MessageStatus> {
         self.statuses.get(id)
     }
@@ -154,7 +147,12 @@ impl MessagingStore {
                 .ok_or(HistoryGap::CursorOutsideWindow)?,
         };
         let start = end.saturating_sub(limit.max(1));
-        let page: Vec<Message> = window.iter().skip(start).take(end - start).cloned().collect();
+        let page: Vec<Message> = window
+            .iter()
+            .skip(start)
+            .take(end - start)
+            .cloned()
+            .collect();
         let next = if start > 0 {
             page.first().map(|message| message.id.local_id.clone())
         } else {
@@ -516,7 +514,9 @@ impl MessagingOutcome {
 mod tests {
     use std::collections::BTreeSet;
 
-    use handover_core::{ConversationKind, MessagingCapability, Participant, SendFailure, TransportKind};
+    use handover_core::{
+        ConversationKind, MessagingCapability, Participant, SendFailure, TransportKind,
+    };
 
     use super::*;
 
@@ -742,12 +742,9 @@ mod tests {
             ],
         );
         assert!(outcome.changed);
-        assert!(
-            outcome
-                .changes
-                .iter()
-                .any(|change| matches!(change, MessagingChange::MessageRemoved(id) if id.local_id == "m1"))
-        );
+        assert!(outcome.changes.iter().any(
+            |change| matches!(change, MessagingChange::MessageRemoved(id) if id.local_id == "m1")
+        ));
         let (page, _) = store.history(&conversation_id(), 10, None).expect("page");
         assert_eq!(page.len(), 2);
         assert_eq!(page[0].id.local_id, "m2");
@@ -813,7 +810,9 @@ mod tests {
         let mut offline = live_store();
         let mut down = account();
         down.connected = false;
-        offline.apply(MessagingEvent::Account(MessagingAccountEvent::Updated(down)));
+        offline.apply(MessagingEvent::Account(MessagingAccountEvent::Updated(
+            down,
+        )));
         assert_eq!(
             offline.validate_messaging_command(&MessagingCommand::SendText {
                 conversation_id: conversation_id(),

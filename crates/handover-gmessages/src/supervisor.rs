@@ -82,14 +82,17 @@ impl HelperProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .kill_on_drop(true)
             .spawn()
             .map_err(SpawnError::Io)?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            SpawnError::Io(std::io::Error::other("helper stdin unavailable"))
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            SpawnError::Io(std::io::Error::other("helper stdout unavailable"))
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| SpawnError::Io(std::io::Error::other("helper stdin unavailable")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| SpawnError::Io(std::io::Error::other("helper stdout unavailable")))?;
         let mut process = Self {
             child,
             stdin,
@@ -137,9 +140,7 @@ impl HelperProcess {
             let content_length = newline.unwrap_or(available.len());
             if line.len() + content_length > MAX_HELPER_LINE_BYTES {
                 return Err(SpawnError::Handshake(
-                    crate::contract::ContractError::OversizedLine(
-                        line.len() + content_length,
-                    ),
+                    crate::contract::ContractError::OversizedLine(line.len() + content_length),
                 ));
             }
             line.extend_from_slice(&available[..content_length]);
@@ -148,9 +149,7 @@ impl HelperProcess {
                 break;
             }
         }
-        decode_event(&line)
-            .map(Some)
-            .map_err(SpawnError::Handshake)
+        decode_event(&line).map(Some).map_err(SpawnError::Handshake)
     }
 
     pub async fn shutdown(mut self) {

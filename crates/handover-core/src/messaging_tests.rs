@@ -27,7 +27,10 @@ fn sample_conversation() -> Conversation {
         kind: ConversationKind::Direct,
         transport: TransportKind::Rcs,
         title: None,
-        participants: vec![sample_participant("self", true), sample_participant("peer", false)],
+        participants: vec![
+            sample_participant("self", true),
+            sample_participant("peer", false),
+        ],
         latest_message_id: None,
         unread_count: Some(2),
         cursor: Some("cursor-9".into()),
@@ -76,13 +79,15 @@ fn message_identity_nests_conversation_identity() {
 
 #[test]
 fn valid_records_pass_normalization() {
-    assert!(validate_account(&MessagingAccount {
-        id: sample_account_id(),
-        label: "Personal".into(),
-        connected: true,
-        authenticated: true,
-    })
-    .is_ok());
+    assert!(
+        validate_account(&MessagingAccount {
+            id: sample_account_id(),
+            label: "Personal".into(),
+            connected: true,
+            authenticated: true,
+        })
+        .is_ok()
+    );
     assert!(validate_conversation(&sample_conversation()).is_ok());
     assert!(validate_message(&sample_message()).is_ok());
 }
@@ -130,14 +135,19 @@ fn conversations_reject_bad_participant_sets() {
     );
 
     let mut conversation = sample_conversation();
-    conversation.participants = vec![sample_participant("a", false), sample_participant("a", false)];
+    conversation.participants = vec![
+        sample_participant("a", false),
+        sample_participant("a", false),
+    ];
     assert!(matches!(
         validate_conversation(&conversation),
         Err(ValidationError::DuplicateParticipant(_))
     ));
 
     let mut conversation = sample_conversation();
-    conversation.participants.push(sample_participant("third", false));
+    conversation
+        .participants
+        .push(sample_participant("third", false));
     assert_eq!(
         validate_conversation(&conversation),
         Err(ValidationError::DirectWithManyParticipants)

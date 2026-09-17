@@ -32,9 +32,16 @@ pub enum HelperCommand {
     /// One-way credential delivery. `bundle_b64` is base64 of the opaque
     /// user-supplied credential bundle. The helper persists it in its own
     /// 0600 store and begins pairing; it never echoes it back.
-    Login { account: String, bundle_b64: String },
-    Logout { account: String },
-    ListConversations { account: String },
+    Login {
+        account: String,
+        bundle_b64: String,
+    },
+    Logout {
+        account: String,
+    },
+    ListConversations {
+        account: String,
+    },
     FetchHistory {
         account: String,
         conversation: String,
@@ -90,7 +97,9 @@ pub enum HelperCommand {
     },
     /// Request catch-up after a (re)connect: the helper re-emits accounts,
     /// full conversation lists, and authoritative windows.
-    Sync { account: String },
+    Sync {
+        account: String,
+    },
     Shutdown,
 }
 
@@ -344,8 +353,7 @@ mod tests {
             check_hello(&other),
             Err(ContractError::UnsupportedProtocol(2))
         ));
-        let non_hello =
-            decode_event(br#"{"type":"error","message":"busy"}"#).expect("decodes");
+        let non_hello = decode_event(br#"{"type":"error","message":"busy"}"#).expect("decodes");
         assert!(check_hello(&non_hello).is_err());
     }
 

@@ -79,10 +79,7 @@ enum MessagesCommand {
         caption: Option<String>,
     },
     /// Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)
-    Reply {
-        message: String,
-        text: String,
-    },
+    Reply { message: String, text: String },
     /// Add a reaction to a message
     React { message: String, emoji: String },
     /// Remove a reaction from a message
@@ -98,7 +95,10 @@ enum MessagesCommand {
     /// Delete one own message
     Delete { message: String },
     /// Open or create a conversation with addresses (phone numbers/emails)
-    Open { account: String, addresses: Vec<String> },
+    Open {
+        account: String,
+        addresses: Vec<String>,
+    },
     /// Log in: read a credential bundle from a file or stdin, never argv
     Login {
         account: String,
@@ -107,6 +107,8 @@ enum MessagesCommand {
     },
     /// Log out and revoke helper access
     Logout { account: String },
+    /// Ask the helper to re-emit authoritative state for one account
+    Sync { account: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -374,10 +376,7 @@ async fn messages(command: MessagesCommand) -> Result<(), CliError> {
                 None => println!("-- start of stored window --"),
             }
         }
-        MessagesCommand::Send {
-            conversation,
-            text,
-        } => {
+        MessagesCommand::Send { conversation, text } => {
             let conversation_id = resolve_conversation(&mut client, &conversation).await?;
             let request_id = client.send_message_text(conversation_id, text).await?;
             println!("send accepted: request {request_id}; delivery is not confirmed");
@@ -465,6 +464,12 @@ async fn messages(command: MessagesCommand) -> Result<(), CliError> {
                 .await?;
             println!("logout queued for {account}; access ends on revoke");
         }
+        MessagesCommand::Sync { account } => {
+            client
+                .messaging_sync(MessagingAccountId::new(account.clone()))
+                .await?;
+            println!("sync requested for {account}");
+        }
     }
     Ok(())
 }
@@ -489,14 +494,12 @@ async fn read_bundle(from_file: Option<PathBuf>) -> Result<Vec<u8>, CliError> {
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let mut block = [0u8; 3];
         block[..chunk.len()].copy_from_slice(chunk);
-        let value =
-            (u32::from(block[0]) << 16) | (u32::from(block[1]) << 8) | u32::from(block[2]);
+        let value = (u32::from(block[0]) << 16) | (u32::from(block[1]) << 8) | u32::from(block[2]);
         output.push(ALPHABET[(value >> 18) as usize & 63] as char);
         output.push(ALPHABET[(value >> 12) as usize & 63] as char);
         output.push(if chunk.len() > 1 {
@@ -545,10 +548,7 @@ async fn resolve_conversation(
     }
     let mut matches = Vec::new();
     for account in &accounts {
-        for conversation in client
-            .messaging_conversations(account.id.clone())
-            .await?
-        {
+        for conversation in client.messaging_conversations(account.id.clone()).await? {
             if conversation.id.local_id == selector {
                 matches.push(conversation.id);
             }
@@ -580,11 +580,13 @@ async fn resolve_message(client: &mut Client, selector: &str) -> Result<MessageI
             if remainder.is_empty() {
                 continue;
             }
-            let longer = remainder_account.as_ref().is_some_and(|known: &MessagingAccountId| {
-                selector
-                    .strip_prefix(format!("{}:", known).as_str())
-                    .is_some_and(|known_rest| known_rest.len() >= remainder.len())
-            });
+            let longer = remainder_account
+                .as_ref()
+                .is_some_and(|known: &MessagingAccountId| {
+                    selector
+                        .strip_prefix(format!("{}:", known).as_str())
+                        .is_some_and(|known_rest| known_rest.len() >= remainder.len())
+                });
             if !longer {
                 remainder_account = Some(account.id.clone());
                 rest = remainder;
@@ -876,10 +878,7 @@ fn print_message(payload: ServerPayload) {
             println!("message removed: {message_id}");
         }
         ServerPayload::MessageStatus { update } => {
-            println!(
-                "message status: {} {:?}",
-                update.message_id, update.status
-            );
+            println!("message status: {} {:?}", update.message_id, update.status);
         }
         ServerPayload::Typing { state } => {
             println!(
@@ -1127,7 +1126,10 @@ mod messaging_tests {
         assert_eq!(base64_encode(b"f"), "Zg==");
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b" OPAQUE-BUNDLE:42/+"), "IE9QQVFVRS1CVU5ETEU6NDIvKw==");
+        assert_eq!(
+            base64_encode(b" OPAQUE-BUNDLE:42/+"),
+            "IE9QQVFVRS1CVU5ETEU6NDIvKw=="
+        );
     }
 
     #[test]

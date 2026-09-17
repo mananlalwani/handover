@@ -323,9 +323,7 @@ pub struct TypingState {
 /// Deliberately absent: message edits, group membership add/remove/rename,
 /// disappearing messages. No backend attests first-class operations for
 /// those today, so they must not be representable as capabilities.
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessagingCapability {
     Text,
@@ -477,10 +475,7 @@ pub fn validate_conversation(conversation: &Conversation) -> Result<(), Validati
 pub fn validate_message(message: &Message) -> Result<(), ValidationError> {
     check_id(&message.id.local_id, "message id")?;
     check_id(&message.id.conversation_id.local_id, "conversation id")?;
-    check_id(
-        message.id.conversation_id.account_id.as_str(),
-        "account id",
-    )?;
+    check_id(message.id.conversation_id.account_id.as_str(), "account id")?;
     check_id(&message.sender.local_id, "sender id")?;
     if let Some(text) = &message.text {
         if text.chars().count() > MAX_TEXT_CHARS {
@@ -515,11 +510,11 @@ pub fn validate_message(message: &Message) -> Result<(), ValidationError> {
             return Err(ValidationError::InvalidReaction);
         }
         if reaction.participant_ids.len() > MAX_REACTORS_PER_REACTION {
-            return Err(ValidationError::TooManyReactors(reaction.participant_ids.len()));
+            return Err(ValidationError::TooManyReactors(
+                reaction.participant_ids.len(),
+            ));
         }
-        if reaction.count == 0
-            || reaction.count < reaction.participant_ids.len() as u64
-        {
+        if reaction.count == 0 || reaction.count < reaction.participant_ids.len() as u64 {
             return Err(ValidationError::InvalidReaction);
         }
     }
@@ -585,7 +580,9 @@ pub fn validate_command(
             }
             Ok(())
         }
-        MessagingCommand::MarkRead { conversation_id, .. } => {
+        MessagingCommand::MarkRead {
+            conversation_id, ..
+        } => {
             let conversation = conversation.ok_or(ValidationError::UnknownConversation)?;
             require_conversation_match(&conversation.id, conversation_id)?;
             require_capability(conversation, MessagingCapability::ReadReceipts)?;
@@ -731,7 +728,10 @@ impl fmt::Display for ValidationError {
             Self::InvalidId(what) => write!(formatter, "invalid {what}"),
             Self::InvalidLabel(what) => write!(formatter, "invalid {what}"),
             Self::TextTooLong(len) => {
-                write!(formatter, "text too long ({len} chars, max {MAX_TEXT_CHARS})")
+                write!(
+                    formatter,
+                    "text too long ({len} chars, max {MAX_TEXT_CHARS})"
+                )
             }
             Self::InvalidText => write!(formatter, "text contains invalid characters"),
             Self::EmptyText => write!(formatter, "text must not be empty"),

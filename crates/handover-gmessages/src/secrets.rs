@@ -66,11 +66,7 @@ fn ensure_directory(directory: &Path) -> Result<(), SecretError> {
 }
 
 /// Persist a credential bundle for one account. Overwrites atomically.
-pub fn store_bundle(
-    directory: &Path,
-    account: &str,
-    bundle: &[u8],
-) -> Result<(), SecretError> {
+pub fn store_bundle(directory: &Path, account: &str, bundle: &[u8]) -> Result<(), SecretError> {
     ensure_directory(directory)?;
     let target = account_file(directory, account)?;
     let tmp = target.with_extension("credentials.json.tmp");
@@ -127,12 +123,10 @@ mod tests {
             .expect("load")
             .expect("present");
         assert_eq!(loaded, b"{\"opaque\":true}");
-        let permissions = std::fs::metadata(
-            directory.path().join("work.credentials.json"),
-        )
-        .expect("metadata")
-        .permissions()
-        .mode()
+        let permissions = std::fs::metadata(directory.path().join("work.credentials.json"))
+            .expect("metadata")
+            .permissions()
+            .mode()
             & 0o777;
         assert_eq!(permissions, 0o600);
         assert!(delete_bundle(directory.path(), "work").expect("delete"));

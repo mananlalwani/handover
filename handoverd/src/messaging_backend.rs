@@ -20,13 +20,13 @@ use handover_core::{
     MessagingAccountEvent, MessagingAccountId, MessagingEvent, PairingPrompt, ReadState,
     TypingState,
 };
+use handover_gmessages::MAX_BUNDLE_BYTES;
 use handover_gmessages::contract::{HelperCommand, HelperEvent, WireMessage};
 use handover_gmessages::normalize::{
     event_ids, normalize_account, normalize_conversation, normalize_message, parse_status,
 };
 use handover_gmessages::staging::validate_staged_path;
 use handover_gmessages::supervisor::{HelperProcess, backoff_delay, find_helper, redact_command};
-use handover_gmessages::MAX_BUNDLE_BYTES;
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -56,10 +56,12 @@ pub(crate) struct MessagingHub {
     inner: Arc<HubInner>,
 }
 
+type FetchWaiters = HashMap<(String, String), Vec<oneshot::Sender<()>>>;
+
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
-    fetches: Mutex<HashMap<(String, String), Vec<oneshot::Sender<()>>>>,
+    fetches: Mutex<FetchWaiters>,
     counter: AtomicU64,
 }
 
@@ -75,6 +77,15 @@ impl MessagingHub {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn try_has_sender(&self) -> bool {
+        self.inner
+            .sender
+            .try_lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(true)
+    }
+
     fn next_request_id(&self) -> String {
         let id = self.inner.counter.fetch_add(1, Ordering::Relaxed);
         format!("msgreq-{id}")
@@ -83,7 +94,10 @@ impl MessagingHub {
     async fn submit(&self, command: HelperCommand) -> Result<(), HelperCallError> {
         let sender = self.inner.sender.lock().await.clone();
         match sender {
-            Some(sender) => sender.send(command).await.map_err(|_| HelperCallError::Unavailable),
+            Some(sender) => sender
+                .send(command)
+                .await
+                .map_err(|_| HelperCallError::Unavailable),
             None => Err(HelperCallError::Unavailable),
         }
     }
@@ -141,17 +155,13 @@ impl MessagingHub {
             }
             fetches.entry(key).or_default().push(tx);
         }
-        if let Err(error) = self
-            .submit(HelperCommand::FetchHistory {
-                account: account.into(),
-                conversation: conversation.into(),
-                limit,
-                cursor,
-            })
-            .await
-        {
-            return Err(error);
-        }
+        self.submit(HelperCommand::FetchHistory {
+            account: account.into(),
+            conversation: conversation.into(),
+            limit,
+            cursor,
+        })
+        .await?;
         match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(_)) | Err(_) => Err(HelperCallError::Timeout),
@@ -197,7 +207,7 @@ pub(crate) fn spawn_supervisor(
     state: Arc<std::sync::RwLock<StateStore>>,
     events: broadcast::Sender<StateEvent>,
     hub: MessagingHub,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut restarts: u32 = 0;
         loop {
@@ -220,7 +230,7 @@ pub(crate) fn spawn_supervisor(
             restarts += 1;
             tokio::time::sleep(backoff_delay(restarts)).await;
         }
-    });
+    })
 }
 
 async fn run_session(
@@ -338,9 +348,9 @@ async fn ingest_event(
             apply_backend_event(
                 state,
                 events,
-                StateEvent::Messaging(MessagingEvent::Account(
-                    MessagingAccountEvent::Removed(MessagingAccountId::new(account)),
-                )),
+                StateEvent::Messaging(MessagingEvent::Account(MessagingAccountEvent::Removed(
+                    MessagingAccountId::new(account),
+                ))),
             );
         }
         HelperEvent::Pairing { account, prompt } => {
@@ -398,12 +408,9 @@ async fn ingest_event(
             apply_backend_event(
                 state,
                 events,
-                StateEvent::Messaging(MessagingEvent::Conversation(
-                    ConversationEvent::Removed(ConversationId::new(
-                        MessagingAccountId::new(account),
-                        conversation,
-                    )),
-                )),
+                StateEvent::Messaging(MessagingEvent::Conversation(ConversationEvent::Removed(
+                    ConversationId::new(MessagingAccountId::new(account), conversation),
+                ))),
             );
         }
         HelperEvent::Messages {
@@ -413,8 +420,10 @@ async fn ingest_event(
             full,
             ..
         } => {
-            let conversation_id =
-                ConversationId::new(MessagingAccountId::new(account.clone()), conversation.clone());
+            let conversation_id = ConversationId::new(
+                MessagingAccountId::new(account.clone()),
+                conversation.clone(),
+            );
             if full {
                 let mut normalized = Vec::with_capacity(messages.len());
                 for wire in messages {
@@ -522,7 +531,8 @@ async fn ingest_event(
             last_read_message,
             unread,
         } => {
-            let conversation_id = ConversationId::new(MessagingAccountId::new(account), conversation);
+            let conversation_id =
+                ConversationId::new(MessagingAccountId::new(account), conversation);
             apply_backend_event(
                 state,
                 events,

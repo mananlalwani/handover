@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use handover_core::{
     Conversation, ConversationId, Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent,
-    MediaSession, MediaSessionId, Message, MessageId, MessagingAccount, MessagingAccountId,
-    MessagingEvent, MessageStatusUpdate, Notification, NotificationEvent, NotificationId,
-    ReadState, ReceivedShare, ShareResult, TypingState,
+    MediaSession, MediaSessionId, Message, MessageId, MessageStatusUpdate, MessagingAccount,
+    MessagingAccountId, MessagingEvent, Notification, NotificationEvent, NotificationId, ReadState,
+    ReceivedShare, ShareResult, TypingState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -134,9 +134,7 @@ pub enum Method {
         message_id: Option<MessageId>,
     },
     #[serde(rename = "messages.typing")]
-    MessagesTyping {
-        conversation_id: ConversationId,
-    },
+    MessagesTyping { conversation_id: ConversationId },
     #[serde(rename = "messages.delete")]
     MessagesDelete { message_id: MessageId },
     #[serde(rename = "messages.open")]
@@ -150,9 +148,9 @@ pub enum Method {
         bundle_b64: String,
     },
     #[serde(rename = "messages.logout")]
-    MessagesLogout {
-        account_id: MessagingAccountId,
-    },
+    MessagesLogout { account_id: MessagingAccountId },
+    #[serde(rename = "messages.sync")]
+    MessagesSync { account_id: MessagingAccountId },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -777,7 +775,8 @@ impl Client {
         &mut self,
         account_id: MessagingAccountId,
     ) -> Result<Vec<Conversation>, IpcError> {
-        self.send(Method::MessagesConversations { account_id }).await?;
+        self.send(Method::MessagesConversations { account_id })
+            .await?;
         match self.receive().await?.payload {
             ServerPayload::Conversations { conversations } => Ok(conversations),
             payload => Err(unexpected(payload)),
@@ -818,11 +817,9 @@ impl Client {
         conversation_id: ConversationId,
     ) -> Result<(), IpcError> {
         match self.receive().await?.payload {
-            ServerPayload::ConversationAccepted { conversation_id: accepted }
-                if accepted == conversation_id =>
-            {
-                Ok(())
-            }
+            ServerPayload::ConversationAccepted {
+                conversation_id: accepted,
+            } if accepted == conversation_id => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }
@@ -900,10 +897,7 @@ impl Client {
         self.expect_conversation_accepted(conversation_id).await
     }
 
-    pub async fn start_typing(
-        &mut self,
-        conversation_id: ConversationId,
-    ) -> Result<(), IpcError> {
+    pub async fn start_typing(&mut self, conversation_id: ConversationId) -> Result<(), IpcError> {
         self.send(Method::MessagesTyping {
             conversation_id: conversation_id.clone(),
         })
@@ -947,6 +941,14 @@ impl Client {
         account_id: MessagingAccountId,
     ) -> Result<(), IpcError> {
         self.send(Method::MessagesLogout {
+            account_id: account_id.clone(),
+        })
+        .await?;
+        self.expect_account_accepted(account_id).await
+    }
+
+    pub async fn messaging_sync(&mut self, account_id: MessagingAccountId) -> Result<(), IpcError> {
+        self.send(Method::MessagesSync {
             account_id: account_id.clone(),
         })
         .await?;

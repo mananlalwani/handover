@@ -5,10 +5,9 @@
 use std::collections::BTreeSet;
 
 use handover_core::{
-    Attachment, Conversation, ConversationId, ConversationKind, Message, MessageId,
-    MessagingAccount, MessagingAccountId, MessagingCapability, MessageStatus, Participant,
-    Reaction, SendFailure, TransportKind, validate_account, validate_conversation,
-    validate_message,
+    Attachment, Conversation, ConversationId, ConversationKind, Message, MessageId, MessageStatus,
+    MessagingAccount, MessagingAccountId, MessagingCapability, Participant, Reaction, SendFailure,
+    TransportKind, validate_account, validate_conversation, validate_message,
 };
 
 use crate::contract::{
@@ -113,10 +112,8 @@ pub fn normalize_conversation(
     // that the real id exists.
     let mut conversation = conversation;
     if let Some(latest) = conversation.latest_message_id.take() {
-        conversation.latest_message_id = Some(MessageId::new(
-            conversation.id.clone(),
-            latest.local_id,
-        ));
+        conversation.latest_message_id =
+            Some(MessageId::new(conversation.id.clone(), latest.local_id));
     }
     validate_conversation(&conversation)?;
     Ok(conversation)
