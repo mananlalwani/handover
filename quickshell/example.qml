@@ -389,8 +389,8 @@ ShellRoot {
             property var selectedConversation: null
             property var replyingTo: null
             property string status: ""
-            property var selectedAccount: accountPicker.count > 0
-                ? HandoverService.messagingAccounts[accountPicker.currentIndex] : null
+            property var selectedAccount: modernAccountPicker.count > 0
+                ? HandoverService.messagingAccounts[modernAccountPicker.currentIndex] : null
             property var accountConversations: selectedAccount
                 ? HandoverService.conversations.filter(item =>
                     item.id.account_id === selectedAccount.id)
@@ -412,6 +412,8 @@ ShellRoot {
                 : null
 
             function conversationLabel(conversation) {
+                if (!conversation)
+                    return "Select a conversation";
                 if (conversation.title)
                     return conversation.title;
                 const others = conversation.participants.filter(item => !item.is_self);
@@ -424,9 +426,11 @@ ShellRoot {
             }
 
             ColumnLayout {
+                id: legacyMessagesLayout
                 anchors.fill: parent
                 anchors.margins: 12
                 spacing: 6
+                visible: false
 
                 Text {
                     Layout.fillWidth: true
@@ -728,6 +732,246 @@ ShellRoot {
                     text: messagesCard.status.length > 0 ? messagesCard.status
                         : (messagesCard.selectedRead && messagesCard.selectedRead.unread
                             ? "unread" : "read");
+                }
+            }
+        }
+
+        Item {
+            id: modernMessages
+            anchors.fill: messagesCard
+            anchors.margins: 14
+            visible: window.page === "messages"
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 10
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "Messages"
+                        color: "#f3f4f6"
+                        font.pixelSize: 24
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    ComboBox {
+                        id: modernAccountPicker
+                        Layout.preferredWidth: 190
+                        model: HandoverService.messagingAccounts.map(item => item.label)
+                        onCurrentIndexChanged: {
+                            messagesCard.selectedConversation = null;
+                            messagesCard.replyingTo = null;
+                        }
+                    }
+                    Button {
+                        text: "↻"
+                        enabled: modernAccountPicker.count > 0
+                            && !HandoverService.pendingMessaging
+                        onClicked: HandoverService.syncAccount(
+                            HandoverService.messagingAccounts[modernAccountPicker.currentIndex].id)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 10
+
+                    Rectangle {
+                        Layout.preferredWidth: 240
+                        Layout.fillHeight: true
+                        radius: 12
+                        color: "#202733"
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 6
+                            TextField {
+                                Layout.fillWidth: true
+                                placeholderText: "Search conversations"
+                            }
+                            ListView {
+                                id: modernConversationList
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                model: messagesCard.accountConversations
+                                delegate: ItemDelegate {
+                                    required property var modelData
+                                    width: modernConversationList.width
+                                    highlighted: messagesCard.selectedConversation !== null
+                                        && HandoverService.sameConversationId(
+                                            messagesCard.selectedConversation, modelData.id)
+                                    text: messagesCard.conversationLabel(modelData)
+                                        + (modelData.unread_count ? "  ·  " + modelData.unread_count : "")
+                                    onClicked: {
+                                        messagesCard.selectedConversation = modelData.id;
+                                        messagesCard.replyingTo = null;
+                                        HandoverService.loadHistory(modelData.id, 20);
+                                        HandoverService.markRead(modelData.id);
+                                    }
+                                }
+                            }
+                            TextField {
+                                id: modernOpenField
+                                Layout.fillWidth: true
+                                placeholderText: "Phone or email"
+                                visible: modernAccountPicker.count > 0
+                            }
+                            Button {
+                                Layout.fillWidth: true
+                                text: "New conversation"
+                                enabled: modernOpenField.text.trim().length > 0
+                                    && !HandoverService.pendingMessaging
+                                onClicked: {
+                                    if (HandoverService.openConversation(
+                                        messagesCard.selectedAccount.id,
+                                        [modernOpenField.text.trim()]))
+                                        modernOpenField.text = "";
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        radius: 12
+                        color: "#1d2430"
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 8
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: messagesCard.selectedConversation
+                                        ? messagesCard.conversationLabel(
+                                            messagesCard.accountConversations.find(item =>
+                                                HandoverService.sameConversationId(
+                                                    item.id, messagesCard.selectedConversation)))
+                                        : "Select a conversation"
+                                    color: "#f3f4f6"
+                                    font.pixelSize: 18
+                                    font.bold: true
+                                }
+                                Text {
+                                    text: messagesCard.selectedTyping ? "typing…" : ""
+                                    color: "#8db8e8"
+                                }
+                            }
+                            ListView {
+                                id: modernMessageList
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 8
+                                model: messagesCard.selectedMessages
+                                delegate: Item {
+                                    required property var modelData
+                                    property var messageData: modelData
+                                    width: modernMessageList.width
+                                    height: bubble.implicitHeight + 4
+                                    Rectangle {
+                                        id: bubbleBackground
+                                        anchors.left: modelData.sender.is_self ? undefined : parent.left
+                                        anchors.right: modelData.sender.is_self ? parent.right : undefined
+                                        width: Math.min(parent.width * 0.78, 500)
+                                        height: bubble.implicitHeight
+                                        radius: 14
+                                        color: modelData.sender.is_self ? "#28649b" : "#2a3442"
+                                    }
+                                    ColumnLayout {
+                                        id: bubble
+                                        anchors.left: modelData.sender.is_self ? undefined : parent.left
+                                        anchors.right: modelData.sender.is_self ? parent.right : undefined
+                                        width: Math.min(parent.width * 0.78, 500)
+                                        spacing: 3
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: modelData.text || "[attachment]"
+                                            color: "#ffffff"
+                                            wrapMode: Text.Wrap
+                                            font.pixelSize: 14
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            visible: (modelData.reactions || []).length > 0
+                                            text: (modelData.reactions || []).map(item =>
+                                                item.emoji + " ×" + item.count).join("  ")
+                                            color: "#c4d8ec"
+                                            font.pixelSize: 12
+                                        }
+                                        Row {
+                                            spacing: 4
+                                            Button {
+                                                text: "Reply"
+                                                flat: true
+                                                onClicked: messagesCard.replyingTo = modelData.id.local_id
+                                            }
+                                            Repeater {
+                                                model: ["❤", "👍", "😂"]
+                                                Button {
+                                                    required property var modelData
+                                                    text: modelData
+                                                    flat: true
+                                                    onClicked: HandoverService.react(
+                                                        messagesCard.selectedConversation,
+                                                        messageData.id.local_id,
+                                                        modelData)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: messagesCard.replyingTo !== null
+                                text: messagesCard.replyingTo !== null
+                                    ? "Replying to message " + messagesCard.replyingTo : ""
+                                color: "#9fc5e8"
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                TextField {
+                                    id: modernComposeField
+                                    Layout.fillWidth: true
+                                    placeholderText: "Write a message…"
+                                    enabled: messagesCard.selectedConversation !== null
+                                        && !HandoverService.pendingMessaging
+                                    onAccepted: modernSendButton.clicked()
+                                }
+                                Button {
+                                    id: modernSendButton
+                                    text: "Send"
+                                    enabled: modernComposeField.text.trim().length > 0
+                                        && messagesCard.selectedConversation !== null
+                                        && !HandoverService.pendingMessaging
+                                    onClicked: {
+                                        if (HandoverService.sendText(
+                                            messagesCard.selectedConversation,
+                                            modernComposeField.text,
+                                            messagesCard.replyingTo)) {
+                                            modernComposeField.text = "";
+                                            messagesCard.replyingTo = null;
+                                        }
+                                    }
+                                }
+                                Button {
+                                    text: "＋"
+                                    enabled: messagesCard.selectedConversation !== null
+                                        && !HandoverService.pendingMessaging
+                                    onClicked: attachmentDialog.open()
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
