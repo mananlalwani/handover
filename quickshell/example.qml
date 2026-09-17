@@ -8,9 +8,9 @@ ShellRoot {
     FloatingWindow {
         id: window
         visible: true
-        implicitWidth: 420
-        implicitHeight: 640
-        color: "#20242b"
+        implicitWidth: 760
+        implicitHeight: 760
+        color: "#151a23"
         title: "Handover"
         property string page: "overview"
         property var shareDevices: HandoverService.devices.filter(device =>
@@ -510,6 +510,7 @@ ShellRoot {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
+                    spacing: 8
                     model: messagesCard.selectedMessages
                     delegate: ColumnLayout {
                         required property var modelData
@@ -519,6 +520,7 @@ ShellRoot {
                         Text {
                             Layout.fillWidth: true
                             color: modelData.sender.is_self ? "#9ecaff" : "#ffffff"
+                            font.pixelSize: 14
                             textFormat: Text.PlainText
                             wrapMode: Text.Wrap
                             text: (modelData.deleted ? "[deleted] " : "")
@@ -532,6 +534,7 @@ ShellRoot {
                         Text {
                             Layout.fillWidth: true
                             color: "#8b95a5"
+                            font.pixelSize: 12
                             textFormat: Text.PlainText
                             visible: modelData.reply_to !== undefined && modelData.reply_to !== null
                                 || modelData.reactions.length > 0
