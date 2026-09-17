@@ -33,6 +33,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
@@ -48,6 +50,8 @@ class NativeTransport(private val context: Context) {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val writerExecutor = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(32)) { _, _ -> Thread { runCatching { socket?.close() } }.start() }
+    private val transferExpiry = Executors.newSingleThreadScheduledExecutor()
+    private val pendingTransfers = ConcurrentHashMap<String, Long>()
     private val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: BufferedOutputStream? = null
@@ -70,6 +74,8 @@ class NativeTransport(private val context: Context) {
     }
 
     fun start() {
+        transferExpiry.scheduleAtFixedRate({ expireTransfers() }, TRANSFER_SWEEP_MS,
+            TRANSFER_SWEEP_MS, TimeUnit.MILLISECONDS)
         serverFingerprint = preferences.getString(PIN_KEY, null)
         multicastLock.acquire()
         discovery = object : NsdManager.DiscoveryListener {
@@ -107,6 +113,8 @@ class NativeTransport(private val context: Context) {
         output = null
         executor.shutdownNow()
         writerExecutor.shutdownNow()
+        failPendingTransfers(TRANSFER_DISCONNECTED)
+        transferExpiry.shutdownNow()
     }
 
     fun connectTo(rawAddress: String): Boolean {
@@ -191,8 +199,16 @@ class NativeTransport(private val context: Context) {
 
     /** Sends a URL to the one explicitly paired desktop. */
     fun shareUrl(url: String): Boolean {
-        if (serverFingerprint == null || !validShareUrl(url)) return false
-        return enqueue { writeNow(JSONObject().put("type", "share_url").put("protocol", 1).put("url", url)) }
+        if (serverFingerprint == null || socket?.isClosed != false || output == null || !validShareUrl(url)) return false
+        val transferId = registerTransfer() ?: return false
+        return if (enqueue {
+            announceAccepted(transferId)
+            writeNow(JSONObject().put("type", "share_url").put("protocol", 1)
+                .put("transfer_id", transferId).put("url", url))
+        }) true else {
+            completeTransfer(transferId, "failed", TRANSFER_INTERRUPTED)
+            false
+        }
     }
 
     /**
@@ -200,14 +216,16 @@ class NativeTransport(private val context: Context) {
      * with every other writer so raw bytes can never be mistaken for a frame.
      */
     fun shareFile(uri: Uri, requestedName: String? = null): Boolean {
-        if (serverFingerprint == null) return false
+        if (serverFingerprint == null || socket?.isClosed != false || output == null) return false
         val metadata = runCatching { fileMetadata(context.contentResolver, uri, requestedName) }.getOrNull() ?: return false
+        val transferId = registerTransfer() ?: return false
         return enqueue {
+            announceAccepted(transferId)
             try {
                 val resolver = context.contentResolver
                 resolver.openInputStream(uri)?.use { input ->
                     writeNow(JSONObject().put("type", "share_file").put("protocol", 1)
-                        .put("name", metadata.first).put("size", metadata.second))
+                        .put("transfer_id", transferId).put("name", metadata.first).put("size", metadata.second))
                     val buffer = ByteArray(STREAM_BUFFER_BYTES)
                     var remaining = metadata.second
                     while (remaining > 0) {
@@ -223,8 +241,11 @@ class NativeTransport(private val context: Context) {
                 // A partial raw stream cannot be resynchronized as JSON. Drop
                 // the authenticated session so the receiver deletes its temp.
                 Log.w(TAG, "native file share failed: ${error.javaClass.simpleName}")
+                completeTransfer(transferId, "failed", TRANSFER_INTERRUPTED)
                 socket?.close()
             }
+        }.also { accepted ->
+            if (!accepted) completeTransfer(transferId, "failed", TRANSFER_INTERRUPTED)
         }
     }
 
@@ -279,6 +300,7 @@ class NativeTransport(private val context: Context) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
+                failPendingTransfers(TRANSFER_DISCONNECTED)
                 output = null
                 socket?.close()
                 socket = null
@@ -396,28 +418,53 @@ class NativeTransport(private val context: Context) {
                     message.optString("player"), message.optString("action"), position,
                 )
             }
+            "share_result" -> {
+                if (serverFingerprint == null) return
+                val transferId = message.optString("transfer_id")
+                if (!isTransferId(transferId)) return
+                val status = message.optString("status")
+                if (status != "completed" && status != "failed") return
+                val reason = message.optString("reason").takeIf { it.isNotEmpty() }
+                if ((status == "completed" && reason != null) ||
+                    (status == "failed" && reason !in TRANSFER_REASONS)) return
+                completeTransfer(transferId, status, reason)
+            }
             "share_url" -> {
                 if (serverFingerprint == null) return
+                val transferId = message.optString("transfer_id")
                 val url = message.optString("url")
-                if (validShareUrl(url)) {
+                if (!isTransferId(transferId) || !validShareUrl(url)) {
+                    sendTransferResult(transferId, "failed", TRANSFER_INVALID_RESOURCE)
+                    return
+                }
+                runCatching {
                     notifyReceived("url", url, url)
                     broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "url").put("url", url)
                         .put("source", serverId ?: serverFingerprint))
-                }
+                }.onSuccess { sendTransferResult(transferId, "completed", null) }
+                    .onFailure { sendTransferResult(transferId, "failed", TRANSFER_STORAGE) }
             }
             "share_file" -> {
                 if (serverFingerprint == null) return
-                val name = safeFileName(message.optString("name")) ?: run { socket?.close(); return }
+                val transferId = message.optString("transfer_id")
+                val name = safeFileName(message.optString("name")) ?: run {
+                    sendTransferFailureAndClose(transferId, TRANSFER_INVALID_RESOURCE); return
+                }
                 val size = message.optLong("size", -1L)
-                if (size !in 0..MAX_FILE_BYTES) { socket?.close(); return }
-                receiveFile(input, name, size)
+                if (size !in 0..MAX_FILE_BYTES) {
+                    sendTransferFailureAndClose(transferId, TRANSFER_SIZE_LIMIT); return
+                }
+                if (!isTransferId(transferId)) { socket?.close(); return }
+                receiveFile(input, transferId, name, size)
             }
         }
     }
 
-    private fun receiveFile(input: BufferedInputStream, name: String, size: Long) {
+    private fun receiveFile(input: BufferedInputStream, transferId: String, name: String, size: Long) {
         val root = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "Handover")
-        if (!root.exists() && !root.mkdirs()) { socket?.close(); return }
+        if (!root.exists() && !root.mkdirs()) {
+            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE); return
+        }
         val destination = uniqueDestination(root, name)
         val temporary = File(root, ".${name}.${java.util.UUID.randomUUID()}.part")
         try {
@@ -438,13 +485,14 @@ class NativeTransport(private val context: Context) {
             } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
                 Files.move(temporary.toPath(), destination.toPath())
             }
-            notifyReceived("file", name, null)
+            runCatching { notifyReceived("file", name, null) }
             broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
                 .put("path", destination.absolutePath).put("source", serverId ?: serverFingerprint))
+            sendTransferResult(transferId, "completed", null)
         } catch (error: Exception) {
             temporary.delete()
             Log.w(TAG, "native file receive failed: ${error.javaClass.simpleName}")
-            socket?.close()
+            sendTransferFailureAndClose(transferId, if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE)
         }
     }
 
@@ -487,6 +535,55 @@ class NativeTransport(private val context: Context) {
     private fun writeNow(message: JSONObject) = synchronized(outputLock) {
         output?.let { stream -> runCatching { write(stream, message) }.onFailure { socket?.close() } }
     }
+
+    private fun sendTransferResult(transferId: String, status: String, reason: String?) {
+        if (!isTransferId(transferId)) return
+        val result = JSONObject().put("type", "share_result").put("protocol", 1)
+            .put("transfer_id", transferId).put("status", status)
+        reason?.let { result.put("reason", it) }
+        if (!enqueue { writeNow(result) }) socket?.close()
+    }
+
+    private fun sendTransferFailureAndClose(transferId: String, reason: String) {
+        if (isTransferId(transferId)) {
+            val result = JSONObject().put("type", "share_result").put("protocol", 1)
+                .put("transfer_id", transferId).put("status", "failed").put("reason", reason)
+            runCatching { writerExecutor.submit { writeNow(result) }.get(2, TimeUnit.SECONDS) }
+        }
+        socket?.close()
+    }
+
+    private fun registerTransfer(): String? {
+        if (pendingTransfers.size >= MAX_PENDING_TRANSFERS) return null
+        val id = UUID.randomUUID().toString().replace("-", "")
+        pendingTransfers[id] = android.os.SystemClock.elapsedRealtime() + TRANSFER_TIMEOUT_MS
+        return id
+    }
+
+    private fun announceAccepted(id: String) {
+        broadcast(ACTION_TRANSFER_RESULT, JSONObject().put("transfer_id", id).put("status", "accepted"))
+    }
+
+    private fun completeTransfer(id: String, status: String, reason: String?) {
+        if (pendingTransfers.remove(id) == null) return
+        val result = JSONObject().put("transfer_id", id).put("status", status)
+        reason?.let { result.put("reason", it) }
+        broadcast(ACTION_TRANSFER_RESULT, result)
+    }
+
+    private fun expireTransfers() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val expired = pendingTransfers.entries.filter { it.value <= now }
+        expired.forEach {
+            completeTransfer(it.key, "failed", TRANSFER_TIMED_OUT)
+        }
+        if (expired.isNotEmpty()) socket?.close()
+    }
+
+    private fun failPendingTransfers(reason: String) {
+        pendingTransfers.keys.toList().forEach { completeTransfer(it, "failed", reason) }
+    }
+
     private fun send(message: JSONObject) {
         enqueue { writeNow(message) }
     }
@@ -558,8 +655,21 @@ class NativeTransport(private val context: Context) {
         private const val RECONNECT_DELAY_MS = 2_000L
 
         const val ACTION_SHARE_RECEIVED = "org.handover.android.SHARE_RECEIVED"
+        const val ACTION_TRANSFER_RESULT = "org.handover.android.TRANSFER_RESULT"
         const val EXTRA_SHARE_URI = "uri"
         const val EXTRA_SHARE_TEXT = "text"
+        private const val MAX_PENDING_TRANSFERS = 32
+        private const val TRANSFER_TIMEOUT_MS = 120_000L
+        private const val TRANSFER_SWEEP_MS = 5_000L
+        private const val TRANSFER_INVALID_RESOURCE = "invalid_resource"
+        private const val TRANSFER_SIZE_LIMIT = "size_limit"
+        private const val TRANSFER_STORAGE = "storage"
+        private const val TRANSFER_INTERRUPTED = "interrupted"
+        private const val TRANSFER_TIMED_OUT = "timed_out"
+        private const val TRANSFER_DISCONNECTED = "disconnected"
+        private const val TRANSFER_REJECTED = "rejected"
+        private val TRANSFER_REASONS = setOf("invalid_resource", "size_limit", "storage",
+            "interrupted", "rejected", "timed_out", "disconnected", "transport")
 
         fun trustedPeerFingerprint(context: Context): String? =
             context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PIN_KEY, null)
@@ -597,6 +707,9 @@ class NativeTransport(private val context: Context) {
             return !parsed.scheme.isNullOrBlank() &&
                 parsed.scheme.lowercase() !in setOf("file", "javascript", "data")
         }
+
+        private fun isTransferId(value: String): Boolean =
+            value.length == 32 && value.all { it in '0'..'9' || it in 'a'..'f' }
 
         private fun uniqueDestination(root: File, name: String): File {
             var candidate = File(root, name)

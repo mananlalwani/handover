@@ -189,6 +189,7 @@ pub enum StateEvent {
     Notification(NotificationEvent),
     Media(MediaEvent),
     ShareReceived(ReceivedShare),
+    ShareResult(ShareResult),
 }
 
 /// A media player identity scoped to its source device.
@@ -316,6 +317,36 @@ pub enum SharedResource {
 pub struct ReceivedShare {
     pub device_id: DeviceId,
     pub resource: SharedResource,
+}
+
+/// A transient result for one native share. KDE Connect cannot confirm delivery.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ShareResult {
+    pub device_id: DeviceId,
+    pub transfer_id: String,
+    pub status: ShareStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<ShareFailure>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareStatus {
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareFailure {
+    InvalidResource,
+    SizeLimit,
+    Storage,
+    Interrupted,
+    Rejected,
+    TimedOut,
+    Disconnected,
+    Transport,
 }
 
 #[cfg(test)]

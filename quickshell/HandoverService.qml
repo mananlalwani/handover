@@ -17,6 +17,7 @@ Singleton {
     property var notifications: []
     property var mediaSessions: []
     property var lastReceivedShare: null
+    property var lastShareResult: null
     property string lastError: ""
     property var pendingCommand: null
     signal commandFinished(string method, var notificationId, bool success, string error)
@@ -123,6 +124,7 @@ Singleton {
         notifications = [];
         mediaSessions = [];
         lastReceivedShare = null;
+        lastShareResult = null;
         if (pendingCommand) {
             finishPending(false, message);
             pendingCommand = null;
@@ -237,6 +239,9 @@ Singleton {
             break;
         case "share_received":
             lastReceivedShare = message.share;
+            break;
+        case "share_result":
+            lastShareResult = message.result;
             break;
         case "share_accepted":
             if (pendingCommand && pendingCommand.deviceId === message.device_id)

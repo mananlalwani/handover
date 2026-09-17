@@ -204,6 +204,10 @@ fn log_change(change: StateChange) {
             };
             info!(device_id = %share.device_id, kind, "share received");
         }
+        StateChange::ShareResult(result) => {
+            info!(device_id = %result.device_id, transfer_id = %result.transfer_id,
+                status = ?result.status, reason = ?result.reason, "share result");
+        }
     }
 }
 

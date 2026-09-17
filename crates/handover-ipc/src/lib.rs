@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use handover_core::{
     Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent, MediaSession, MediaSessionId,
-    Notification, NotificationEvent, NotificationId, ReceivedShare,
+    Notification, NotificationEvent, NotificationId, ReceivedShare, ShareResult,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -211,8 +211,13 @@ pub enum ServerPayload {
     ShareReceived {
         share: ReceivedShare,
     },
+    ShareResult {
+        result: ShareResult,
+    },
     ShareAccepted {
         device_id: DeviceId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transfer_id: Option<String>,
     },
     MediaAccepted {
         id: MediaSessionId,
@@ -467,6 +472,14 @@ impl Client {
     }
 
     pub async fn send_url(&mut self, device_id: DeviceId, url: String) -> Result<(), IpcError> {
+        self.send_url_tracked(device_id, url).await.map(|_| ())
+    }
+
+    pub async fn send_url_tracked(
+        &mut self,
+        device_id: DeviceId,
+        url: String,
+    ) -> Result<Option<String>, IpcError> {
         self.send(Method::ShareUrl {
             device_id: device_id.clone(),
             url,
@@ -480,6 +493,16 @@ impl Client {
         device_id: DeviceId,
         file_url: String,
     ) -> Result<(), IpcError> {
+        self.send_file_url_tracked(device_id, file_url)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn send_file_url_tracked(
+        &mut self,
+        device_id: DeviceId,
+        file_url: String,
+    ) -> Result<Option<String>, IpcError> {
         self.send(Method::ShareFile {
             device_id: device_id.clone(),
             file_url,
@@ -488,11 +511,15 @@ impl Client {
         self.expect_share_accepted(device_id).await
     }
 
-    async fn expect_share_accepted(&mut self, device_id: DeviceId) -> Result<(), IpcError> {
+    async fn expect_share_accepted(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Option<String>, IpcError> {
         match self.receive().await?.payload {
             ServerPayload::ShareAccepted {
                 device_id: accepted,
-            } if accepted == device_id => Ok(()),
+                transfer_id,
+            } if accepted == device_id => Ok(transfer_id),
             payload => Err(unexpected(payload)),
         }
     }
@@ -816,6 +843,29 @@ mod tests {
             serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
             message
         );
+    }
+
+    #[test]
+    fn native_result_is_additive_and_kde_acceptance_has_no_transfer_id() {
+        let result = ServerMessage::new(ServerPayload::ShareResult {
+            result: handover_core::ShareResult {
+                device_id: DeviceId::new("phone-a"),
+                transfer_id: "0123456789abcdef0123456789abcdef".into(),
+                status: handover_core::ShareStatus::Failed,
+                reason: Some(handover_core::ShareFailure::TimedOut),
+            },
+        });
+        let encoded = serde_json::to_string(&result).unwrap();
+        assert!(encoded.contains("\"type\":\"share_result\""));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            result
+        );
+        let kde = ServerMessage::new(ServerPayload::ShareAccepted {
+            device_id: DeviceId::new("phone-a"),
+            transfer_id: None,
+        });
+        assert!(!serde_json::to_string(&kde).unwrap().contains("transfer_id"));
     }
 
     #[test]

@@ -186,9 +186,9 @@ selects the explicitly requested paired device and routes the request to its
 available backend; a native and a KDE Connect representation may therefore
 coexist without exposing backend names to clients. Native share messages are
 sent only on an already authenticated, paired TLS 1.3 session. A URL is one
-bounded control frame, `{"type":"share_url","protocol":1,"url":"..."}`.
+bounded control frame, `{"type":"share_url","protocol":1,"transfer_id":"...","url":"..."}`.
 For a file, the sender first sends
-`{"type":"share_file","protocol":1,"name":"...","size":N}` and then
+`{"type":"share_file","protocol":1,"transfer_id":"...","name":"...","size":N}` and then
 exactly `N` raw bytes on the same TLS stream. The JSON frame remains subject to
 the 64 KiB control-frame limit; file bytes never enter a JSON frame.
 
@@ -196,22 +196,29 @@ Native file transfers are limited to 100 MiB and use at most a 32 KiB transfer
 buffer. The advertised name must be one safe basename, at most 255 UTF-8
 bytes: path separators, `.` and `..`, NUL, control characters, and invalid
 UTF-8 are rejected. The receiver writes into a private temporary file below
-`${XDG_STATE_HOME:-~/.local/state}/handover/received`, then atomically renames
+`${XDG_STATE_HOME:-~/.local/state}/handover/native/received`, then atomically renames
 it to the sanitized final name only after all bytes arrive and the size matches.
 Temporary files are removed on cancellation, EOF, timeout, size mismatch,
 authentication failure, or any other transfer error; an interrupted transfer
 never leaves a usable partial file. Received files are never opened or executed
 automatically.
 
-The native sender's `share_accepted` result means only that the authenticated
-peer queued the request. Completion is represented by a transient
-`share_received` event after a URL is accepted or a file is fully committed;
-there is no completion acknowledgement in the wire protocol, and failures are
-reported as failed command/transfer results where the existing API supports
-them. The event includes the normalized source-device identity, so clients do
-not infer it from a path or transport. Native and KDE Connect incoming shares
-both use the existing transient event subscription and do not create transfer
-history.
+Each native outgoing share carries an opaque sender-generated `transfer_id`.
+`share_accepted` means only that the daemon queued the request for the authenticated peer.
+After handling finishes, the receiver sends `share_result` with `completed` or
+`failed`. Failed results use only the normalized reasons `invalid_resource`,
+`size_limit`, `storage`, `interrupted`, `rejected`, `timed_out`, `disconnected`, or `transport`; platform
+exception text and paths never cross the wire. A disconnect cannot become a
+completion after reconnect.
+
+The daemon keeps at most 32 pending native transfers per peer in memory; final
+results are removed immediately and stale IDs expire after 120 seconds.
+There is no persistent transfer history. A transient backend-independent
+transfer-result event may be exposed through the existing share subscription.
+The existing `share_received` event remains the handling event and includes
+the normalized source-device identity. KDE Connect remains accepted-only
+because its D-Bus API cannot confirm delivery; no native completion guarantee
+is claimed for KDE requests.
 
 Notifications use an ID made from the source `DeviceId` and a device-local
 notification ID. This prevents collisions between phones. The normalized

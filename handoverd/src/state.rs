@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use handover_core::{
     BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaEvent,
     MediaSession, MediaSessionId, Notification, NotificationCommand, NotificationEvent,
-    NotificationId, ReceivedShare, StateEvent,
+    NotificationId, ReceivedShare, ShareResult, StateEvent,
 };
 
 #[derive(Default)]
@@ -22,6 +22,10 @@ impl StateStore {
             StateEvent::ShareReceived(share) => ApplyOutcome {
                 changed: true,
                 changes: vec![StateChange::ShareReceived(share)],
+            },
+            StateEvent::ShareResult(result) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::ShareResult(result)],
             },
         }
     }
@@ -275,6 +279,7 @@ pub(crate) enum StateChange {
     Notification(NotificationChange),
     Media(MediaChange),
     ShareReceived(ReceivedShare),
+    ShareResult(ShareResult),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -710,5 +715,22 @@ mod tests {
         ));
         assert!(store.snapshot().devices.is_empty());
         assert!(store.snapshot().notifications.is_empty());
+    }
+
+    #[test]
+    fn share_result_is_transient_and_does_not_enter_snapshot() {
+        let mut store = StateStore::default();
+        let result = handover_core::ShareResult {
+            device_id: DeviceId::new("native:peer"),
+            transfer_id: "00112233445566778899aabbccddeeff".into(),
+            status: handover_core::ShareStatus::Completed,
+            reason: None,
+        };
+        let outcome = store.apply(StateEvent::ShareResult(result.clone()));
+        assert!(outcome.changed);
+        assert!(
+            matches!(outcome.changes.as_slice(), [StateChange::ShareResult(actual)] if actual == &result)
+        );
+        assert!(store.snapshot().devices.is_empty());
     }
 }

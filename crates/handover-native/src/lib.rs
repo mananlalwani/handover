@@ -12,7 +12,7 @@ use handover_core::{
     BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
     MediaEvent, MediaSession, MediaSessionId, Notification, NotificationAction,
     NotificationCommand, NotificationEvent, NotificationId, PlaybackState, ReceivedShare,
-    SharedResource, StateEvent,
+    ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -54,6 +54,8 @@ const MAX_MEDIA_POSITION_MS: u64 = i32::MAX as u64;
 const MAX_OUTBOX_PER_PEER: usize = 32;
 const MAX_SHARE_SIZE: u64 = 100 * 1024 * 1024;
 const SHARE_BUFFER: usize = 32 * 1024;
+const MAX_PENDING_SHARES_PER_PEER: usize = 32;
+const SHARE_RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Error)]
 pub enum NativeCommandError {
@@ -123,6 +125,7 @@ struct Runtime {
     // Queued Linux-to-phone notification commands, drained by the owning
     // session thread. Bounded per peer; IPC reports acceptance, not delivery.
     outbox: BTreeMap<String, Vec<Message>>,
+    pending_shares: BTreeMap<String, BTreeMap<String, Instant>>,
 }
 
 #[derive(Clone)]
@@ -151,6 +154,18 @@ impl Drop for Session<'_> {
         if self.published {
             inner.active.remove(&self.peer.id);
             inner.outbox.remove(&self.peer.id);
+            let pending = inner
+                .pending_shares
+                .remove(&self.peer.id)
+                .unwrap_or_default();
+            for transfer_id in pending.into_keys() {
+                (self.event)(StateEvent::ShareResult(ShareResult {
+                    device_id: DeviceId::new(format!("native:{}", self.peer.id)),
+                    transfer_id,
+                    status: ShareStatus::Failed,
+                    reason: Some(ShareFailure::Disconnected),
+                }));
+            }
             let removed_keys = inner.notif_keys.remove(&self.peer.id).unwrap_or_default();
             inner.notif_enabled.remove(&self.peer.id);
             let removed_players = inner
@@ -397,14 +412,23 @@ enum Message {
     },
     ShareUrl {
         protocol: u32,
+        transfer_id: String,
         url: String,
     },
     ShareFile {
         protocol: u32,
+        transfer_id: String,
         name: String,
         size: u64,
         #[serde(skip)]
         path: PathBuf,
+    },
+    ShareResult {
+        protocol: u32,
+        transfer_id: String,
+        status: ShareStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<ShareFailure>,
     },
     Revoke {
         protocol: u32,
@@ -439,6 +463,7 @@ impl Message {
             | Self::MediaControl { protocol, .. }
             | Self::ShareUrl { protocol, .. }
             | Self::ShareFile { protocol, .. }
+            | Self::ShareResult { protocol, .. }
             | Self::Revoke { protocol }
             | Self::Ping { protocol }
             | Self::Pong { protocol } => *protocol,
@@ -483,6 +508,7 @@ impl NativeBackend {
                 media_enabled: BTreeMap::new(),
                 media_players: BTreeMap::new(),
                 outbox: BTreeMap::new(),
+                pending_shares: BTreeMap::new(),
             })),
             directory,
             certificate,
@@ -703,20 +729,23 @@ impl NativeBackend {
 
     /// Accept one share for a live paired peer. Delivery is asynchronous; a
     /// later disconnect or I/O failure can prevent completion.
-    pub fn share_url(&self, peer_id: &str, url: String) -> Result<(), NativeCommandError> {
+    pub fn share_url(&self, peer_id: &str, url: String) -> Result<String, NativeCommandError> {
         if !valid_share_url(&url) {
             return Err(NativeCommandError::QueueFull);
         }
+        let transfer_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         self.queue_share(
             peer_id,
             Message::ShareUrl {
                 protocol: WIRE_VERSION,
+                transfer_id: transfer_id.clone(),
                 url,
             },
+            transfer_id,
         )
     }
 
-    pub fn share_file(&self, peer_id: &str, path: PathBuf) -> Result<(), NativeCommandError> {
+    pub fn share_file(&self, peer_id: &str, path: PathBuf) -> Result<String, NativeCommandError> {
         let file = File::open(&path).map_err(|_| NativeCommandError::QueueFull)?;
         let metadata = file.metadata().map_err(|_| NativeCommandError::QueueFull)?;
         if !metadata.is_file() {
@@ -732,18 +761,26 @@ impl NativeBackend {
         if size > MAX_SHARE_SIZE {
             return Err(NativeCommandError::QueueFull);
         }
+        let transfer_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         self.queue_share(
             peer_id,
             Message::ShareFile {
                 protocol: WIRE_VERSION,
+                transfer_id: transfer_id.clone(),
                 name,
                 size,
                 path,
             },
+            transfer_id,
         )
     }
 
-    fn queue_share(&self, peer_id: &str, message: Message) -> Result<(), NativeCommandError> {
+    fn queue_share(
+        &self,
+        peer_id: &str,
+        message: Message,
+        transfer_id: String,
+    ) -> Result<String, NativeCommandError> {
         let mut inner = self.inner.lock().unwrap();
         if !inner.active.contains_key(peer_id) {
             return Err(NativeCommandError::Offline);
@@ -752,8 +789,14 @@ impl NativeBackend {
         if queue.len() >= MAX_OUTBOX_PER_PEER {
             return Err(NativeCommandError::QueueFull);
         }
+        let pending = inner.pending_shares.entry(peer_id.to_owned()).or_default();
+        if pending.len() >= MAX_PENDING_SHARES_PER_PEER || pending.contains_key(&transfer_id) {
+            return Err(NativeCommandError::QueueFull);
+        }
+        pending.insert(transfer_id.clone(), Instant::now());
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
         queue.push(message);
-        Ok(())
+        Ok(transfer_id)
     }
 
     fn receive_share_file<R: Read>(
@@ -1112,6 +1155,27 @@ impl NativeBackend {
             if !self.inner.lock().unwrap().peers.peers.contains_key(&id) {
                 break;
             }
+            let expired = {
+                let mut inner = self.inner.lock().unwrap();
+                let pending = inner.pending_shares.entry(id.clone()).or_default();
+                let expired = take_expired_shares(pending, Instant::now());
+                if let Some(queue) = inner.outbox.get_mut(&id) {
+                    queue.retain(|message| match message {
+                        Message::ShareUrl { transfer_id, .. }
+                        | Message::ShareFile { transfer_id, .. } => !expired.contains(transfer_id),
+                        _ => true,
+                    });
+                }
+                expired
+            };
+            for transfer_id in expired {
+                event(StateEvent::ShareResult(ShareResult {
+                    device_id: DeviceId::new(format!("native:{id}")),
+                    transfer_id,
+                    status: ShareStatus::Failed,
+                    reason: Some(ShareFailure::TimedOut),
+                }));
+            }
             // Drain queued Linux-to-phone notification commands before
             // blocking on the next inbound frame. Acceptance was already
             // reported over IPC; a write failure ends the session and the
@@ -1124,19 +1188,77 @@ impl NativeBackend {
                 .remove(&id)
                 .unwrap_or_default();
             for message in outbound {
+                let share_id = match &message {
+                    Message::ShareUrl { transfer_id, .. }
+                    | Message::ShareFile { transfer_id, .. } => Some(transfer_id),
+                    _ => None,
+                };
+                let started = share_id.and_then(|transfer_id| {
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .pending_shares
+                        .get(&id)
+                        .and_then(|pending| pending.get(transfer_id))
+                        .copied()
+                });
+                if share_id.is_some() && started.is_none() {
+                    continue;
+                }
+                if let (Some(transfer_id), Some(started)) = (share_id, started)
+                    && started.elapsed() >= SHARE_RESULT_TIMEOUT
+                {
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .pending_shares
+                        .entry(id.clone())
+                        .or_default()
+                        .remove(transfer_id);
+                    event(StateEvent::ShareResult(ShareResult {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        transfer_id: transfer_id.clone(),
+                        status: ShareStatus::Failed,
+                        reason: Some(ShareFailure::TimedOut),
+                    }));
+                    continue;
+                }
                 if let Err(error) = write_frame(&mut tls, &message) {
                     tracing::debug!(peer = %id, %error, "native notification command write failed");
                     return Err(error);
                 }
-                if let Message::ShareFile { path, size, .. } = &message {
+                if let Message::ShareFile {
+                    path,
+                    size,
+                    transfer_id,
+                    ..
+                } = &message
+                {
                     let file = File::open(path)?;
                     let metadata = file.metadata()?;
                     if !metadata.is_file() || metadata.len() != *size {
                         return Err(NativeError::InvalidFrame);
                     }
-                    let mut limited = file.take(*size);
-                    if std::io::copy(&mut limited, &mut tls)? != *size {
-                        return Err(NativeError::InvalidFrame);
+                    let started = started.ok_or(NativeError::InvalidFrame)?;
+                    if let Err(error) =
+                        stream_file_until(&mut file.take(*size), &mut tls, *size, started)
+                    {
+                        if error.kind() == std::io::ErrorKind::TimedOut {
+                            self.inner
+                                .lock()
+                                .unwrap()
+                                .pending_shares
+                                .entry(id.clone())
+                                .or_default()
+                                .remove(transfer_id);
+                            event(StateEvent::ShareResult(ShareResult {
+                                device_id: DeviceId::new(format!("native:{id}")),
+                                transfer_id: transfer_id.clone(),
+                                status: ShareStatus::Failed,
+                                reason: Some(ShareFailure::TimedOut),
+                            }));
+                        }
+                        return Err(NativeError::Io(error));
                     }
                     tls.flush()?;
                 }
@@ -1144,31 +1266,135 @@ impl NativeBackend {
             match read_frame(&mut tls) {
                 Ok(Message::ShareUrl {
                     protocol: WIRE_VERSION,
+                    transfer_id,
                     url,
                 }) => {
                     last_received = Instant::now();
-                    if !valid_share_url(&url) {
-                        return Err(NativeError::InvalidFrame);
+                    if !valid_transfer_id(&transfer_id) || !valid_share_url(&url) {
+                        write_frame(
+                            &mut tls,
+                            &Message::ShareResult {
+                                protocol: WIRE_VERSION,
+                                transfer_id,
+                                status: ShareStatus::Failed,
+                                reason: Some(ShareFailure::InvalidResource),
+                            },
+                        )?;
+                        continue;
                     }
                     event(StateEvent::ShareReceived(ReceivedShare {
                         device_id: DeviceId::new(format!("native:{id}")),
                         resource: SharedResource::Url { url },
                     }));
+                    write_frame(
+                        &mut tls,
+                        &Message::ShareResult {
+                            protocol: WIRE_VERSION,
+                            transfer_id,
+                            status: ShareStatus::Completed,
+                            reason: None,
+                        },
+                    )?;
                 }
                 Ok(Message::ShareFile {
                     protocol: WIRE_VERSION,
+                    transfer_id,
                     name,
                     size,
                     ..
                 }) => {
+                    let rejected = if !valid_transfer_id(&transfer_id)
+                        || !safe_share_name(&name)
+                        || name.len() > 255
+                    {
+                        Some(ShareFailure::InvalidResource)
+                    } else if size > MAX_SHARE_SIZE {
+                        Some(ShareFailure::SizeLimit)
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = rejected {
+                        let _ = write_frame(
+                            &mut tls,
+                            &Message::ShareResult {
+                                protocol: WIRE_VERSION,
+                                transfer_id,
+                                status: ShareStatus::Failed,
+                                reason: Some(reason),
+                            },
+                        );
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    let path = match self.receive_share_file(&mut tls, &name, size) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            let reason = match &error {
+                                NativeError::Io(io)
+                                    if io.kind() == std::io::ErrorKind::UnexpectedEof =>
+                                {
+                                    ShareFailure::Interrupted
+                                }
+                                _ => ShareFailure::Storage,
+                            };
+                            let _ = write_frame(
+                                &mut tls,
+                                &Message::ShareResult {
+                                    protocol: WIRE_VERSION,
+                                    transfer_id,
+                                    status: ShareStatus::Failed,
+                                    reason: Some(reason),
+                                },
+                            );
+                            return Err(error);
+                        }
+                    };
                     last_received = Instant::now();
-                    let path = self.receive_share_file(&mut tls, &name, size)?;
                     event(StateEvent::ShareReceived(ReceivedShare {
                         device_id: DeviceId::new(format!("native:{id}")),
                         resource: SharedResource::File {
                             path: path.to_string_lossy().into_owned(),
                         },
                     }));
+                    write_frame(
+                        &mut tls,
+                        &Message::ShareResult {
+                            protocol: WIRE_VERSION,
+                            transfer_id,
+                            status: ShareStatus::Completed,
+                            reason: None,
+                        },
+                    )?;
+                }
+                Ok(Message::ShareResult {
+                    protocol: WIRE_VERSION,
+                    transfer_id,
+                    status,
+                    reason,
+                }) => {
+                    last_received = Instant::now();
+                    if !valid_transfer_id(&transfer_id)
+                        || (status == ShareStatus::Completed && reason.is_some())
+                        || (status == ShareStatus::Failed && reason.is_none())
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    let was_pending = self
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .pending_shares
+                        .entry(id.clone())
+                        .or_default()
+                        .remove(&transfer_id)
+                        .is_some();
+                    if was_pending {
+                        event(StateEvent::ShareResult(ShareResult {
+                            device_id: DeviceId::new(format!("native:{id}")),
+                            transfer_id,
+                            status,
+                            reason,
+                        }));
+                    }
                 }
                 Ok(Message::Battery {
                     protocol: WIRE_VERSION,
@@ -1321,6 +1547,54 @@ fn safe_share_name(name: &str) -> bool {
         && name != ".."
         && !name.contains(['/', '\\'])
         && !name.chars().any(char::is_control)
+}
+
+fn new_transfer_id() -> Result<String, openssl::error::ErrorStack> {
+    let mut bytes = [0u8; 16];
+    openssl::rand::rand_bytes(&mut bytes)?;
+    Ok(hex::encode(bytes))
+}
+
+fn valid_transfer_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn take_expired_shares(pending: &mut BTreeMap<String, Instant>, now: Instant) -> Vec<String> {
+    let expired = pending
+        .iter()
+        .filter(|(_, started)| now.duration_since(**started) >= SHARE_RESULT_TIMEOUT)
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in &expired {
+        pending.remove(id);
+    }
+    expired
+}
+
+fn stream_file_until<R: Read, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    size: u64,
+    started: Instant,
+) -> std::io::Result<()> {
+    let mut remaining = size;
+    let mut buffer = [0u8; SHARE_BUFFER];
+    while remaining > 0 {
+        if started.elapsed() >= SHARE_RESULT_TIMEOUT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "share result deadline",
+            ));
+        }
+        let amount = usize::try_from(remaining.min(SHARE_BUFFER as u64)).unwrap();
+        input.read_exact(&mut buffer[..amount])?;
+        output.write_all(&buffer[..amount])?;
+        remaining -= amount as u64;
+    }
+    output.flush()
 }
 
 fn valid_share_url(url: &str) -> bool {
@@ -1868,6 +2142,34 @@ fn write_frame<W: Write>(writer: &mut W, message: &Message) -> Result<(), Native
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_results_expire_once_at_deadline() {
+        let now = Instant::now();
+        let mut pending = BTreeMap::from([
+            ("old".to_owned(), now - SHARE_RESULT_TIMEOUT),
+            ("fresh".to_owned(), now),
+        ]);
+        assert_eq!(take_expired_shares(&mut pending, now), vec!["old"]);
+        assert_eq!(take_expired_shares(&mut pending, now), Vec::<String>::new());
+        assert!(pending.contains_key("fresh"));
+    }
+
+    #[test]
+    fn streaming_stops_at_transfer_deadline() {
+        let mut output = Vec::new();
+        let error = stream_file_until(
+            &mut [1u8; 4].as_slice(),
+            &mut output,
+            4,
+            Instant::now() - SHARE_RESULT_TIMEOUT,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(output.is_empty());
+        stream_file_until(&mut [1u8; 4].as_slice(), &mut output, 4, Instant::now()).unwrap();
+        assert_eq!(output, [1, 1, 1, 1]);
+    }
 
     #[test]
     fn received_file_streams_and_cleans_interruption() {

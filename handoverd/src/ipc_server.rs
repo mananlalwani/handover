@@ -128,7 +128,7 @@ async fn handle_client(
                 }
                 event = receiver.recv() => {
                     match event {
-                        Ok(event) if matches!(event, StateEvent::ShareReceived(_)) && !include_share_events => {}
+                        Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareResult(_)) && !include_share_events => {}
                         Ok(event) if matches!(event, StateEvent::Media(_)) && !include_media_events => {}
                         Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -653,7 +653,10 @@ where
                 }
             });
         let payload = match result {
-            Ok(()) => ServerMessage::new(ServerPayload::ShareAccepted { device_id }),
+            Ok(transfer_id) => ServerMessage::new(ServerPayload::ShareAccepted {
+                device_id,
+                transfer_id: Some(transfer_id),
+            }),
             Err(handover_native::NativeCommandError::Offline) => ServerMessage::protocol_error(
                 ErrorCode::DeviceDisconnected,
                 "native device is disconnected",
@@ -671,7 +674,10 @@ where
         Ok(()) => {
             write_json_line(
                 writer,
-                &ServerMessage::new(ServerPayload::ShareAccepted { device_id }),
+                &ServerMessage::new(ServerPayload::ShareAccepted {
+                    device_id,
+                    transfer_id: None,
+                }),
             )
             .await?;
         }
@@ -760,6 +766,9 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Media(event) => ServerMessage::from_media_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })
+        }
+        StateEvent::ShareResult(result) => {
+            ServerMessage::new(ServerPayload::ShareResult { result })
         }
     }
 }

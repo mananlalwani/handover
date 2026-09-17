@@ -11,7 +11,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use handover_core::{DeviceEvent, MediaEvent, NotificationEvent, StateEvent};
+use handover_core::{
+    DeviceEvent, MediaEvent, NotificationEvent, ShareFailure, ShareStatus, StateEvent,
+};
 use handover_native::NativeBackend;
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
@@ -324,6 +326,80 @@ fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
     // Same recovery for media sessions: a daemon restart must not wait for
     // the next playback change to learn the current players.
     assert_eq!(recv(peer)["type"], "media_request");
+}
+
+fn wait_share_result(harness: &Harness, id: &str) -> handover_core::ShareResult {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::ShareResult(result) = harness.events.recv_timeout(remaining).unwrap()
+            && result.transfer_id == id
+        {
+            return result;
+        }
+    }
+}
+
+#[test]
+fn native_share_result_requires_matching_receiver_ack_and_disconnect_fails_pending() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    let transfer_id = harness
+        .backend
+        .share_url(&client.fingerprint, "https://example.org/ok".into())
+        .unwrap();
+    let outbound = recv(&mut peer);
+    assert_eq!(outbound["type"], "share_url");
+    assert_eq!(outbound["transfer_id"], transfer_id);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"share_result","protocol":1,
+        "transfer_id":transfer_id,"status":"completed"}),
+    );
+    let result = wait_share_result(&harness, &transfer_id);
+    assert_eq!(result.status, ShareStatus::Completed);
+    assert_eq!(result.reason, None);
+
+    let pending = harness
+        .backend
+        .share_url(&client.fingerprint, "https://example.org/pending".into())
+        .unwrap();
+    assert_eq!(recv(&mut peer)["transfer_id"], pending);
+    drop(peer);
+    let result = wait_share_result(&harness, &pending);
+    assert_eq!(result.status, ShareStatus::Failed);
+    assert_eq!(result.reason, Some(ShareFailure::Disconnected));
+}
+
+#[test]
+fn receiver_ack_follows_completed_file_and_rejects_invalid_url() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    let id = "00112233445566778899aabbccddeeff";
+    send(
+        &mut peer,
+        serde_json::json!({"type":"share_file","protocol":1,
+        "transfer_id":id,"name":"space ✓.txt","size":4}),
+    );
+    peer.tls.write_all(b"test").unwrap();
+    peer.tls.flush().unwrap();
+    let receipt = recv(&mut peer);
+    assert_eq!(receipt["type"], "share_result");
+    assert_eq!(receipt["transfer_id"], id);
+    assert_eq!(receipt["status"], "completed");
+    let bad = "ffeeddccbbaa99887766554433221100";
+    send(
+        &mut peer,
+        serde_json::json!({"type":"share_url","protocol":1,
+        "transfer_id":bad,"url":"file:///etc/passwd"}),
+    );
+    let rejected = recv(&mut peer);
+    assert_eq!(rejected["status"], "failed");
+    assert_eq!(rejected["reason"], "invalid_resource");
 }
 
 fn wait_notification(

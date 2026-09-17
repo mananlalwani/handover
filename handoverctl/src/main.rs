@@ -240,8 +240,11 @@ async fn monitor() -> Result<(), CliError> {
 async fn send_url(selector: &str, url: String) -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let device_id = select_device(&client.devices().await?, selector)?;
-    client.send_url(device_id, url).await?;
-    println!("URL share accepted; delivery is not confirmed");
+    let transfer_id = client.send_url_tracked(device_id, url).await?;
+    match transfer_id {
+        Some(id) => println!("URL share accepted: transfer {id}; awaiting receiver result"),
+        None => println!("URL share accepted; delivery is not confirmed"),
+    }
     Ok(())
 }
 
@@ -250,8 +253,13 @@ async fn send_file(selector: &str, path: PathBuf) -> Result<(), CliError> {
     let device_id = select_device(&client.devices().await?, selector)?;
     let absolute = tokio::fs::canonicalize(path).await?;
     let file_url = Url::from_file_path(absolute).map_err(|_| CliError::InvalidFilePath)?;
-    client.send_file_url(device_id, file_url.into()).await?;
-    println!("File share accepted; delivery is not confirmed");
+    let transfer_id = client
+        .send_file_url_tracked(device_id, file_url.into())
+        .await?;
+    match transfer_id {
+        Some(id) => println!("File share accepted: transfer {id}; awaiting receiver result"),
+        None => println!("File share accepted; delivery is not confirmed"),
+    }
     Ok(())
 }
 
@@ -367,6 +375,20 @@ fn print_message(payload: ServerPayload) {
                 SharedResource::Url { .. } => "URL",
             };
             println!("share received: {kind} from {}", share.device_id);
+        }
+        ServerPayload::ShareResult { result } => {
+            println!(
+                "share {}: transfer {} to {}{}",
+                match result.status {
+                    handover_core::ShareStatus::Completed => "completed",
+                    handover_core::ShareStatus::Failed => "failed",
+                },
+                result.transfer_id,
+                result.device_id,
+                result
+                    .reason
+                    .map_or_else(String::new, |reason| format!(" ({reason:?})"))
+            );
         }
         ServerPayload::Snapshot {
             devices,
