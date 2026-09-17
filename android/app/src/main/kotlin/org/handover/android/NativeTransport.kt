@@ -46,6 +46,9 @@ import org.handover.android.DeviceIdentityStore.Companion.fingerprint
 
 /** Native Handover transport. Frames are 4-byte big-endian length + UTF-8 JSON, max 64 KiB. */
 class NativeTransport(private val context: Context) {
+    private val callObserver = CallObserver(context) { frame ->
+        if (serverFingerprint != null) send(frame)
+    }
     private val identity = DeviceIdentityStore(context)
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val multicastLock = context.getSystemService(WifiManager::class.java)
@@ -107,6 +110,7 @@ class NativeTransport(private val context: Context) {
     }
 
     fun stop() {
+        callObserver.stop()
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         discovery = null
         if (multicastLock.isHeld) multicastLock.release()
@@ -380,6 +384,7 @@ class NativeTransport(private val context: Context) {
                 HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
                     syncNotifications(enabled, list)
                 }
+                callObserver.refresh()
                 // Same recovery for media sessions.
                 MediaObserver.activePushSync()
             }
@@ -410,13 +415,19 @@ class NativeTransport(private val context: Context) {
                     message.optString("key"), message.optString("action_id"),
                 )
             }
+            "call_request" -> {
+                if (serverFingerprint == null) return
+                callObserver.refresh()
+            }
             "call_control" -> {
                 if (serverFingerprint == null) return
                 when (message.optString("action")) {
                     "place" -> CallController.place(context, message.optString("address"))
                     "answer" -> CallController.answer(context)
-                    "decline", "hangup" -> CallController.hangup(context)
+                    "decline" -> CallController.hangup(context, decline = true)
+                    "hangup" -> CallController.hangup(context)
                 }
+                callObserver.refresh()
             }
             "media_request" -> {
                 if (serverFingerprint == null) return
