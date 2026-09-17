@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use handover_core::{DeviceEvent, MediaEvent, NotificationEvent, SharedResource, StateEvent};
+use handover_core::{
+    DeviceEvent, DeviceId, MediaEvent, NotificationEvent, SharedResource, StateEvent,
+};
 use handover_kdeconnect::KdeConnectBackend;
 use handover_native::NativeBackend;
 use ipc_server::{EVENT_CAPACITY, IpcServer};
@@ -145,12 +147,23 @@ fn apply_backend_event(
     }
 }
 
+/// Backend ownership boundary: device IDs namespaced `native:` are owned by
+/// the native backend; everything else is KDE-owned. Teardown of one backend
+/// must never clear the other's entries. Shares need no filtering: received
+/// shares are transient events, never owned snapshot state.
+fn is_native_device(id: &DeviceId) -> bool {
+    id.as_str().starts_with("native:")
+}
+
 fn clear_backend_state(state: &Arc<RwLock<StateStore>>, events: &broadcast::Sender<StateEvent>) {
     let snapshot = state
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot();
     for session in snapshot.media_sessions {
+        if is_native_device(&session.id.device_id) {
+            continue;
+        }
         apply_backend_event(
             state,
             events,
@@ -158,6 +171,9 @@ fn clear_backend_state(state: &Arc<RwLock<StateStore>>, events: &broadcast::Send
         );
     }
     for notification in snapshot.notifications {
+        if is_native_device(&notification.id.device_id) {
+            continue;
+        }
         apply_backend_event(
             state,
             events,
@@ -165,7 +181,7 @@ fn clear_backend_state(state: &Arc<RwLock<StateStore>>, events: &broadcast::Send
         );
     }
     for device in snapshot.devices {
-        if device.id.as_str().starts_with("native:") {
+        if is_native_device(&device.id) {
             continue;
         }
         apply_backend_event(
@@ -264,7 +280,79 @@ fn log_notification_change(change: NotificationChange) {
 #[cfg(test)]
 mod native_coexistence_tests {
     use super::*;
-    use handover_core::{Capability, Device, DeviceId};
+    use handover_core::{
+        Capability, Device, DeviceId, MediaSession, MediaSessionId, Notification, NotificationId,
+        PlaybackState,
+    };
+    use std::collections::BTreeSet;
+
+    fn device(id: &str, capabilities: BTreeSet<Capability>) -> Device {
+        Device {
+            id: DeviceId::new(id),
+            name: id.into(),
+            connected: true,
+            paired: true,
+            battery: None,
+            capabilities,
+        }
+    }
+
+    fn notification(device_id: &str, local_id: &str) -> Notification {
+        Notification {
+            id: NotificationId::new(DeviceId::new(device_id), local_id),
+            app_name: "Example".into(),
+            title: "Hello".into(),
+            body: "World".into(),
+            icon_path: None,
+            clearable: true,
+            actions: vec![],
+            reply_supported: false,
+        }
+    }
+
+    fn media_session(device_id: &str, player_id: &str) -> MediaSession {
+        MediaSession {
+            id: MediaSessionId::new(DeviceId::new(device_id), player_id),
+            application: "Example Music".into(),
+            title: Some("Test track".into()),
+            artist: None,
+            album: None,
+            playback: PlaybackState::Playing,
+            position_ms: None,
+            duration_ms: None,
+            volume_percent: None,
+            controls: BTreeSet::from([handover_core::MediaControl::Pause]),
+        }
+    }
+
+    fn populated_state() -> (Arc<RwLock<StateStore>>, broadcast::Sender<StateEvent>) {
+        let state = Arc::new(RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        for (id, capabilities) in [
+            ("kde-device", BTreeSet::from([Capability::Notifications])),
+            (
+                "native:cert",
+                BTreeSet::from([Capability::Notifications, Capability::Media]),
+            ),
+        ] {
+            apply_backend_event(
+                &state,
+                &events,
+                StateEvent::Device(DeviceEvent::Added(device(id, capabilities))),
+            );
+            apply_backend_event(
+                &state,
+                &events,
+                StateEvent::Notification(NotificationEvent::Added(notification(id, "n1"))),
+            );
+            apply_backend_event(
+                &state,
+                &events,
+                StateEvent::Media(MediaEvent::Added(media_session(id, "player"))),
+            );
+        }
+        (state, events)
+    }
 
     #[test]
     fn kde_loss_keeps_native_device() {
@@ -288,5 +376,91 @@ mod native_coexistence_tests {
         let devices = state.read().unwrap().snapshot().devices;
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].id.as_str(), "native:cert");
+    }
+
+    #[test]
+    fn kde_teardown_clears_only_kde_owned_state() {
+        let (state, events) = populated_state();
+        clear_backend_state(&state, &events);
+
+        let snapshot = state.read().unwrap().snapshot();
+        assert_eq!(
+            snapshot
+                .devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["native:cert"]
+        );
+        assert_eq!(
+            snapshot
+                .notifications
+                .iter()
+                .map(|notification| notification.id.to_string())
+                .collect::<Vec<_>>(),
+            ["native:cert:n1"]
+        );
+        assert_eq!(
+            snapshot
+                .media_sessions
+                .iter()
+                .map(|session| session.id.player_id.clone())
+                .collect::<Vec<_>>(),
+            ["player"]
+        );
+        assert_eq!(
+            snapshot.media_sessions[0].id.device_id.as_str(),
+            "native:cert"
+        );
+    }
+
+    #[test]
+    fn native_teardown_clears_only_native_owned_state() {
+        let (state, events) = populated_state();
+        // Mirror the native session-drop event sequence: per-peer removals
+        // followed by the device going offline.
+        for event in [
+            StateEvent::Notification(NotificationEvent::Removed(NotificationId::new(
+                DeviceId::new("native:cert"),
+                "n1",
+            ))),
+            StateEvent::Media(MediaEvent::Removed(MediaSessionId::new(
+                DeviceId::new("native:cert"),
+                "player",
+            ))),
+            StateEvent::Device(DeviceEvent::Removed(DeviceId::new("native:cert"))),
+        ] {
+            apply_backend_event(&state, &events, event);
+        }
+
+        let snapshot = state.read().unwrap().snapshot();
+        assert_eq!(
+            snapshot
+                .devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["kde-device"]
+        );
+        assert_eq!(
+            snapshot
+                .notifications
+                .iter()
+                .map(|notification| notification.id.to_string())
+                .collect::<Vec<_>>(),
+            ["kde-device:n1"]
+        );
+        assert_eq!(
+            snapshot
+                .media_sessions
+                .iter()
+                .map(|session| session.id.player_id.clone())
+                .collect::<Vec<_>>(),
+            ["player"]
+        );
+        assert_eq!(
+            snapshot.media_sessions[0].id.device_id.as_str(),
+            "kde-device"
+        );
     }
 }
