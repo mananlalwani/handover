@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use handover_core::{
@@ -63,6 +63,7 @@ struct HubInner {
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
     fetches: Mutex<FetchWaiters>,
     counter: AtomicU64,
+    shutdown: AtomicBool,
 }
 
 impl MessagingHub {
@@ -73,8 +74,21 @@ impl MessagingHub {
                 pending: Mutex::new(HashMap::new()),
                 fetches: Mutex::new(HashMap::new()),
                 counter: AtomicU64::new(1),
+                shutdown: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Graceful shutdown: stop the supervisor loop and ask the helper to
+    /// exit. Unclean kills can still orphan the helper; the next supervisor
+    /// generation replaces it.
+    pub(crate) async fn shutdown(&self) {
+        self.inner.shutdown.store(true, Ordering::Relaxed);
+        let _ = self.fire(HelperCommand::Shutdown).await;
+    }
+
+    pub(crate) fn is_shutdown(&self) -> bool {
+        self.inner.shutdown.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -211,6 +225,9 @@ pub(crate) fn spawn_supervisor(
     tokio::spawn(async move {
         let mut restarts: u32 = 0;
         loop {
+            if hub.is_shutdown() {
+                break;
+            }
             let Some(path) = find_helper() else {
                 tokio::time::sleep(DORMANT_RETRY).await;
                 continue;
@@ -221,6 +238,9 @@ pub(crate) fn spawn_supervisor(
                     info!(helper = %process.name, "messaging helper connected");
                     run_session(&state, &events, &hub, process).await;
                     hub.fail_all().await;
+                    if hub.is_shutdown() {
+                        break;
+                    }
                     mark_helper_accounts_down(&state, &events);
                 }
                 Err(error) => {

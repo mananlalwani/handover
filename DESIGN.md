@@ -334,6 +334,35 @@ the Handover IPC API and its CLI/Quickshell clients; a future MPRIS bridge, if
 needed for a backend-independent use case, should be a separate deliberate
 integration rather than daemon-owned duplicate export.
 
+## Messaging
+
+Messaging conversations belong to messaging accounts (endpoints such as one
+linked Google Messages session), never to physical devices. The public
+model lives in `handover-core::messaging`: account-scoped conversation and
+message ids with opaque backend-local keys, RCS-first transports, attested
+capability sets (absence means "not attested", never "assumed absent"),
+and accepted/sent/delivered/displayed/failed semantics where acceptance is
+never delivery. There are no edit, membership-change, or
+disappearing-message capabilities because no backend attests them.
+
+The Google Messages path runs through an optional separate helper process
+over a versioned JSON contract (see
+[`docs/gmessages-sidecar.md`](docs/gmessages-sidecar.md)). The helper owns
+credential bundles, pairing, relay RPCs, polling, and media transfer; the
+daemon owns normalized accounts, conversations, bounded message windows
+(300 per conversation), statuses, typing, and read state, and validates
+every helper record and outbound command. No Google protocol types and no
+AGPL material enter the MIT tree. A missing or dead helper only marks its
+accounts offline; native and KDE Connect state are untouched.
+
+Clients use additive protocol-1 `messages.*` methods (accounts,
+conversations, history with cursor paging, send/send-file, react/unreact,
+read, typing-start, delete, open, login/logout, sync) with an opt-in
+`messages` subscribe flag, following the same snapshot-recovery and
+bounded-channel rules as devices, notifications, and media. Login bundles
+travel file/stdin → local socket → local helper pipe only, rest in
+helper-owned 0600 files, and are revoked with an explicit logout.
+
 ## User service
 
 The installed daemon runs as a systemd user service enabled under

@@ -70,7 +70,7 @@ async fn main() {
     // offline.
     let messaging_hub = MessagingHub::new();
     spawn_supervisor(Arc::clone(&state), events.clone(), messaging_hub.clone());
-    let server = server.with_messaging(messaging_hub);
+    let server = server.with_messaging(messaging_hub.clone());
     let backend = run_backend(Arc::clone(&state), events);
 
     tokio::select! {
@@ -86,6 +86,11 @@ async fn main() {
             }
         }
     }
+    // Graceful shutdown also stops the messaging helper so it does not
+    // outlive the daemon. An unclean kill can still orphan the helper; the
+    // next supervisor generation replaces it on restart.
+    messaging_hub.shutdown().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     info!("handoverd stopped");
 }
 

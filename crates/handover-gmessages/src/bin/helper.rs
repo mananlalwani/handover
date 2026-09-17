@@ -196,6 +196,16 @@ impl LoopbackRelay {
         self.accounts.get_mut(account)
     }
 
+    fn ensure_account(&mut self, account: &str) {
+        self.accounts
+            .entry(account.into())
+            .or_insert(StoredAccount {
+                label: format!("Loopback {account}"),
+                authenticated: false,
+                conversations: BTreeMap::new(),
+            });
+    }
+
     fn seed(&mut self, account: &str) {
         let stored = match self.accounts.get_mut(account) {
             Some(stored) => stored,
@@ -986,10 +996,37 @@ impl LoopbackHelper {
 
     fn dispatch(&mut self, command: HelperCommand) -> Vec<HelperEvent> {
         match command {
-            HelperCommand::Hello => vec![HelperEvent::Hello {
-                helper_protocol: HELPER_PROTOCOL,
-                name: HELPER_NAME.into(),
-            }],
+            HelperCommand::Hello => {
+                // Session restore: every persisted credential bundle gets an
+                // account announcement so a restarted daemon recovers without
+                // asking the user to pair again. Pairing ceremony state
+                // itself is re-attested through the normal sync flow.
+                let mut events = vec![HelperEvent::Hello {
+                    helper_protocol: HELPER_PROTOCOL,
+                    name: HELPER_NAME.into(),
+                }];
+                if let Ok(entries) = std::fs::read_dir(&self.directory) {
+                    let mut accounts: Vec<String> = entries
+                        .filter_map(|entry| entry.ok())
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .filter(|name| name.ends_with(".credentials.json"))
+                        .map(|name| name.trim_end_matches(".credentials.json").to_string())
+                        .collect();
+                    accounts.sort();
+                    for account in accounts {
+                        if !account.is_empty() && account.len() <= 128 {
+                            self.relay.ensure_account(&account);
+                            events.push(HelperEvent::Account {
+                                account: account.clone(),
+                                label: format!("Loopback {account}"),
+                                connected: true,
+                                authenticated: false,
+                            });
+                        }
+                    }
+                }
+                events
+            }
             HelperCommand::Login {
                 account,
                 bundle_b64,

@@ -332,6 +332,352 @@ ShellRoot {
             }
         }
 
+        FileDialog {
+            id: attachmentDialog
+            title: "Attach one file"
+            fileMode: FileDialog.OpenFile
+            onAccepted: {
+                if (messagesCard.selectedConversation
+                    && !HandoverService.sendAttachment(
+                        messagesCard.selectedConversation, selectedFile.toString(), "")) {
+                    messagesCard.status = HandoverService.lastError;
+                }
+            }
+        }
+
+        Rectangle {
+            id: messagesCard
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 320
+            radius: 8
+            color: "#303741"
+            property var selectedConversation: null
+            property var replyingTo: null
+            property string status: ""
+            property var selectedAccount: accountPicker.count > 0
+                ? HandoverService.messagingAccounts[accountPicker.currentIndex] : null
+            property var accountConversations: selectedAccount
+                ? HandoverService.conversations.filter(item =>
+                    item.id.account_id === selectedAccount.id)
+                : []
+            property string selectedKey: selectedConversation
+                ? HandoverService.conversationKey(selectedConversation) : ""
+            property var selectedMessages: selectedKey
+                && HandoverService.conversationMessages[selectedKey]
+                ? HandoverService.conversationMessages[selectedKey] : []
+            property var selectedTyping: selectedConversation
+                ? HandoverService.typingStates.find(item =>
+                    item.conversation_id.account_id === selectedConversation.account_id
+                    && item.conversation_id.local_id === selectedConversation.local_id)
+                : null
+            property var selectedRead: selectedConversation
+                ? HandoverService.readStates.find(item =>
+                    item.conversation_id.account_id === selectedConversation.account_id
+                    && item.conversation_id.local_id === selectedConversation.local_id)
+                : null
+
+            function conversationLabel(conversation) {
+                if (conversation.title)
+                    return conversation.title;
+                const others = conversation.participants.filter(item => !item.is_self);
+                return others.map(item =>
+                    item.display_name || item.address || item.local_id).join(", ");
+            }
+
+            function senderLabel(sender) {
+                return sender.display_name || sender.address || sender.local_id;
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 6
+
+                Text {
+                    Layout.fillWidth: true
+                    color: "#b9c2cf"
+                    textFormat: Text.PlainText
+                    text: "Messages"
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    color: "#ffb4ab"
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    visible: HandoverService.pairingPrompt !== null
+                    text: HandoverService.pairingPrompt
+                        ? "Pairing " + HandoverService.pairingPrompt.accountId
+                            + ": " + HandoverService.pairingPrompt.prompt
+                        : ""
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: HandoverService.messagingAccounts.length > 0
+                    spacing: 6
+
+                    ComboBox {
+                        id: accountPicker
+                        Layout.fillWidth: true
+                        model: HandoverService.messagingAccounts.map(item => item.label)
+                        onCurrentIndexChanged: {
+                            messagesCard.selectedConversation = null;
+                            messagesCard.replyingTo = null;
+                        }
+                    }
+
+                    Button {
+                        text: "Sync"
+                        enabled: accountPicker.count > 0 && !HandoverService.pendingMessaging
+                        onClicked: {
+                            const account = HandoverService.messagingAccounts[accountPicker.currentIndex];
+                            if (account)
+                                HandoverService.syncAccount(account.id);
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    color: "#e4e7eb"
+                    textFormat: Text.PlainText
+                    visible: HandoverService.messagingAccounts.length === 0
+                    text: "No messaging accounts. Pair with `handoverctl messages login`."
+                }
+
+                ListView {
+                    id: conversationList
+                    Layout.fillWidth: true
+                    implicitHeight: 96
+                    clip: true
+                    model: messagesCard.accountConversations
+                    delegate: ItemDelegate {
+                        required property var modelData
+                        required property int index
+                        width: conversationList.width
+                        highlighted: messagesCard.selectedConversation !== null
+                            && HandoverService.sameConversationId(
+                                messagesCard.selectedConversation, modelData.id)
+                        text: {
+                            const unread = modelData.unread_count ? " (" + modelData.unread_count + ")" : "";
+                            const kind = modelData.kind === "group" ? " [group]" : "";
+                            return messagesCard.conversationLabel(modelData)
+                                + " · " + modelData.transport + kind + unread;
+                        }
+                        onClicked: {
+                            messagesCard.selectedConversation = modelData.id;
+                            messagesCard.replyingTo = null;
+                            HandoverService.loadHistory(modelData.id, 20);
+                            HandoverService.markRead(modelData.id);
+                        }
+                    }
+                }
+
+                ListView {
+                    id: messageList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: messagesCard.selectedMessages
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        width: messageList.width
+                        spacing: 2
+
+                        Text {
+                            Layout.fillWidth: true
+                            color: modelData.sender.is_self ? "#9ecaff" : "#ffffff"
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            text: (modelData.deleted ? "[deleted] " : "")
+                                + messagesCard.senderLabel(modelData.sender) + ": "
+                                + (modelData.text || "")
+                                + (modelData.attachments.length > 0
+                                    ? " [" + modelData.attachments.map(item =>
+                                        item.name || item.local_id).join(", ") + "]" : "")
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            color: "#8b95a5"
+                            textFormat: Text.PlainText
+                            visible: modelData.reply_to !== undefined && modelData.reply_to !== null
+                                || modelData.reactions.length > 0
+                            text: {
+                                const reply = modelData.reply_to
+                                    ? "reply to " + modelData.reply_to.local_id + " " : "";
+                                const reactions = modelData.reactions.map(item =>
+                                    item.emoji + "×" + item.count).join(" ");
+                                return reply + reactions;
+                            }
+                        }
+
+                        Row {
+                            spacing: 4
+                            visible: {
+                                const conversation = messagesCard.accountConversations.find(item =>
+                                    HandoverService.sameConversationId(
+                                        item.id, modelData.id.conversation_id));
+                                return conversation
+                                    && conversation.capabilities.includes("reactions");
+                            }
+                            Repeater {
+                                model: ["❤", "👍", "😂"]
+                                Button {
+                                    required property var modelData
+                                    text: modelData
+                                    flat: true
+                                    enabled: !HandoverService.pendingMessaging
+                                    onClicked: {
+                                        const message = parent.parent.parent.modelData;
+                                        const reacted = message.reactions.some(item =>
+                                            item.emoji === modelData
+                                            && item.participant_ids.includes("self"));
+                                        if (reacted)
+                                            HandoverService.unreact(
+                                                message.id.conversation_id,
+                                                message.id.local_id, modelData);
+                                        else
+                                            HandoverService.react(
+                                                message.id.conversation_id,
+                                                message.id.local_id, modelData);
+                                    }
+                                }
+                            }
+                            Button {
+                                text: "Reply"
+                                flat: true
+                                enabled: !HandoverService.pendingMessaging
+                                onClicked: messagesCard.replyingTo =
+                                    parent.parent.parent.modelData.id.local_id
+                            }
+                            Button {
+                                text: "Delete"
+                                flat: true
+                                visible: parent.parent.parent.modelData.sender.is_self
+                                enabled: !HandoverService.pendingMessaging
+                                onClicked: {
+                                    const message = parent.parent.parent.modelData;
+                                    HandoverService.deleteMessage(
+                                        message.id.conversation_id, message.id.local_id);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    color: "#8b95a5"
+                    textFormat: Text.PlainText
+                    visible: messagesCard.selectedTyping !== null
+                        && messagesCard.selectedTyping !== undefined
+                    text: "typing…"
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: messagesCard.selectedConversation !== null
+                        && HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
+                    spacing: 6
+
+                    Button {
+                        text: "Load older"
+                        enabled: !HandoverService.pendingMessaging
+                        onClicked: HandoverService.loadHistory(
+                            messagesCard.selectedConversation, 20,
+                            HandoverService.conversationCursors[messagesCard.selectedKey])
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    color: "#8b95a5"
+                    textFormat: Text.PlainText
+                    visible: messagesCard.replyingTo !== null
+                    text: "Replying to " + (messagesCard.replyingTo || "")
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: messagesCard.selectedConversation !== null
+                    spacing: 6
+
+                    TextField {
+                        id: composeField
+                        Layout.fillWidth: true
+                        placeholderText: "Message"
+                        enabled: !HandoverService.pendingMessaging
+                        onAccepted: sendComposed()
+                        function sendComposed() {
+                            if (!messagesCard.selectedConversation || text.trim().length === 0)
+                                return;
+                            if (HandoverService.sendText(
+                                messagesCard.selectedConversation, text)) {
+                                text = "";
+                                messagesCard.replyingTo = null;
+                            } else {
+                                messagesCard.status = HandoverService.lastError;
+                            }
+                        }
+                    }
+
+                    Button {
+                        text: "Send"
+                        enabled: composeField.text.trim().length > 0
+                            && !HandoverService.pendingMessaging
+                        onClicked: composeField.sendComposed()
+                    }
+
+                    Button {
+                        text: "Attach"
+                        enabled: !HandoverService.pendingMessaging
+                        onClicked: attachmentDialog.open()
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: messagesCard.selectedAccount !== null
+                    spacing: 6
+
+                    TextField {
+                        id: openField
+                        Layout.fillWidth: true
+                        placeholderText: "Start conversation: +15550001"
+                        enabled: !HandoverService.pendingMessaging
+                    }
+
+                    Button {
+                        text: "Start"
+                        enabled: openField.text.trim().length > 0
+                            && !HandoverService.pendingMessaging
+                        onClicked: {
+                            if (HandoverService.openConversation(
+                                messagesCard.selectedAccount.id, [openField.text.trim()]))
+                                openField.text = "";
+                            else
+                                messagesCard.status = HandoverService.lastError;
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    color: "#b9c2cf"
+                    textFormat: Text.PlainText
+                    visible: messagesCard.status.length > 0
+                        || (messagesCard.selectedRead !== null
+                            && messagesCard.selectedRead !== undefined)
+                    text: messagesCard.status.length > 0 ? messagesCard.status
+                        : (messagesCard.selectedRead && messagesCard.selectedRead.unread
+                            ? "unread" : "read");
+                }
+            }
+        }
+
         Connections {
             target: HandoverService
             function onCommandFinished(method, notificationId, success, error) {
@@ -342,6 +688,12 @@ ShellRoot {
                 window.shareStatus = success
                     ? "Accepted by KDE Connect; delivery is not confirmed"
                     : error;
+            }
+            function onMessagingFinished(method, requestId, success, error) {
+                messagesCard.status = success ? "accepted: " + requestId : error;
+            }
+            function onMessagingAccepted(method, subject, success, error) {
+                messagesCard.status = success ? "accepted" : error;
             }
         }
     }

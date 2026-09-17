@@ -23,6 +23,189 @@ Singleton {
     signal commandFinished(string method, var notificationId, bool success, string error)
     signal shareFinished(string method, string deviceId, bool success, string error)
     signal mediaFinished(string action, var mediaId, bool success, string error)
+    // Messaging state. Conversations belong to messaging accounts, never to
+    // physical devices. Message windows are keyed by "account:thread".
+    property var messagingAccounts: []
+    property var conversations: []
+    property var conversationMessages: ({})
+    property var conversationCursors: ({})
+    property var typingStates: []
+    property var readStates: []
+    property var pairingPrompt: null
+    property var pendingMessaging: null
+    signal messagingFinished(string method, string requestId, bool success, string error)
+    signal messagingAccepted(string method, string subject, bool success, string error)
+
+    function conversationKey(id) {
+        return id.account_id + ":" + id.local_id;
+    }
+
+    function sameConversationId(first, second) {
+        return first.account_id === second.account_id && first.local_id === second.local_id;
+    }
+
+    function sameMessageId(first, second) {
+        return sameConversationId(first.conversation_id, second.conversation_id)
+            && first.local_id === second.local_id;
+    }
+
+    function replaceConversation(conversation) {
+        const next = conversations.filter(existing => !sameConversationId(existing.id, conversation.id));
+        next.push(conversation);
+        conversations = next;
+    }
+
+    function removeConversation(conversationId) {
+        conversations = conversations.filter(existing => !sameConversationId(existing.id, conversationId));
+        const key = conversationKey(conversationId);
+        const messages = Object.assign({}, conversationMessages);
+        delete messages[key];
+        conversationMessages = messages;
+        const cursors = Object.assign({}, conversationCursors);
+        delete cursors[key];
+        conversationCursors = cursors;
+    }
+
+    function replaceMessages(conversationId, incoming, cursorNext) {
+        const key = conversationKey(conversationId);
+        const known = conversationMessages[key] || [];
+        const merged = known.filter(existing =>
+            !incoming.some(next => next.id.local_id === existing.id.local_id));
+        for (const message of incoming)
+            merged.push(message);
+        merged.sort((a, b) => (a.sent_at || 0) - (b.sent_at || 0)
+            || (a.id.local_id < b.id.local_id ? -1 : 1));
+        const messages = Object.assign({}, conversationMessages);
+        messages[key] = merged;
+        conversationMessages = messages;
+        if (cursorNext !== undefined) {
+            const cursors = Object.assign({}, conversationCursors);
+            if (cursorNext)
+                cursors[key] = cursorNext;
+            else
+                delete cursors[key];
+            conversationCursors = cursors;
+        }
+    }
+
+    function removeMessage(messageId) {
+        const key = conversationKey(messageId.conversation_id);
+        const known = conversationMessages[key] || [];
+        const messages = Object.assign({}, conversationMessages);
+        messages[key] = known.filter(existing => !sameMessageId(existing.id, messageId));
+        conversationMessages = messages;
+    }
+
+    function replaceTyping(state) {
+        const next = typingStates.filter(existing =>
+            !sameConversationId(existing.conversation_id, state.conversation_id));
+        if (state.participant_ids && state.participant_ids.length > 0)
+            next.push(state);
+        typingStates = next;
+    }
+
+    function replaceReadState(state) {
+        const next = readStates.filter(existing =>
+            !sameConversationId(existing.conversation_id, state.conversation_id));
+        next.push(state);
+        readStates = next;
+    }
+
+    function sendMessaging(method, fields) {
+        if (pendingMessaging) {
+            lastError = "another messaging command is still pending";
+            return false;
+        }
+        if (!sendRequest(method, fields)) {
+            lastError = "handoverd is disconnected";
+            return false;
+        }
+        pendingMessaging = { method: method };
+        lastError = "";
+        return true;
+    }
+
+    function finishMessaging(success, error, requestId, subject) {
+        if (!pendingMessaging)
+            return;
+        const method = pendingMessaging.method;
+        pendingMessaging = null;
+        if (requestId !== undefined)
+            messagingFinished(method, requestId, success, error);
+        else
+            messagingAccepted(method, subject || "", success, error);
+    }
+
+    function refreshMessaging() {
+        sendRequest("messages.accounts", null);
+    }
+
+    function loadConversations(accountId) {
+        sendRequest("messages.conversations", { account_id: accountId });
+    }
+
+    function loadHistory(conversationId, limit, cursor) {
+        const fields = { conversation_id: conversationId };
+        if (limit)
+            fields.limit = limit;
+        if (cursor)
+            fields.cursor = cursor;
+        sendRequest("messages.history", fields);
+    }
+
+    function sendText(conversationId, text) {
+        return sendMessaging("messages.send", { conversation_id: conversationId, text: text });
+    }
+
+    function sendAttachment(conversationId, fileUrl, caption) {
+        const fields = { conversation_id: conversationId, file_url: fileUrl };
+        if (caption)
+            fields.caption = caption;
+        return sendMessaging("messages.send_file", fields);
+    }
+
+    function react(conversationId, messageLocalId, emoji) {
+        return sendMessaging("messages.react", {
+            message_id: { conversation_id: conversationId, local_id: messageLocalId },
+            emoji: emoji
+        });
+    }
+
+    function unreact(conversationId, messageLocalId, emoji) {
+        return sendMessaging("messages.unreact", {
+            message_id: { conversation_id: conversationId, local_id: messageLocalId },
+            emoji: emoji
+        });
+    }
+
+    function markRead(conversationId) {
+        return sendMessaging("messages.read", { conversation_id: conversationId });
+    }
+
+    function sendTyping(conversationId) {
+        return sendMessaging("messages.typing", { conversation_id: conversationId });
+    }
+
+    function deleteMessage(conversationId, messageLocalId) {
+        return sendMessaging("messages.delete", {
+            message_id: { conversation_id: conversationId, local_id: messageLocalId }
+        });
+    }
+
+    function openConversation(accountId, addresses) {
+        return sendMessaging("messages.open", {
+            account_id: accountId,
+            addresses: addresses
+        });
+    }
+
+    function syncAccount(accountId) {
+        return sendMessaging("messages.sync", { account_id: accountId });
+    }
+
+    function logoutAccount(accountId) {
+        return sendMessaging("messages.logout", { account_id: accountId });
+    }
 
     function sendRequest(method, fields, socketOverride) {
         const socket = socketOverride || socketLoader.item;
@@ -115,7 +298,7 @@ Singleton {
         lastError = "";
         sendRequest("hello", null, socket);
         sendRequest("devices.list", null, socket);
-        sendRequest("subscribe", { shares: true, media: true }, socket);
+        sendRequest("subscribe", { shares: true, media: true, messages: true }, socket);
     }
 
     function scheduleReconnect(message) {
@@ -125,9 +308,20 @@ Singleton {
         mediaSessions = [];
         lastReceivedShare = null;
         lastShareResult = null;
+        messagingAccounts = [];
+        conversations = [];
+        conversationMessages = {};
+        conversationCursors = {};
+        typingStates = [];
+        readStates = [];
+        pairingPrompt = null;
         if (pendingCommand) {
             finishPending(false, message);
             pendingCommand = null;
+        }
+        if (pendingMessaging) {
+            finishMessaging(false, message);
+            pendingMessaging = null;
         }
         retryTimer.restart();
     }
@@ -215,6 +409,16 @@ Singleton {
             devices = message.devices || [];
             notifications = message.notifications || [];
             mediaSessions = message.media_sessions || [];
+            messagingAccounts = message.messaging_accounts || [];
+            conversations = message.conversations || [];
+            typingStates = message.typing_states || [];
+            readStates = message.read_states || [];
+            if (message.conversations) {
+                for (const conversation of message.conversations)
+                    loadHistory(conversation.id, 20);
+            } else {
+                refreshMessaging();
+            }
             break;
         case "device_added":
         case "device_updated":
@@ -247,6 +451,77 @@ Singleton {
             if (pendingCommand && pendingCommand.deviceId === message.device_id)
                 finishPending(true, "");
             break;
+        case "accounts":
+            break;
+        case "conversations":
+            for (const conversation of message.conversations || [])
+                replaceConversation(conversation);
+            break;
+        case "history":
+            replaceMessages(message.conversation_id, message.messages || [], message.cursor_next);
+            break;
+        case "typing_states":
+            typingStates = message.states || [];
+            break;
+        case "read_states":
+            readStates = message.states || [];
+            break;
+        case "account_added":
+        case "account_updated":
+            {
+                const next = messagingAccounts.filter(existing => existing.id !== message.account.id);
+                next.push(message.account);
+                messagingAccounts = next;
+                if (message.account.authenticated)
+                    loadConversations(message.account.id);
+            }
+            break;
+        case "account_removed":
+            messagingAccounts = messagingAccounts.filter(existing => existing.id !== message.account_id);
+            conversations = conversations.filter(existing =>
+                existing.id.account_id !== message.account_id);
+            break;
+        case "conversation_added":
+        case "conversation_updated":
+            replaceConversation(message.conversation);
+            loadHistory(message.conversation.id, 20);
+            break;
+        case "conversation_removed":
+            removeConversation(message.conversation_id);
+            break;
+        case "message_added":
+        case "message_updated":
+            replaceMessages(message.message.id.conversation_id, [message.message]);
+            break;
+        case "message_removed":
+            removeMessage(message.message_id);
+            break;
+        case "message_status":
+            break;
+        case "typing":
+            replaceTyping(message.state);
+            break;
+        case "read_state":
+            replaceReadState(message.state);
+            break;
+        case "pairing":
+            pairingPrompt = { accountId: message.account_id, prompt: message.prompt };
+            break;
+        case "message_accepted":
+            if (pendingMessaging)
+                finishMessaging(true, "", message.request_id);
+            break;
+        case "conversation_accepted":
+            if (pendingMessaging)
+                finishMessaging(true, "", undefined,
+                    message.conversation_id.account_id + ":" + message.conversation_id.local_id);
+            break;
+        case "account_accepted":
+            if (pendingMessaging)
+                finishMessaging(true, "", undefined, message.account_id);
+            else
+                refreshMessaging();
+            break;
         case "media_accepted":
             if (pendingCommand && pendingCommand.mediaId
                     && sameMediaId(pendingCommand.mediaId, message.id))
@@ -260,6 +535,8 @@ Singleton {
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
             finishPending(false, lastError);
+            if (pendingMessaging)
+                finishMessaging(false, lastError);
             break;
         default:
             console.warn("Handover: unknown daemon message type", message.type);

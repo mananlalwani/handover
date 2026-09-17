@@ -36,6 +36,20 @@ previous, play/pause, and next controls, gated by each session's advertised
 capabilities. When seeking is supported, the card offers ten-second back and
 forward requests; it does not animate a progress bar from sparse backend updates.
 
+Messaging state is account-scoped, never device-scoped: `messagingAccounts`,
+`conversations`, `conversationMessages` (keyed by `account:thread`),
+`typingStates`, `readStates`, and `pairingPrompt`. `refreshMessaging`,
+`loadConversations`, `loadHistory`, `sendText`, `sendAttachment`, `react`,
+`unreact`, `markRead`, `sendTyping`, `deleteMessage`, `openConversation`,
+`syncAccount`, and `logoutAccount` speak the additive protocol-1
+`messages.*` methods; `messagingFinished`/`messagingAccepted` report
+acceptance, never delivery. The example includes a straightforward Messages
+card: account picker, conversation list with unread counts, paged history,
+compose with attachments, reply targeting, reaction toggles, typing display,
+read state, and conversation creation. Pairing itself stays in
+`handoverctl messages login`; the UI only displays the helper's
+verification prompt.
+
 The service requests a snapshot and subscribes after every connection. If the
 daemon is absent or restarts, it clears its local view and retries after two
 seconds.
