@@ -496,6 +496,8 @@ dependencies = [
  "handover-ipc",
  "handover-kdeconnect",
  "handover-native",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

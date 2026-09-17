@@ -1,6 +1,7 @@
 mod ipc_server;
 mod messaging;
 mod messaging_backend;
+mod messaging_cache;
 mod state;
 
 use std::sync::OnceLock;
@@ -32,7 +33,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
     info!("handoverd started");
 
-    let state = Arc::new(RwLock::new(StateStore::default()));
+    let mut initial_state = StateStore::default();
+    if let Err(error) = messaging_cache::restore(&mut initial_state) {
+        warn!(%error, "could not restore messaging cache");
+    }
+    let state = Arc::new(RwLock::new(initial_state));
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
     match NativeBackend::default_directory().and_then(NativeBackend::open) {
         Ok(native) => {
@@ -157,6 +162,7 @@ fn apply_backend_event(
             );
         }
     }
+    let messaging_event = matches!(event, StateEvent::Messaging(_));
     let outcome = state
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -166,6 +172,9 @@ fn apply_backend_event(
     }
     if outcome.changed {
         let _subscriber_count = events.send(event);
+        if messaging_event && let Err(error) = messaging_cache::persist(state) {
+            warn!(%error, "could not persist messaging cache");
+        }
     }
 }
 

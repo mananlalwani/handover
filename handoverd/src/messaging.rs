@@ -105,6 +105,13 @@ impl MessagingStore {
         self.read.values().cloned().collect()
     }
 
+    pub(crate) fn snapshot_messages(&self) -> Vec<Message> {
+        self.messages
+            .values()
+            .flat_map(|window| window.iter().cloned())
+            .collect()
+    }
+
     pub(crate) fn account(&self, id: &MessagingAccountId) -> Option<&MessagingAccount> {
         self.accounts.get(id)
     }

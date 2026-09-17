@@ -12,6 +12,8 @@ handover-gmessages = { path = "../crates/handover-gmessages" }
 handover-ipc = { path = "../crates/handover-ipc" }
 handover-kdeconnect = { path = "../crates/handover-kdeconnect" }
 handover-native = { path = "../crates/handover-native" }
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

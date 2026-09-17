@@ -519,6 +519,9 @@ async fn ingest_event(
                     .messaging_mut()
                     .reconcile_window(&conversation_id, normalized);
                 publish_outcome(state, events, outcome);
+                if let Err(error) = crate::messaging_cache::persist(state) {
+                    warn!(%error, "could not persist messaging cache");
+                }
             } else {
                 for wire in messages {
                     let wire = scrub_staged_paths(wire);
