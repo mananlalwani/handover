@@ -519,7 +519,7 @@ class NativeTransport(private val context: Context) {
             } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
                 Files.move(temporary.toPath(), destination.toPath())
             }
-            runCatching { notifyReceived("file", name, null) }
+            runCatching { notifyReceived("file", name, null, null) }
             broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
                 .put("path", destination.absolutePath).put("source", serverId ?: serverFingerprint))
             sendTransferResult(transferId, "completed", null)
@@ -560,7 +560,7 @@ class NativeTransport(private val context: Context) {
             resolver.update(destination, ContentValues().apply {
                 put(MediaStore.Downloads.IS_PENDING, 0)
             }, null, null)
-            notifyReceived("file", name, null)
+            notifyReceived("file", name, null, destination)
             broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
                 .put("path", destination.toString()).put("source", serverId ?: serverFingerprint))
             sendTransferResult(transferId, "completed", null)
@@ -573,7 +573,7 @@ class NativeTransport(private val context: Context) {
         }
     }
 
-    private fun notifyReceived(kind: String, value: String, url: String?) {
+    private fun notifyReceived(kind: String, value: String, url: String?, file: Uri? = null) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(SHARE_CHANNEL, "Received shares", NotificationManager.IMPORTANCE_DEFAULT))
         val source = (serverId ?: serverFingerprint ?: "unknown desktop").take(12)
@@ -591,6 +591,17 @@ class NativeTransport(private val context: Context) {
             }
         } else {
             builder.setContentTitle("File received from $source").setContentText(value)
+            if (file != null) {
+                val mime = context.contentResolver.getType(file)
+                    ?: java.net.URLConnection.guessContentTypeFromName(value)
+                    ?: "application/octet-stream"
+                val intent = Intent(Intent.ACTION_VIEW).setDataAndType(file, mime)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                builder.setContentIntent(PendingIntent.getActivity(
+                    context, file.hashCode(), intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ))
+            }
         }
         manager.notify((System.currentTimeMillis() and 0x7fffffff).toInt(), builder.build())
     }

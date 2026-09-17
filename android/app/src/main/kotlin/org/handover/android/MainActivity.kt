@@ -19,6 +19,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.RemoteInput
 import android.provider.Settings
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.view.View
 
 class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
@@ -28,6 +32,39 @@ class MainActivity : android.app.Activity() {
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
+
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun panel(vararg children: View) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(16), dp(18), dp(16))
+        background = GradientDrawable().apply {
+            setColor(Color.rgb(247, 248, 252))
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(1), Color.rgb(224, 227, 235))
+        }
+        children.forEach { addView(it, LinearLayout.LayoutParams(-1, -2)) }
+    }
+
+    private fun sectionTitle(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 18f
+        setTextColor(Color.rgb(28, 34, 48))
+        setTypeface(typeface, Typeface.BOLD)
+        setPadding(0, 0, 0, dp(10))
+    }
+
+    private fun primary(button: Button) = button.apply {
+        isAllCaps = false
+        textSize = 15f
+        setTextColor(Color.WHITE)
+        backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(48, 84, 210))
+    }
+
+    private fun secondary(button: Button) = button.apply {
+        isAllCaps = false
+        textSize = 14f
+    }
     private fun permissionLabel(permission: String): String =
         if (CallController.hasPermission(this, permission)) "granted" else "not granted"
 
@@ -155,16 +192,20 @@ class MainActivity : android.app.Activity() {
             requestPermissions(arrayOf("android.permission.ACCESS_LOCAL_NETWORK"), LOCAL_NETWORK_REQUEST)
         }
         status = TextView(this).apply {
-            setPadding(32, 48, 32, 24)
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
         }
         notificationStatus = TextView(this).apply {
-            setPadding(32, 0, 32, 24)
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
         }
         mediaStatus = TextView(this).apply {
-            setPadding(32, 0, 32, 24)
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
         }
         capabilitiesStatus = TextView(this).apply {
-            setPadding(32, 16, 32, 16)
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
         }
         val start = Button(this).apply {
             text = "Enable Handover connection"
@@ -285,29 +326,57 @@ class MainActivity : android.app.Activity() {
                 refreshStatus()
             }
         }
+        primary(start)
+        secondary(manualConnect)
+        listOf(notificationAccess, appNotificationAccess, localNetworkAccess, batteryAccess,
+            backgroundAccess, callAccess, postTest, updateTest, removeTest, startTestMedia,
+            stopTestMedia, revoke).forEach(::secondary)
+
+        val diagnostics = panel(
+            sectionTitle("Diagnostics"), postTest, updateTest, removeTest,
+            startTestMedia, stopTestMedia,
+        ).apply { visibility = View.GONE }
+        val diagnosticsToggle = secondary(Button(this).apply {
+            text = "Show diagnostics"
+            setOnClickListener {
+                diagnostics.visibility = if (diagnostics.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                text = if (diagnostics.visibility == View.VISIBLE) "Hide diagnostics" else "Show diagnostics"
+            }
+        })
+        val title = TextView(this).apply {
+            text = "Handover"
+            textSize = 32f
+            setTextColor(Color.rgb(24, 30, 44))
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val subtitle = TextView(this).apply {
+            text = "Your phone, available on Linux"
+            textSize = 16f
+            setTextColor(Color.rgb(92, 99, 116))
+            setPadding(0, dp(2), 0, dp(18))
+        }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(status, LinearLayout.LayoutParams(-1, -2))
-            addView(notificationStatus, LinearLayout.LayoutParams(-1, -2))
-            addView(mediaStatus, LinearLayout.LayoutParams(-1, -2))
-            addView(capabilitiesStatus, LinearLayout.LayoutParams(-1, -2))
-            addView(start, LinearLayout.LayoutParams(-1, -2))
-            addView(address, LinearLayout.LayoutParams(-1, -2))
-            addView(manualConnect, LinearLayout.LayoutParams(-1, -2))
-            addView(notificationAccess, LinearLayout.LayoutParams(-1, -2))
-            addView(appNotificationAccess, LinearLayout.LayoutParams(-1, -2))
-            addView(localNetworkAccess, LinearLayout.LayoutParams(-1, -2))
-            addView(batteryAccess, LinearLayout.LayoutParams(-1, -2))
-            addView(backgroundAccess, LinearLayout.LayoutParams(-1, -2))
-            addView(callAccess, LinearLayout.LayoutParams(-1, -2))
-            addView(postTest, LinearLayout.LayoutParams(-1, -2))
-            addView(updateTest, LinearLayout.LayoutParams(-1, -2))
-            addView(removeTest, LinearLayout.LayoutParams(-1, -2))
-            addView(startTestMedia, LinearLayout.LayoutParams(-1, -2))
-            addView(stopTestMedia, LinearLayout.LayoutParams(-1, -2))
-            addView(revoke, LinearLayout.LayoutParams(-1, -2))
+            setPadding(dp(20), dp(24), dp(20), dp(32))
+            addView(title)
+            addView(subtitle)
+            listOf(
+                panel(sectionTitle("Connection"), status, start, address, manualConnect),
+                panel(sectionTitle("Permissions & capabilities"), capabilitiesStatus,
+                    notificationAccess, appNotificationAccess, callAccess, localNetworkAccess,
+                    batteryAccess, backgroundAccess),
+                panel(sectionTitle("Activity"), notificationStatus, mediaStatus),
+                diagnosticsToggle,
+                diagnostics,
+                panel(sectionTitle("Pairing"), revoke),
+            ).forEach { view ->
+                addView(view, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            }
         }
-        setContentView(ScrollView(this).apply { addView(content) })
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(Color.rgb(238, 241, 247))
+            addView(content)
+        })
     }
 
     override fun onNewIntent(intent: Intent?) {
