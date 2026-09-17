@@ -529,7 +529,6 @@ Singleton {
         case "conversation_added":
         case "conversation_updated":
             replaceConversation(message.conversation);
-            loadHistory(message.conversation.id, 20);
             break;
         case "conversation_removed":
             removeConversation(message.conversation_id);
