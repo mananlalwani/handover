@@ -1098,55 +1098,61 @@ ShellRoot {
                                     }
                                 }
                             }
-                            Text {
+                            RowLayout {
                                 Layout.fillWidth: true
-                                Layout.alignment: Qt.AlignHCenter
                                 visible: messagesCard.selectedConversation !== null
-                                    && messagesCard.selectedMessages.length > 0
-                                text: messagesCard.selectedMessages.length + " messages loaded"
-                                color: "#9caec5"
-                                horizontalAlignment: Text.AlignHCenter
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                Layout.alignment: Qt.AlignHCenter
-                                visible: messagesCard.selectedConversation !== null
-                                    && messagesCard.selectedMessages.length === 0
-                                text: "Loading messages…"
-                                color: "#9caec5"
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                visible: messagesCard.replyingTo !== null
-                                text: messagesCard.replyingTo !== null
-                                    ? "Replying to message " + messagesCard.replyingTo : ""
-                                color: "#9fc5e8"
-                            }
-                            Button {
-                                Layout.alignment: Qt.AlignHCenter
-                                visible: messagesCard.selectedConversation !== null
-                                text: HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
-                                    ? "Load older messages" : "No older messages available"
-                                enabled: !HandoverService.pendingMessaging
-                                    && HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
-                                onClicked: HandoverService.loadHistory(
-                                    messagesCard.selectedConversation, 20,
-                                    HandoverService.conversationCursors[messagesCard.selectedKey])
-                            }
-                            Button {
-                                Layout.alignment: Qt.AlignHCenter
-                                visible: messagesCard.selectedConversation !== null
-                                text: HandoverService.isLoadingAllHistory(
-                                    messagesCard.selectedConversation)
-                                    ? "Loading all messages…" : "Load all messages"
-                                enabled: !HandoverService.isLoadingAllHistory(
-                                    messagesCard.selectedConversation)
-                                    && !HandoverService.pendingMessaging
-                                onClicked: {
-                                    messagesCard.status = "requesting complete history…";
-                                    if (!HandoverService.loadAllHistory(
-                                        messagesCard.selectedConversation))
-                                        messagesCard.status = HandoverService.lastError;
+                                spacing: 6
+                                Text {
+                                    Layout.fillWidth: true
+                                    color: messagesCard.replyingTo !== null
+                                        ? "#9fc5e8" : "#9caec5"
+                                    elide: Text.ElideRight
+                                    text: {
+                                        if (messagesCard.replyingTo !== null)
+                                            return "Replying to " + messagesCard.replyingTo;
+                                        if (HandoverService.isLoadingAllHistory(
+                                                messagesCard.selectedConversation))
+                                            return "Loading all messages…";
+                                        if (messagesCard.status.length > 0)
+                                            return messagesCard.status;
+                                        if (messagesCard.selectedMessages.length === 0)
+                                            return "Loading messages…";
+                                        return messagesCard.selectedMessages.length + " messages";
+                                    }
+                                }
+                                ToolButton {
+                                    text: "⋯"
+                                    onClicked: messageOptions.open()
+                                    Menu {
+                                        id: messageOptions
+                                        MenuItem {
+                                            text: "Load older messages"
+                                            enabled: !HandoverService.pendingMessaging
+                                                && HandoverService.conversationCursors[
+                                                    messagesCard.selectedKey] !== undefined
+                                            onTriggered: HandoverService.loadHistory(
+                                                messagesCard.selectedConversation, 20,
+                                                HandoverService.conversationCursors[
+                                                    messagesCard.selectedKey])
+                                        }
+                                        MenuItem {
+                                            text: "Load all messages"
+                                            enabled: !HandoverService.isLoadingAllHistory(
+                                                messagesCard.selectedConversation)
+                                                && !HandoverService.pendingMessaging
+                                            onTriggered: {
+                                                messagesCard.status = "requesting complete history…";
+                                                if (!HandoverService.loadAllHistory(
+                                                    messagesCard.selectedConversation))
+                                                    messagesCard.status = HandoverService.lastError;
+                                            }
+                                        }
+                                        MenuItem {
+                                            text: "Cancel reply"
+                                            visible: messagesCard.replyingTo !== null
+                                            onTriggered: messagesCard.replyingTo = null
+                                        }
+                                    }
                                 }
                             }
                             RowLayout {
@@ -1192,13 +1198,6 @@ ShellRoot {
                                         && !HandoverService.pendingMessaging
                                     onClicked: attachmentDialog.open()
                                 }
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                visible: messagesCard.status.length > 0
-                                text: messagesCard.status
-                                color: "#9fb7d0"
-                                elide: Text.ElideRight
                             }
                         }
                     }
