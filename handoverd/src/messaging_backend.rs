@@ -24,6 +24,7 @@ use handover_gmessages::MAX_BUNDLE_BYTES;
 use handover_gmessages::contract::{HelperCommand, HelperEvent, WireMessage};
 use handover_gmessages::normalize::{
     event_ids, normalize_account, normalize_conversation, normalize_message, parse_status,
+    resolve_sender,
 };
 use handover_gmessages::staging::validate_staged_path;
 use handover_gmessages::supervisor::{HelperProcess, backoff_delay, find_helper, redact_command};
@@ -453,7 +454,18 @@ async fn ingest_event(
                 for wire in messages {
                     let wire = scrub_staged_paths(wire);
                     match normalize_message(&conversation_id, wire) {
-                        Ok(message) => normalized.push(message),
+                        Ok(mut message) => {
+                            if let Some(conversation) = state
+                                .read()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .messaging()
+                                .conversation(&conversation_id)
+                                .cloned()
+                            {
+                                resolve_sender(&mut message, &conversation);
+                            }
+                            normalized.push(message);
+                        }
                         Err(error) => warn!(%error, "dropping invalid message record"),
                     }
                 }
@@ -467,7 +479,16 @@ async fn ingest_event(
                 for wire in messages {
                     let wire = scrub_staged_paths(wire);
                     match normalize_message(&conversation_id, wire) {
-                        Ok(message) => {
+                        Ok(mut message) => {
+                            if let Some(conversation) = state
+                                .read()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .messaging()
+                                .conversation(&conversation_id)
+                                .cloned()
+                            {
+                                resolve_sender(&mut message, &conversation);
+                            }
                             let known = state
                                 .read()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
