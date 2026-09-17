@@ -381,9 +381,8 @@ ShellRoot {
 
         Rectangle {
             id: messagesCard
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.minimumHeight: 320
+            anchors.fill: parent
+            anchors.margins: 16
             radius: 8
             color: "#303741"
             visible: window.page === "messages"
