@@ -35,6 +35,7 @@ class MainActivity : android.app.Activity() {
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
+    private val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
@@ -67,6 +68,17 @@ class MainActivity : android.app.Activity() {
     private fun secondary(button: Button) = button.apply {
         isAllCaps = false
         textSize = 14f
+    }
+
+    private fun refreshPermissionButtons() {
+        permissionButtons.forEach { (button, granted) ->
+            val enabled = granted()
+            button.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                if (enabled) Color.rgb(35, 142, 84) else Color.rgb(105, 70, 190),
+            )
+            button.setTextColor(Color.WHITE)
+            button.alpha = if (enabled) 0.88f else 1f
+        }
     }
 
     private fun menuButton(title: String, description: String, action: () -> Unit) =
@@ -136,6 +148,7 @@ class MainActivity : android.app.Activity() {
         } else {
             "Installed: ${installed.versionName}\nReady to install: ${pending.versionName.ifEmpty { pending.versionCode.toString() }}"
         }
+        refreshPermissionButtons()
     }
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
@@ -385,6 +398,26 @@ class MainActivity : android.app.Activity() {
         listOf(notificationAccess, appNotificationAccess, localNetworkAccess, batteryAccess,
             backgroundAccess, callAccess, postTest, updateTest, removeTest, startTestMedia,
             stopTestMedia, revoke).forEach(::secondary)
+        permissionButtons += notificationAccess to {
+            HandoverNotificationService.isEnabled(this@MainActivity)
+        }
+        permissionButtons += appNotificationAccess to {
+            getSystemService(NotificationManager::class.java).areNotificationsEnabled()
+        }
+        permissionButtons += callAccess to {
+            listOf(android.Manifest.permission.READ_PHONE_STATE, android.Manifest.permission.CALL_PHONE,
+                android.Manifest.permission.ANSWER_PHONE_CALLS).all {
+                CallController.hasPermission(this@MainActivity, it)
+            }
+        }
+        permissionButtons += localNetworkAccess to {
+            android.os.Build.VERSION.SDK_INT < 37 ||
+                checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") == PackageManager.PERMISSION_GRANTED
+        }
+        permissionButtons += batteryAccess to {
+            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        }
+        refreshPermissionButtons()
 
         fun page(title: String, description: String, vararg sections: View) =
             LinearLayout(this).apply {
