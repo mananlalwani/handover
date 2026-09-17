@@ -962,6 +962,26 @@ ShellRoot {
                                         spacing: 3
                                         Text {
                                             Layout.fillWidth: true
+                                            Layout.leftMargin: 12
+                                            Layout.rightMargin: 12
+                                            Layout.topMargin: 10
+                                            text: {
+                                                const conversation = messagesCard.accountConversations.find(item =>
+                                                    HandoverService.sameConversationId(
+                                                        item.id, modelData.id.conversation_id));
+                                                const group = conversation && conversation.kind === "group";
+                                                return (!modelData.sender.is_self || group)
+                                                    ? messagesCard.senderLabel(modelData.sender) : "You";
+                                            }
+                                            color: "#b9d7f2"
+                                            wrapMode: Text.Wrap
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 12
+                                            Layout.rightMargin: 12
                                             text: modelData.text || "[attachment]"
                                             color: "#ffffff"
                                             wrapMode: Text.Wrap
@@ -969,6 +989,8 @@ ShellRoot {
                                         }
                                         Text {
                                             Layout.fillWidth: true
+                                            Layout.leftMargin: 12
+                                            Layout.rightMargin: 12
                                             visible: (modelData.reactions || []).length > 0
                                             text: (modelData.reactions || []).map(item =>
                                                 item.emoji + " ×" + item.count).join("  ")
@@ -976,6 +998,9 @@ ShellRoot {
                                             font.pixelSize: 12
                                         }
                                         Row {
+                                            Layout.leftMargin: 8
+                                            Layout.rightMargin: 8
+                                            Layout.bottomMargin: 6
                                             spacing: 4
                                             Button {
                                                 text: "Reply"
