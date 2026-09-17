@@ -38,7 +38,6 @@ ShellRoot {
             anchors.fill: parent
             anchors.margins: 16
             spacing: 12
-            z: 2
 
             Text {
                 Layout.fillWidth: true
@@ -78,6 +77,13 @@ ShellRoot {
                         onClicked: window.page = modelData.key
                     }
                 }
+            }
+
+            Item {
+                id: messageContentArea
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: window.page === "messages"
             }
 
             Rectangle {
@@ -384,8 +390,9 @@ ShellRoot {
 
         Rectangle {
             id: messagesCard
+            parent: messageContentArea
             anchors.fill: parent
-            anchors.margins: 16
+            anchors.margins: 0
             radius: 8
             color: "#303741"
             visible: window.page === "messages"
@@ -754,7 +761,8 @@ ShellRoot {
 
         Item {
             id: modernMessages
-            anchors.fill: messagesCard
+            parent: messagesCard
+            anchors.fill: parent
             anchors.margins: 14
             visible: window.page === "messages"
 
