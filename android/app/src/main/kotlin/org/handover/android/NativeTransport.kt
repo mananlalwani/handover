@@ -3,6 +3,7 @@ package org.handover.android
 import android.content.Context
 import android.content.Intent
 import android.content.ContentResolver
+import android.content.ContentValues
 import android.net.Uri
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,6 +12,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -469,6 +472,10 @@ class NativeTransport(private val context: Context) {
     }
 
     private fun receiveFile(input: BufferedInputStream, transferId: String, name: String, size: Long) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            receivePublicDownload(input, transferId, name, size)
+            return
+        }
         val root = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "Handover")
         if (!root.exists() && !root.mkdirs()) {
             sendTransferFailureAndClose(transferId, TRANSFER_STORAGE); return
@@ -501,6 +508,49 @@ class NativeTransport(private val context: Context) {
             temporary.delete()
             Log.w(TAG, "native file receive failed: ${error.javaClass.simpleName}")
             sendTransferFailureAndClose(transferId, if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE)
+        }
+    }
+
+    private fun receivePublicDownload(
+        input: BufferedInputStream, transferId: String, name: String, size: Long,
+    ) {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Handover")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val destination = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        if (destination == null) {
+            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
+            return
+        }
+        try {
+            resolver.openOutputStream(destination, "w")!!.use { output ->
+                val buffer = ByteArray(STREAM_BUFFER_BYTES)
+                var remaining = size
+                while (remaining > 0) {
+                    val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                    if (count < 0) throw EOFException("interrupted file transfer")
+                    if (count > 0) {
+                        output.write(buffer, 0, count)
+                        remaining -= count
+                    }
+                }
+            }
+            resolver.update(destination, ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }, null, null)
+            notifyReceived("file", name, null)
+            broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
+                .put("path", destination.toString()).put("source", serverId ?: serverFingerprint))
+            sendTransferResult(transferId, "completed", null)
+        } catch (error: Exception) {
+            resolver.delete(destination, null, null)
+            Log.w(TAG, "native public download failed: ${error.javaClass.simpleName}")
+            sendTransferFailureAndClose(
+                transferId, if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE,
+            )
         }
     }
 
