@@ -132,7 +132,7 @@ class MainActivity : android.app.Activity() {
         val installed = packageManager.getPackageInfo(packageName, 0)
         val pending = AppUpdater.pending(this)
         updateStatus.text = if (pending == null) {
-            "Installed: ${installed.versionName}\nNo downloaded update"
+            "Installed: ${installed.versionName}\nVerified desktop updates: active\nNo downloaded update"
         } else {
             "Installed: ${installed.versionName}\nReady to install: ${pending.versionName.ifEmpty { pending.versionCode.toString() }}"
         }

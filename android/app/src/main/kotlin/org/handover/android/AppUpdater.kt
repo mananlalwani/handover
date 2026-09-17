@@ -71,8 +71,17 @@ object AppUpdater {
     fun pending(context: Context): PendingUpdate? {
         val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val uri = preferences.getString(URI, null)?.let(Uri::parse) ?: return null
-        return PendingUpdate(uri, preferences.getLong(VERSION_CODE, 0),
+        val update = PendingUpdate(uri, preferences.getLong(VERSION_CODE, 0),
             preferences.getString(VERSION_NAME, "").orEmpty())
+        @Suppress("DEPRECATION")
+        val installed = context.packageManager.getPackageInfo(context.packageName, 0)
+        val installedCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode
+            else installed.versionCode.toLong()
+        if (update.versionCode <= installedCode) {
+            preferences.edit().clear().apply()
+            return null
+        }
+        return update
     }
 
     fun installIntent(context: Context, update: PendingUpdate): Intent =
