@@ -62,5 +62,12 @@
                 <action android:name="org.handover.android.TEST_MEDIA_STOP" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".UpdateInstalledReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

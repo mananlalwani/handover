@@ -18,6 +18,7 @@ object AppUpdater {
     private const val URI = "uri"
     private const val VERSION_CODE = "version_code"
     private const val VERSION_NAME = "version_name"
+    private const val RECONNECT = "reconnect_after_update"
 
     @Suppress("DEPRECATION")
     private fun packageInfo(context: Context, path: String) =
@@ -78,7 +79,7 @@ object AppUpdater {
         val installedCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode
             else installed.versionCode.toLong()
         if (update.versionCode <= installedCode) {
-            preferences.edit().clear().apply()
+            preferences.edit().remove(URI).remove(VERSION_CODE).remove(VERSION_NAME).apply()
             return null
         }
         return update
@@ -95,5 +96,19 @@ object AppUpdater {
         } else {
             context.startActivity(installIntent(context, update))
         }
+    }
+
+    fun markReconnectNeeded(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(RECONNECT, true).apply()
+    }
+
+    fun reconnectNeeded(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(RECONNECT, false)
+
+    fun clearReconnectNeeded(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(RECONNECT, false).apply()
     }
 }

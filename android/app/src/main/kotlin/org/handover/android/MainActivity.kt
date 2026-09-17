@@ -30,11 +30,13 @@ class MainActivity : android.app.Activity() {
     private lateinit var mediaStatus: TextView
     private lateinit var capabilitiesStatus: TextView
     private lateinit var updateStatus: TextView
+    private lateinit var homeConnect: Button
     private lateinit var pageHost: LinearLayout
     private var homePage: View? = null
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
+    private var reconnectPromptShown = false
     private val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -79,6 +81,13 @@ class MainActivity : android.app.Activity() {
             button.setTextColor(Color.WHITE)
             button.alpha = if (enabled) 0.88f else 1f
         }
+    }
+
+    private fun startHandoverConnection() {
+        val service = Intent(this, HandoverForegroundService::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+        AppUpdater.clearReconnectNeeded(this)
+        refreshStatus()
     }
 
     private fun menuButton(title: String, description: String, action: () -> Unit) =
@@ -148,6 +157,13 @@ class MainActivity : android.app.Activity() {
         } else {
             "Installed: ${installed.versionName}\nReady to install: ${pending.versionName.ifEmpty { pending.versionCode.toString() }}"
         }
+        if (::homeConnect.isInitialized) {
+            val reconnect = AppUpdater.reconnectNeeded(this)
+            homeConnect.text = if (reconnect) "Reconnect after update" else "Connect / Pair desktop"
+            homeConnect.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                if (reconnect) Color.rgb(232, 139, 22) else Color.rgb(48, 84, 210),
+            )
+        }
         refreshPermissionButtons()
     }
     private val pairReceiver = object : BroadcastReceiver() {
@@ -211,6 +227,14 @@ class MainActivity : android.app.Activity() {
         }, RECEIVER_NOT_EXPORTED)
         refreshStatus()
         NativeTransport.pendingPairingCode(this)?.let(::showPairDialog)
+        if (AppUpdater.reconnectNeeded(this) && !reconnectPromptShown) {
+            reconnectPromptShown = true
+            AlertDialog.Builder(this).setTitle("Reconnect Handover")
+                .setMessage("The update was installed successfully. Reconnect to your already-paired Linux desktop now?")
+                .setPositiveButton("Reconnect") { _, _ -> startHandoverConnection() }
+                .setNegativeButton("Later", null)
+                .show()
+        }
     }
 
     override fun onResume() {
@@ -269,17 +293,11 @@ class MainActivity : android.app.Activity() {
         }
         val start = Button(this).apply {
             text = "Enable Handover connection"
-            setOnClickListener {
-                val service = Intent(this@MainActivity, HandoverForegroundService::class.java)
-                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
-            }
+            setOnClickListener { startHandoverConnection() }
         }
-        val homePair = primary(Button(this).apply {
+        homeConnect = primary(Button(this).apply {
             text = "Connect / Pair desktop"
-            setOnClickListener {
-                val service = Intent(this@MainActivity, HandoverForegroundService::class.java)
-                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
-            }
+            setOnClickListener { startHandoverConnection() }
         })
         val revoke = Button(this).apply {
             text = "Unpair this desktop"
@@ -505,7 +523,7 @@ class MainActivity : android.app.Activity() {
                 setTextColor(Color.rgb(92, 99, 116))
                 setPadding(0, dp(2), 0, dp(16))
             })
-            addView(panel(sectionTitle("Status"), status, homePair), LinearLayout.LayoutParams(-1, -2))
+            addView(panel(sectionTitle("Status"), status, homeConnect), LinearLayout.LayoutParams(-1, -2))
             listOf(
                 menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
