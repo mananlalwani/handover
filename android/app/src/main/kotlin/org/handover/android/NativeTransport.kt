@@ -162,6 +162,24 @@ class NativeTransport(private val context: Context) {
         send(HandoverNotificationService.syncJson(enabled, notifications.take(64)))
     }
 
+    /** Never send media state before the peer is authenticated. */
+    fun publishMedia(session: WireMediaSession) {
+        if (serverFingerprint == null) return
+        if (!MediaObserver.isValidPlayer(session.player)) return
+        send(MediaObserver.postJson(session))
+    }
+
+    fun retractMedia(player: String) {
+        if (serverFingerprint == null) return
+        if (!MediaObserver.isValidPlayer(player)) return
+        send(JSONObject().put("type", "media_removed").put("protocol", 1).put("player", player))
+    }
+
+    fun syncMedia(sessions: List<WireMediaSession>) {
+        if (serverFingerprint == null) return
+        send(MediaObserver.syncJson(sessions.take(16)))
+    }
+
     private val resolver = object : NsdManager.ResolveListener {
         override fun onServiceResolved(info: NsdServiceInfo) {
             Log.i(TAG, "Handover LAN service resolved")
@@ -289,6 +307,8 @@ class NativeTransport(private val context: Context) {
                 HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
                     syncNotifications(enabled, list)
                 }
+                // Same recovery for media sessions.
+                MediaObserver.activePushSync()
             }
             "revoke" -> {
                 preferences.edit().remove(PIN_KEY).apply()
@@ -315,6 +335,17 @@ class NativeTransport(private val context: Context) {
                 if (serverFingerprint == null) return
                 HandoverNotificationService.invokeAction(
                     message.optString("key"), message.optString("action_id"),
+                )
+            }
+            "media_request" -> {
+                if (serverFingerprint == null) return
+                MediaObserver.activePushSync()
+            }
+            "media_control" -> {
+                if (serverFingerprint == null) return
+                val position = message.takeIf { it.has("position_ms") }?.optLong("position_ms")
+                MediaObserver.executeControl(
+                    message.optString("player"), message.optString("action"), position,
                 )
             }
         }

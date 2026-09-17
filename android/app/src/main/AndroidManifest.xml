@@ -44,6 +44,8 @@
                 <action android:name="org.handover.android.TEST_POST" />
                 <action android:name="org.handover.android.TEST_UPDATE" />
                 <action android:name="org.handover.android.TEST_REMOVE" />
+                <action android:name="org.handover.android.TEST_MEDIA_START" />
+                <action android:name="org.handover.android.TEST_MEDIA_STOP" />
             </intent-filter>
         </receiver>
     </application>

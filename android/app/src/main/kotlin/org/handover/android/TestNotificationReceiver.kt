@@ -23,6 +23,8 @@ class TestNotificationReceiver : BroadcastReceiver() {
             ACTION_TEST_POST -> TestNotifications.post(context, false, intent.counter())
             ACTION_TEST_UPDATE -> TestNotifications.post(context, true, intent.counter())
             ACTION_TEST_REMOVE -> TestNotifications.remove(context)
+            ACTION_TEST_MEDIA_START -> TestMediaSession.start(context)
+            ACTION_TEST_MEDIA_STOP -> TestMediaSession.stop()
         }
     }
 
@@ -35,6 +37,8 @@ class TestNotificationReceiver : BroadcastReceiver() {
         const val ACTION_TEST_POST = "org.handover.android.TEST_POST"
         const val ACTION_TEST_UPDATE = "org.handover.android.TEST_UPDATE"
         const val ACTION_TEST_REMOVE = "org.handover.android.TEST_REMOVE"
+        const val ACTION_TEST_MEDIA_START = "org.handover.android.TEST_MEDIA_START"
+        const val ACTION_TEST_MEDIA_STOP = "org.handover.android.TEST_MEDIA_STOP"
         const val EXTRA_REPLY_KEY = "handover_test_reply"
         const val EXTRA_COUNTER = "counter"
         const val PREFS = "handover_test"

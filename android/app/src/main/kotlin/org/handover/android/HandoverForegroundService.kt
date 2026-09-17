@@ -10,6 +10,7 @@ import android.os.IBinder
 /** Owns the native transport while the user has enabled Handover connectivity. */
 class HandoverForegroundService : Service() {
     private lateinit var batteryObserver: BatteryObserver
+    private lateinit var mediaObserver: MediaObserver
     private lateinit var transport: NativeTransport
 
     override fun onCreate() {
@@ -18,12 +19,15 @@ class HandoverForegroundService : Service() {
         startForeground(NOTIFICATION_ID, notification())
         transport = NativeTransport(applicationContext)
         HandoverNotificationService.transport = transport
+        MediaObserver.transport = transport
         transport.start()
         transport.connectToSavedEndpoint()
         batteryObserver = BatteryObserver(this) { reading ->
             transport.publishBattery(reading)
         }
         batteryObserver.start()
+        mediaObserver = MediaObserver(this)
+        mediaObserver.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = when (intent?.action) {
@@ -35,9 +39,13 @@ class HandoverForegroundService : Service() {
 
     override fun onDestroy() {
         batteryObserver.stop()
+        mediaObserver.stop()
         transport.stop()
         if (HandoverNotificationService.transport === transport) {
             HandoverNotificationService.transport = null
+        }
+        if (MediaObserver.transport === transport) {
+            MediaObserver.transport = null
         }
         super.onDestroy()
     }

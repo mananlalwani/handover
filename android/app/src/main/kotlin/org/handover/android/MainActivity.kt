@@ -18,6 +18,7 @@ import android.provider.Settings
 class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
+    private lateinit var mediaStatus: TextView
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
@@ -27,6 +28,7 @@ class MainActivity : android.app.Activity() {
         val listener = if (HandoverNotificationService.isEnabled(this)) "granted" else "not granted"
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
+        mediaStatus.text = if (TestMediaSession.isActive()) "Test media: playing" else "Test media: stopped"
     }
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
@@ -108,6 +110,9 @@ class MainActivity : android.app.Activity() {
         notificationStatus = TextView(this).apply {
             setPadding(32, 0, 32, 24)
         }
+        mediaStatus = TextView(this).apply {
+            setPadding(32, 0, 32, 24)
+        }
         val start = Button(this).apply {
             text = "Enable Handover connection"
             setOnClickListener {
@@ -149,10 +154,25 @@ class MainActivity : android.app.Activity() {
             text = "Remove test notification"
             setOnClickListener { TestNotifications.remove(this@MainActivity) }
         }
+        val startTestMedia = Button(this).apply {
+            text = "Start test media"
+            setOnClickListener {
+                TestMediaSession.start(this@MainActivity)
+                refreshStatus()
+            }
+        }
+        val stopTestMedia = Button(this).apply {
+            text = "Stop test media"
+            setOnClickListener {
+                TestMediaSession.stop()
+                refreshStatus()
+            }
+        }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(notificationStatus, LinearLayout.LayoutParams(-1, -2))
+            addView(mediaStatus, LinearLayout.LayoutParams(-1, -2))
             addView(start, LinearLayout.LayoutParams(-1, -2))
             addView(address, LinearLayout.LayoutParams(-1, -2))
             addView(manualConnect, LinearLayout.LayoutParams(-1, -2))
@@ -160,6 +180,8 @@ class MainActivity : android.app.Activity() {
             addView(postTest, LinearLayout.LayoutParams(-1, -2))
             addView(updateTest, LinearLayout.LayoutParams(-1, -2))
             addView(removeTest, LinearLayout.LayoutParams(-1, -2))
+            addView(startTestMedia, LinearLayout.LayoutParams(-1, -2))
+            addView(stopTestMedia, LinearLayout.LayoutParams(-1, -2))
             addView(revoke, LinearLayout.LayoutParams(-1, -2))
         })
     }
