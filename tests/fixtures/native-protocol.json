@@ -1,6 +1,6 @@
 [
   {"type":"hello","protocol":1,"id":"android-device-01","name":"Pixel Test"},
-  {"type":"pair_confirm","protocol":1},
+  {"type":"pair_confirm","protocol":1,"code":"12345678"},
   {"type":"paired","protocol":1},
   {"type":"battery","protocol":1,"percentage":87,"charging":true},
   {"type":"revoke","protocol":1},
