@@ -55,6 +55,7 @@ ShellRoot {
             }
 
             RowLayout {
+                id: pageTabs
                 Layout.fillWidth: true
                 spacing: 4
 
@@ -381,8 +382,14 @@ ShellRoot {
 
         Rectangle {
             id: messagesCard
-            anchors.fill: parent
-            anchors.margins: 16
+            anchors.top: pageTabs.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.topMargin: 12
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            anchors.bottomMargin: 16
             radius: 8
             color: "#303741"
             visible: window.page === "messages"
