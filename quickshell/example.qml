@@ -13,7 +13,12 @@ ShellRoot {
         color: "#151a23"
         title: "Handover"
         property string page: "overview"
-        property var shareDevices: HandoverService.devices.filter(device =>
+        // The reference UI is focused on the native Handover path for now.
+        // Keep KDE Connect available in the daemon, but do not mix its
+        // compatibility devices (or the development emulator) into this UI.
+        property var appDevices: HandoverService.devices.filter(device =>
+            device.id.startsWith("native:") && !device.name.includes("sdk_gphone"))
+        property var shareDevices: window.appDevices.filter(device =>
             device.connected && device.paired && device.capabilities.includes("file_transfer"))
         property string shareStatus: ""
 
@@ -38,7 +43,7 @@ ShellRoot {
                 color: "#f4f4f5"
                 font.pixelSize: 18
                 text: {
-                    const connected = HandoverService.devices.filter(device => device.connected);
+                    const connected = window.appDevices.filter(device => device.connected);
                     if (connected.length === 0)
                         return "No connected device";
                     const device = connected[0];
@@ -100,7 +105,7 @@ ShellRoot {
                             const session = mediaCard.mediaSession;
                             if (!session)
                                 return "Phone media";
-                            const device = HandoverService.devices.find(item =>
+                            const device = window.appDevices.find(item =>
                                 item.id === session.id.device_id);
                             return session.application + " · "
                                 + (device ? device.name : session.id.device_id);
@@ -268,7 +273,7 @@ ShellRoot {
                             const notification = notificationCard.notification;
                             if (!notification)
                                 return "Phone notifications";
-                            const device = HandoverService.devices.find(item =>
+                                const device = window.appDevices.find(item =>
                                 item.id === notification.id.device_id);
                             return notification.app_name + " · "
                                 + (device ? device.name : notification.id.device_id);
