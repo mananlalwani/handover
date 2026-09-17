@@ -29,6 +29,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
     private lateinit var capabilitiesStatus: TextView
+    private lateinit var updateStatus: TextView
     private lateinit var pageHost: LinearLayout
     private var homePage: View? = null
     private var shownPairCode: String? = null
@@ -127,6 +128,13 @@ class MainActivity : android.app.Activity() {
             append("Call state: ${permissionLabel(android.Manifest.permission.READ_PHONE_STATE)}\n")
             append("Place calls: ${permissionLabel(android.Manifest.permission.CALL_PHONE)}\n")
             append("Answer/end calls: ${permissionLabel(android.Manifest.permission.ANSWER_PHONE_CALLS)}")
+        }
+        val installed = packageManager.getPackageInfo(packageName, 0)
+        val pending = AppUpdater.pending(this)
+        updateStatus.text = if (pending == null) {
+            "Installed: ${installed.versionName}\nNo downloaded update"
+        } else {
+            "Installed: ${installed.versionName}\nReady to install: ${pending.versionName.ifEmpty { pending.versionCode.toString() }}"
         }
     }
     private val pairReceiver = object : BroadcastReceiver() {
@@ -239,6 +247,10 @@ class MainActivity : android.app.Activity() {
             setTextColor(Color.rgb(70, 77, 94))
         }
         capabilitiesStatus = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
+        }
+        updateStatus = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.rgb(70, 77, 94))
         }
@@ -424,6 +436,27 @@ class MainActivity : android.app.Activity() {
             panel(sectionTitle("Notification test"), postTest, updateTest, removeTest),
             panel(sectionTitle("Media test"), startTestMedia, stopTestMedia),
         )
+        val installUpdate = primary(Button(this).apply {
+            text = "Install downloaded update"
+            setOnClickListener {
+                val update = AppUpdater.pending(this@MainActivity)
+                if (update == null) {
+                    android.widget.Toast.makeText(this@MainActivity,
+                        "No verified update is ready", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    AppUpdater.requestInstall(this@MainActivity, update)
+                }
+            }
+        })
+        val updatesPage = page(
+            "Updates", "Updates received from your desktop are verified before installation.",
+            panel(sectionTitle("App version"), updateStatus, installUpdate),
+            panel(sectionTitle("Security"), TextView(this).apply {
+                text = "Only a newer Handover APK signed by the same certificate is accepted. Android always asks before installing it."
+                textSize = 14f
+                setTextColor(Color.rgb(70, 77, 94))
+            }),
+        )
 
         val home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -444,6 +477,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
+                menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },
                 menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
             ).forEach { item ->
                 addView(item, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })

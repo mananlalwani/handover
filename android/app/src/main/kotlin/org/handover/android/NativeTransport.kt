@@ -590,13 +590,17 @@ class NativeTransport(private val context: Context) {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             }
         } else {
-            builder.setContentTitle("File received from $source").setContentText(value)
+            val update = file?.let { AppUpdater.inspectAndRemember(context, it) }
+            builder.setContentTitle(if (update != null) "Handover update ready" else "File received from $source")
+                .setContentText(if (update != null) "Version ${update.versionName.ifEmpty { update.versionCode.toString() }} · tap to install" else value)
             if (file != null) {
-                val mime = context.contentResolver.getType(file)
-                    ?: java.net.URLConnection.guessContentTypeFromName(value)
-                    ?: "application/octet-stream"
-                val intent = Intent(Intent.ACTION_VIEW).setDataAndType(file, mime)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val intent = if (update != null) AppUpdater.installIntent(context, update) else {
+                    val mime = context.contentResolver.getType(file)
+                        ?: java.net.URLConnection.guessContentTypeFromName(value)
+                        ?: "application/octet-stream"
+                    Intent(Intent.ACTION_VIEW).setDataAndType(file, mime)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
                 builder.setContentIntent(PendingIntent.getActivity(
                     context, file.hashCode(), intent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
