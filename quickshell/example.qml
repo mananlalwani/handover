@@ -790,28 +790,95 @@ ShellRoot {
                             anchors.margins: 8
                             spacing: 6
                             TextField {
+                                id: conversationSearch
                                 Layout.fillWidth: true
                                 placeholderText: "Search conversations"
+                                background: Rectangle {
+                                    radius: 8
+                                    color: "#151a23"
+                                    border.color: "#344154"
+                                }
                             }
                             ListView {
                                 id: modernConversationList
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 clip: true
-                                model: messagesCard.accountConversations
-                                delegate: ItemDelegate {
+                                model: messagesCard.accountConversations.filter(item =>
+                                    !conversationSearch.text.trim()
+                                    || messagesCard.conversationLabel(item).toLowerCase().includes(
+                                        conversationSearch.text.trim().toLowerCase()))
+                                delegate: Item {
                                     required property var modelData
                                     width: modernConversationList.width
-                                    highlighted: messagesCard.selectedConversation !== null
-                                        && HandoverService.sameConversationId(
-                                            messagesCard.selectedConversation, modelData.id)
-                                    text: messagesCard.conversationLabel(modelData)
-                                        + (modelData.unread_count ? "  ·  " + modelData.unread_count : "")
-                                    onClicked: {
-                                        messagesCard.selectedConversation = modelData.id;
-                                        messagesCard.replyingTo = null;
-                                        HandoverService.loadHistory(modelData.id, 20);
-                                        HandoverService.markRead(modelData.id);
+                                    height: 58
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 8
+                                        color: messagesCard.selectedConversation !== null
+                                            && HandoverService.sameConversationId(
+                                                messagesCard.selectedConversation, modelData.id)
+                                            ? "#314b6c" : "transparent"
+                                    }
+                                    Rectangle {
+                                        x: 8
+                                        y: 9
+                                        width: 40
+                                        height: 40
+                                        radius: 20
+                                        color: "#526d9b"
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: messagesCard.conversationLabel(modelData).charAt(0).toUpperCase()
+                                            color: "#ffffff"
+                                            font.pixelSize: 18
+                                            font.bold: true
+                                        }
+                                    }
+                                    Column {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 58
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 2
+                                        Text {
+                                            width: parent.width
+                                            text: messagesCard.conversationLabel(modelData)
+                                            color: "#f3f4f6"
+                                            elide: Text.ElideRight
+                                            font.pixelSize: 14
+                                        }
+                                        Text {
+                                            text: modelData.transport
+                                            color: "#9caec5"
+                                            font.pixelSize: 11
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: !!modelData.unread_count
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 8
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 20
+                                        height: 20
+                                        radius: 10
+                                        color: "#4e9bea"
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.unread_count || ""
+                                            color: "#ffffff"
+                                            font.pixelSize: 11
+                                        }
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: {
+                                            messagesCard.selectedConversation = modelData.id;
+                                            messagesCard.replyingTo = null;
+                                            HandoverService.loadHistory(modelData.id, 20);
+                                            HandoverService.markRead(modelData.id);
+                                        }
                                     }
                                 }
                             }
@@ -943,13 +1010,20 @@ ShellRoot {
                                     id: modernComposeField
                                     Layout.fillWidth: true
                                     placeholderText: "Write a message…"
+                                    background: Rectangle {
+                                        radius: 18
+                                        color: "#151a23"
+                                        border.color: "#3a4a60"
+                                    }
                                     enabled: messagesCard.selectedConversation !== null
                                         && !HandoverService.pendingMessaging
                                     onAccepted: modernSendButton.clicked()
                                 }
                                 Button {
                                     id: modernSendButton
-                                    text: "Send"
+                                    text: "↑"
+                                    font.pixelSize: 18
+                                    font.bold: true
                                     enabled: modernComposeField.text.trim().length > 0
                                         && messagesCard.selectedConversation !== null
                                         && !HandoverService.pendingMessaging
@@ -962,9 +1036,13 @@ ShellRoot {
                                             messagesCard.replyingTo = null;
                                         }
                                     }
+                                    background: Rectangle {
+                                        radius: 18
+                                        color: modernSendButton.enabled ? "#3d8bd9" : "#303947"
+                                    }
                                 }
                                 Button {
-                                    text: "＋"
+                                    text: "＋  Attach"
                                     enabled: messagesCard.selectedConversation !== null
                                         && !HandoverService.pendingMessaging
                                     onClicked: attachmentDialog.open()
