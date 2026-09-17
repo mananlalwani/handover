@@ -519,22 +519,22 @@ ShellRoot {
                     delegate: Item {
                         required property var modelData
                         width: messageList.width
-                        property var message: modelData
+                        property var messageData: modelData
                         implicitHeight: bubble.implicitHeight + 8
 
                         Rectangle {
-                            anchors.left: message.sender.is_self ? undefined : parent.left
-                            anchors.right: message.sender.is_self ? parent.right : undefined
+                            anchors.left: messageData.sender.is_self ? undefined : parent.left
+                            anchors.right: messageData.sender.is_self ? parent.right : undefined
                             width: Math.min(parent.width * 0.82, 520)
                             height: bubble.implicitHeight
                             radius: 14
-                            color: message.sender.is_self ? "#245b8f" : "#252d39"
+                            color: messageData.sender.is_self ? "#245b8f" : "#252d39"
                         }
 
                         ColumnLayout {
                             id: bubble
-                            anchors.left: message.sender.is_self ? undefined : parent.left
-                            anchors.right: message.sender.is_self ? parent.right : undefined
+                            anchors.left: messageData.sender.is_self ? undefined : parent.left
+                            anchors.right: messageData.sender.is_self ? parent.right : undefined
                             width: Math.min(parent.width * 0.82, 520)
                             spacing: 3
                             anchors.margins: 10
@@ -545,11 +545,11 @@ ShellRoot {
                                 font.pixelSize: 14
                                 textFormat: Text.PlainText
                                 wrapMode: Text.Wrap
-                                text: (message.deleted ? "[deleted] " : "")
-                                    + messagesCard.senderLabel(message.sender) + ": "
-                                    + (message.text || "")
-                                    + (message.attachments.length > 0
-                                        ? " [" + message.attachments.map(item =>
+                                text: (messageData.deleted ? "[deleted] " : "")
+                                    + messagesCard.senderLabel(messageData.sender) + ": "
+                                    + (messageData.text || "")
+                                    + ((messageData.attachments || []).length > 0
+                                        ? " [" + (messageData.attachments || []).map(item =>
                                             item.name || item.local_id).join(", ") + "]" : "")
                             }
 
@@ -558,12 +558,12 @@ ShellRoot {
                                 color: "#b7c6d9"
                                 font.pixelSize: 12
                                 textFormat: Text.PlainText
-                                visible: message.reply_to !== undefined && message.reply_to !== null
-                                    || message.reactions.length > 0
+                                visible: messageData.reply_to !== undefined && messageData.reply_to !== null
+                                    || (messageData.reactions || []).length > 0
                                 text: {
-                                    const reply = message.reply_to
-                                        ? "reply to " + message.reply_to.local_id + " " : "";
-                                    const reactions = message.reactions.map(item =>
+                                    const reply = messageData.reply_to
+                                        ? "reply to " + messageData.reply_to.local_id + " " : "";
+                                    const reactions = (messageData.reactions || []).map(item =>
                                         item.emoji + "×" + item.count).join(" ");
                                     return reply + reactions;
                                 }
@@ -574,7 +574,7 @@ ShellRoot {
                                 visible: {
                                     const conversation = messagesCard.accountConversations.find(item =>
                                         HandoverService.sameConversationId(
-                                            item.id, message.id.conversation_id));
+                                            item.id, messageData.id.conversation_id));
                                     return conversation
                                         && conversation.capabilities.includes("reactions");
                                 }
@@ -586,17 +586,17 @@ ShellRoot {
                                     flat: true
                                     enabled: !HandoverService.pendingMessaging
                                     onClicked: {
-                                        const reacted = message.reactions.some(item =>
+                                        const reacted = (messageData.reactions || []).some(item =>
                                             item.emoji === modelData
                                             && item.participant_ids.includes("self"));
                                         if (reacted)
                                             HandoverService.unreact(
-                                                message.id.conversation_id,
-                                                message.id.local_id, modelData);
+                                                messageData.id.conversation_id,
+                                                messageData.id.local_id, modelData);
                                         else
                                             HandoverService.react(
-                                                message.id.conversation_id,
-                                                message.id.local_id, modelData);
+                                                messageData.id.conversation_id,
+                                                messageData.id.local_id, modelData);
                                     }
                                 }
                             }
@@ -604,16 +604,16 @@ ShellRoot {
                                 text: "Reply"
                                 flat: true
                                 enabled: !HandoverService.pendingMessaging
-                                onClicked: messagesCard.replyingTo = message.id.local_id
+                                onClicked: messagesCard.replyingTo = messageData.id.local_id
                             }
                             Button {
                                 text: "Delete"
                                 flat: true
-                                visible: message.sender.is_self
+                                visible: messageData.sender.is_self
                                 enabled: !HandoverService.pendingMessaging
                                 onClicked: {
                                     HandoverService.deleteMessage(
-                                        message.id.conversation_id, message.id.local_id);
+                                        messageData.id.conversation_id, messageData.id.local_id);
                                 }
                             }
                         }
