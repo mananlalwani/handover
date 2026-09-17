@@ -993,6 +993,19 @@ ShellRoot {
                                             wrapMode: Text.Wrap
                                             font.pixelSize: 14
                                         }
+                                        Repeater {
+                                            model: modelData.attachments || []
+                                            Button {
+                                                required property var modelData
+                                                Layout.leftMargin: 8
+                                                Layout.rightMargin: 8
+                                                text: "📎 " + (modelData.name || modelData.mime || "Open attachment")
+                                                flat: true
+                                                enabled: !!modelData.staged_path
+                                                onClicked: Qt.openUrlExternally(
+                                                    "file://" + modelData.staged_path)
+                                            }
+                                        }
                                         Text {
                                             Layout.fillWidth: true
                                             Layout.leftMargin: 12
@@ -1039,9 +1052,10 @@ ShellRoot {
                             Button {
                                 Layout.alignment: Qt.AlignHCenter
                                 visible: messagesCard.selectedConversation !== null
-                                    && HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
-                                text: "Load older messages"
+                                text: HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
+                                    ? "Load older messages" : "No older messages available"
                                 enabled: !HandoverService.pendingMessaging
+                                    && HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
                                 onClicked: HandoverService.loadHistory(
                                     messagesCard.selectedConversation, 20,
                                     HandoverService.conversationCursors[messagesCard.selectedKey])
