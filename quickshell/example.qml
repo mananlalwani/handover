@@ -807,7 +807,9 @@ ShellRoot {
                                 clip: true
                                 onModelChanged: {
                                     if (messagesCard.selectedConversation === null && count > 0) {
-                                        const first = model[0];
+                                        const first = messagesCard.accountConversations[0];
+                                        if (!first)
+                                            return;
                                         messagesCard.selectedConversation = first.id;
                                         HandoverService.loadHistory(first.id, 20);
                                         HandoverService.markRead(first.id);
@@ -1052,6 +1054,14 @@ ShellRoot {
                                         }
                                     }
                                 }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: messagesCard.selectedConversation !== null
+                                    && messagesCard.selectedMessages.length === 0
+                                text: "Loading messages…"
+                                color: "#9caec5"
                             }
                             Text {
                                 Layout.fillWidth: true
