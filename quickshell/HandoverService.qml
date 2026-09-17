@@ -36,6 +36,7 @@ Singleton {
     property var pendingMessaging: null
     signal messagingFinished(string method, string requestId, bool success, string error)
     signal messagingAccepted(string method, string subject, bool success, string error)
+    signal historyProgress(var conversationId, bool complete, int messageCount)
 
     function conversationKey(id) {
         return id.account_id + ":" + id.local_id;
@@ -491,11 +492,15 @@ Singleton {
                 const key = conversationKey(message.conversation_id);
                 if (exhaustiveHistoryLoads[key]) {
                     if (message.cursor_next) {
+                        historyProgress(message.conversation_id, false,
+                            (message.messages || []).length);
                         loadHistory(message.conversation_id, 100, message.cursor_next);
                     } else {
                         const loads = Object.assign({}, exhaustiveHistoryLoads);
                         delete loads[key];
                         exhaustiveHistoryLoads = loads;
+                        historyProgress(message.conversation_id, true,
+                            (message.messages || []).length);
                     }
                 }
             }

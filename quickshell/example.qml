@@ -1142,6 +1142,14 @@ ShellRoot {
 
         Connections {
             target: HandoverService
+            function onHistoryProgress(conversationId, complete, messageCount) {
+                if (messagesCard.selectedConversation
+                    && HandoverService.sameConversationId(
+                        conversationId, messagesCard.selectedConversation))
+                    messagesCard.status = complete
+                        ? "complete history loaded"
+                        : "loading older messages…";
+            }
             function onCommandFinished(method, notificationId, success, error) {
                 if (method === "notification.reply" && success)
                     replyField.text = "";
