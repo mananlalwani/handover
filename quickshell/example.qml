@@ -952,7 +952,9 @@ ShellRoot {
                                         width: Math.min(parent.width * 0.78, 500)
                                         height: bubble.implicitHeight
                                         radius: 14
-                                        color: modelData.sender.is_self ? "#28649b" : "#2a3442"
+                                        color: modelData.transport === "sms"
+                                            ? (modelData.sender.is_self ? "#765126" : "#493a2b")
+                                            : (modelData.sender.is_self ? "#28649b" : "#2a3442")
                                     }
                                     ColumnLayout {
                                         id: bubble
@@ -982,7 +984,11 @@ ShellRoot {
                                             Layout.fillWidth: true
                                             Layout.leftMargin: 12
                                             Layout.rightMargin: 12
-                                            text: modelData.text || "[attachment]"
+                                            text: modelData.text
+                                                || ((modelData.attachments || []).length > 0
+                                                    ? "📎 " + (modelData.attachments || []).map(item =>
+                                                        item.name || item.mime || "attachment").join(", ")
+                                                    : "")
                                             color: "#ffffff"
                                             wrapMode: Text.Wrap
                                             font.pixelSize: 14
@@ -1029,6 +1035,16 @@ ShellRoot {
                                 text: messagesCard.replyingTo !== null
                                     ? "Replying to message " + messagesCard.replyingTo : ""
                                 color: "#9fc5e8"
+                            }
+                            Button {
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: messagesCard.selectedConversation !== null
+                                    && HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
+                                text: "Load older messages"
+                                enabled: !HandoverService.pendingMessaging
+                                onClicked: HandoverService.loadHistory(
+                                    messagesCard.selectedConversation, 20,
+                                    HandoverService.conversationCursors[messagesCard.selectedKey])
                             }
                             RowLayout {
                                 Layout.fillWidth: true
