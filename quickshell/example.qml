@@ -382,11 +382,11 @@ ShellRoot {
 
         Rectangle {
             id: messagesCard
-            anchors.top: pageTabs.bottom
+            anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.topMargin: 12
+            anchors.topMargin: pageTabs.mapToItem(messagesCard.parent, 0, pageTabs.height).y + 12
             anchors.leftMargin: 16
             anchors.rightMargin: 16
             anchors.bottomMargin: 16
