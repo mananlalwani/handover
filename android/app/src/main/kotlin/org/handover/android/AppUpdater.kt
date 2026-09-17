@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.provider.MediaStore
 import java.io.File
 
 data class PendingUpdate(val uri: Uri, val versionCode: Long, val versionName: String)
@@ -83,6 +84,28 @@ object AppUpdater {
         } finally {
             temporary.delete()
         }
+    }
+
+    /** Recover detection if the transfer notification was dismissed or the
+     * app was closed when the APK arrived. Only scans Handover's directory. */
+    fun scanDownloads(context: Context): PendingUpdate? {
+        if (Build.VERSION.SDK_INT < 29) return null
+        val projection = arrayOf(MediaStore.Downloads._ID)
+        val updates = mutableListOf<PendingUpdate>()
+        context.contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection,
+            "${MediaStore.Downloads.RELATIVE_PATH}=? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",
+            arrayOf("${android.os.Environment.DIRECTORY_DOWNLOADS}/Handover/", "%.apk"),
+            "${MediaStore.Downloads.DATE_ADDED} DESC",
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+            while (cursor.moveToNext() && updates.isEmpty()) {
+                val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    cursor.getLong(idIndex).toString())
+                inspectAndRemember(context, uri)?.let(updates::add)
+            }
+        }
+        return updates.maxByOrNull { it.versionCode }
     }
 
     fun pending(context: Context): PendingUpdate? {

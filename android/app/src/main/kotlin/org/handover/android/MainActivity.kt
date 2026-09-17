@@ -172,6 +172,12 @@ class MainActivity : android.app.Activity() {
         }
         refreshPermissionButtons()
     }
+
+    private fun scanForUpdates() {
+        AppUpdater.scanDownloads(this)
+        refreshStatus()
+        android.widget.Toast.makeText(this, "Downloads/Handover scanned", android.widget.Toast.LENGTH_SHORT).show()
+    }
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
             if (intent.action == NativeTransport.ACTION_PAIRED || intent.action == NativeTransport.ACTION_REVOKED) {
@@ -244,6 +250,7 @@ class MainActivity : android.app.Activity() {
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
         }, RECEIVER_NOT_EXPORTED)
+        AppUpdater.scanDownloads(this)
         refreshStatus()
         NativeTransport.pendingPairingCode(this)?.let(::showPairDialog)
         if (AppUpdater.reconnectNeeded(this) && !reconnectPromptShown) {
@@ -535,9 +542,13 @@ class MainActivity : android.app.Activity() {
                 }
             }
         })
+        val scanUpdates = secondary(Button(this).apply {
+            text = "Scan for updates"
+            setOnClickListener { scanForUpdates() }
+        })
         val updatesPage = page(
             "Updates", "Updates received from your desktop are verified before installation.",
-            panel(sectionTitle("App version"), updateStatus, installUpdate),
+            panel(sectionTitle("App version"), updateStatus, scanUpdates, installUpdate),
             panel(sectionTitle("Security"), TextView(this).apply {
                 text = "Only a newer Handover APK signed by the same certificate is accepted. Android always asks before installing it."
                 textSize = 14f
