@@ -4,6 +4,7 @@ members = [
     "crates/handover-core",
     "crates/handover-kdeconnect",
     "crates/handover-native",
+    "crates/handover-gmessages",
     "crates/handover-ipc",
     "handoverd",
     "handoverctl",
@@ -22,7 +23,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 url = "2.5"
 tempfile = "3.27"
-tokio = { version = "1.47", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.47", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 zbus = { version = "5.13", default-features = false, features = ["tokio"] }
