@@ -37,6 +37,7 @@ class MainActivity : android.app.Activity() {
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
     private var reconnectPromptShown = false
+    private var connectionState = "offline"
     private val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -127,7 +128,7 @@ class MainActivity : android.app.Activity() {
 
     private fun refreshStatus() {
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
-        status.text = "Handover\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
+        status.text = "Connection: ${connectionState.replaceFirstChar { it.uppercase() }}\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
         val listener = if (HandoverNotificationService.isEnabled(this)) "granted" else "not granted"
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
@@ -170,6 +171,13 @@ class MainActivity : android.app.Activity() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
             if (intent.action == NativeTransport.ACTION_PAIRED || intent.action == NativeTransport.ACTION_REVOKED) {
                 dismissPairDialog()
+                refreshStatus()
+                return
+            }
+            if (intent.action == NativeTransport.ACTION_CONNECTION_STATE) {
+                connectionState = org.json.JSONObject(
+                    intent.getStringExtra(NativeTransport.EXTRA_JSON).orEmpty(),
+                ).optString("state", "offline")
                 refreshStatus()
                 return
             }
@@ -223,6 +231,7 @@ class MainActivity : android.app.Activity() {
             addAction(NativeTransport.ACTION_PAIR_REQUEST)
             addAction(NativeTransport.ACTION_PAIRED)
             addAction(NativeTransport.ACTION_REVOKED)
+            addAction(NativeTransport.ACTION_CONNECTION_STATE)
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
         }, RECEIVER_NOT_EXPORTED)
         refreshStatus()

@@ -272,6 +272,7 @@ class NativeTransport(private val context: Context) {
     }
 
     private fun connectionLoop() {
+        broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "reconnecting"))
         while (discovery != null) {
             val target = endpoint
             try {
@@ -292,6 +293,7 @@ class NativeTransport(private val context: Context) {
                 ssl.soTimeout = 30_000
                 ssl.startHandshake()
                 socket = ssl
+                broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "connected"))
                 val input = BufferedInputStream(ssl.inputStream)
                 output = BufferedOutputStream(ssl.outputStream)
                 writeNow(hello())
@@ -309,6 +311,7 @@ class NativeTransport(private val context: Context) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
+                broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "offline"))
                 failPendingTransfers(TRANSFER_DISCONNECTED)
                 output = null
                 socket?.close()
@@ -732,6 +735,7 @@ class NativeTransport(private val context: Context) {
         const val ACTION_PAIR_REQUEST = "org.handover.android.PAIR_REQUEST"
         const val ACTION_PAIRED = "org.handover.android.PAIRED"
         const val ACTION_REVOKED = "org.handover.android.REVOKED"
+        const val ACTION_CONNECTION_STATE = "org.handover.android.CONNECTION_STATE"
         const val EXTRA_JSON = "json"
         private const val SERVICE_TYPE = "_handover._tcp"
         private const val TAG = "HandoverNative"
