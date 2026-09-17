@@ -1220,6 +1220,10 @@ ShellRoot {
             radius: 8
             color: "#303741"
             property var phone: window.appDevices.find(device => device.connected) || null
+            property var call: phone ? HandoverService.calls.find(state => state.device_id === phone.id) || null : null
+            function supports(action) {
+                return phone !== null && call !== null && (call.controls || []).includes(action);
+            }
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 18
@@ -1227,9 +1231,12 @@ ShellRoot {
                 Text { text: "Calls"; color: "#f3f4f6"; font.pixelSize: 24; font.bold: true }
                 Text {
                     Layout.fillWidth: true
-                    text: callCard.phone
-                        ? "Call audio: Bluetooth HFP · " + callCard.phone.name
-                        : "Native phone unavailable"
+                    text: !callCard.phone ? "Native phone unavailable"
+                        : !callCard.call ? "Waiting for phone call state — updated Android app required"
+                        : callCard.call.phase === "off_hook" ? "Dialing or in a call · " + callCard.phone.name
+                        : callCard.call.phase === "ringing" ? "Incoming call · " + callCard.phone.name
+                        : callCard.call.phase === "idle" ? "Phone idle · " + callCard.phone.name
+                        : "Call state unavailable — check phone permission"
                     color: "#b9c2cf"
                 }
                 TextField {
@@ -1242,23 +1249,23 @@ ShellRoot {
                     Layout.fillWidth: true
                     Button {
                         text: "Call"
-                        enabled: callAddress.text.trim().length > 0 && callCard.phone
+                        enabled: /^\+?[0-9]{1,15}$/.test(callAddress.text.trim()) && callCard.supports("place")
                         onClicked: HandoverService.callControl(
                             callCard.phone, "place", callAddress.text.trim())
                     }
                     Button {
                         text: "Answer"
-                        enabled: callCard.phone !== null
+                        enabled: callCard.supports("answer")
                         onClicked: HandoverService.callControl(callCard.phone, "answer", "")
                     }
                     Button {
                         text: "Decline"
-                        enabled: callCard.phone !== null
+                        enabled: callCard.supports("decline")
                         onClicked: HandoverService.callControl(callCard.phone, "decline", "")
                     }
                     Button {
                         text: "Hang up"
-                        enabled: callCard.phone !== null
+                        enabled: callCard.supports("hangup")
                         onClicked: HandoverService.callControl(callCard.phone, "hangup", "")
                     }
                 }

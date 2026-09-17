@@ -16,6 +16,7 @@ Singleton {
     property var devices: []
     property var notifications: []
     property var mediaSessions: []
+    property var calls: []
     property var lastReceivedShare: null
     property var lastShareResult: null
     property string lastError: ""
@@ -220,10 +221,10 @@ Singleton {
             lastError = "native phone is unavailable";
             return false;
         }
-        const fields = { id: device.id.substring(7), action: action };
+        const fields = { device_id: device.id, action: action };
         if (address)
             fields.address = address;
-        if (!sendRequest("native.call", fields)) {
+        if (!sendRequest("calls.control", fields)) {
             lastError = "handoverd is disconnected";
             return false;
         }
@@ -351,6 +352,7 @@ Singleton {
         devices = [];
         notifications = [];
         mediaSessions = [];
+        calls = [];
         lastReceivedShare = null;
         lastShareResult = null;
         messagingAccounts = [];
@@ -454,6 +456,7 @@ Singleton {
             devices = message.devices || [];
             notifications = message.notifications || [];
             mediaSessions = message.media_sessions || [];
+            calls = message.calls || [];
             messagingAccounts = message.messaging_accounts || [];
             conversations = message.conversations || [];
             typingStates = message.typing_states || [];
@@ -464,6 +467,12 @@ Singleton {
             if (!message.conversations) {
                 refreshMessaging();
             }
+            break;
+        case "call_updated":
+            calls = calls.filter(call => call.device_id !== message.call.device_id).concat([message.call]);
+            break;
+        case "call_removed":
+            calls = calls.filter(call => call.device_id !== message.device_id);
             break;
         case "device_added":
         case "device_updated":
