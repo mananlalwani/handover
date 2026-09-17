@@ -62,8 +62,9 @@ The application protocol uses a four-byte big-endian length followed by a
 versioned JSON message, with a 64 KiB maximum frame. The native messages are
 `hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `notification_post`,
 `notification_removed`, `notifications_sync`, `notifications_request`,
-`notification_dismiss`, `notification_reply`, `notification_action`, `revoke`,
-`ping`, and `pong`.
+`notification_dismiss`, `notification_reply`, `notification_action`,
+`media_post`, `media_removed`, `media_sync`, `media_request`, `media_control`,
+`revoke`, `ping`, and `pong`.
 An Android `hello` may include the previously trusted server ID. If Linux has
 revoked that phone, it replies with `revoke` so Android clears its stale pin
 before presenting a new pairing request.
@@ -72,11 +73,13 @@ fingerprints, commitment-less hellos from unknown peers, openings that do not
 match the committed nonce, and confirmations that do not repeat the displayed
 code are rejected; a failed ceremony drops the session so a retry starts a
 fresh, user-visible ceremony. Session count, read/write timeouts, and frame
-size are bounded. The daemon accepts battery and notification updates only
-after `BatteryState` validation (battery) or field/action bound checks
-(notifications), then publishes the ordinary device/notification updates to
-all clients. Notification content is never sent before the peer is paired,
-and titles/bodies are excluded from normal logs on both endpoints.
+size are bounded. The daemon accepts battery, notification, and media updates
+only after `BatteryState` validation (battery), field/action bound checks
+(notifications), or player/metadata/control bound checks (media), then
+publishes the ordinary device/notification/media updates to all clients.
+Notification content and track metadata are never sent before the peer is
+paired, and titles/bodies/artists are excluded from normal logs on both
+endpoints.
 
 Native peer administration is exposed through the existing daemon IPC as
 `native.peers`, `native.pending`, `native.pair`, and `native.unpair`. Unpairing
@@ -257,6 +260,32 @@ The D-Bus call is a request: `media_accepted` means KDE Connect accepted it,
 not that Android has already changed playback. The subsequent media update is
 the source of truth. Unsupported controls, unknown sessions, disconnected
 devices, and invalid numeric values return controlled protocol errors.
+
+The native path carries the same normalized sessions over the paired TLS
+session:
+
+```text
+Android MediaSessionManager active sessions
+    -> native media observer (notification-listener component)
+    -> media_post / media_removed / media_sync frames
+    -> normalized MediaSession events
+    -> handoverd media-session map
+    -> Unix socket clients
+```
+
+The phone's package name becomes the Handover `player_id` inside the
+existing `native:<fingerprint>` device scope, so native and KDE Connect
+sessions coexist without collisions and clients never select a backend.
+Playback maps playing/paused/stopped directly; transitional states report
+unknown rather than guessing. Only the controls behind the platform actions
+bitmask are advertised (absolute `seekTo` maps to `SetPosition`; relative
+seeks have no genuine platform API and are rejected if advertised), with the
+combined toggle derived exactly like the KDE adapter. Position and duration
+are reported only when the platform supplies them; volume is never
+transported. Desktop commands are queued for the live session and report IPC
+acceptance exactly like the KDE path; a disconnect removes the peer's native
+sessions so a reconnect resyncs, and a revoked listener clears them with the
+notifications.
 
 KDE Connect already exports remote Android players through standard MPRIS
 services named `org.mpris.MediaPlayer2.kdeconnect.mpris_<id>`. Handover should
