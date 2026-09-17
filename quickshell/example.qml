@@ -805,16 +805,6 @@ ShellRoot {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 clip: true
-                                onModelChanged: {
-                                    if (messagesCard.selectedConversation === null && count > 0) {
-                                        const first = messagesCard.accountConversations[0];
-                                        if (!first)
-                                            return;
-                                        messagesCard.selectedConversation = first.id;
-                                        HandoverService.loadHistory(first.id, 20);
-                                        HandoverService.markRead(first.id);
-                                    }
-                                }
                                 model: messagesCard.accountConversations.filter(item =>
                                     !conversationSearch.text.trim()
                                     || messagesCard.conversationLabel(item).toLowerCase().includes(
