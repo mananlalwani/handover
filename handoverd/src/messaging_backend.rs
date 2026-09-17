@@ -463,6 +463,17 @@ async fn ingest_event(
                 MessagingAccountId::new(account.clone()),
                 conversation.clone(),
             );
+            // Helper cursors contain backend-private relay details. Public
+            // paging uses the oldest normalized message id; the helper can
+            // recover its private timestamp from its own cache.
+            let public_cursor = cursor_next
+                .filter(|cursor| !cursor.is_empty())
+                .and_then(|_| {
+                    messages
+                        .iter()
+                        .min_by_key(|message| (message.sent_at, &message.local_id))
+                        .map(|message| message.local_id.clone())
+                });
             let conversation_record = {
                 state
                     .read()
@@ -472,7 +483,7 @@ async fn ingest_event(
                     .cloned()
             };
             if let Some(mut record) = conversation_record {
-                record.cursor = cursor_next.filter(|cursor| !cursor.is_empty());
+                record.cursor = public_cursor;
                 apply_backend_event(
                     state,
                     events,
@@ -541,6 +552,11 @@ async fn ingest_event(
                         Err(error) => warn!(%error, "dropping invalid message record"),
                     }
                 }
+                state
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging_mut()
+                    .sort_window(&conversation_id);
             }
             hub.complete_fetch(&account, &conversation).await;
         }
@@ -763,7 +779,7 @@ pub(crate) fn validate_login_bundle(bundle_b64: &str) -> Result<(), HelperCallEr
 mod tests {
     use super::*;
     use handover_gmessages::contract::{
-        WireConversation, WireConversationKind, WireParticipant, WireTransport,
+        WireConversation, WireConversationKind, WireMessage, WireParticipant, WireTransport,
     };
 
     #[tokio::test]
@@ -825,7 +841,17 @@ mod tests {
                 HelperEvent::Messages {
                     account: "personal".into(),
                     conversation: "thread".into(),
-                    messages: Vec::new(),
+                    messages: vec![WireMessage {
+                        local_id: "oldest".into(),
+                        sender: "other".into(),
+                        transport: Some(WireTransport::Rcs),
+                        sent_at: Some(1),
+                        text: Some("message".into()),
+                        attachments: Vec::new(),
+                        reply_to: None,
+                        reactions: Vec::new(),
+                        deleted: false,
+                    }],
                     cursor_next: Some("older:123".into()),
                     full: false,
                 },
@@ -842,6 +868,6 @@ mod tests {
             .conversation(&id)
             .and_then(|conversation| conversation.cursor.as_deref())
             .map(str::to_owned);
-        assert_eq!(cursor.as_deref(), Some("older:123"));
+        assert_eq!(cursor.as_deref(), Some("oldest"));
     }
 }

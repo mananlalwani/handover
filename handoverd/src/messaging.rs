@@ -119,6 +119,14 @@ impl MessagingStore {
             .and_then(|window| window.iter().find(|message| message.id == *id))
     }
 
+    pub(crate) fn sort_window(&mut self, conversation_id: &ConversationId) {
+        if let Some(window) = self.messages.get_mut(conversation_id) {
+            let mut sorted: Vec<Message> = window.drain(..).collect();
+            sorted.sort_by(|a, b| (a.sent_at, &a.id.local_id).cmp(&(b.sent_at, &b.id.local_id)));
+            *window = sorted.into_iter().collect();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn status(&self, id: &MessageId) -> Option<&MessageStatus> {
         self.statuses.get(id)
@@ -151,6 +159,16 @@ impl MessagingStore {
                 .position(|message| message.id.local_id == cursor)
                 .ok_or(HistoryGap::CursorOutsideWindow)?,
         };
+        if end == 0
+            && cursor.is_some()
+            && self
+                .conversations
+                .get(conversation_id)
+                .and_then(|conversation| conversation.cursor.as_deref())
+                == cursor
+        {
+            return Err(HistoryGap::CursorOutsideWindow);
+        }
         let start = end.saturating_sub(limit.max(1));
         let page: Vec<Message> = window
             .iter()
@@ -679,6 +697,30 @@ mod tests {
             store.history(&conversation_id(), 2, Some("missing")),
             Err(HistoryGap::CursorOutsideWindow)
         );
+        store
+            .conversations
+            .get_mut(&conversation_id())
+            .expect("conversation")
+            .cursor = Some("m1".into());
+        assert_eq!(
+            store.history(&conversation_id(), 100, Some("m1")),
+            Err(HistoryGap::CursorOutsideWindow)
+        );
+        store.apply(MessagingEvent::Message(MessageEvent::Added(message(
+            "m0", "peer", 9, "m0",
+        ))));
+        store.sort_window(&conversation_id());
+        store
+            .conversations
+            .get_mut(&conversation_id())
+            .expect("conversation")
+            .cursor = Some("m0".into());
+        let (oldest, next) = store
+            .history(&conversation_id(), 100, Some("m1"))
+            .expect("helper-refilled page");
+        assert_eq!(oldest.len(), 1);
+        assert_eq!(oldest[0].id.local_id, "m0");
+        assert_eq!(next.as_deref(), Some("m0"));
     }
 
     #[test]
