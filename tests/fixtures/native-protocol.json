@@ -4,6 +4,13 @@
   {"type":"pair_confirm","protocol":1,"code":"12345678"},
   {"type":"paired","protocol":1},
   {"type":"battery","protocol":1,"percentage":87,"charging":true},
+  {"type":"notification_post","protocol":1,"key":"0|org.example|42|tag|10042","app":"Example","title":"Hello","body":"World","clearable":true,"actions":[{"id":"0","label":"Reply"}],"reply_supported":true},
+  {"type":"notification_removed","protocol":1,"key":"0|org.example|42|tag|10042"},
+  {"type":"notifications_sync","protocol":1,"enabled":true,"notifications":[{"key":"0|org.example|42|tag|10042","app":"Example","title":"Hello","body":"World","clearable":true,"actions":[],"reply_supported":false}]},
+  {"type":"notifications_request","protocol":1},
+  {"type":"notification_dismiss","protocol":1,"key":"0|org.example|42|tag|10042"},
+  {"type":"notification_reply","protocol":1,"key":"0|org.example|42|tag|10042","text":"Thanks"},
+  {"type":"notification_action","protocol":1,"key":"0|org.example|42|tag|10042","action_id":"0"},
   {"type":"revoke","protocol":1},
   {"type":"ping","protocol":1},
   {"type":"pong","protocol":1}

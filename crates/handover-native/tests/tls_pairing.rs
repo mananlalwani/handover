@@ -11,7 +11,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use handover_core::{DeviceEvent, StateEvent};
+use handover_core::{DeviceEvent, NotificationEvent, StateEvent};
 use handover_native::NativeBackend;
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
@@ -305,4 +305,222 @@ fn tampered_opening_aborts_pairing() {
     );
     recv_err(&mut peer);
     assert!(harness.backend.peers().is_empty());
+}
+
+fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
+    let derived = exchange_openings(harness, peer, client);
+    let code = wait_pending_code(harness, &client.fingerprint);
+    assert_eq!(code, derived);
+    harness.backend.approve(&client.fingerprint, &code).unwrap();
+    send(
+        peer,
+        serde_json::json!({"type":"pair_confirm","protocol":1,"code":code}),
+    );
+    assert_eq!(recv(peer)["type"], "paired");
+    // The server requests a notification sync on every fresh session; the
+    // phone answers with its current list (possibly empty when the listener
+    // permission is off).
+    assert_eq!(recv(peer)["type"], "notifications_request");
+}
+
+fn wait_notification(
+    harness: &Harness,
+    mut matches: impl FnMut(&NotificationEvent) -> bool,
+) -> NotificationEvent {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match harness.events.recv_timeout(remaining).unwrap() {
+            StateEvent::Notification(event) if matches(&event) => return event,
+            _ => {}
+        }
+    }
+}
+
+fn post(key: &str, title: &str) -> serde_json::Value {
+    serde_json::json!({"type":"notification_post","protocol":1,"key":key,
+        "app":"Example","title":title,"body":"World","clearable":true,
+        "actions":[{"id":"0","label":"Reply"}],"reply_supported":true})
+}
+
+#[test]
+fn native_notifications_add_update_remove_and_sync() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+
+    send(&mut peer, post("key-1", "Hello"));
+    let added = wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Added(n) if n.id.local_id == "key-1"),
+    );
+    match added {
+        NotificationEvent::Added(notification) => {
+            assert_eq!(
+                notification.id.device_id.as_str(),
+                format!("native:{}", client.fingerprint)
+            );
+            assert_eq!(notification.title, "Hello");
+            assert_eq!(notification.actions.len(), 1);
+            assert!(notification.reply_supported);
+        }
+        _ => unreachable!(),
+    }
+
+    send(&mut peer, post("key-1", "Hello again"));
+    let updated = wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Updated(n) if n.id.local_id == "key-1"),
+    );
+    match updated {
+        NotificationEvent::Updated(notification) => assert_eq!(notification.title, "Hello again"),
+        _ => unreachable!(),
+    }
+
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notification_removed","protocol":1,"key":"key-1"}),
+    );
+    wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Removed(id) if id.local_id == "key-1"),
+    );
+
+    // A full sync reconciles stale entries: key-2 is new, key-3 is new, and
+    // the resync drops anything the phone no longer holds.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":true,
+        "notifications":[
+            {"key":"key-2","app":"Example","title":"Two","body":"b","clearable":true,"actions":[],"reply_supported":false},
+            {"key":"key-3","app":"Example","title":"Three","body":"b","clearable":false,"actions":[],"reply_supported":false}
+        ]}),
+    );
+    wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Added(n) if n.id.local_id == "key-2"),
+    );
+    wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Added(n) if n.id.local_id == "key-3"),
+    );
+
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":true,
+        "notifications":[
+            {"key":"key-3","app":"Example","title":"Three","body":"b","clearable":false,"actions":[],"reply_supported":false}
+        ]}),
+    );
+    wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Removed(id) if id.local_id == "key-2"),
+    );
+
+    // Disabling the listener clears the capability and the remaining state.
+    // The device update is emitted before the removals, so accept both in
+    // either order.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":false,"notifications":[]}),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut removed = false;
+    let mut capability_cleared = false;
+    while !removed || !capability_cleared {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match harness.events.recv_timeout(remaining).unwrap() {
+            StateEvent::Notification(NotificationEvent::Removed(id)) if id.local_id == "key-3" => {
+                removed = true;
+            }
+            StateEvent::Device(DeviceEvent::Updated(device))
+                if device.id.as_str() == format!("native:{}", client.fingerprint)
+                    && !device
+                        .capabilities
+                        .contains(&handover_core::Capability::Notifications) =>
+            {
+                capability_cleared = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(removed && capability_cleared);
+}
+
+#[test]
+fn native_notification_commands_reach_the_phone() {
+    use handover_core::{DeviceId, NotificationCommand, NotificationId};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+
+    send(&mut peer, post("key-9", "Hello"));
+    wait_notification(
+        &harness,
+        |event| matches!(event, NotificationEvent::Added(n) if n.id.local_id == "key-9"),
+    );
+
+    let id = NotificationId::new(
+        DeviceId::new(format!("native:{}", client.fingerprint)),
+        "key-9",
+    );
+    harness
+        .backend
+        .execute_notification(
+            &client.fingerprint,
+            &NotificationCommand::Dismiss {
+                notification_id: id.clone(),
+            },
+        )
+        .unwrap();
+    let dismiss = recv(&mut peer);
+    assert_eq!(dismiss["type"], "notification_dismiss");
+    assert_eq!(dismiss["key"], "key-9");
+
+    harness
+        .backend
+        .execute_notification(
+            &client.fingerprint,
+            &NotificationCommand::Reply {
+                notification_id: id.clone(),
+                text: "Thanks".into(),
+            },
+        )
+        .unwrap();
+    let reply = recv(&mut peer);
+    assert_eq!(reply["type"], "notification_reply");
+    assert_eq!(reply["text"], "Thanks");
+
+    harness
+        .backend
+        .execute_notification(
+            &client.fingerprint,
+            &NotificationCommand::InvokeAction {
+                notification_id: id,
+                action_id: "0".into(),
+            },
+        )
+        .unwrap();
+    let action = recv(&mut peer);
+    assert_eq!(action["type"], "notification_action");
+    assert_eq!(action["action_id"], "0");
+}
+
+#[test]
+fn phone_side_notification_commands_are_rejected() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+
+    // The dismiss/reply/action/request direction is Linux-to-phone only. A
+    // phone sending them violates the protocol and loses the session without
+    // any notification state entering Handover.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notification_dismiss","protocol":1,"key":"key-1"}),
+    );
+    recv_err(&mut peer);
 }

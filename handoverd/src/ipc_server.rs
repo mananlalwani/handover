@@ -448,6 +448,9 @@ where
     }
 
     let notification_id = command.notification_id().clone();
+    if notification_id.device_id.as_str().starts_with("native:") {
+        return handle_native_notification_command(command, notification_id, writer).await;
+    }
     match handover_kdeconnect::KdeConnectBackend::execute(&command).await {
         Ok(()) => {
             write_json_line(
@@ -466,6 +469,61 @@ where
                 ),
             )
             .await?;
+        }
+    }
+    Ok(true)
+}
+
+/// Route a validated notification command to the paired native session.
+/// A successful response means the command was accepted for delivery to the
+/// phone, not that Android confirmed the dismissal, action, or reply. State
+/// changes arrive later as ordinary notification events.
+async fn handle_native_notification_command<W>(
+    command: NotificationCommand,
+    notification_id: handover_core::NotificationId,
+    writer: &mut W,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(native) = native_backend() else {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::BackendUnavailable,
+                "native backend unavailable",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    };
+    let peer_id = notification_id
+        .device_id
+        .as_str()
+        .strip_prefix("native:")
+        .unwrap_or_default();
+    match native.execute_notification(peer_id, &command) {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::CommandCompleted { notification_id }),
+            )
+            .await?;
+        }
+        Err(error) => {
+            use handover_native::NativeCommandError;
+            let (code, message) = match error {
+                NativeCommandError::Offline => (
+                    ErrorCode::DeviceDisconnected,
+                    "native device is disconnected",
+                ),
+                NativeCommandError::QueueFull => (
+                    ErrorCode::BackendRejected,
+                    "native backend could not accept the command",
+                ),
+            };
+            warn!(%notification_id, "native notification command not accepted");
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
         }
     }
     Ok(true)
@@ -806,6 +864,44 @@ mod tests {
             second.devices().await.expect("second client works"),
             vec![device("Phone", 72)]
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn native_notification_commands_route_away_from_kde() {
+        use handover_core::{Notification, NotificationId};
+        let (_directory, path, state, _events, task) = server_with_device().await;
+        let native = Notification {
+            id: NotificationId::new(handover_core::DeviceId::new("native:cert"), "key-1"),
+            app_name: "Example".into(),
+            title: "Hello".into(),
+            body: "World".into(),
+            icon_path: None,
+            clearable: true,
+            actions: vec![],
+            reply_supported: false,
+        };
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Notification(NotificationEvent::Added(
+                native.clone(),
+            )));
+        let mut client = Client::connect_to(path).await.expect("connect");
+        // No native backend is running in this test, so routing must report
+        // an unavailable native path rather than attempting a KDE D-Bus call
+        // for a `native:` device.
+        let error = client
+            .dismiss_notification(native.id)
+            .await
+            .expect_err("native backend absent");
+        assert!(matches!(
+            error,
+            IpcError::Server {
+                code: ErrorCode::BackendUnavailable,
+                ..
+            }
+        ));
         task.abort();
     }
 

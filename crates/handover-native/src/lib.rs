@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use handover_core::{BatteryState, Capability, Device, DeviceEvent, DeviceId, StateEvent};
+use handover_core::{
+    BatteryState, Capability, Device, DeviceEvent, DeviceId, Notification, NotificationAction,
+    NotificationCommand, NotificationEvent, NotificationId, StateEvent,
+};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
@@ -27,6 +30,27 @@ pub const WIRE_VERSION: u32 = 1;
 pub const MAX_FRAME: usize = 64 * 1024;
 const MAX_SESSIONS: usize = 16;
 const LISTEN_PORT: u16 = 24837;
+// Bounds for native notification fields. They keep one phone from filling the
+// frame budget with a single oversized field and mirror the Android sender's
+// truncation limits so both sides pin the same contract.
+const MAX_NOTIFICATION_KEY: usize = 256;
+const MAX_NOTIFICATION_APP: usize = 128;
+const MAX_NOTIFICATION_TITLE: usize = 512;
+const MAX_NOTIFICATION_BODY: usize = 4096;
+const MAX_NOTIFICATION_ACTIONS: usize = 8;
+const MAX_NOTIFICATION_ACTION_ID: usize = 64;
+const MAX_NOTIFICATION_ACTION_LABEL: usize = 128;
+const MAX_NOTIFICATIONS_PER_SYNC: usize = 64;
+const MAX_NOTIFICATION_REPLY: usize = 1024;
+const MAX_OUTBOX_PER_PEER: usize = 32;
+
+#[derive(Debug, Error)]
+pub enum NativeCommandError {
+    #[error("native device is disconnected")]
+    Offline,
+    #[error("native command queue is full")]
+    QueueFull,
+}
 
 #[derive(Debug, Error)]
 pub enum NativeError {
@@ -77,6 +101,13 @@ struct Runtime {
     sessions: usize,
     connecting: BTreeSet<String>,
     batteries: BTreeMap<String, BatteryState>,
+    // Native notification state, owned per paired peer. Keys are the Android
+    // notification keys advertised as `local_id` in the normalized model.
+    notif_enabled: BTreeMap<String, bool>,
+    notif_keys: BTreeMap<String, BTreeSet<String>>,
+    // Queued Linux-to-phone notification commands, drained by the owning
+    // session thread. Bounded per peer; IPC reports acceptance, not delivery.
+    outbox: BTreeMap<String, Vec<Message>>,
 }
 
 #[derive(Clone)]
@@ -104,18 +135,54 @@ impl Drop for Session<'_> {
         inner.pending.remove(&self.peer.id);
         if self.published {
             inner.active.remove(&self.peer.id);
+            inner.outbox.remove(&self.peer.id);
+            let removed_keys = inner.notif_keys.remove(&self.peer.id).unwrap_or_default();
+            inner.notif_enabled.remove(&self.peer.id);
+            let device_id = device(&self.peer, false, None, false).id;
+            let mut removals: Vec<NotificationId> = removed_keys
+                .into_iter()
+                .map(|key| NotificationId::new(device_id.clone(), key))
+                .collect();
+            removals.sort();
             let event = if inner.peers.peers.contains_key(&self.peer.id) {
                 DeviceEvent::Updated(device(
                     &self.peer,
                     false,
                     inner.batteries.get(&self.peer.id).cloned(),
+                    false,
                 ))
             } else {
-                DeviceEvent::Removed(device(&self.peer, false, None).id)
+                DeviceEvent::Removed(device(&self.peer, false, None, false).id)
             };
+            // Clearing per-peer notification keys here keeps a disconnect from
+            // leaving ghost state while a replacement connection resyncs from
+            // the phone's current list. KDE-derived entries are untouched:
+            // their device IDs never carry the `native:` prefix.
+            for id in removals {
+                (self.event)(StateEvent::Notification(NotificationEvent::Removed(id)));
+            }
             (self.event)(StateEvent::Device(event));
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+struct WireNotificationAction {
+    id: String,
+    label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+struct WireNotification {
+    key: String,
+    app: String,
+    title: String,
+    body: String,
+    clearable: bool,
+    #[serde(default)]
+    actions: Vec<WireNotificationAction>,
+    #[serde(default)]
+    reply_supported: bool,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -154,6 +221,51 @@ enum Message {
         percentage: u8,
         charging: bool,
     },
+    // Phone-to-Linux notification state. `notification_post` upserts one
+    // notification; `notification_removed` retracts it; `notifications_sync`
+    // carries the phone's full current list so a (re)connect reconciles stale
+    // entries and advertises listener permission via `enabled`.
+    NotificationPost {
+        protocol: u32,
+        key: String,
+        app: String,
+        title: String,
+        body: String,
+        clearable: bool,
+        #[serde(default)]
+        actions: Vec<WireNotificationAction>,
+        #[serde(default)]
+        reply_supported: bool,
+    },
+    NotificationRemoved {
+        protocol: u32,
+        key: String,
+    },
+    NotificationsSync {
+        protocol: u32,
+        enabled: bool,
+        #[serde(default)]
+        notifications: Vec<WireNotification>,
+    },
+    // Linux-to-phone direction. IPC acceptance means the command was queued
+    // for the live session, not that Android confirmed the effect.
+    NotificationsRequest {
+        protocol: u32,
+    },
+    NotificationDismiss {
+        protocol: u32,
+        key: String,
+    },
+    NotificationReply {
+        protocol: u32,
+        key: String,
+        text: String,
+    },
+    NotificationAction {
+        protocol: u32,
+        key: String,
+        action_id: String,
+    },
     Revoke {
         protocol: u32,
     },
@@ -173,6 +285,13 @@ impl Message {
             | Self::PairConfirm { protocol, .. }
             | Self::Paired { protocol }
             | Self::Battery { protocol, .. }
+            | Self::NotificationPost { protocol, .. }
+            | Self::NotificationRemoved { protocol, .. }
+            | Self::NotificationsSync { protocol, .. }
+            | Self::NotificationsRequest { protocol }
+            | Self::NotificationDismiss { protocol, .. }
+            | Self::NotificationReply { protocol, .. }
+            | Self::NotificationAction { protocol, .. }
             | Self::Revoke { protocol }
             | Self::Ping { protocol }
             | Self::Pong { protocol } => *protocol,
@@ -212,6 +331,9 @@ impl NativeBackend {
                 sessions: 0,
                 connecting: BTreeSet::new(),
                 batteries: BTreeMap::new(),
+                notif_enabled: BTreeMap::new(),
+                notif_keys: BTreeMap::new(),
+                outbox: BTreeMap::new(),
             })),
             directory,
             certificate,
@@ -251,7 +373,7 @@ impl NativeBackend {
     pub fn remembered_devices(&self) -> Vec<Device> {
         self.peers()
             .iter()
-            .map(|peer| device(peer, false, None))
+            .map(|peer| device(peer, false, None, false))
             .collect()
     }
     pub fn pending(&self) -> Vec<PendingPeer> {
@@ -296,10 +418,78 @@ impl NativeBackend {
             inner.peers = peers;
             inner.batteries.remove(id);
         }
+        inner.notif_enabled.remove(id);
+        inner.notif_keys.remove(id);
+        inner.outbox.remove(id);
         if let Some(stream) = inner.active.remove(id) {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
         Ok(removed)
+    }
+
+    /// Queue a validated notification command for the live native session.
+    /// Success means the command was accepted for delivery, not that Android
+    /// confirmed the dismissal, action, or reply. The owning session thread
+    /// drains the queue; a disconnected peer reports [`NativeCommandError::Offline`].
+    pub fn execute_notification(
+        &self,
+        peer_id: &str,
+        command: &NotificationCommand,
+    ) -> Result<(), NativeCommandError> {
+        let message = match command {
+            NotificationCommand::Dismiss { notification_id } => Message::NotificationDismiss {
+                protocol: WIRE_VERSION,
+                key: notification_id.local_id.clone(),
+            },
+            NotificationCommand::Reply {
+                notification_id,
+                text,
+            } => {
+                if text.len() > MAX_NOTIFICATION_REPLY {
+                    return Err(NativeCommandError::QueueFull);
+                }
+                Message::NotificationReply {
+                    protocol: WIRE_VERSION,
+                    key: notification_id.local_id.clone(),
+                    text: text.clone(),
+                }
+            }
+            NotificationCommand::InvokeAction {
+                notification_id,
+                action_id,
+            } => Message::NotificationAction {
+                protocol: WIRE_VERSION,
+                key: notification_id.local_id.clone(),
+                action_id: action_id.clone(),
+            },
+        };
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return Err(NativeCommandError::Offline);
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return Err(NativeCommandError::QueueFull);
+        }
+        queue.push(message);
+        Ok(())
+    }
+
+    /// Ask the live session to request a fresh notification sync. Returns
+    /// false when the peer has no active session.
+    pub fn request_notifications_sync(&self, peer_id: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return false;
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return false;
+        }
+        queue.push(Message::NotificationsRequest {
+            protocol: WIRE_VERSION,
+        });
+        true
     }
     fn save_peers(&self, peers: &PeerFile) -> Result<(), NativeError> {
         let path = self.directory.join("peers.json");
@@ -580,12 +770,23 @@ impl NativeBackend {
             }
             inner.active.insert(id.clone(), tls.get_ref().try_clone()?);
             session.published = true;
+            let notifications_supported = inner.notif_enabled.get(&id).copied().unwrap_or(false);
             event(StateEvent::Device(DeviceEvent::Added(device(
                 &peer,
                 true,
                 inner.batteries.get(&id).cloned(),
+                notifications_supported,
             ))));
         }
+        // Ask a freshly paired phone for its current notification list. The
+        // phone also syncs proactively after `paired`; the request covers a
+        // daemon restart where the phone never saw the pairing transition.
+        let _ = write_frame(
+            &mut tls,
+            &Message::NotificationsRequest {
+                protocol: WIRE_VERSION,
+            },
+        );
         let mut last_received = Instant::now();
         loop {
             if last_received.elapsed() > Duration::from_secs(90) {
@@ -593,6 +794,23 @@ impl NativeBackend {
             }
             if !self.inner.lock().unwrap().peers.peers.contains_key(&id) {
                 break;
+            }
+            // Drain queued Linux-to-phone notification commands before
+            // blocking on the next inbound frame. Acceptance was already
+            // reported over IPC; a write failure ends the session and the
+            // phone resyncs on reconnect.
+            let outbound = self
+                .inner
+                .lock()
+                .unwrap()
+                .outbox
+                .remove(&id)
+                .unwrap_or_default();
+            for message in outbound {
+                if let Err(error) = write_frame(&mut tls, &message) {
+                    tracing::debug!(peer = %id, %error, "native notification command write failed");
+                    return Err(error);
+                }
             }
             match read_frame(&mut tls) {
                 Ok(Message::Battery {
@@ -608,11 +826,54 @@ impl NativeBackend {
                         break;
                     }
                     inner.batteries.insert(id.clone(), battery);
+                    let notifications_supported =
+                        inner.notif_enabled.get(&id).copied().unwrap_or(false);
                     event(StateEvent::Device(DeviceEvent::Updated(device(
                         &peer,
                         true,
                         Some(battery),
+                        notifications_supported,
                     ))));
+                }
+                Ok(Message::NotificationPost {
+                    protocol: WIRE_VERSION,
+                    key,
+                    app,
+                    title,
+                    body,
+                    clearable,
+                    actions,
+                    reply_supported,
+                }) => {
+                    last_received = Instant::now();
+                    self.handle_notification_post(
+                        &peer,
+                        WireNotification {
+                            key,
+                            app,
+                            title,
+                            body,
+                            clearable,
+                            actions,
+                            reply_supported,
+                        },
+                        event,
+                    )?;
+                }
+                Ok(Message::NotificationRemoved {
+                    protocol: WIRE_VERSION,
+                    key,
+                }) => {
+                    last_received = Instant::now();
+                    self.handle_notification_removed(&peer, &key, event)?;
+                }
+                Ok(Message::NotificationsSync {
+                    protocol: WIRE_VERSION,
+                    enabled,
+                    notifications,
+                }) => {
+                    last_received = Instant::now();
+                    self.handle_notifications_sync(&peer, enabled, notifications, event)?;
                 }
                 Ok(Message::Ping {
                     protocol: WIRE_VERSION,
@@ -641,14 +902,180 @@ impl NativeBackend {
     }
 }
 
-fn device(peer: &Peer, connected: bool, battery: Option<BatteryState>) -> Device {
+fn device(
+    peer: &Peer,
+    connected: bool,
+    battery: Option<BatteryState>,
+    notifications_supported: bool,
+) -> Device {
+    let mut capabilities = BTreeSet::from([Capability::Battery]);
+    if notifications_supported {
+        capabilities.insert(Capability::Notifications);
+    }
     Device {
         id: DeviceId::new(format!("native:{}", peer.id)),
         name: peer.name.clone(),
         connected,
         paired: true,
         battery,
-        capabilities: [Capability::Battery].into(),
+        capabilities,
+    }
+}
+
+/// Validates one phone-reported notification without logging its content.
+/// Titles and bodies never reach normal log levels; callers log only the
+/// device-scoped key and counts.
+fn normalize_native_notification(
+    peer: &Peer,
+    wire: &WireNotification,
+) -> Result<Notification, NativeError> {
+    let key = wire.key.trim();
+    if key.is_empty() || key.len() > MAX_NOTIFICATION_KEY || key.chars().any(char::is_control) {
+        return Err(NativeError::InvalidFrame);
+    }
+    if wire.app.len() > MAX_NOTIFICATION_APP
+        || wire.title.len() > MAX_NOTIFICATION_TITLE
+        || wire.body.len() > MAX_NOTIFICATION_BODY
+    {
+        return Err(NativeError::InvalidFrame);
+    }
+    if wire.actions.len() > MAX_NOTIFICATION_ACTIONS {
+        return Err(NativeError::InvalidFrame);
+    }
+    let mut seen = BTreeSet::new();
+    let mut actions = Vec::with_capacity(wire.actions.len());
+    for action in &wire.actions {
+        if action.id.is_empty()
+            || action.id.len() > MAX_NOTIFICATION_ACTION_ID
+            || action.label.is_empty()
+            || action.label.len() > MAX_NOTIFICATION_ACTION_LABEL
+            || !seen.insert(action.id.clone())
+        {
+            return Err(NativeError::InvalidFrame);
+        }
+        actions.push(NotificationAction {
+            id: action.id.clone(),
+            label: action.label.clone(),
+        });
+    }
+    Ok(Notification {
+        id: NotificationId::new(DeviceId::new(format!("native:{}", peer.id)), key.to_owned()),
+        app_name: wire.app.clone(),
+        title: wire.title.clone(),
+        body: wire.body.clone(),
+        icon_path: None,
+        clearable: wire.clearable,
+        actions,
+        reply_supported: wire.reply_supported,
+    })
+}
+
+impl NativeBackend {
+    fn handle_notification_post(
+        &self,
+        peer: &Peer,
+        wire: WireNotification,
+        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        let notification = normalize_native_notification(peer, &wire)?;
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.peers.peers.contains_key(&peer.id) {
+            return Err(NativeError::InvalidFrame);
+        }
+        let keys = inner.notif_keys.entry(peer.id.clone()).or_default();
+        let is_new = !keys.contains(&wire.key);
+        keys.insert(wire.key.clone());
+        let device_changed = inner.notif_enabled.get(&peer.id).copied() != Some(true);
+        inner.notif_enabled.insert(peer.id.clone(), true);
+        let device_update = device_changed
+            .then(|| device(peer, true, inner.batteries.get(&peer.id).cloned(), true));
+        drop(inner);
+        if let Some(device) = device_update {
+            event(StateEvent::Device(DeviceEvent::Updated(device)));
+        }
+        event(StateEvent::Notification(if is_new {
+            NotificationEvent::Added(notification)
+        } else {
+            NotificationEvent::Updated(notification)
+        }));
+        Ok(())
+    }
+
+    fn handle_notification_removed(
+        &self,
+        peer: &Peer,
+        key: &str,
+        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        if key.is_empty() || key.len() > MAX_NOTIFICATION_KEY {
+            return Err(NativeError::InvalidFrame);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let known = inner
+            .notif_keys
+            .get_mut(&peer.id)
+            .is_some_and(|keys| keys.remove(key));
+        drop(inner);
+        if known {
+            event(StateEvent::Notification(NotificationEvent::Removed(
+                NotificationId::new(DeviceId::new(format!("native:{}", peer.id)), key.to_owned()),
+            )));
+        }
+        Ok(())
+    }
+
+    fn handle_notifications_sync(
+        &self,
+        peer: &Peer,
+        enabled: bool,
+        wires: Vec<WireNotification>,
+        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        if wires.len() > MAX_NOTIFICATIONS_PER_SYNC {
+            return Err(NativeError::InvalidFrame);
+        }
+        let mut notifications = Vec::with_capacity(wires.len());
+        let mut keys = BTreeSet::new();
+        for wire in &wires {
+            if !keys.insert(wire.key.clone()) {
+                return Err(NativeError::InvalidFrame);
+            }
+            notifications.push(normalize_native_notification(peer, wire)?);
+        }
+        if !enabled && !notifications.is_empty() {
+            return Err(NativeError::InvalidFrame);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.peers.peers.contains_key(&peer.id) {
+            return Err(NativeError::InvalidFrame);
+        }
+        let previous = inner
+            .notif_keys
+            .insert(peer.id.clone(), keys.clone())
+            .unwrap_or_default();
+        let device_changed = inner.notif_enabled.get(&peer.id).copied() != Some(enabled);
+        inner.notif_enabled.insert(peer.id.clone(), enabled);
+        let device_update = device_changed
+            .then(|| device(peer, true, inner.batteries.get(&peer.id).cloned(), enabled));
+        drop(inner);
+        if let Some(device) = device_update {
+            event(StateEvent::Device(DeviceEvent::Updated(device)));
+        }
+        for id in previous.difference(&keys) {
+            event(StateEvent::Notification(NotificationEvent::Removed(
+                NotificationId::new(DeviceId::new(format!("native:{}", peer.id)), id.clone()),
+            )));
+        }
+        for notification in notifications {
+            let id = notification.id.clone();
+            let is_new = !previous.contains(&id.local_id);
+            event(StateEvent::Notification(if is_new {
+                NotificationEvent::Added(notification)
+            } else {
+                NotificationEvent::Updated(notification)
+            }));
+        }
+        Ok(())
     }
 }
 
@@ -865,6 +1292,108 @@ mod tests {
                 .unwrap()
                 .peers()
                 .is_empty()
+        );
+    }
+
+    fn test_peer() -> Peer {
+        Peer {
+            id: "android-device-01".into(),
+            name: "Pixel Test".into(),
+            fingerprint: "fingerprint".into(),
+        }
+    }
+
+    fn wire_notification(key: &str) -> WireNotification {
+        WireNotification {
+            key: key.into(),
+            app: "Example".into(),
+            title: "Hello".into(),
+            body: "World".into(),
+            clearable: true,
+            actions: vec![WireNotificationAction {
+                id: "0".into(),
+                label: "Reply".into(),
+            }],
+            reply_supported: true,
+        }
+    }
+
+    #[test]
+    fn native_notification_keeps_device_scoped_identity_without_content_in_debug() {
+        let notification =
+            normalize_native_notification(&test_peer(), &wire_notification("key-1")).unwrap();
+        assert_eq!(
+            notification.id,
+            NotificationId::new(DeviceId::new("native:android-device-01"), "key-1")
+        );
+        assert_eq!(notification.actions.len(), 1);
+        assert!(notification.reply_supported);
+        assert!(notification.icon_path.is_none());
+        // Reply tokens and action internals stay out of the normalized model;
+        // only the advertised id/label pairs cross the boundary.
+        let debug = format!("{notification:?}");
+        assert!(debug.contains("Example"));
+    }
+
+    #[test]
+    fn native_notification_rejects_bad_keys_sizes_and_duplicate_actions() {
+        let peer = test_peer();
+        assert!(normalize_native_notification(&peer, &wire_notification("")).is_err());
+        let mut oversize = wire_notification("key-1");
+        oversize.title = "t".repeat(MAX_NOTIFICATION_TITLE + 1);
+        assert!(normalize_native_notification(&peer, &oversize).is_err());
+        let mut dup = wire_notification("key-1");
+        dup.actions.push(WireNotificationAction {
+            id: "0".into(),
+            label: "Again".into(),
+        });
+        assert!(normalize_native_notification(&peer, &dup).is_err());
+        let mut many = wire_notification("key-1");
+        many.actions = (0..MAX_NOTIFICATION_ACTIONS + 1)
+            .map(|i| WireNotificationAction {
+                id: i.to_string(),
+                label: "Action".into(),
+            })
+            .collect();
+        assert!(normalize_native_notification(&peer, &many).is_err());
+    }
+
+    #[test]
+    fn notification_commands_queue_only_for_live_peers() {
+        use handover_core::NotificationCommand;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().to_path_buf()).unwrap();
+        let id = NotificationId::new(DeviceId::new("native:android-device-01"), "key-1");
+        // No session is active, so even a well-formed command is offline
+        // rather than silently dropped: IPC maps this to a controlled error.
+        assert!(matches!(
+            backend.execute_notification(
+                "android-device-01",
+                &NotificationCommand::Dismiss {
+                    notification_id: id.clone()
+                }
+            ),
+            Err(NativeCommandError::Offline)
+        ));
+        assert!(!backend.request_notifications_sync("android-device-01"));
+    }
+
+    #[test]
+    fn notifications_capability_follows_listener_permission() {
+        assert!(
+            device(&test_peer(), true, None, false)
+                .capabilities
+                .contains(&Capability::Battery)
+        );
+        assert!(
+            !device(&test_peer(), true, None, false)
+                .capabilities
+                .contains(&Capability::Notifications)
+        );
+        assert!(
+            device(&test_peer(), true, None, true)
+                .capabilities
+                .contains(&Capability::Notifications)
         );
     }
 }
