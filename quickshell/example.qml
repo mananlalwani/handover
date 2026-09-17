@@ -12,6 +12,7 @@ ShellRoot {
         implicitHeight: 640
         color: "#20242b"
         title: "Handover"
+        property string page: "overview"
         property var shareDevices: HandoverService.devices.filter(device =>
             device.connected && device.paired && device.capabilities.includes("file_transfer"))
         property string shareStatus: ""
@@ -48,12 +49,36 @@ ShellRoot {
                 }
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                Repeater {
+                    model: [
+                        { key: "overview", label: "Overview" },
+                        { key: "messages", label: "Messages" },
+                        { key: "notifications", label: "Notifications" },
+                        { key: "media", label: "Media" },
+                        { key: "transfers", label: "Transfers" }
+                    ]
+                    Button {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        text: modelData.label
+                        flat: window.page !== modelData.key
+                        highlighted: window.page === modelData.key
+                        onClicked: window.page = modelData.key
+                    }
+                }
+            }
+
             Rectangle {
                 id: mediaCard
                 Layout.fillWidth: true
                 implicitHeight: mediaColumn.implicitHeight + 24
                 radius: 8
                 color: "#303741"
+                visible: window.page === "overview" || window.page === "media"
                 property var mediaSession: {
                     const playing = HandoverService.mediaSessions.find(session =>
                         session.playback === "playing");
@@ -172,6 +197,7 @@ ShellRoot {
 
             RowLayout {
                 Layout.fillWidth: true
+                visible: window.page === "overview" || window.page === "transfers"
 
                 ComboBox {
                     id: devicePicker
@@ -189,6 +215,7 @@ ShellRoot {
 
             RowLayout {
                 Layout.fillWidth: true
+                visible: window.page === "overview" || window.page === "transfers"
 
                 TextField {
                     id: urlField
@@ -213,7 +240,8 @@ ShellRoot {
                 color: "#b9c2cf"
                 textFormat: Text.PlainText
                 text: window.shareStatus
-                visible: text.length > 0
+                visible: text.length > 0 && (window.page === "overview"
+                    || window.page === "transfers")
             }
 
             Rectangle {
@@ -222,6 +250,7 @@ ShellRoot {
                 Layout.fillHeight: true
                 radius: 8
                 color: "#303741"
+                visible: window.page === "overview" || window.page === "notifications"
                 property var notification: HandoverService.notifications.find(item => item.reply_supported)
                     || (HandoverService.notifications.length > 0
                         ? HandoverService.notifications[0] : null)
@@ -352,6 +381,7 @@ ShellRoot {
             Layout.minimumHeight: 320
             radius: 8
             color: "#303741"
+            visible: window.page === "messages"
             property var selectedConversation: null
             property var replyingTo: null
             property string status: ""
