@@ -129,6 +129,11 @@ enum Message {
     },
     PairConfirm {
         protocol: u32,
+        // The ceremony code the phone user approved. The server verifies it
+        // against the pending candidate; a confirmation that does not repeat
+        // the displayed code aborts pairing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
     Paired {
         protocol: u32,
@@ -153,7 +158,7 @@ impl Message {
     fn version(&self) -> u32 {
         match self {
             Self::Hello { protocol, .. }
-            | Self::PairConfirm { protocol }
+            | Self::PairConfirm { protocol, .. }
             | Self::Paired { protocol }
             | Self::Battery { protocol, .. }
             | Self::Revoke { protocol }
@@ -293,20 +298,19 @@ impl NativeBackend {
     pub fn run(self, event: Arc<dyn Fn(StateEvent) + Send + Sync>) -> Result<(), NativeError> {
         let listener = TcpListener::bind(("0.0.0.0", LISTEN_PORT))?;
         let port = listener.local_addr()?.port();
-        let mdns = ServiceDaemon::new().map_err(|e| NativeError::Discovery(e.to_string()))?;
-        let name = format!("Handover-{}", &self.id[..12]);
-        let service = ServiceInfo::new(
-            "_handover._tcp.local.",
-            &name,
-            &format!("{}.local.", name.to_lowercase()),
-            "",
-            port,
-            &[("v", "1")][..],
-        )
-        .map_err(|e| NativeError::Discovery(e.to_string()))?
-        .enable_addr_auto();
-        mdns.register(service)
-            .map_err(|e| NativeError::Discovery(e.to_string()))?;
+        // Keep the advertisement alive for the lifetime of the listener.
+        let _discovery = advertise(port, &self.id)?;
+        self.serve(listener, event)
+    }
+
+    /// Serves the native protocol on an already-bound listener without DNS-SD
+    /// advertisement. The pairing/TLS interop harness and integration tests
+    /// use this with an ephemeral port; production callers use [`Self::run`].
+    pub fn serve(
+        self,
+        listener: TcpListener,
+        event: Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
         for incoming in listener.incoming() {
             let stream = incoming?;
             let mut inner = self.inner.lock().unwrap();
@@ -432,7 +436,10 @@ impl NativeBackend {
             published: false,
         };
         if !known {
-            // Compare both complete certificate fingerprints out of band.
+            // Both users compare the same eight-digit code out of band, then
+            // approve on their own side: Linux through local IPC, the phone
+            // by repeating the code it displayed. Pairing completes only when
+            // the local approval and the matching phone confirmation meet.
             let started = Instant::now();
             let mut phone_confirmed = false;
             loop {
@@ -442,7 +449,25 @@ impl NativeBackend {
                 match read_frame(&mut tls) {
                     Ok(Message::PairConfirm {
                         protocol: WIRE_VERSION,
-                    }) => phone_confirmed = true,
+                        code,
+                    }) => {
+                        let expected = self
+                            .inner
+                            .lock()
+                            .unwrap()
+                            .pending
+                            .get(&id)
+                            .map_or(String::new(), |candidate| candidate.code.clone());
+                        if expected.is_empty() || code.as_deref() != Some(expected.as_str()) {
+                            // A confirmation that does not repeat the displayed
+                            // ceremony code is a malfunction or an attack. Drop
+                            // the session so any retry starts a fresh,
+                            // user-visible ceremony instead of allowing
+                            // unlimited guesses against this one.
+                            return Err(NativeError::InvalidFrame);
+                        }
+                        phone_confirmed = true;
+                    }
                     Ok(Message::Ping {
                         protocol: WIRE_VERSION,
                     }) => write_frame(
@@ -552,6 +577,32 @@ fn device(peer: &Peer, connected: bool, battery: Option<BatteryState>) -> Device
     }
 }
 
+/// Registers the `_handover._tcp.local.` advertisement for a bound port and
+/// returns the daemon handle, which keeps the record alive while it is held.
+fn advertise(port: u16, id: &str) -> Result<ServiceDaemon, NativeError> {
+    let mdns = ServiceDaemon::new().map_err(|e| NativeError::Discovery(e.to_string()))?;
+    mdns.register(discovery_service(port, id)?)
+        .map_err(|e| NativeError::Discovery(e.to_string()))?;
+    Ok(mdns)
+}
+
+/// Builds the DNS-SD record advertised by [`NativeBackend::run`]. Discovery
+/// addresses and TXT values are untrusted hints; trust comes from the TLS
+/// certificate fingerprint pinned at pairing time.
+fn discovery_service(port: u16, id: &str) -> Result<ServiceInfo, NativeError> {
+    let name = format!("Handover-{}", &id[..12]);
+    Ok(ServiceInfo::new(
+        "_handover._tcp.local.",
+        &name,
+        &format!("{}.local.", name.to_lowercase()),
+        "",
+        port,
+        &[("v", "1")][..],
+    )
+    .map_err(|e| NativeError::Discovery(e.to_string()))?
+    .enable_addr_auto())
+}
+
 fn generate_identity() -> Result<(PKey<Private>, X509), NativeError> {
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
     let key = PKey::from_ec_key(EcKey::generate(&group)?)?;
@@ -632,6 +683,23 @@ fn write_frame<W: Write>(writer: &mut W, message: &Message) -> Result<(), Native
 mod tests {
     use super::*;
     #[test]
+    fn discovery_record_matches_advertised_service() {
+        // Code-level coverage for the DNS-SD advertisement. Multicast
+        // discovery has no live-network verification (see DESIGN.md).
+        let id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let service = discovery_service(24837, id).unwrap();
+        assert_eq!(service.get_type(), "_handover._tcp.local.");
+        assert_eq!(
+            service.get_fullname(),
+            "Handover-0123456789ab._handover._tcp.local."
+        );
+        assert_eq!(service.get_port(), 24837);
+        assert_eq!(
+            service.get_properties().get_property_val_str("v"),
+            Some("1")
+        );
+    }
+    #[test]
     fn framing_rejects_oversize() {
         let bytes = (MAX_FRAME as u32 + 1).to_be_bytes();
         assert!(matches!(
@@ -665,7 +733,7 @@ mod tests {
         for message in messages {
             let mut bytes = Vec::new();
             write_frame(&mut bytes, &message).unwrap();
-            assert_eq!(read_frame(&mut &bytes[..]).unwrap().version(), WIRE_VERSION);
+            assert_eq!(read_frame(&mut &bytes[..]).unwrap(), message);
         }
     }
     #[test]
