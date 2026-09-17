@@ -34,7 +34,11 @@ use crate::{apply_backend_event, publish_event, state::StateStore};
 
 use handover_core::StateEvent;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+// Google Messages relay operations can take about 60 seconds while the
+// phone wakes and services a request. Keep this above the adapter's
+// bounded slow-operation timeout so accepted commands are not reported
+// as failures merely because the daemon stopped waiting early.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 const MAX_IN_FLIGHT: usize = 64;
 const DORMANT_RETRY: Duration = Duration::from_secs(30);
 

@@ -17,7 +17,13 @@ use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const MAX_LINE_BYTES: usize = 64 * 1024;
+/// Maximum decoded IPC line: 1 MiB. Proven floor: a real 86-thread
+/// conversation list serializes to ~71 KiB, and full message windows
+/// with bodies exceed the old 64 KiB bound deterministically, which made
+/// subscribe/snapshot/history undecodable for real libraries. The daemon
+/// already writes unbounded lines; this aligns readers. Per-connection
+/// buffer cost is bounded by this cap.
+pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 const SOCKET_DIRECTORY: &str = "handover";
 const SOCKET_NAME: &str = "handoverd.sock";
 
@@ -1358,5 +1364,31 @@ mod tests {
             serde_json::to_string(&current).expect("serializes"),
             r#"{"protocol":1,"method":"subscribe","shares":true,"media":true,"messages":true}"#
         );
+    }
+
+    #[tokio::test]
+    async fn large_library_snapshot_lines_decode() {
+        // Regression: a real 86-thread conversation list measures ~71 KiB
+        // serialized, which the old 64 KiB bound rejected, breaking
+        // subscribe/snapshot/history for real libraries.
+        let bodies = "x".repeat(100 * 1024);
+        let message = ServerMessage::new(ServerPayload::Notifications {
+            notifications: vec![Notification {
+                id: NotificationId::new(DeviceId::new("phone"), "1"),
+                app_name: "Messages".into(),
+                title: "Big".into(),
+                body: bodies,
+                icon_path: None,
+                clearable: true,
+                actions: vec![],
+                reply_supported: true,
+            }],
+        });
+        let mut encoded = serde_json::to_vec(&message).expect("serializes");
+        assert!(encoded.len() > 64 * 1024);
+        encoded.push(b'\n');
+        let mut reader = BufReader::new(encoded.as_slice());
+        let decoded: Option<ServerMessage> = read_json_line(&mut reader).await.expect("decodes");
+        assert_eq!(decoded, Some(message));
     }
 }
