@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use handover_core::{
-    BatteryState, Capability, Device, DeviceEvent, DeviceId, Notification, NotificationAction,
-    NotificationCommand, NotificationEvent, NotificationId, StateEvent,
+    BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
+    MediaEvent, MediaSession, MediaSessionId, Notification, NotificationAction,
+    NotificationCommand, NotificationEvent, NotificationId, PlaybackState, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -42,6 +43,13 @@ const MAX_NOTIFICATION_ACTION_ID: usize = 64;
 const MAX_NOTIFICATION_ACTION_LABEL: usize = 128;
 const MAX_NOTIFICATIONS_PER_SYNC: usize = 64;
 const MAX_NOTIFICATION_REPLY: usize = 1024;
+// Bounds for native media fields. They mirror the Android sender's truncation
+// limits so both sides pin the same contract; volume is never transported.
+const MAX_MEDIA_PLAYER: usize = 128;
+const MAX_MEDIA_APP: usize = 128;
+const MAX_MEDIA_TEXT: usize = 512;
+const MAX_MEDIA_SESSIONS_PER_SYNC: usize = 16;
+const MAX_MEDIA_POSITION_MS: u64 = i32::MAX as u64;
 const MAX_OUTBOX_PER_PEER: usize = 32;
 
 #[derive(Debug, Error)]
@@ -105,6 +113,10 @@ struct Runtime {
     // notification keys advertised as `local_id` in the normalized model.
     notif_enabled: BTreeMap<String, bool>,
     notif_keys: BTreeMap<String, BTreeSet<String>>,
+    // Native media state, owned per paired peer. Players are the Android
+    // package names advertised as `player_id` in the normalized model.
+    media_enabled: BTreeMap<String, bool>,
+    media_players: BTreeMap<String, BTreeSet<String>>,
     // Queued Linux-to-phone notification commands, drained by the owning
     // session thread. Bounded per peer; IPC reports acceptance, not delivery.
     outbox: BTreeMap<String, Vec<Message>>,
@@ -138,21 +150,32 @@ impl Drop for Session<'_> {
             inner.outbox.remove(&self.peer.id);
             let removed_keys = inner.notif_keys.remove(&self.peer.id).unwrap_or_default();
             inner.notif_enabled.remove(&self.peer.id);
-            let device_id = device(&self.peer, false, None, false).id;
+            let removed_players = inner
+                .media_players
+                .remove(&self.peer.id)
+                .unwrap_or_default();
+            inner.media_enabled.remove(&self.peer.id);
+            let device_id = device(&self.peer, false, None, false, false).id;
             let mut removals: Vec<NotificationId> = removed_keys
                 .into_iter()
                 .map(|key| NotificationId::new(device_id.clone(), key))
                 .collect();
             removals.sort();
+            let mut media_removals: Vec<MediaSessionId> = removed_players
+                .into_iter()
+                .map(|player| MediaSessionId::new(device_id.clone(), player))
+                .collect();
+            media_removals.sort();
             let event = if inner.peers.peers.contains_key(&self.peer.id) {
                 DeviceEvent::Updated(device(
                     &self.peer,
                     false,
                     inner.batteries.get(&self.peer.id).cloned(),
                     false,
+                    false,
                 ))
             } else {
-                DeviceEvent::Removed(device(&self.peer, false, None, false).id)
+                DeviceEvent::Removed(device(&self.peer, false, None, false, false).id)
             };
             // Clearing per-peer notification keys here keeps a disconnect from
             // leaving ghost state while a replacement connection resyncs from
@@ -160,6 +183,13 @@ impl Drop for Session<'_> {
             // their device IDs never carry the `native:` prefix.
             for id in removals {
                 (self.event)(StateEvent::Notification(NotificationEvent::Removed(id)));
+            }
+            // Same ownership rule for media sessions: the disconnect drops the
+            // peer's native players so a reconnect resyncs from current phone
+            // state. `handoverd` also strips sessions of disconnected devices,
+            // and the store dedupes, so a double removal is harmless.
+            for id in media_removals {
+                (self.event)(StateEvent::Media(MediaEvent::Removed(id)));
             }
             (self.event)(StateEvent::Device(event));
         }
@@ -183,6 +213,60 @@ struct WireNotification {
     actions: Vec<WireNotificationAction>,
     #[serde(default)]
     reply_supported: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WirePlayback {
+    Playing,
+    Paused,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WireControl {
+    Play,
+    Pause,
+    PlayPause,
+    Next,
+    Previous,
+    Seek,
+    SetPosition,
+}
+
+/// Linux-to-phone media command verb. `Seek` is deliberately absent: Android
+/// exposes absolute `seekTo`, which maps to `SetPosition`; relative seeks
+/// have no genuine platform API, so the daemon can never route one here.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WireCommand {
+    Play,
+    Pause,
+    PlayPause,
+    Next,
+    Previous,
+    SetPosition,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+struct WireMediaSession {
+    player: String,
+    application: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    album: Option<String>,
+    playback: WirePlayback,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    position_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    controls: Vec<WireControl>,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -266,6 +350,48 @@ enum Message {
         key: String,
         action_id: String,
     },
+    // Phone-to-Linux media state. `media_post` upserts one player session;
+    // `media_removed` retracts it; `media_sync` carries the phone's full
+    // current session list so a (re)connect reconciles stale entries.
+    MediaPost {
+        protocol: u32,
+        player: String,
+        application: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artist: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        album: Option<String>,
+        playback: WirePlayback,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(default)]
+        controls: Vec<WireControl>,
+    },
+    MediaRemoved {
+        protocol: u32,
+        player: String,
+    },
+    MediaSync {
+        protocol: u32,
+        #[serde(default)]
+        sessions: Vec<WireMediaSession>,
+    },
+    // Linux-to-phone direction. IPC acceptance means the command was queued
+    // for the live session, not that Android confirmed the effect.
+    MediaRequest {
+        protocol: u32,
+    },
+    MediaControl {
+        protocol: u32,
+        player: String,
+        action: WireCommand,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position_ms: Option<u64>,
+    },
     Revoke {
         protocol: u32,
     },
@@ -292,6 +418,11 @@ impl Message {
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
+            | Self::MediaPost { protocol, .. }
+            | Self::MediaRemoved { protocol, .. }
+            | Self::MediaSync { protocol, .. }
+            | Self::MediaRequest { protocol }
+            | Self::MediaControl { protocol, .. }
             | Self::Revoke { protocol }
             | Self::Ping { protocol }
             | Self::Pong { protocol } => *protocol,
@@ -333,6 +464,8 @@ impl NativeBackend {
                 batteries: BTreeMap::new(),
                 notif_enabled: BTreeMap::new(),
                 notif_keys: BTreeMap::new(),
+                media_enabled: BTreeMap::new(),
+                media_players: BTreeMap::new(),
                 outbox: BTreeMap::new(),
             })),
             directory,
@@ -373,7 +506,7 @@ impl NativeBackend {
     pub fn remembered_devices(&self) -> Vec<Device> {
         self.peers()
             .iter()
-            .map(|peer| device(peer, false, None, false))
+            .map(|peer| device(peer, false, None, false, false))
             .collect()
     }
     pub fn pending(&self) -> Vec<PendingPeer> {
@@ -420,6 +553,8 @@ impl NativeBackend {
         }
         inner.notif_enabled.remove(id);
         inner.notif_keys.remove(id);
+        inner.media_enabled.remove(id);
+        inner.media_players.remove(id);
         inner.outbox.remove(id);
         if let Some(stream) = inner.active.remove(id) {
             let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -487,6 +622,64 @@ impl NativeBackend {
             return false;
         }
         queue.push(Message::NotificationsRequest {
+            protocol: WIRE_VERSION,
+        });
+        true
+    }
+
+    /// Queue a validated media command for the live native session. Success
+    /// means the command was accepted for delivery, not that Android changed
+    /// playback; authoritative state arrives as a later media update. The
+    /// daemon validates the command against current state before routing, so
+    /// a relative `Seek` can never reach here: native sessions never
+    /// advertise it.
+    pub fn execute_media(
+        &self,
+        peer_id: &str,
+        command: &MediaCommand,
+    ) -> Result<(), NativeCommandError> {
+        let (player, action, position_ms) = match command {
+            MediaCommand::Play { id } => (id.player_id.clone(), WireCommand::Play, None),
+            MediaCommand::Pause { id } => (id.player_id.clone(), WireCommand::Pause, None),
+            MediaCommand::PlayPause { id } => (id.player_id.clone(), WireCommand::PlayPause, None),
+            MediaCommand::Next { id } => (id.player_id.clone(), WireCommand::Next, None),
+            MediaCommand::Previous { id } => (id.player_id.clone(), WireCommand::Previous, None),
+            MediaCommand::SetPosition { id, position_ms } => (
+                id.player_id.clone(),
+                WireCommand::SetPosition,
+                Some(*position_ms),
+            ),
+            MediaCommand::Seek { .. } => return Err(NativeCommandError::QueueFull),
+        };
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return Err(NativeCommandError::Offline);
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return Err(NativeCommandError::QueueFull);
+        }
+        queue.push(Message::MediaControl {
+            protocol: WIRE_VERSION,
+            player,
+            action,
+            position_ms,
+        });
+        Ok(())
+    }
+
+    /// Ask the live session to report its current media sessions. Returns
+    /// false when the peer has no active session.
+    pub fn request_media_sync(&self, peer_id: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return false;
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return false;
+        }
+        queue.push(Message::MediaRequest {
             protocol: WIRE_VERSION,
         });
         true
@@ -771,11 +964,13 @@ impl NativeBackend {
             inner.active.insert(id.clone(), tls.get_ref().try_clone()?);
             session.published = true;
             let notifications_supported = inner.notif_enabled.get(&id).copied().unwrap_or(false);
+            let media_supported = inner.media_enabled.get(&id).copied().unwrap_or(false);
             event(StateEvent::Device(DeviceEvent::Added(device(
                 &peer,
                 true,
                 inner.batteries.get(&id).cloned(),
                 notifications_supported,
+                media_supported,
             ))));
         }
         // Ask a freshly paired phone for its current notification list. The
@@ -784,6 +979,14 @@ impl NativeBackend {
         let _ = write_frame(
             &mut tls,
             &Message::NotificationsRequest {
+                protocol: WIRE_VERSION,
+            },
+        );
+        // Same recovery for media sessions: a daemon restart must not wait
+        // for the next playback change to learn the current players.
+        let _ = write_frame(
+            &mut tls,
+            &Message::MediaRequest {
                 protocol: WIRE_VERSION,
             },
         );
@@ -828,11 +1031,13 @@ impl NativeBackend {
                     inner.batteries.insert(id.clone(), battery);
                     let notifications_supported =
                         inner.notif_enabled.get(&id).copied().unwrap_or(false);
+                    let media_supported = inner.media_enabled.get(&id).copied().unwrap_or(false);
                     event(StateEvent::Device(DeviceEvent::Updated(device(
                         &peer,
                         true,
                         Some(battery),
                         notifications_supported,
+                        media_supported,
                     ))));
                 }
                 Ok(Message::NotificationPost {
@@ -875,6 +1080,49 @@ impl NativeBackend {
                     last_received = Instant::now();
                     self.handle_notifications_sync(&peer, enabled, notifications, event)?;
                 }
+                Ok(Message::MediaPost {
+                    protocol: WIRE_VERSION,
+                    player,
+                    application,
+                    title,
+                    artist,
+                    album,
+                    playback,
+                    position_ms,
+                    duration_ms,
+                    controls,
+                }) => {
+                    last_received = Instant::now();
+                    self.handle_media_post(
+                        &peer,
+                        WireMediaSession {
+                            player,
+                            application,
+                            title,
+                            artist,
+                            album,
+                            playback,
+                            position_ms,
+                            duration_ms,
+                            controls,
+                        },
+                        event,
+                    )?;
+                }
+                Ok(Message::MediaRemoved {
+                    protocol: WIRE_VERSION,
+                    player,
+                }) => {
+                    last_received = Instant::now();
+                    self.handle_media_removed(&peer, &player, event)?;
+                }
+                Ok(Message::MediaSync {
+                    protocol: WIRE_VERSION,
+                    sessions,
+                }) => {
+                    last_received = Instant::now();
+                    self.handle_media_sync(&peer, sessions, event)?;
+                }
                 Ok(Message::Ping {
                     protocol: WIRE_VERSION,
                 }) => {
@@ -907,10 +1155,14 @@ fn device(
     connected: bool,
     battery: Option<BatteryState>,
     notifications_supported: bool,
+    media_supported: bool,
 ) -> Device {
     let mut capabilities = BTreeSet::from([Capability::Battery]);
     if notifications_supported {
         capabilities.insert(Capability::Notifications);
+    }
+    if media_supported {
+        capabilities.insert(Capability::Media);
     }
     Device {
         id: DeviceId::new(format!("native:{}", peer.id)),
@@ -970,6 +1222,72 @@ fn normalize_native_notification(
     })
 }
 
+/// Validates one phone-reported media session without logging its content.
+/// Track titles and artists never reach normal log levels; callers log only
+/// the device-scoped player id and counts.
+fn normalize_native_media(
+    peer: &Peer,
+    wire: &WireMediaSession,
+) -> Result<MediaSession, NativeError> {
+    let player = wire.player.trim();
+    if player.is_empty() || player.len() > MAX_MEDIA_PLAYER || player.chars().any(char::is_control)
+    {
+        return Err(NativeError::InvalidFrame);
+    }
+    if wire.application.len() > MAX_MEDIA_APP {
+        return Err(NativeError::InvalidFrame);
+    }
+    for text in [&wire.title, &wire.artist, &wire.album]
+        .into_iter()
+        .flatten()
+    {
+        if text.len() > MAX_MEDIA_TEXT {
+            return Err(NativeError::InvalidFrame);
+        }
+    }
+    for bound in [wire.position_ms, wire.duration_ms].into_iter().flatten() {
+        if bound > MAX_MEDIA_POSITION_MS {
+            return Err(NativeError::InvalidFrame);
+        }
+    }
+    let mut controls = BTreeSet::new();
+    for control in &wire.controls {
+        match control {
+            WireControl::Play => controls.insert(MediaControl::Play),
+            WireControl::Pause => controls.insert(MediaControl::Pause),
+            WireControl::PlayPause => controls.insert(MediaControl::PlayPause),
+            WireControl::Next => controls.insert(MediaControl::Next),
+            WireControl::Previous => controls.insert(MediaControl::Previous),
+            WireControl::SetPosition => controls.insert(MediaControl::SetPosition),
+            // Relative seeks have no genuine Android API behind them; a
+            // phone advertising one is malfunctioning or malicious.
+            WireControl::Seek => return Err(NativeError::InvalidFrame),
+        };
+    }
+    let playback = match wire.playback {
+        WirePlayback::Playing => PlaybackState::Playing,
+        WirePlayback::Paused => PlaybackState::Paused,
+        WirePlayback::Stopped => PlaybackState::Stopped,
+        WirePlayback::Unknown => PlaybackState::Unknown,
+    };
+    Ok(MediaSession {
+        id: MediaSessionId::new(
+            DeviceId::new(format!("native:{}", peer.id)),
+            player.to_owned(),
+        ),
+        application: wire.application.clone(),
+        title: wire.title.clone().filter(|text| !text.is_empty()),
+        artist: wire.artist.clone().filter(|text| !text.is_empty()),
+        album: wire.album.clone().filter(|text| !text.is_empty()),
+        playback,
+        position_ms: wire.position_ms,
+        duration_ms: wire.duration_ms,
+        // Volume is read-only in the Handover model and never transported.
+        volume_percent: None,
+        controls,
+    })
+}
+
 impl NativeBackend {
     fn handle_notification_post(
         &self,
@@ -987,8 +1305,15 @@ impl NativeBackend {
         keys.insert(wire.key.clone());
         let device_changed = inner.notif_enabled.get(&peer.id).copied() != Some(true);
         inner.notif_enabled.insert(peer.id.clone(), true);
-        let device_update = device_changed
-            .then(|| device(peer, true, inner.batteries.get(&peer.id).cloned(), true));
+        let device_update = device_changed.then(|| {
+            device(
+                peer,
+                true,
+                inner.batteries.get(&peer.id).cloned(),
+                true,
+                inner.media_enabled.get(&peer.id).copied().unwrap_or(false),
+            )
+        });
         drop(inner);
         if let Some(device) = device_update {
             event(StateEvent::Device(DeviceEvent::Updated(device)));
@@ -1055,8 +1380,15 @@ impl NativeBackend {
             .unwrap_or_default();
         let device_changed = inner.notif_enabled.get(&peer.id).copied() != Some(enabled);
         inner.notif_enabled.insert(peer.id.clone(), enabled);
-        let device_update = device_changed
-            .then(|| device(peer, true, inner.batteries.get(&peer.id).cloned(), enabled));
+        let device_update = device_changed.then(|| {
+            device(
+                peer,
+                true,
+                inner.batteries.get(&peer.id).cloned(),
+                enabled,
+                inner.media_enabled.get(&peer.id).copied().unwrap_or(false),
+            )
+        });
         drop(inner);
         if let Some(device) = device_update {
             event(StateEvent::Device(DeviceEvent::Updated(device)));
@@ -1075,7 +1407,161 @@ impl NativeBackend {
                 NotificationEvent::Updated(notification)
             }));
         }
+        if !enabled {
+            // Media observation shares the notification-listener permission,
+            // so a revoked listener must not leave native sessions behind.
+            self.clear_native_media(peer, event);
+        }
         Ok(())
+    }
+
+    fn handle_media_post(
+        &self,
+        peer: &Peer,
+        wire: WireMediaSession,
+        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        let session = normalize_native_media(peer, &wire)?;
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.peers.peers.contains_key(&peer.id) {
+            return Err(NativeError::InvalidFrame);
+        }
+        let players = inner.media_players.entry(peer.id.clone()).or_default();
+        let is_new = !players.contains(&wire.player);
+        players.insert(wire.player.clone());
+        let device_changed = inner.media_enabled.get(&peer.id).copied() != Some(true);
+        inner.media_enabled.insert(peer.id.clone(), true);
+        let device_update = device_changed.then(|| {
+            device(
+                peer,
+                true,
+                inner.batteries.get(&peer.id).cloned(),
+                inner.notif_enabled.get(&peer.id).copied().unwrap_or(false),
+                true,
+            )
+        });
+        drop(inner);
+        if let Some(device) = device_update {
+            event(StateEvent::Device(DeviceEvent::Updated(device)));
+        }
+        event(StateEvent::Media(if is_new {
+            MediaEvent::Added(session)
+        } else {
+            MediaEvent::Updated(session)
+        }));
+        Ok(())
+    }
+
+    fn handle_media_removed(
+        &self,
+        peer: &Peer,
+        player: &str,
+        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        if player.is_empty() || player.len() > MAX_MEDIA_PLAYER {
+            return Err(NativeError::InvalidFrame);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let known = inner
+            .media_players
+            .get_mut(&peer.id)
+            .is_some_and(|players| players.remove(player));
+        drop(inner);
+        if known {
+            event(StateEvent::Media(MediaEvent::Removed(MediaSessionId::new(
+                DeviceId::new(format!("native:{}", peer.id)),
+                player.to_owned(),
+            ))));
+        }
+        Ok(())
+    }
+
+    fn handle_media_sync(
+        &self,
+        peer: &Peer,
+        wires: Vec<WireMediaSession>,
+        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        if wires.len() > MAX_MEDIA_SESSIONS_PER_SYNC {
+            return Err(NativeError::InvalidFrame);
+        }
+        let mut sessions = Vec::with_capacity(wires.len());
+        let mut players = BTreeSet::new();
+        for wire in &wires {
+            if !players.insert(wire.player.clone()) {
+                return Err(NativeError::InvalidFrame);
+            }
+            sessions.push(normalize_native_media(peer, wire)?);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.peers.peers.contains_key(&peer.id) {
+            return Err(NativeError::InvalidFrame);
+        }
+        let previous = inner
+            .media_players
+            .insert(peer.id.clone(), players.clone())
+            .unwrap_or_default();
+        let device_changed = inner.media_enabled.get(&peer.id).copied() != Some(true);
+        inner.media_enabled.insert(peer.id.clone(), true);
+        let device_update = device_changed.then(|| {
+            device(
+                peer,
+                true,
+                inner.batteries.get(&peer.id).cloned(),
+                inner.notif_enabled.get(&peer.id).copied().unwrap_or(false),
+                true,
+            )
+        });
+        drop(inner);
+        if let Some(device) = device_update {
+            event(StateEvent::Device(DeviceEvent::Updated(device)));
+        }
+        for player in previous.difference(&players) {
+            event(StateEvent::Media(MediaEvent::Removed(MediaSessionId::new(
+                DeviceId::new(format!("native:{}", peer.id)),
+                player.clone(),
+            ))));
+        }
+        for session in sessions {
+            let id = session.id.clone();
+            let is_new = !previous.contains(&id.player_id);
+            event(StateEvent::Media(if is_new {
+                MediaEvent::Added(session)
+            } else {
+                MediaEvent::Updated(session)
+            }));
+        }
+        Ok(())
+    }
+
+    /// Drops the peer's native media sessions, used when the shared
+    /// notification-listener permission is revoked: the listener powers
+    /// media observation too, so its sessions must not linger as ghosts.
+    fn clear_native_media(&self, peer: &Peer, event: &Arc<dyn Fn(StateEvent) + Send + Sync>) {
+        let mut inner = self.inner.lock().unwrap();
+        let previous = inner.media_players.remove(&peer.id).unwrap_or_default();
+        let was_enabled = inner.media_enabled.remove(&peer.id).unwrap_or(false);
+        let device_update = (was_enabled && inner.peers.peers.contains_key(&peer.id)).then(|| {
+            device(
+                peer,
+                true,
+                inner.batteries.get(&peer.id).cloned(),
+                inner.notif_enabled.get(&peer.id).copied().unwrap_or(false),
+                false,
+            )
+        });
+        drop(inner);
+        if let Some(device) = device_update {
+            event(StateEvent::Device(DeviceEvent::Updated(device)));
+        }
+        let mut removals: Vec<MediaSessionId> = previous
+            .into_iter()
+            .map(|player| MediaSessionId::new(DeviceId::new(format!("native:{}", peer.id)), player))
+            .collect();
+        removals.sort();
+        for id in removals {
+            event(StateEvent::Media(MediaEvent::Removed(id)));
+        }
     }
 }
 
@@ -1381,19 +1867,104 @@ mod tests {
     #[test]
     fn notifications_capability_follows_listener_permission() {
         assert!(
-            device(&test_peer(), true, None, false)
+            device(&test_peer(), true, None, false, false)
                 .capabilities
                 .contains(&Capability::Battery)
         );
         assert!(
-            !device(&test_peer(), true, None, false)
+            !device(&test_peer(), true, None, false, false)
                 .capabilities
                 .contains(&Capability::Notifications)
         );
         assert!(
-            device(&test_peer(), true, None, true)
+            device(&test_peer(), true, None, true, false)
                 .capabilities
                 .contains(&Capability::Notifications)
         );
+    }
+
+    #[test]
+    fn media_capability_is_independent_of_notifications() {
+        assert!(
+            !device(&test_peer(), true, None, false, false)
+                .capabilities
+                .contains(&Capability::Media)
+        );
+        let both = device(&test_peer(), true, None, true, true).capabilities;
+        assert!(both.contains(&Capability::Notifications));
+        assert!(both.contains(&Capability::Media));
+        let media_only = device(&test_peer(), true, None, false, true).capabilities;
+        assert!(!media_only.contains(&Capability::Notifications));
+        assert!(media_only.contains(&Capability::Media));
+    }
+
+    fn wire_media_session(player: &str) -> WireMediaSession {
+        WireMediaSession {
+            player: player.into(),
+            application: "Test Player".into(),
+            title: Some("Test track".into()),
+            artist: Some("Test artist".into()),
+            album: None,
+            playback: WirePlayback::Playing,
+            position_ms: Some(1_000),
+            duration_ms: Some(180_000),
+            controls: vec![
+                WireControl::Play,
+                WireControl::Pause,
+                WireControl::SetPosition,
+            ],
+        }
+    }
+
+    #[test]
+    fn native_media_keeps_device_scoped_identity_without_volume() {
+        let session =
+            normalize_native_media(&test_peer(), &wire_media_session("com.example")).unwrap();
+        assert_eq!(
+            session.id,
+            MediaSessionId::new(DeviceId::new("native:android-device-01"), "com.example")
+        );
+        assert_eq!(session.application, "Test Player");
+        assert_eq!(session.title.as_deref(), Some("Test track"));
+        assert_eq!(session.playback, PlaybackState::Playing);
+        assert_eq!(session.position_ms, Some(1_000));
+        assert_eq!(session.duration_ms, Some(180_000));
+        // Volume is read-only in the Handover model and never transported.
+        assert_eq!(session.volume_percent, None);
+        assert!(session.controls.contains(&MediaControl::Play));
+        assert!(session.controls.contains(&MediaControl::SetPosition));
+        assert!(!session.controls.contains(&MediaControl::Seek));
+        // Track content stays out of debug formatting checks for secrets;
+        // titles are content, so only assert structural fields here.
+        assert!(session.album.is_none());
+    }
+
+    #[test]
+    fn native_media_rejects_bad_players_sizes_and_advertised_seek() {
+        let peer = test_peer();
+        assert!(normalize_native_media(&peer, &wire_media_session("")).is_err());
+        let mut oversize = wire_media_session("com.example");
+        oversize.title = Some("t".repeat(MAX_MEDIA_TEXT + 1));
+        assert!(normalize_native_media(&peer, &oversize).is_err());
+        let mut big_position = wire_media_session("com.example");
+        big_position.position_ms = Some(MAX_MEDIA_POSITION_MS + 1);
+        assert!(normalize_native_media(&peer, &big_position).is_err());
+        // Relative seeks have no genuine Android API: a phone advertising
+        // one must not enter Handover state.
+        let mut seek = wire_media_session("com.example");
+        seek.controls.push(WireControl::Seek);
+        assert!(normalize_native_media(&peer, &seek).is_err());
+    }
+
+    #[test]
+    fn media_commands_queue_only_for_live_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().to_path_buf()).unwrap();
+        let id = MediaSessionId::new(DeviceId::new("native:android-device-01"), "com.example");
+        assert!(matches!(
+            backend.execute_media("android-device-01", &MediaCommand::Play { id: id.clone() }),
+            Err(NativeCommandError::Offline)
+        ));
+        assert!(!backend.request_media_sync("android-device-01"));
     }
 }

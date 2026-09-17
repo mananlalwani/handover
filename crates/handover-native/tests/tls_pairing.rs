@@ -11,7 +11,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use handover_core::{DeviceEvent, NotificationEvent, StateEvent};
+use handover_core::{DeviceEvent, MediaEvent, NotificationEvent, StateEvent};
 use handover_native::NativeBackend;
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
@@ -321,6 +321,9 @@ fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
     // phone answers with its current list (possibly empty when the listener
     // permission is off).
     assert_eq!(recv(peer)["type"], "notifications_request");
+    // Same recovery for media sessions: a daemon restart must not wait for
+    // the next playback change to learn the current players.
+    assert_eq!(recv(peer)["type"], "media_request");
 }
 
 fn wait_notification(
@@ -521,6 +524,180 @@ fn phone_side_notification_commands_are_rejected() {
     send(
         &mut peer,
         serde_json::json!({"type":"notification_dismiss","protocol":1,"key":"key-1"}),
+    );
+    recv_err(&mut peer);
+}
+
+fn wait_media(harness: &Harness, mut matches: impl FnMut(&MediaEvent) -> bool) -> MediaEvent {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match harness.events.recv_timeout(remaining).unwrap() {
+            StateEvent::Media(event) if matches(&event) => return event,
+            _ => {}
+        }
+    }
+}
+
+fn media_post(player: &str, playback: &str) -> serde_json::Value {
+    serde_json::json!({"type":"media_post","protocol":1,"player":player,
+        "application":"Example Music","title":"Test track","artist":"Test artist",
+        "playback":playback,"position_ms":1000,"duration_ms":180000,
+        "controls":["play","pause","play_pause","next","previous","set_position"]})
+}
+
+#[test]
+fn native_media_add_update_remove_and_sync() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+
+    send(&mut peer, media_post("com.example.music", "playing"));
+    let added = wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Added(s) if s.id.player_id == "com.example.music"),
+    );
+    match added {
+        MediaEvent::Added(session) => {
+            assert_eq!(
+                session.id.device_id.as_str(),
+                format!("native:{}", client.fingerprint)
+            );
+            assert_eq!(session.application, "Example Music");
+            assert_eq!(session.playback, handover_core::PlaybackState::Playing);
+            assert_eq!(session.position_ms, Some(1_000));
+            assert_eq!(session.duration_ms, Some(180_000));
+            // Volume is never transported.
+            assert_eq!(session.volume_percent, None);
+            assert!(
+                session
+                    .controls
+                    .contains(&handover_core::MediaControl::Next)
+            );
+            assert!(
+                !session
+                    .controls
+                    .contains(&handover_core::MediaControl::Seek)
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    send(&mut peer, media_post("com.example.music", "paused"));
+    let updated = wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Updated(s) if s.id.player_id == "com.example.music"),
+    );
+    match updated {
+        MediaEvent::Updated(session) => {
+            assert_eq!(session.playback, handover_core::PlaybackState::Paused)
+        }
+        _ => unreachable!(),
+    }
+
+    send(
+        &mut peer,
+        serde_json::json!({"type":"media_removed","protocol":1,"player":"com.example.music"}),
+    );
+    wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Removed(id) if id.player_id == "com.example.music"),
+    );
+
+    // A full sync reconciles stale players.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"media_sync","protocol":1,"sessions":[
+            {"player":"com.example.a","application":"A","playback":"playing","controls":["pause"]},
+            {"player":"com.example.b","application":"B","playback":"stopped","controls":[]}
+        ]}),
+    );
+    wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Added(s) if s.id.player_id == "com.example.a"),
+    );
+    wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Added(s) if s.id.player_id == "com.example.b"),
+    );
+
+    send(
+        &mut peer,
+        serde_json::json!({"type":"media_sync","protocol":1,"sessions":[
+            {"player":"com.example.b","application":"B","playback":"stopped","controls":[]}
+        ]}),
+    );
+    wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Removed(id) if id.player_id == "com.example.a"),
+    );
+
+    // A phone advertising relative seeks has no genuine platform API behind
+    // the claim and must not enter Handover state.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"media_post","protocol":1,"player":"com.example.c",
+            "application":"C","playback":"playing","controls":["seek"]}),
+    );
+    recv_err(&mut peer);
+}
+
+#[test]
+fn native_media_commands_reach_the_phone() {
+    use handover_core::{DeviceId, MediaCommand, MediaSessionId};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+
+    send(&mut peer, media_post("com.example.music", "playing"));
+    wait_media(
+        &harness,
+        |event| matches!(event, MediaEvent::Added(s) if s.id.player_id == "com.example.music"),
+    );
+
+    let id = MediaSessionId::new(
+        DeviceId::new(format!("native:{}", client.fingerprint)),
+        "com.example.music",
+    );
+    harness
+        .backend
+        .execute_media(&client.fingerprint, &MediaCommand::Pause { id: id.clone() })
+        .unwrap();
+    let pause = recv(&mut peer);
+    assert_eq!(pause["type"], "media_control");
+    assert_eq!(pause["player"], "com.example.music");
+    assert_eq!(pause["action"], "pause");
+
+    harness
+        .backend
+        .execute_media(
+            &client.fingerprint,
+            &MediaCommand::SetPosition {
+                id,
+                position_ms: 60_000,
+            },
+        )
+        .unwrap();
+    let seek = recv(&mut peer);
+    assert_eq!(seek["type"], "media_control");
+    assert_eq!(seek["action"], "set_position");
+    assert_eq!(seek["position_ms"], 60_000);
+}
+
+#[test]
+fn phone_side_media_commands_are_rejected() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+
+    // Media commands flow Linux-to-phone only. A phone sending them violates
+    // the protocol and loses the session without state entering Handover.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"media_control","protocol":1,"player":"x","action":"pause"}),
     );
     recv_err(&mut peer);
 }

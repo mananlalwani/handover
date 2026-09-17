@@ -11,6 +11,12 @@
   {"type":"notification_dismiss","protocol":1,"key":"0|org.example|42|tag|10042"},
   {"type":"notification_reply","protocol":1,"key":"0|org.example|42|tag|10042","text":"Thanks"},
   {"type":"notification_action","protocol":1,"key":"0|org.example|42|tag|10042","action_id":"0"},
+  {"type":"media_post","protocol":1,"player":"com.example.music","application":"Example Music","title":"Test track","artist":"Test artist","playback":"playing","position_ms":1000,"duration_ms":180000,"controls":["play","pause","play_pause","next","previous","set_position"]},
+  {"type":"media_removed","protocol":1,"player":"com.example.music"},
+  {"type":"media_sync","protocol":1,"sessions":[{"player":"com.example.music","application":"Example Music","title":"Test track","playback":"paused","controls":["play"]}]},
+  {"type":"media_request","protocol":1},
+  {"type":"media_control","protocol":1,"player":"com.example.music","action":"pause"},
+  {"type":"media_control","protocol":1,"player":"com.example.music","action":"set_position","position_ms":60000},
   {"type":"revoke","protocol":1},
   {"type":"ping","protocol":1},
   {"type":"pong","protocol":1}

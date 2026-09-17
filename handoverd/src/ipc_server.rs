@@ -385,6 +385,9 @@ where
     }
 
     let id = command.id().clone();
+    if id.device_id.as_str().starts_with("native:") {
+        return handle_native_media_command(command, id, writer).await;
+    }
     match handover_kdeconnect::KdeConnectBackend::execute_media(&command).await {
         Ok(()) => {
             write_json_line(
@@ -403,6 +406,61 @@ where
                 ),
             )
             .await?;
+        }
+    }
+    Ok(true)
+}
+
+/// Route a validated media command to the paired native session.
+/// A successful response means the command was accepted for delivery to the
+/// phone, not that Android changed playback. Authoritative state arrives as
+/// a later media update.
+async fn handle_native_media_command<W>(
+    command: MediaCommand,
+    id: handover_core::MediaSessionId,
+    writer: &mut W,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(native) = native_backend() else {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::BackendUnavailable,
+                "native backend unavailable",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    };
+    let peer_id = id
+        .device_id
+        .as_str()
+        .strip_prefix("native:")
+        .unwrap_or_default();
+    match native.execute_media(peer_id, &command) {
+        Ok(()) => {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::MediaAccepted { id }),
+            )
+            .await?;
+        }
+        Err(error) => {
+            use handover_native::NativeCommandError;
+            let (code, message) = match error {
+                NativeCommandError::Offline => (
+                    ErrorCode::DeviceDisconnected,
+                    "native device is disconnected",
+                ),
+                NativeCommandError::QueueFull => (
+                    ErrorCode::BackendRejected,
+                    "native backend could not accept the command",
+                ),
+            };
+            warn!(device_id = %id.device_id, player_id = %id.player_id, "native media command not accepted");
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
         }
     }
     Ok(true)
@@ -893,6 +951,61 @@ mod tests {
         // for a `native:` device.
         let error = client
             .dismiss_notification(native.id)
+            .await
+            .expect_err("native backend absent");
+        assert!(matches!(
+            error,
+            IpcError::Server {
+                code: ErrorCode::BackendUnavailable,
+                ..
+            }
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn native_media_commands_route_away_from_kde() {
+        use handover_core::{MediaSession, MediaSessionId, PlaybackState};
+        let (_directory, path, state, _events, task) = server_with_device().await;
+        // The fixture device lacks the media capability, so add a capable
+        // native device first: routing is checked after validation passes.
+        let device = Device {
+            id: DeviceId::new("native:cert"),
+            name: "Native Phone".into(),
+            connected: true,
+            paired: true,
+            battery: None,
+            capabilities: BTreeSet::from([
+                handover_core::Capability::Battery,
+                handover_core::Capability::Media,
+            ]),
+        };
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Device(DeviceEvent::Added(device.clone())));
+        let session = MediaSession {
+            id: MediaSessionId::new(device.id.clone(), "com.example.music"),
+            application: "Example Music".into(),
+            title: Some("Test track".into()),
+            artist: None,
+            album: None,
+            playback: PlaybackState::Playing,
+            position_ms: None,
+            duration_ms: None,
+            volume_percent: None,
+            controls: BTreeSet::from([handover_core::MediaControl::Pause]),
+        };
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Media(MediaEvent::Added(session.clone())));
+        let mut client = Client::connect_to(path).await.expect("connect");
+        // No native backend is running in this test, so routing must report
+        // an unavailable native path rather than attempting a KDE D-Bus call
+        // for a `native:` session.
+        let error = client
+            .media_command(MediaCommand::Pause { id: session.id })
             .await
             .expect_err("native backend absent");
         assert!(matches!(
