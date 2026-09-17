@@ -160,6 +160,10 @@ impl MessagingStore {
             .collect();
         let next = if start > 0 {
             page.first().map(|message| message.id.local_id.clone())
+        } else if limit == 100 {
+            self.conversations
+                .get(conversation_id)
+                .and_then(|conversation| conversation.cursor.clone())
         } else {
             None
         };

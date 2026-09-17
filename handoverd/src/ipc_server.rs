@@ -1501,7 +1501,7 @@ where
             // declaring that history is exhausted. This is what makes a
             // larger "load all" request materially different from rereading
             // the same local window.
-            if cursor.is_none() && messages.len() < limit {
+            if cursor.is_none() && limit == 100 && messages.len() < limit {
                 if let Some(hub) = messaging {
                     if hub
                         .fetch_through_helper(

@@ -947,6 +947,9 @@ ShellRoot {
                                 clip: true
                                 spacing: 8
                                 model: messagesCard.selectedMessages
+                                ScrollBar.vertical: ScrollBar {
+                                    policy: ScrollBar.AsNeeded
+                                }
                                 delegate: Item {
                                     required property var modelData
                                     property var messageData: modelData

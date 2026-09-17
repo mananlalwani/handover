@@ -443,12 +443,28 @@ async fn ingest_event(
             conversation,
             messages,
             full,
-            ..
+            cursor_next,
         } => {
             let conversation_id = ConversationId::new(
                 MessagingAccountId::new(account.clone()),
                 conversation.clone(),
             );
+            if let Some(mut record) = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .messaging()
+                .conversation(&conversation_id)
+                .cloned()
+            {
+                record.cursor = cursor_next.filter(|cursor| !cursor.is_empty());
+                apply_backend_event(
+                    state,
+                    events,
+                    StateEvent::Messaging(MessagingEvent::Conversation(
+                        ConversationEvent::Updated(record),
+                    )),
+                );
+            }
             if full {
                 let mut normalized = Vec::with_capacity(messages.len());
                 for wire in messages {
