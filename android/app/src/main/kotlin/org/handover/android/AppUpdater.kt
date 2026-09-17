@@ -62,6 +62,10 @@ object AppUpdater {
                     .putString(URI, uri.toString())
                     .putLong(VERSION_CODE, update.versionCode)
                     .putString(VERSION_NAME, update.versionName)
+                    // Package-replaced broadcasts are not reliable on every
+                    // OEM. Preserve this marker across installation; while the
+                    // APK remains pending it is suppressed by reconnectNeeded.
+                    .putBoolean(RECONNECT, true)
                     .apply()
             }
         } finally {
@@ -105,7 +109,7 @@ object AppUpdater {
 
     fun reconnectNeeded(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(RECONNECT, false)
+            .getBoolean(RECONNECT, false) && pending(context) == null
 
     fun clearReconnectNeeded(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
