@@ -64,6 +64,7 @@ ShellRoot {
                     model: [
                         { key: "overview", label: "Overview" },
                         { key: "messages", label: "Messages" },
+                        { key: "calls", label: "Calls" },
                         { key: "notifications", label: "Notifications" },
                         { key: "media", label: "Media" },
                         { key: "transfers", label: "Transfers" }
@@ -84,6 +85,13 @@ ShellRoot {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: window.page === "messages"
+            }
+
+            Item {
+                id: callContentArea
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: window.page === "calls"
             }
 
             Rectangle {
@@ -1202,6 +1210,65 @@ ShellRoot {
                         }
                     }
                 }
+            }
+        }
+
+        Rectangle {
+            id: callCard
+            parent: callContentArea
+            anchors.fill: parent
+            radius: 8
+            color: "#303741"
+            property var phone: window.appDevices.find(device => device.connected) || null
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 18
+                spacing: 12
+                Text { text: "Calls"; color: "#f3f4f6"; font.pixelSize: 24; font.bold: true }
+                Text {
+                    Layout.fillWidth: true
+                    text: callCard.phone
+                        ? "Call audio: Bluetooth HFP · " + callCard.phone.name
+                        : "Native phone unavailable"
+                    color: "#b9c2cf"
+                }
+                TextField {
+                    id: callAddress
+                    Layout.fillWidth: true
+                    placeholderText: "Phone number"
+                    inputMethodHints: Qt.ImhDialableCharactersOnly
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        text: "Call"
+                        enabled: callAddress.text.trim().length > 0 && callCard.phone
+                        onClicked: HandoverService.callControl(
+                            callCard.phone, "place", callAddress.text.trim())
+                    }
+                    Button {
+                        text: "Answer"
+                        enabled: callCard.phone !== null
+                        onClicked: HandoverService.callControl(callCard.phone, "answer", "")
+                    }
+                    Button {
+                        text: "Decline"
+                        enabled: callCard.phone !== null
+                        onClicked: HandoverService.callControl(callCard.phone, "decline", "")
+                    }
+                    Button {
+                        text: "Hang up"
+                        enabled: callCard.phone !== null
+                        onClicked: HandoverService.callControl(callCard.phone, "hangup", "")
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: HandoverService.lastError
+                    color: "#ffb4ab"
+                    visible: text.length > 0
+                }
+                Item { Layout.fillHeight: true }
             }
         }
 

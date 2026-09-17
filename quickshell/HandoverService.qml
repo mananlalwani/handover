@@ -215,6 +215,22 @@ Singleton {
         return sendMessaging("messages.typing", { conversation_id: conversationId });
     }
 
+    function callControl(device, action, address) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        const fields = { id: device.id.substring(7), action: action };
+        if (address)
+            fields.address = address;
+        if (!sendRequest("native.call", fields)) {
+            lastError = "handoverd is disconnected";
+            return false;
+        }
+        lastError = "";
+        return true;
+    }
+
     function deleteMessage(conversationId, messageLocalId) {
         return sendMessaging("messages.delete", {
             message_id: { conversation_id: conversationId, local_id: messageLocalId }
