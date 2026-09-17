@@ -249,6 +249,13 @@ class MainActivity : android.app.Activity() {
                 if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
             }
         }
+        val homePair = primary(Button(this).apply {
+            text = "Connect / Pair desktop"
+            setOnClickListener {
+                val service = Intent(this@MainActivity, HandoverForegroundService::class.java)
+                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+            }
+        })
         val revoke = Button(this).apply {
             text = "Unpair this desktop"
             setOnClickListener { startService(Intent(this@MainActivity, HandoverForegroundService::class.java).setAction(HandoverForegroundService.ACTION_REVOKE)) }
@@ -432,7 +439,7 @@ class MainActivity : android.app.Activity() {
                 setTextColor(Color.rgb(92, 99, 116))
                 setPadding(0, dp(2), 0, dp(16))
             })
-            addView(panel(sectionTitle("Status"), status), LinearLayout.LayoutParams(-1, -2))
+            addView(panel(sectionTitle("Status"), status, homePair), LinearLayout.LayoutParams(-1, -2))
             listOf(
                 menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
