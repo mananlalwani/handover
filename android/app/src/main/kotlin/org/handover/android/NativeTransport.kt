@@ -472,6 +472,7 @@ class NativeTransport(private val context: Context) {
                 }
                 runCatching {
                     notifyReceived("url", url, url)
+                    TransferHistory.add(context, "url", url, Uri.parse(url))
                     broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "url").put("url", url)
                         .put("source", serverId ?: serverFingerprint))
                 }.onSuccess { sendTransferResult(transferId, "completed", null) }
@@ -525,6 +526,7 @@ class NativeTransport(private val context: Context) {
             runCatching { notifyReceived("file", name, null, null) }
             broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
                 .put("path", destination.absolutePath).put("source", serverId ?: serverFingerprint))
+            TransferHistory.add(context, "file", name, null)
             sendTransferResult(transferId, "completed", null)
         } catch (error: Exception) {
             temporary.delete()
@@ -566,6 +568,7 @@ class NativeTransport(private val context: Context) {
             notifyReceived("file", name, null, destination)
             broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
                 .put("path", destination.toString()).put("source", serverId ?: serverFingerprint))
+            TransferHistory.add(context, "file", name, destination)
             sendTransferResult(transferId, "completed", null)
         } catch (error: Exception) {
             resolver.delete(destination, null, null)

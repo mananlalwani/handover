@@ -28,6 +28,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
+    private lateinit var transferStatus: TextView
     private lateinit var capabilitiesStatus: TextView
     private lateinit var updateStatus: TextView
     private lateinit var homeConnect: Button
@@ -133,6 +134,10 @@ class MainActivity : android.app.Activity() {
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
         mediaStatus.text = if (TestMediaSession.isActive()) "Test media: playing" else "Test media: stopped"
+        val transfers = TransferHistory.read(this)
+        transferStatus.text = if (transfers.isEmpty()) "No received transfers" else transfers.joinToString("\n") {
+            "${it.kind.replaceFirstChar { c -> c.uppercase() }} · ${it.name} · ${it.status}"
+        }
         val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         val localNetwork = if (android.os.Build.VERSION.SDK_INT < 37 ||
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") == PackageManager.PERMISSION_GRANTED
@@ -185,6 +190,10 @@ class MainActivity : android.app.Activity() {
                 refreshStatus()
                 return
             }
+            if (intent.action == NativeTransport.ACTION_SHARE_RECEIVED) {
+                refreshStatus()
+                return
+            }
             if (intent.action != NativeTransport.ACTION_PAIR_REQUEST) return
             val code = org.json.JSONObject(intent.getStringExtra(NativeTransport.EXTRA_JSON).orEmpty()).optString("code")
             showPairDialog(code)
@@ -233,6 +242,7 @@ class MainActivity : android.app.Activity() {
             addAction(NativeTransport.ACTION_REVOKED)
             addAction(NativeTransport.ACTION_CONNECTION_STATE)
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
+            addAction(NativeTransport.ACTION_SHARE_RECEIVED)
         }, RECEIVER_NOT_EXPORTED)
         refreshStatus()
         NativeTransport.pendingPairingCode(this)?.let(::showPairDialog)
@@ -291,6 +301,18 @@ class MainActivity : android.app.Activity() {
         mediaStatus = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.rgb(70, 77, 94))
+        }
+        transferStatus = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
+            setOnClickListener {
+                TransferHistory.read(this@MainActivity).firstOrNull()?.let { record ->
+                    if (!TransferHistory.open(this@MainActivity, record)) {
+                        android.widget.Toast.makeText(this@MainActivity,
+                            "This transfer cannot be opened here", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
         }
         capabilitiesStatus = TextView(this).apply {
             textSize = 14f
@@ -490,6 +512,11 @@ class MainActivity : android.app.Activity() {
             "Activity", "Current phone-side Handover activity.",
             panel(sectionTitle("Notifications"), notificationStatus),
             panel(sectionTitle("Media"), mediaStatus),
+            panel(sectionTitle("Recent transfers"), transferStatus,
+                secondary(Button(this).apply {
+                    text = "Clear transfer history"
+                    setOnClickListener { TransferHistory.clear(this@MainActivity); refreshStatus() }
+                })),
         )
         val diagnosticsPage = page(
             "Diagnostics", "Local test tools. These do not contact anyone.",
