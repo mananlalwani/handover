@@ -19,6 +19,7 @@ class HandoverForegroundService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, notification())
         transport = NativeTransport(applicationContext)
+        activeTransport = transport
         HandoverNotificationService.transport = transport
         MediaObserver.transport = transport
         transport.start()
@@ -43,6 +44,7 @@ class HandoverForegroundService : Service() {
     override fun onDestroy() {
         batteryObserver.stop()
         mediaObserver.stop()
+        if (activeTransport === transport) activeTransport = null
         transport.stop()
         if (HandoverNotificationService.transport === transport) {
             HandoverNotificationService.transport = null
@@ -68,6 +70,9 @@ class HandoverForegroundService : Service() {
         .build()
 
     companion object {
+        @Volatile private var activeTransport: NativeTransport? = null
+        fun refreshCallsIfRunning() { activeTransport?.refreshCalls() }
+
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"
         const val ACTION_CONNECT = "org.handover.android.CONNECT"

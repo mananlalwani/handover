@@ -477,6 +477,7 @@ mod tests {
             device_id: DeviceId::new("phone-a"),
             phase: CallPhase::Unknown,
             controls: BTreeSet::new(),
+            generation: 1,
         };
         assert!(store.snapshot().calls.is_empty());
 
@@ -527,11 +528,13 @@ mod tests {
             device_id: DeviceId::new("phone-a"),
             phase: CallPhase::Ringing,
             controls: BTreeSet::from([CallAction::Answer, CallAction::Decline]),
+            generation: 1,
         };
         let second = CallState {
             device_id: DeviceId::new("phone-b"),
             phase: CallPhase::Idle,
             controls: BTreeSet::from([CallAction::Place]),
+            generation: 1,
         };
         store.apply(StateEvent::Call(CallEvent::Updated(second.clone())));
         store.apply(StateEvent::Call(CallEvent::Updated(first.clone())));

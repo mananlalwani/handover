@@ -64,6 +64,9 @@ enum NativeCommand {
         id: String,
         action: String,
         address: Option<String>,
+        /// Explicitly authorize placing a real phone call (required for place)
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -213,7 +216,13 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
             id,
             action,
             address,
+            confirm,
         } => {
+            if action == "place" && !confirm {
+                return Err(CliError::DeviceSelection(
+                    "placing a real call requires --confirm".into(),
+                ));
+            }
             client.native_call(id, action, address).await?;
             println!("Call command accepted; effect is not confirmed");
         }
@@ -833,7 +842,7 @@ fn print_message(payload: ServerPayload) {
             println!("call state: {} {:?}", call.device_id, call.phase)
         }
         ServerPayload::CallRemoved { device_id } => println!("call state unavailable: {device_id}"),
-        ServerPayload::Calls { .. } => {}
+        ServerPayload::Calls { .. } | ServerPayload::CallAudio { .. } => {}
         ServerPayload::DeviceAdded { device } => {
             println!("device added: {}", describe_device(&device));
         }

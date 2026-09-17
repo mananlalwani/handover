@@ -126,6 +126,10 @@ struct Runtime {
     // session thread. Bounded per peer; IPC reports acceptance, not delivery.
     outbox: BTreeMap<String, Vec<Message>>,
     pending_shares: BTreeMap<String, BTreeMap<String, Instant>>,
+    // Latest call-state generation reported by each peer. A queued call
+    // command stamped with an older generation is stale: a new call may have
+    // started or ended since the user acted, so the command is dropped.
+    call_generations: BTreeMap<String, u64>,
 }
 
 #[derive(Clone)]
@@ -374,11 +378,21 @@ enum Message {
         action: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         address: Option<String>,
+        /// Call-state generation observed when the command was queued. The
+        /// session drops the command if the phone reported newer state since;
+        /// the phone independently re-checks its own current generation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<u64>,
     },
     CallState {
         protocol: u32,
         phase: CallPhase,
         controls: BTreeSet<handover_core::CallAction>,
+        /// Monotonic counter owned by the phone. Commands are stamped with the
+        /// latest observed value; the phone refuses mismatches, and the drain
+        /// drops commands stamped before the newest report.
+        #[serde(default)]
+        generation: u64,
     },
     CallRequest {
         protocol: u32,
@@ -527,6 +541,7 @@ impl NativeBackend {
                 media_players: BTreeMap::new(),
                 outbox: BTreeMap::new(),
                 pending_shares: BTreeMap::new(),
+                call_generations: BTreeMap::new(),
             })),
             directory,
             certificate,
@@ -692,6 +707,7 @@ impl NativeBackend {
         peer_id: &str,
         action: &str,
         address: Option<String>,
+        generation: Option<u64>,
     ) -> Result<(), NativeCommandError> {
         if !matches!(action, "place" | "answer" | "decline" | "hangup") {
             return Err(NativeCommandError::QueueFull);
@@ -708,6 +724,7 @@ impl NativeBackend {
             protocol: WIRE_VERSION,
             action: action.into(),
             address,
+            generation,
         });
         Ok(())
     }
@@ -1253,6 +1270,27 @@ impl NativeBackend {
                 .outbox
                 .remove(&id)
                 .unwrap_or_default();
+            // A call command queued before the phone's latest report is stale:
+            // state re-observation proves a call may have started or ended
+            // since the user acted. Dropping it here keeps a delayed command
+            // from answering, declining or hanging up a *later* call.
+            let latest_generation = self
+                .inner
+                .lock()
+                .unwrap()
+                .call_generations
+                .get(&id)
+                .copied();
+            let outbound: Vec<_> = outbound
+                .into_iter()
+                .filter(|message| match message {
+                    Message::CallControl {
+                        generation: Some(stamped),
+                        ..
+                    } => latest_generation == Some(*stamped),
+                    _ => true,
+                })
+                .collect();
             for message in outbound {
                 let share_id = match &message {
                     Message::ShareUrl { transfer_id, .. }
@@ -1490,12 +1528,22 @@ impl NativeBackend {
                     protocol: WIRE_VERSION,
                     phase,
                     controls,
+                    generation,
                 }) => {
                     last_received = Instant::now();
+                    // The generation is the phone's own counter, not a daemon
+                    // guess: storing the received value keeps stamps and the
+                    // phone's execution check in one sequence.
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .call_generations
+                        .insert(id.clone(), generation);
                     event(StateEvent::Call(CallEvent::Updated(CallState {
                         device_id: DeviceId::new(format!("native:{id}")),
                         phase,
                         controls,
+                        generation,
                     })));
                 }
                 Ok(Message::NotificationPost {

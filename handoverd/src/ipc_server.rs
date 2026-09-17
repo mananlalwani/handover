@@ -328,6 +328,9 @@ where
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,
         },
+        Method::CallsAudio => ServerPayload::CallAudio {
+            status: crate::call_audio::inspect().await,
+        },
         Method::CallsList => ServerPayload::Calls {
             calls: snapshot(state).calls,
         },
@@ -1330,20 +1333,22 @@ fn route_call(
     address: Option<String>,
 ) -> ServerPayload {
     let current = snapshot(state);
+    let call = current
+        .calls
+        .iter()
+        .find(|call| call.device_id == device_id);
     let allowed = current
         .devices
         .iter()
         .any(|d| d.id == device_id && d.connected && d.paired)
-        && current
-            .calls
-            .iter()
-            .any(|call| call.device_id == device_id && call.controls.contains(&action))
+        && call.is_some_and(|call| call.controls.contains(&action))
         && match action {
             handover_core::CallAction::Place => address
                 .as_deref()
                 .is_some_and(handover_core::valid_call_address),
             _ => address.is_none(),
         };
+    let generation = call.map(|call| call.generation);
     if !allowed {
         return ServerPayload::Error {
             code: ErrorCode::BackendRejected,
@@ -1351,7 +1356,7 @@ fn route_call(
         };
     }
     let result = device_id.as_str().strip_prefix("native:").and_then(|id| {
-        native_backend().map(|native| native.call_control(id, action.as_str(), address))
+        native_backend().map(|native| native.call_control(id, action.as_str(), address, generation))
     });
     match result {
         Some(Ok(())) => ServerPayload::NativeAccepted,
@@ -1798,6 +1803,44 @@ mod tests {
             battery: Some(BatteryState::new(percentage, false).expect("valid battery")),
             capabilities: BTreeSet::from([Capability::Battery]),
         }
+    }
+
+    #[tokio::test]
+    async fn calls_snapshot_and_rejections_use_isolated_ipc() {
+        use handover_core::{CallAction, CallEvent, CallPhase, CallState};
+        let (_directory, path, state, _events, task) = server_with_device().await;
+        // No native backend or real phone exists in this fixture.
+        let call = CallState {
+            device_id: DeviceId::new("phone"),
+            phase: CallPhase::Idle,
+            controls: BTreeSet::from([CallAction::Place]),
+            generation: 1,
+        };
+        state
+            .write()
+            .unwrap()
+            .apply(StateEvent::Call(CallEvent::Updated(call.clone())));
+        let mut client = Client::connect_to(path.clone()).await.unwrap();
+        assert_eq!(client.calls().await.unwrap(), vec![call.clone()]);
+        assert!(
+            client
+                .call_control(call.device_id.clone(), CallAction::Answer, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .call_control(
+                    call.device_id.clone(),
+                    CallAction::Place,
+                    Some("*#06#".into())
+                )
+                .await
+                .is_err()
+        );
+        let subscription = client.subscribe().await.unwrap();
+        assert_eq!(subscription.calls, vec![call]);
+        task.abort();
     }
 
     fn notification() -> Notification {

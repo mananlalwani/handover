@@ -1221,6 +1221,22 @@ ShellRoot {
             color: "#303741"
             property var phone: window.appDevices.find(device => device.connected) || null
             property var call: phone ? HandoverService.calls.find(state => state.device_id === phone.id) || null : null
+            property string dialDevice: ""
+            property string dialAddress: ""
+            onVisibleChanged: if (visible) HandoverService.refreshCallAudio()
+            onCallChanged: if (visible) HandoverService.refreshCallAudio()
+            Dialog {
+                id: confirmCall
+                width: 360
+                title: "Place a real phone call?"
+                modal: true
+                standardButtons: Dialog.Ok | Dialog.Cancel
+                Label { text: callCard.dialAddress }
+                onAccepted: {
+                    if (callCard.phone && callCard.phone.id === callCard.dialDevice && callCard.supports("place"))
+                        HandoverService.callControl(callCard.phone, "place", callCard.dialAddress);
+                }
+            }
             function supports(action) {
                 return phone !== null && call !== null && (call.controls || []).includes(action);
             }
@@ -1239,6 +1255,26 @@ ShellRoot {
                         : "Call state unavailable — check phone permission"
                     color: "#b9c2cf"
                 }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: "#b9c2cf"
+                    text: !HandoverService.callAudio || !HandoverService.callAudio.observed
+                        ? "Local call audio: status unavailable"
+                        : !HandoverService.callAudio.gateway_ready
+                        ? "Local call audio: no HFP audio-gateway profile selected"
+                        : HandoverService.callAudio.duplex_running
+                        ? "Local HFP input/output running — phone association and microphone/speaker routing not confirmed"
+                        : "Local HFP profile selected — audio input/output not running"
+                }
+                Button { text: "Refresh audio status"; onClicked: HandoverService.refreshCallAudio() }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: "#b9c2cf"
+                    text: HandoverService.callNotice
+                    visible: text.length > 0
+                }
                 TextField {
                     id: callAddress
                     Layout.fillWidth: true
@@ -1250,8 +1286,11 @@ ShellRoot {
                     Button {
                         text: "Call"
                         enabled: /^\+?[0-9]{1,15}$/.test(callAddress.text.trim()) && callCard.supports("place")
-                        onClicked: HandoverService.callControl(
-                            callCard.phone, "place", callAddress.text.trim())
+                        onClicked: {
+                            callCard.dialDevice = callCard.phone.id;
+                            callCard.dialAddress = callAddress.text.trim();
+                            confirmCall.open();
+                        }
                     }
                     Button {
                         text: "Answer"

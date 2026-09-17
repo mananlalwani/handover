@@ -28,6 +28,9 @@ class MainActivity : android.app.Activity() {
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
+    private fun permissionLabel(permission: String): String =
+        if (CallController.hasPermission(this, permission)) "granted" else "not granted"
+
     private fun refreshStatus() {
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
         status.text = "Handover\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
@@ -48,7 +51,10 @@ class MainActivity : android.app.Activity() {
             append("Local network: $localNetwork\n")
             append("Battery optimization: ${if (battery) "unrestricted" else "optimized"}\n")
             append("Files/photos: system picker (on demand)\n")
-            append("Media controls: notification access")
+            append("Media controls: notification access\n")
+            append("Call state: ${permissionLabel(android.Manifest.permission.READ_PHONE_STATE)}\n")
+            append("Place calls: ${permissionLabel(android.Manifest.permission.CALL_PHONE)}\n")
+            append("Answer/end calls: ${permissionLabel(android.Manifest.permission.ANSWER_PHONE_CALLS)}")
         }
     }
     private val pairReceiver = object : BroadcastReceiver() {
@@ -117,6 +123,23 @@ class MainActivity : android.app.Activity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        HandoverForegroundService.refreshCallsIfRunning()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CALL_PERMISSIONS_REQUEST) {
+            refreshStatus()
+            HandoverForegroundService.refreshCallsIfRunning()
+            if (permissions.any { !CallController.hasPermission(this, it) }) {
+                AlertDialog.Builder(this).setTitle("Call permissions not granted")
+                    .setMessage("Review the permission status above. If Android no longer shows a prompt, enable Phone access in app settings.")
+                    .setPositiveButton("App settings") { _, _ ->
+                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                            .setData(Uri.parse("package:$packageName")))
+                    }.setNegativeButton("Close", null).show()
+            }
+        }
     }
 
     override fun onStop() {
@@ -221,13 +244,19 @@ class MainActivity : android.app.Activity() {
         val callAccess = Button(this).apply {
             text = "Enable call controls"
             setOnClickListener {
-                requestPermissions(
-                    arrayOf(
-                        android.Manifest.permission.READ_PHONE_STATE,
-                        android.Manifest.permission.CALL_PHONE,
-                        android.Manifest.permission.ANSWER_PHONE_CALLS,
-                    ), CALL_PERMISSIONS_REQUEST,
-                )
+                val missing = arrayOf(
+                    android.Manifest.permission.READ_PHONE_STATE,
+                    android.Manifest.permission.CALL_PHONE,
+                    android.Manifest.permission.ANSWER_PHONE_CALLS,
+                ).filterNot { CallController.hasPermission(this@MainActivity, it) }
+                if (missing.isEmpty()) {
+                    refreshStatus()
+                    android.widget.Toast.makeText(this@MainActivity,
+                        "All call permissions are already granted", android.widget.Toast.LENGTH_LONG).show()
+                    HandoverForegroundService.refreshCallsIfRunning()
+                } else {
+                    requestPermissions(missing.toTypedArray(), CALL_PERMISSIONS_REQUEST)
+                }
             }
         }
         val postTest = Button(this).apply {

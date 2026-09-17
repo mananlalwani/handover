@@ -1,3 +1,4 @@
+mod call_audio;
 mod ipc_server;
 mod messaging;
 mod messaging_backend;

@@ -142,6 +142,15 @@ pub fn valid_call_address(address: &str) -> bool {
     !digits.is_empty() && digits.len() <= 15 && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Read-only, host-wide audio observations. Not associated with a particular
+/// phone and never confirmation of audibility, microphone routing or delivery.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CallAudioStatus {
+    pub observed: bool,
+    pub gateway_ready: bool,
+    pub duplex_running: bool,
+}
+
 /// Current phone-call state attested by a device.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CallState {
@@ -149,6 +158,11 @@ pub struct CallState {
     pub phase: CallPhase,
     #[serde(default)]
     pub controls: BTreeSet<CallAction>,
+    /// Bumped by the backend on every phone-reported call state. Queued call
+    /// commands carry it; a newer report proves re-observation and makes the
+    /// command stale, so it can never act on a later call.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

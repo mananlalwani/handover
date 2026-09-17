@@ -74,6 +74,8 @@ pub enum Method {
     NotificationsList,
     #[serde(rename = "calls.list")]
     CallsList,
+    #[serde(rename = "calls.audio")]
+    CallsAudio,
     #[serde(rename = "media.list")]
     MediaList,
     #[serde(rename = "subscribe")]
@@ -307,6 +309,9 @@ pub enum ServerPayload {
     },
     Calls {
         calls: Vec<CallState>,
+    },
+    CallAudio {
+        status: handover_core::CallAudioStatus,
     },
     Media {
         media_sessions: Vec<MediaSession>,

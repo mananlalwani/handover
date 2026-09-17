@@ -17,6 +17,12 @@ Singleton {
     property var notifications: []
     property var mediaSessions: []
     property var calls: []
+    property var callAudio: null
+    property string callNotice: ""
+    function refreshCallAudio() {
+        callAudio = null;
+        sendRequest("calls.audio", {});
+    }
     property var lastReceivedShare: null
     property var lastShareResult: null
     property string lastError: ""
@@ -353,6 +359,8 @@ Singleton {
         notifications = [];
         mediaSessions = [];
         calls = [];
+        callAudio = null;
+        callNotice = "";
         lastReceivedShare = null;
         lastShareResult = null;
         messagingAccounts = [];
@@ -467,6 +475,12 @@ Singleton {
             if (!message.conversations) {
                 refreshMessaging();
             }
+            break;
+        case "call_audio":
+            callAudio = message.status;
+            break;
+        case "native_accepted":
+            callNotice = "Command queued; phone effect not confirmed";
             break;
         case "call_updated":
             calls = calls.filter(call => call.device_id !== message.call.device_id).concat([message.call]);

@@ -19,11 +19,17 @@ class CallObserver(private val context: Context, private val publish: (JSONObjec
     private var listener: PhoneStateListener? = null
     private var stopped = false
 
+    /** Latest published call-state generation. Command execution re-checks it
+     * so a queued command can never act on re-observed (later) state. */
+    @Volatile var generation: Long = -1
+        private set
+
     fun refresh() {
         handler.post {
             if (stopped) return@post
             if (!CallController.hasPermission(context, Manifest.permission.READ_PHONE_STATE)) {
                 unregister()
+                generation = -1
                 emit(null)
                 return@post
             }
@@ -61,7 +67,7 @@ class CallObserver(private val context: Context, private val publish: (JSONObjec
             if (phase == "off_hook") controls.put("hangup")
         }
         publish(JSONObject().put("type", "call_state").put("protocol", 1)
-            .put("phase", phase).put("controls", controls))
+            .put("phase", phase).put("controls", controls).put("generation", ++generation))
     }
 
     private fun unregister() {

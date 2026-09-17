@@ -109,6 +109,8 @@ class NativeTransport(private val context: Context) {
         preferences.getString(MANUAL_ENDPOINT_KEY, null)?.let(::connectTo)
     }
 
+    fun refreshCalls() = callObserver.refresh()
+
     fun stop() {
         callObserver.stop()
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
@@ -421,11 +423,17 @@ class NativeTransport(private val context: Context) {
             }
             "call_control" -> {
                 if (serverFingerprint == null) return
+                val requested = message.optLong("generation", -1L)
+                val stale = requested != callObserver.generation
                 when (message.optString("action")) {
-                    "place" -> CallController.place(context, message.optString("address"))
-                    "answer" -> CallController.answer(context)
-                    "decline" -> CallController.hangup(context, decline = true)
-                    "hangup" -> CallController.hangup(context)
+                    "place" -> if (stale) Log.w(TAG, "call place refused: stale generation")
+                        else CallController.place(context, message.optString("address"))
+                    "answer" -> if (stale) Log.w(TAG, "call answer refused: stale generation")
+                        else CallController.answer(context)
+                    "decline" -> if (stale) Log.w(TAG, "call decline refused: stale generation")
+                        else CallController.hangup(context, decline = true)
+                    "hangup" -> if (stale) Log.w(TAG, "call hangup refused: stale generation")
+                        else CallController.hangup(context)
                 }
                 callObserver.refresh()
             }
