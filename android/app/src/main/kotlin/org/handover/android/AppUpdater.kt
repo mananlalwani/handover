@@ -20,6 +20,13 @@ object AppUpdater {
     private const val VERSION_NAME = "version_name"
     private const val RECONNECT = "reconnect_after_update"
 
+    private fun deleteManagedPackage(context: Context, rawUri: String?) {
+        val uri = rawUri?.let(Uri::parse) ?: return
+        // Update packages are inserted into MediaStore by Handover itself.
+        // A failed delete is harmless and must not block update state cleanup.
+        runCatching { context.contentResolver.delete(uri, null, null) }
+    }
+
     @Suppress("DEPRECATION")
     private fun packageInfo(context: Context, path: String) =
         context.packageManager.getPackageArchiveInfo(
@@ -58,7 +65,12 @@ object AppUpdater {
                 certificates(candidate) != certificates(installed)
             ) return null
             PendingUpdate(uri, versionCode(candidate), candidate.versionName.orEmpty()).also { update ->
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val previous = preferences.getString(URI, null)
+                if (previous != null && previous != uri.toString()) {
+                    deleteManagedPackage(context, previous)
+                }
+                preferences.edit()
                     .putString(URI, uri.toString())
                     .putLong(VERSION_CODE, update.versionCode)
                     .putString(VERSION_NAME, update.versionName)
@@ -83,6 +95,7 @@ object AppUpdater {
         val installedCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode
             else installed.versionCode.toLong()
         if (update.versionCode <= installedCode) {
+            deleteManagedPackage(context, uri.toString())
             preferences.edit().remove(URI).remove(VERSION_CODE).remove(VERSION_NAME).apply()
             return null
         }

@@ -13,6 +13,9 @@ class UpdateInstalledReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         AppUpdater.markReconnectNeeded(context)
+        // Re-reading pending state sees the newly installed version and
+        // removes the Handover-managed APK from Downloads immediately.
+        AppUpdater.pending(context)
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(
             CHANNEL, "Handover updates", NotificationManager.IMPORTANCE_HIGH,
