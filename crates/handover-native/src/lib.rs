@@ -1148,12 +1148,29 @@ impl NativeBackend {
             },
         );
         let mut last_received = Instant::now();
+        let session_started = Instant::now();
+        let mut snapshot_retry_sent = false;
         loop {
             if last_received.elapsed() > Duration::from_secs(90) {
                 break;
             }
             if !self.inner.lock().unwrap().peers.peers.contains_key(&id) {
                 break;
+            }
+            if !snapshot_retry_sent && session_started.elapsed() >= Duration::from_secs(5) {
+                let notification_answered = {
+                    let inner = self.inner.lock().unwrap();
+                    inner.notif_enabled.contains_key(&id)
+                };
+                if !notification_answered {
+                    let _ = write_frame(
+                        &mut tls,
+                        &Message::NotificationsRequest {
+                            protocol: WIRE_VERSION,
+                        },
+                    );
+                }
+                snapshot_retry_sent = true;
             }
             let expired = {
                 let mut inner = self.inner.lock().unwrap();
