@@ -64,8 +64,8 @@ in the Android app. A reachable Tailscale address works as well.
 KDE Connect is optional. Use it when you need a capability that the native
 connection does not provide yet. Install KDE Connect, pair the phone in KDE
 Connect, and let Handover discover the paired device. Clipboard synchronization
-is currently KDE Connect-owned; Handover does not implement a native clipboard
-service.
+remains available through KDE Connect. Native Handover clipboard transfer is
+documented below.
 
 ## Common commands
 
@@ -134,6 +134,11 @@ state. KDE Connect may still provide its own background clipboard behavior.
 An opt-in Android setting can mirror text clipboard changes while the Handover
 foreground service is active. It uses content hashes to avoid echoing a change
 back to its origin.
+
+Native transfers also carry HTML and URI clipboard data. Image and other
+file-backed clipboard items up to 10 MiB use the authenticated file stream and
+retain their MIME type. Android share-sheet actions can send URLs and files to
+the paired desktop.
 
 The Android app also provides presentation controls, a pointer pad, and Linux
 volume controls. These commands report acceptance of the request; they do not

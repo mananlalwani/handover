@@ -44,7 +44,8 @@ KDE Connect backend, common commands, troubleshooting, and removal.
 - Supports an on-demand contacts snapshot, including phone numbers, emails, and photos.
 - Provides a phone presentation remote with slide and pointer controls.
 - Provides explicit phone controls for Linux volume up, down, and mute.
-- Supports explicit clipboard transfer in both directions.
+- Supports explicit clipboard transfer in both directions, including HTML, URI,
+  and small file-backed clipboard items.
 - Can ring or ping a connected native phone.
 - Reports the phone's active network transport.
 - Inhibits idle and sleep while a native phone is connected.
@@ -55,10 +56,13 @@ KDE Connect backend, common commands, troubleshooting, and removal.
 Native clipboard transfer is explicit. Use the phone's "Send current clipboard
 to Linux" action, or `handoverctl clipboard <device> [text]` to set the phone's
 clipboard. With no text argument, the CLI reads the current Wayland clipboard.
-Clipboard contents are bounded and are not mirrored in daemon state.
+Clipboard contents are bounded and are not mirrored in daemon state. Text,
+HTML, and URI payloads are limited to 32 KiB each and 48 KiB together. File-
+backed clipboard items are limited to 10 MiB.
 
-Clipboard synchronization is currently provided by the optional KDE Connect
-backend. It is not a native Handover capability yet.
+Background clipboard mirroring remains an opt-in Android setting and runs while
+the Handover foreground service is active. KDE Connect remains available as an
+optional compatibility backend.
 
 The available capabilities depend on the connection method and Android permissions.
 Handover reports when a request was accepted. That does not always mean the
