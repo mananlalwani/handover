@@ -737,6 +737,21 @@ class MainActivity : android.app.Activity() {
                         requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), CONTACTS_PERMISSION_REQUEST)
                     }
                 }
+            }), secondary(Button(this).apply {
+                text = "Export provider diagnostic"
+                setOnClickListener {
+                    val uri = ContactsDump.export(this@MainActivity)
+                    if (uri == null) {
+                        android.widget.Toast.makeText(this@MainActivity,
+                            "Could not export contact provider data", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                            type = "application/json"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }, "Share contact provider diagnostic"))
+                    }
+                }
             })),
         )
 
