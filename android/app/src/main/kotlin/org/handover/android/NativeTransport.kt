@@ -242,6 +242,17 @@ class NativeTransport(private val context: Context) {
                     while (phoneCursor.moveToNext()) phones.put(phoneCursor.getString(0))
                 }
                 item.put("phones", phones).put("emails", org.json.JSONArray())
+                val emails = org.json.JSONArray()
+                context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                    arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
+                    "${ContactsContract.CommonDataKinds.Email.CONTACT_ID}=?", arrayOf(id), null,
+                )?.use { emailCursor ->
+                    while (emailCursor.moveToNext()) {
+                        emailCursor.getString(0)?.let { emails.put(it) }
+                    }
+                }
+                item.put("emails", emails)
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
                     val photo = runCatching {
