@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use handover_core::{
-    ConversationId, Device, DeviceId, MediaCommand, MediaSession, MediaSessionId, MessageId,
-    MessagingAccountId, Notification, SharedResource,
+    Contact, ConversationId, Device, DeviceId, MediaCommand, MediaSession, MediaSessionId,
+    MessageId, MessagingAccountId, Notification, SharedResource,
 };
 use handover_ipc::{Client, IpcError, PROTOCOL_VERSION, ServerPayload};
 use thiserror::Error;
@@ -29,6 +29,11 @@ enum Command {
     },
     /// List active remote notifications
     Notifications,
+    /// List or request an on-demand native contacts snapshot
+    Contacts {
+        #[command(subcommand)]
+        command: ContactsCommand,
+    },
     /// List and control active remote media sessions
     Media {
         #[command(subcommand)]
@@ -54,6 +59,14 @@ enum Command {
         #[command(subcommand)]
         command: MessagesCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ContactsCommand {
+    /// List the latest contacts snapshot held by handoverd
+    List,
+    /// Ask one native phone to send a fresh contacts snapshot
+    Sync { device: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -182,6 +195,7 @@ async fn main() -> ExitCode {
         Some(Command::Devices) => list_devices().await,
         Some(Command::Native { command }) => native(command).await,
         Some(Command::Notifications) => list_notifications().await,
+        Some(Command::Contacts { command }) => contacts(command).await,
         Some(Command::Media { command }) => media(command).await,
         Some(Command::Monitor) => monitor().await,
         Some(Command::SendUrl { device, url }) => send_url(&device, url).await,
@@ -209,6 +223,36 @@ async fn main() -> ExitCode {
             eprintln!("handoverctl: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+async fn contacts(command: ContactsCommand) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    match command {
+        ContactsCommand::List => print_contacts(&client.contacts().await?),
+        ContactsCommand::Sync { device } => {
+            let devices = client.devices().await?;
+            let device_id = select_device(&devices, &device)?;
+            let name = devices
+                .iter()
+                .find(|candidate| candidate.id == device_id)
+                .map(|candidate| candidate.name.clone())
+                .unwrap_or_else(|| device_id.to_string());
+            client.sync_contacts(device_id).await?;
+            println!("Contacts sync requested for {name}");
+        }
+    }
+    Ok(())
+}
+
+fn print_contacts(contacts: &[Contact]) {
+    for contact in contacts {
+        let phones = contact.phones.join(", ");
+        let emails = contact.emails.join(", ");
+        println!(
+            "{}\t{}\t{}\t{}",
+            contact.device_id, contact.display_name, phones, emails
+        );
     }
 }
 
