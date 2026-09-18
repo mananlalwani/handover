@@ -1,7 +1,7 @@
 # Handover
 
 Handover connects an Android phone to a Linux desktop. It lets desktop apps
-see the phone and use features such as notifications, media controls, calls,
+see the phone and use capabilities such as notifications, media controls, calls,
 file sharing, and clipboard sync.
 
 Handover runs in the background. You can use its small command-line tool to
@@ -9,8 +9,8 @@ check connected phones, or use the included Quickshell panel.
 
 ## Current status
 
-Handover is early software. KDE Connect provides the most complete connection
-today. A separate native Android connection is also available for testing.
+Handover is early software. KDE Connect currently provides the widest set of
+capabilities. A separate native Android connection is available for testing.
 
 ## Install
 
@@ -41,14 +41,14 @@ Android connection, common commands, troubleshooting, and removal.
 - Sends files and links to a phone.
 - Provides a Quickshell example panel.
 
-The available features depend on the connection method and Android permissions.
+The available capabilities depend on the connection method and Android permissions.
 Handover reports when a request was accepted. That does not always mean the
 phone has completed it.
 
 ## Privacy
 
 Native connections use TLS and require pairing. Private keys stay in Android's
-keystore. Handover does not intentionally log message text, notification
+keystore. Handover does not log message text, notification
 contents, tokens, keys, or file contents.
 
 ## More information
