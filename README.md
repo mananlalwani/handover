@@ -45,7 +45,7 @@ systemctl --user restart handoverd
 journalctl --user -u handoverd
 ```
 
-## Native Android pairing
+## Native Android
 
 Build and install the companion from `android/`, then enable Handover on the
 phone while both devices can reach each other:
@@ -69,7 +69,14 @@ is unavailable, enter an explicit `address:24837`; a reachable Tailscale
 address is also supported. Unpairing removes the local trust record and closes
 the connection on that endpoint.
 
-## Clients and features
+See [`docs/native-interop.md`](docs/native-interop.md) for protocol details,
+live verification history, and known native-backend limitations. Android
+security decisions are recorded in
+[`docs/android-security-review.md`](docs/android-security-review.md), and the
+latest lifecycle run is in
+[`docs/android-live-reliability-2026-09-17.md`](docs/android-live-reliability-2026-09-17.md).
+
+## Clients and common commands
 
 Run the reference Quickshell client:
 
@@ -92,12 +99,10 @@ An accepted command is not proof of delivery unless the backend provides a
 completion result. KDE Connect currently exposes accepted-only outgoing share
 semantics; native transfers provide bounded, authenticated delivery results.
 
-The reference client also displays notifications and media sessions. Media
-controls are capability-gated, and later state is authoritative; a successful
-control request means the backend accepted it, not that playback necessarily
-changed.
+The reference client displays notifications and media sessions. Controls are
+capability-gated and later state is authoritative.
 
-Clipboard synchronization remains owned by KDE Connect. Handover does not add a
+Clipboard synchronization remains owned by KDE Connect; Handover does not add a
 second clipboard engine or persist clipboard contents.
 
 ## Google Messages
