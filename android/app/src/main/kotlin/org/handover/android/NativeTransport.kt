@@ -226,6 +226,8 @@ class NativeTransport(private val context: Context) {
             ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
             ContactsContract.Contacts.PHOTO_URI,
             ContactsContract.Contacts.PHOTO_FILE_ID,
+            ContactsContract.Contacts.PHOTO_ID,
+            ContactsContract.Contacts.LOOKUP_KEY,
         )
         context.contentResolver.query(
             ContactsContract.Contacts.CONTENT_URI, projection, null, null,
@@ -236,6 +238,8 @@ class NativeTransport(private val context: Context) {
             val photoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
             val fullPhotoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_URI)
             val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
+            val photoIdIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_ID)
+            val lookupIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY)
             while (cursor.moveToNext()) {
                 val id = cursor.getString(idIndex)
                 val item = JSONObject().put("local_id", id)
@@ -263,9 +267,15 @@ class NativeTransport(private val context: Context) {
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
                     val photoFileId = cursor.getLong(photoFileIndex).takeIf { it > 0 }
+                    val photoId = cursor.getLong(photoIdIndex).takeIf { it > 0 }
+                    val lookupKey = cursor.getString(lookupIndex)
                     val fullPhotoUri = cursor.getString(fullPhotoIndex)
                     val photo = encodeContactPhoto(
-                        id, photoUri?.let(Uri::parse) ?: fullPhotoUri?.let(Uri::parse), photoFileId,
+                        id,
+                        photoUri?.let(Uri::parse) ?: fullPhotoUri?.let(Uri::parse),
+                        photoFileId,
+                        photoId,
+                        lookupKey,
                     )
                     if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
                         item.put("photo", photo)
@@ -278,23 +288,37 @@ class NativeTransport(private val context: Context) {
     }
 
     private fun encodeContactPhoto(
-        contactId: String, thumbnailUri: Uri?, photoFileId: Long?,
+        contactId: String,
+        thumbnailUri: Uri?,
+        photoFileId: Long?,
+        photoId: Long?,
+        lookupKey: String?,
     ): String? = runCatching {
         val contactUri = ContactsContract.Contacts.CONTENT_URI.buildUpon()
             .appendPath(contactId).build()
+        val lookupUri = lookupKey?.let {
+            ContactsContract.Contacts.getLookupUri(contactId.toLong(), it)
+        }
         val fileUri = photoFileId?.let {
             ContactsContract.DisplayPhoto.CONTENT_URI.buildUpon().appendPath(it.toString()).build()
         }
         val input = thumbnailUri?.let { context.contentResolver.openInputStream(it) }
             ?: fileUri?.let { context.contentResolver.openInputStream(it) }
+            ?: lookupUri?.let {
+                ContactsContract.Contacts.openContactPhotoInputStream(context.contentResolver, it, true)
+            }
             ?: ContactsContract.Contacts.openContactPhotoInputStream(
                 context.contentResolver, contactUri, true,
             )
         val bitmap = input?.use(BitmapFactory::decodeStream) ?: context.contentResolver.query(
             ContactsContract.Data.CONTENT_URI,
             arrayOf(ContactsContract.CommonDataKinds.Photo.PHOTO),
-            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
-            arrayOf(contactId, ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE),
+            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data._ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
+            arrayOf(
+                contactId,
+                photoId?.toString() ?: "-1",
+                ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE,
+            ),
             null,
         )?.use { cursor ->
             if (cursor.moveToFirst() && !cursor.isNull(0))
