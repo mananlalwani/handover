@@ -224,6 +224,7 @@ class NativeTransport(private val context: Context) {
             ContactsContract.Contacts._ID,
             ContactsContract.Contacts.DISPLAY_NAME,
             ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
+            ContactsContract.Contacts.PHOTO_URI,
             ContactsContract.Contacts.PHOTO_FILE_ID,
         )
         context.contentResolver.query(
@@ -233,6 +234,7 @@ class NativeTransport(private val context: Context) {
             val idIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
             val nameIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME)
             val photoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
+            val fullPhotoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_URI)
             val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
             while (cursor.moveToNext()) {
                 val id = cursor.getString(idIndex)
@@ -261,7 +263,10 @@ class NativeTransport(private val context: Context) {
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
                     val photoFileId = cursor.getLong(photoFileIndex).takeIf { it > 0 }
-                    val photo = encodeContactPhoto(id, photoUri?.let(Uri::parse), photoFileId)
+                    val fullPhotoUri = cursor.getString(fullPhotoIndex)
+                    val photo = encodeContactPhoto(
+                        id, photoUri?.let(Uri::parse) ?: fullPhotoUri?.let(Uri::parse), photoFileId,
+                    )
                     if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
                         item.put("photo", photo)
                 }
