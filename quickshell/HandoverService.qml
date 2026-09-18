@@ -391,6 +391,14 @@ Singleton {
         return sendRequest("clipboard.send", { device_id: device.id, text: text });
     }
 
+    function sendCurrentClipboard(device) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        return sendRequest("clipboard.send_current", { device_id: device.id });
+    }
+
     function mediaCommand(session, action, value) {
         if (!session || !session.id || !action)
             return false;

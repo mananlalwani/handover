@@ -390,6 +390,36 @@ where
                 },
             }
         }
+        Method::ClipboardSendCurrent { device_id } => {
+            match tokio::process::Command::new("wl-paste")
+                .arg("--no-newline")
+                .output()
+                .await
+            {
+                Ok(output) if output.status.success() => {
+                    let text = String::from_utf8(output.stdout).unwrap_or_default();
+                    let peer_id = device_id
+                        .as_str()
+                        .strip_prefix("native:")
+                        .unwrap_or_default();
+                    match native_backend().map(|native| native.clipboard_set(peer_id, &text)) {
+                        Some(Ok(())) => ServerPayload::NativeAccepted,
+                        Some(Err(_)) => ServerPayload::Error {
+                            code: ErrorCode::BackendRejected,
+                            message: "clipboard was not accepted".into(),
+                        },
+                        None => ServerPayload::Error {
+                            code: ErrorCode::BackendUnavailable,
+                            message: "native backend unavailable".into(),
+                        },
+                    }
+                }
+                _ => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: "could not read the Wayland clipboard".into(),
+                },
+            }
+        }
         Method::ContactsList => ServerPayload::Contacts {
             contacts: snapshot(state).contacts,
         },

@@ -453,6 +453,16 @@ ShellRoot {
                                 clipboardText.clear();
                         }
                     }
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Send current desktop clipboard"
+                        enabled: window.appDevices.some(device => device.connected && device.paired)
+                        onClicked: {
+                            const device = window.appDevices.find(item => item.connected && item.paired);
+                            if (device)
+                                HandoverService.sendCurrentClipboard(device);
+                        }
+                    }
                 }
             }
 
