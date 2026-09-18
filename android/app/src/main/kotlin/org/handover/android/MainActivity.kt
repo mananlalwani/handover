@@ -731,6 +731,80 @@ class MainActivity : android.app.Activity() {
                 setTextColor(Color.rgb(70, 77, 94))
             }),
         )
+        var remoteX = 0f
+        var remoteY = 0f
+        var remoteMoved = false
+        val remotePad = View(this).apply {
+            minimumHeight = dp(240)
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(225, 229, 239))
+                cornerRadius = dp(14).toFloat()
+            }
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        remoteX = event.x
+                        remoteY = event.y
+                        remoteMoved = false
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = ((event.x - remoteX) / 2f).toInt()
+                        val dy = ((event.y - remoteY) / 2f).toInt()
+                        if (dx != 0 || dy != 0) {
+                            remoteMoved = true
+                            HandoverForegroundService.remoteInput("move", dx, dy)
+                            remoteX = event.x
+                            remoteY = event.y
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!remoteMoved) HandoverForegroundService.remoteInput("click", button = 1)
+                        true
+                    }
+                    else -> true
+                }
+            }
+        }
+        val remoteText = EditText(this).apply {
+            hint = "Text to type on Linux"
+            setSingleLine(false)
+        }
+        val remoteInputPage = page(
+            "Remote input", "Control the Linux pointer and type text.",
+            panel(sectionTitle("Touchpad"), TextView(this).apply {
+                text = "Drag to move. Tap to click."
+                setTextColor(Color.rgb(70, 77, 94))
+            }, remotePad, LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Left click"
+                    setOnClickListener { HandoverForegroundService.remoteInput("click", button = 1) }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Right click"
+                    setOnClickListener { HandoverForegroundService.remoteInput("click", button = 3) }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+            }, LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Scroll up"
+                    setOnClickListener { HandoverForegroundService.remoteInput("scroll", deltaY = -1) }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Scroll down"
+                    setOnClickListener { HandoverForegroundService.remoteInput("scroll", deltaY = 1) }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+            }),
+            panel(sectionTitle("Keyboard"), remoteText, secondary(Button(this).apply {
+                text = "Type on Linux"
+                setOnClickListener {
+                    HandoverForegroundService.remoteInput("type", text = remoteText.text.toString())
+                    remoteText.text.clear()
+                }
+            })),
+        )
         val volumePage = page(
             "System volume", "Control the default Linux audio output.",
             panel(sectionTitle("Volume"), LinearLayout(this).apply {
@@ -809,6 +883,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
                 menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
+                menuButton("Remote input", "Control the Linux pointer and keyboard") { showPage(remoteInputPage) },
                 menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
                 menuButton("Contacts", "Send an on-demand contacts snapshot") { showPage(contactsPage) },
                 menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },

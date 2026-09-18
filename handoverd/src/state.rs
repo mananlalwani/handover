@@ -67,6 +67,10 @@ impl StateStore {
                 changed: false,
                 changes: Vec::new(),
             },
+            StateEvent::RemoteInput(_) => ApplyOutcome {
+                changed: false,
+                changes: Vec::new(),
+            },
         }
     }
 

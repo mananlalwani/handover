@@ -1656,6 +1656,10 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
             ErrorCode::BackendRejected,
             "clipboard changes are not broadcast to desktop clients",
         ),
+        StateEvent::RemoteInput(_) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "remote input events are not broadcast to desktop clients",
+        ),
     }
 }
 

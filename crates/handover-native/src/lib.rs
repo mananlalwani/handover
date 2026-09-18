@@ -14,8 +14,8 @@ use handover_core::{
     Contact, ContactsEvent, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
     MediaSession, MediaSessionId, Notification, NotificationAction, NotificationCommand,
     NotificationEvent, NotificationId, PlaybackState, PresentationAction, PresentationCommand,
-    ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
-    VolumeAction, VolumeCommand,
+    ReceivedShare, RemoteInputAction, RemoteInputCommand, ShareFailure, ShareResult, ShareStatus,
+    SharedResource, StateEvent, VolumeAction, VolumeCommand,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -456,6 +456,18 @@ enum Message {
         protocol: u32,
         action: VolumeAction,
     },
+    RemoteInputControl {
+        protocol: u32,
+        action: RemoteInputAction,
+        #[serde(default)]
+        delta_x: i32,
+        #[serde(default)]
+        delta_y: i32,
+        #[serde(default)]
+        button: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     CallControl {
         protocol: u32,
         request_id: String,
@@ -596,6 +608,7 @@ impl Message {
             | Self::RemoteNotification { protocol, .. }
             | Self::PresentationControl { protocol, .. }
             | Self::VolumeControl { protocol, .. }
+            | Self::RemoteInputControl { protocol, .. }
             | Self::CallControl { protocol, .. }
             | Self::CallResult { protocol, .. }
             | Self::CallState { protocol, .. }
@@ -862,6 +875,31 @@ impl NativeBackend {
             Message::VolumeControl {
                 protocol: WIRE_VERSION,
                 action: command.action,
+            },
+        )
+    }
+
+    pub fn remote_input(
+        &self,
+        peer_id: &str,
+        command: &RemoteInputCommand,
+    ) -> Result<(), NativeCommandError> {
+        if command.delta_x.abs() > 2000
+            || command.delta_y.abs() > 2000
+            || command.button > 5
+            || command.text.as_ref().is_some_and(|text| text.len() > 512)
+        {
+            return Err(NativeCommandError::QueueFull);
+        }
+        self.queue_simple(
+            peer_id,
+            Message::RemoteInputControl {
+                protocol: WIRE_VERSION,
+                action: command.action,
+                delta_x: command.delta_x,
+                delta_y: command.delta_y,
+                button: command.button,
+                text: command.text.clone(),
             },
         )
     }
@@ -1914,6 +1952,35 @@ impl NativeBackend {
                     event(StateEvent::Volume(VolumeCommand {
                         device_id: DeviceId::new(format!("native:{id}")),
                         action,
+                    }));
+                }
+                Ok(Message::RemoteInputControl {
+                    protocol: WIRE_VERSION,
+                    action,
+                    delta_x,
+                    delta_y,
+                    button,
+                    text,
+                }) => {
+                    let valid = match action {
+                        RemoteInputAction::Move => delta_x.abs() <= 2000 && delta_y.abs() <= 2000,
+                        RemoteInputAction::Click => (1..=5).contains(&button),
+                        RemoteInputAction::Scroll => delta_y.unsigned_abs() <= 20,
+                        RemoteInputAction::Type => {
+                            text.as_ref().is_some_and(|value| value.len() <= 512)
+                        }
+                    };
+                    if !valid {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    last_received = Instant::now();
+                    event(StateEvent::RemoteInput(RemoteInputCommand {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        action,
+                        delta_x,
+                        delta_y,
+                        button,
+                        text,
                     }));
                 }
                 Ok(Message::ContactsSync {

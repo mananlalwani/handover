@@ -164,6 +164,26 @@ pub struct VolumeCommand {
     pub action: VolumeAction,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteInputAction {
+    Move,
+    Click,
+    Scroll,
+    Type,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RemoteInputCommand {
+    pub device_id: DeviceId,
+    pub action: RemoteInputAction,
+    pub delta_x: i32,
+    pub delta_y: i32,
+    pub button: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ClipboardText {
     pub device_id: DeviceId,
@@ -392,6 +412,7 @@ pub enum StateEvent {
     Volume(VolumeCommand),
     Clipboard(ClipboardText),
     ClipboardFile(ClipboardFile),
+    RemoteInput(RemoteInputCommand),
     Contacts(ContactsEvent),
 }
 

@@ -5,6 +5,7 @@ mod messaging;
 mod messaging_backend;
 mod messaging_cache;
 mod presentation;
+mod remote_input;
 mod screensaver;
 mod state;
 mod volume;
@@ -158,6 +159,9 @@ fn apply_backend_event(
     if let StateEvent::ClipboardFile(file) = &event {
         clipboard::apply_file(&file.path, &file.mime);
         let _ = std::fs::remove_file(&file.path);
+    }
+    if let StateEvent::RemoteInput(command) = &event {
+        remote_input::execute(command);
     }
     let call_started = match &event {
         StateEvent::Call(CallEvent::Updated(call))
