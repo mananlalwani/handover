@@ -250,8 +250,12 @@ fn print_contacts(contacts: &[Contact]) {
         let phones = contact.phones.join(", ");
         let emails = contact.emails.join(", ");
         println!(
-            "{}\t{}\t{}\t{}",
-            contact.device_id, contact.display_name, phones, emails
+            "{}\t{}\t{}\t{}\tphoto={}",
+            contact.device_id,
+            contact.display_name,
+            phones,
+            emails,
+            if contact.photo.is_some() { "yes" } else { "no" }
         );
     }
 }

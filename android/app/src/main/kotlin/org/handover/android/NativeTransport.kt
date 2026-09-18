@@ -258,7 +258,7 @@ class NativeTransport(private val context: Context) {
                 item.put("emails", emails)
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
-                    val photo = encodeContactPhoto(Uri.parse(photoUri))
+                    val photo = encodeContactPhoto(id, photoUri?.let(Uri::parse))
                     if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
                         item.put("photo", photo)
                 }
@@ -269,8 +269,14 @@ class NativeTransport(private val context: Context) {
         return true
     }
 
-    private fun encodeContactPhoto(uri: Uri): String? = runCatching {
-        val bitmap = context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+    private fun encodeContactPhoto(contactId: String, thumbnailUri: Uri?): String? = runCatching {
+        val contactUri = ContactsContract.Contacts.CONTENT_URI.buildUpon()
+            .appendPath(contactId).build()
+        val input = thumbnailUri?.let { context.contentResolver.openInputStream(it) }
+            ?: ContactsContract.Contacts.openContactPhotoInputStream(
+                context.contentResolver, contactUri, true,
+            )
+        val bitmap = input?.use(BitmapFactory::decodeStream)
             ?: return@runCatching null
         val size = maxOf(bitmap.width, bitmap.height)
         val scaled = if (size > 96) {
