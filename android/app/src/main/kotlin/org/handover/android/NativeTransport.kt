@@ -308,7 +308,7 @@ class NativeTransport(private val context: Context) {
         val bitmap = input?.use(BitmapFactory::decodeStream) ?: context.contentResolver.query(
             ContactsContract.Data.CONTENT_URI,
             arrayOf(
-                ContactsContract.CommonDataKinds.Photo.PHOTO,
+                ContactsContract.Data.DATA15,
                 ContactsContract.CommonDataKinds.Photo.PHOTO_FILE_ID,
             ),
             "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
