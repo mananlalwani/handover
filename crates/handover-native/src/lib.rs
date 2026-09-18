@@ -394,10 +394,18 @@ enum Message {
     ClipboardPost {
         protocol: u32,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        html: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
     },
     ClipboardSet {
         protocol: u32,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        html: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
     },
     NotificationDismiss {
         protocol: u32,
@@ -838,7 +846,13 @@ impl NativeBackend {
         )
     }
 
-    pub fn clipboard_set(&self, peer_id: &str, text: &str) -> Result<(), NativeCommandError> {
+    pub fn clipboard_set(
+        &self,
+        peer_id: &str,
+        text: &str,
+        html: Option<String>,
+        uri: Option<String>,
+    ) -> Result<(), NativeCommandError> {
         if text.len() > 32 * 1024 {
             return Err(NativeCommandError::QueueFull);
         }
@@ -847,6 +861,8 @@ impl NativeBackend {
             Message::ClipboardSet {
                 protocol: WIRE_VERSION,
                 text: text.to_owned(),
+                html,
+                uri,
             },
         )
     }
@@ -1894,12 +1910,16 @@ impl NativeBackend {
                 Ok(Message::ClipboardPost {
                     protocol: WIRE_VERSION,
                     text,
+                    html,
+                    uri,
                 }) => {
                     last_received = Instant::now();
                     if text.len() <= 32 * 1024 {
                         event(StateEvent::Clipboard(ClipboardText {
                             device_id: DeviceId::new(format!("native:{id}")),
                             text,
+                            html,
+                            uri,
                         }));
                     }
                 }

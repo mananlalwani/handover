@@ -168,6 +168,10 @@ pub struct VolumeCommand {
 pub struct ClipboardText {
     pub device_id: DeviceId,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

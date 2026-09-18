@@ -162,14 +162,15 @@ class NativeTransport(private val context: Context) {
         if (!enabled) return
         val listener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
             if (serverFingerprint == null) return@OnPrimaryClipChangedListener
-            val text = manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: return@OnPrimaryClipChangedListener
+            val item = manager.primaryClip?.getItemAt(0) ?: return@OnPrimaryClipChangedListener
+            val text = item.coerceToText(context)?.toString() ?: ""
             if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return@OnPrimaryClipChangedListener
             val hash = clipboardHash(text)
             if (remoteClipboardHash == hash) {
                 remoteClipboardHash = null
                 return@OnPrimaryClipChangedListener
             }
-            send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text))
+            sendClipboardPayload(manager.primaryClip)
         }
         clipboardListener = listener
         manager.addPrimaryClipChangedListener(listener)
@@ -258,9 +259,19 @@ class NativeTransport(private val context: Context) {
     fun sendClipboardToLinux(): Boolean {
         if (serverFingerprint == null) return false
         val manager = context.getSystemService(android.content.ClipboardManager::class.java)
-        val text = manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: return false
+        return sendClipboardPayload(manager.primaryClip)
+    }
+
+    private fun sendClipboardPayload(clip: android.content.ClipData?): Boolean {
+        val item = clip?.getItemAt(0) ?: return false
+        val text = item.coerceToText(context)?.toString() ?: ""
         if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return false
-        send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text))
+        val html = item.htmlText
+        val uri = item.uri?.toString()
+        send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text).apply {
+            if (!html.isNullOrEmpty()) put("html", html)
+            if (!uri.isNullOrEmpty()) put("uri", uri)
+        })
         return true
     }
 
@@ -639,10 +650,19 @@ class NativeTransport(private val context: Context) {
             "clipboard_set" -> {
                 if (serverFingerprint != null) {
                     val text = message.optString("text")
+                    val html = message.optString("html").takeIf { it.isNotEmpty() }
+                    val uri = message.optString("uri").takeIf { it.isNotEmpty() }
                     if (text.toByteArray(Charsets.UTF_8).size <= 32 * 1024) {
                         remoteClipboardHash = clipboardHash(text)
+                        val clip = when {
+                            uri != null -> android.content.ClipData.newUri(
+                                context.contentResolver, "Handover", Uri.parse(uri),
+                            )
+                            html != null -> android.content.ClipData.newHtmlText("Handover", text, html)
+                            else -> android.content.ClipData.newPlainText("Handover", text)
+                        }
                         context.getSystemService(android.content.ClipboardManager::class.java)
-                            .setPrimaryClip(android.content.ClipData.newPlainText("Handover", text))
+                            .setPrimaryClip(clip)
                     }
                 }
             }

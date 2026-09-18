@@ -84,7 +84,14 @@ pub enum Method {
         body: String,
     },
     #[serde(rename = "clipboard.send")]
-    ClipboardSend { device_id: DeviceId, text: String },
+    ClipboardSend {
+        device_id: DeviceId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        html: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
     #[serde(rename = "clipboard.send_current")]
     ClipboardSendCurrent { device_id: DeviceId },
     #[serde(rename = "contacts.list")]
@@ -798,7 +805,13 @@ impl Client {
         device_id: DeviceId,
         text: String,
     ) -> Result<(), IpcError> {
-        self.send(Method::ClipboardSend { device_id, text }).await?;
+        self.send(Method::ClipboardSend {
+            device_id,
+            text,
+            html: None,
+            uri: None,
+        })
+        .await?;
         match self.receive().await?.payload {
             ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),

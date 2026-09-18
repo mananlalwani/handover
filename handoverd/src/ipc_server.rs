@@ -366,12 +366,17 @@ where
                 },
             }
         }
-        Method::ClipboardSend { device_id, text } => {
+        Method::ClipboardSend {
+            device_id,
+            text,
+            html,
+            uri,
+        } => {
             let peer_id = device_id
                 .as_str()
                 .strip_prefix("native:")
                 .unwrap_or_default();
-            match native_backend().map(|native| native.clipboard_set(peer_id, &text)) {
+            match native_backend().map(|native| native.clipboard_set(peer_id, &text, html, uri)) {
                 Some(Ok(())) => ServerPayload::NativeAccepted,
                 Some(Err(error)) => ServerPayload::Error {
                     code: match error {
@@ -402,7 +407,9 @@ where
                         .as_str()
                         .strip_prefix("native:")
                         .unwrap_or_default();
-                    match native_backend().map(|native| native.clipboard_set(peer_id, &text)) {
+                    match native_backend()
+                        .map(|native| native.clipboard_set(peer_id, &text, None, None))
+                    {
                         Some(Ok(())) => ServerPayload::NativeAccepted,
                         Some(Err(_)) => ServerPayload::Error {
                             code: ErrorCode::BackendRejected,
