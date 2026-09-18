@@ -83,6 +83,8 @@ pub enum Method {
         title: String,
         body: String,
     },
+    #[serde(rename = "clipboard.send")]
+    ClipboardSend { device_id: DeviceId, text: String },
     #[serde(rename = "contacts.list")]
     ContactsList,
     #[serde(rename = "contacts.sync")]
@@ -783,6 +785,18 @@ impl Client {
             body,
         })
         .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn send_clipboard(
+        &mut self,
+        device_id: DeviceId,
+        text: String,
+    ) -> Result<(), IpcError> {
+        self.send(Method::ClipboardSend { device_id, text }).await?;
         match self.receive().await?.payload {
             ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),

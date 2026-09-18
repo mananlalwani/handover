@@ -50,6 +50,8 @@ enum Command {
         title: String,
         body: String,
     },
+    /// Set the clipboard on one native phone
+    Clipboard { device: String, text: String },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
     /// Print current normalized call state for one device
@@ -205,6 +207,7 @@ async fn main() -> ExitCode {
             title,
             body,
         }) => send_notification(&device, app, title, body).await,
+        Some(Command::Clipboard { device, text }) => send_clipboard(&device, text).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
         Some(Command::Messages { command }) => messages(command).await,
         Some(Command::Calls { device }) => calls(device).await,
@@ -224,6 +227,14 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn send_clipboard(selector: &str, text: String) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let device = select_device(&client.devices().await?, selector)?;
+    client.send_clipboard(device, text).await?;
+    println!("Clipboard accepted by phone");
+    Ok(())
 }
 
 async fn contacts(command: ContactsCommand) -> Result<(), CliError> {

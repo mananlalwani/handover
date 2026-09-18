@@ -119,8 +119,15 @@ identifiers. Follow the adapter's pairing runbook for account setup.
 Android notification access, media control, call control, and background access
 are optional permissions. Enable only the capabilities you want to use.
 
-Clipboard synchronization remains a KDE Connect function. Handover does not
-store clipboard contents or add a second clipboard service.
+Native clipboard transfer is explicit rather than a background mirror. On the
+phone, use "Send current clipboard to Linux". From Linux, use:
+
+```sh
+handoverctl clipboard "Phone name" "text to put on the phone"
+```
+
+The native path limits clipboard text to 32 KiB and does not store it in daemon
+state. KDE Connect may still provide its own background clipboard behavior.
 
 ## Privacy and security
 

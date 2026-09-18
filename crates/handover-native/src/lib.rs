@@ -10,12 +10,12 @@ use std::time::{Duration, Instant};
 
 use handover_core::{
     BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
-    CallState, Capability, ConnectivityState, ConnectivityTransport, Contact, ContactsEvent,
-    Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent, MediaSession,
-    MediaSessionId, Notification, NotificationAction, NotificationCommand, NotificationEvent,
-    NotificationId, PlaybackState, PresentationAction, PresentationCommand, ReceivedShare,
-    ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent, VolumeAction,
-    VolumeCommand,
+    CallState, Capability, ClipboardText, ConnectivityState, ConnectivityTransport, Contact,
+    ContactsEvent, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
+    MediaSession, MediaSessionId, Notification, NotificationAction, NotificationCommand,
+    NotificationEvent, NotificationId, PlaybackState, PresentationAction, PresentationCommand,
+    ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
+    VolumeAction, VolumeCommand,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -391,6 +391,14 @@ enum Message {
         protocol: u32,
         contacts: Vec<WireContact>,
     },
+    ClipboardPost {
+        protocol: u32,
+        text: String,
+    },
+    ClipboardSet {
+        protocol: u32,
+        text: String,
+    },
     NotificationDismiss {
         protocol: u32,
         key: String,
@@ -553,6 +561,8 @@ impl Message {
             | Self::NotificationsRequest { protocol }
             | Self::ContactsRequest { protocol }
             | Self::ContactsSync { protocol, .. }
+            | Self::ClipboardPost { protocol, .. }
+            | Self::ClipboardSet { protocol, .. }
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
@@ -824,6 +834,19 @@ impl NativeBackend {
             Message::VolumeControl {
                 protocol: WIRE_VERSION,
                 action: command.action,
+            },
+        )
+    }
+
+    pub fn clipboard_set(&self, peer_id: &str, text: &str) -> Result<(), NativeCommandError> {
+        if text.len() > 32 * 1024 {
+            return Err(NativeCommandError::QueueFull);
+        }
+        self.queue_simple(
+            peer_id,
+            Message::ClipboardSet {
+                protocol: WIRE_VERSION,
+                text: text.to_owned(),
             },
         )
     }
@@ -1867,6 +1890,18 @@ impl NativeBackend {
                         device_id,
                         contacts,
                     }));
+                }
+                Ok(Message::ClipboardPost {
+                    protocol: WIRE_VERSION,
+                    text,
+                }) => {
+                    last_received = Instant::now();
+                    if text.len() <= 32 * 1024 {
+                        event(StateEvent::Clipboard(ClipboardText {
+                            device_id: DeviceId::new(format!("native:{id}")),
+                            text,
+                        }));
+                    }
                 }
                 Ok(Message::NotificationPost {
                     protocol: WIRE_VERSION,

@@ -59,6 +59,10 @@ impl StateStore {
                 changes: Vec::new(),
             },
             StateEvent::Contacts(event) => self.apply_contacts(event),
+            StateEvent::Clipboard(_) => ApplyOutcome {
+                changed: false,
+                changes: Vec::new(),
+            },
         }
     }
 

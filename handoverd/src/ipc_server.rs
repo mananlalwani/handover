@@ -366,6 +366,30 @@ where
                 },
             }
         }
+        Method::ClipboardSend { device_id, text } => {
+            let peer_id = device_id
+                .as_str()
+                .strip_prefix("native:")
+                .unwrap_or_default();
+            match native_backend().map(|native| native.clipboard_set(peer_id, &text)) {
+                Some(Ok(())) => ServerPayload::NativeAccepted,
+                Some(Err(error)) => ServerPayload::Error {
+                    code: match error {
+                        handover_native::NativeCommandError::Offline => {
+                            ErrorCode::DeviceDisconnected
+                        }
+                        handover_native::NativeCommandError::QueueFull => {
+                            ErrorCode::BackendRejected
+                        }
+                    },
+                    message: "clipboard was not accepted".into(),
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "native backend unavailable".into(),
+                },
+            }
+        }
         Method::ContactsList => ServerPayload::Contacts {
             contacts: snapshot(state).contacts,
         },
@@ -1541,6 +1565,10 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Contacts(_) => ServerMessage::protocol_error(
             ErrorCode::BackendRejected,
             "contact snapshots are requested explicitly",
+        ),
+        StateEvent::Clipboard(_) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "clipboard changes are not broadcast to desktop clients",
         ),
     }
 }

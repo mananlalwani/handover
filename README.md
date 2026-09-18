@@ -48,6 +48,10 @@ KDE Connect backend, common commands, troubleshooting, and removal.
   is installed.
 - Provides a Quickshell example panel.
 
+Native clipboard transfer is explicit. Use the phone's "Send current clipboard
+to Linux" action, or `handoverctl clipboard <device> <text>` to set the phone's
+clipboard. Clipboard contents are bounded and are not mirrored in daemon state.
+
 Clipboard synchronization is currently provided by the optional KDE Connect
 backend. It is not a native Handover capability yet.
 

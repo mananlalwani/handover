@@ -752,6 +752,9 @@ class MainActivity : android.app.Activity() {
                         }, "Share contact provider diagnostic"))
                     }
                 }
+            }), secondary(Button(this).apply {
+                text = "Send current clipboard to Linux"
+                setOnClickListener { HandoverForegroundService.sendClipboard() }
             })),
         )
 

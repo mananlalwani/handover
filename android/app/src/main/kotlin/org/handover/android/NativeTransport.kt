@@ -216,6 +216,15 @@ class NativeTransport(private val context: Context) {
         return true
     }
 
+    fun sendClipboardToLinux(): Boolean {
+        if (serverFingerprint == null) return false
+        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
+        val text = manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: return false
+        if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return false
+        send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text))
+        return true
+    }
+
     fun requestContactsSync(): Boolean {
         if (serverFingerprint == null || context.checkSelfPermission("android.permission.READ_CONTACTS") !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) return false
@@ -588,6 +597,15 @@ class NativeTransport(private val context: Context) {
                 }
             }
             "contacts_request" -> requestContactsSync()
+            "clipboard_set" -> {
+                if (serverFingerprint != null) {
+                    val text = message.optString("text")
+                    if (text.toByteArray(Charsets.UTF_8).size <= 32 * 1024) {
+                        context.getSystemService(android.content.ClipboardManager::class.java)
+                            .setPrimaryClip(android.content.ClipData.newPlainText("Handover", text))
+                    }
+                }
+            }
             "notification_dismiss" -> {
                 if (serverFingerprint == null) return
                 HandoverNotificationService.dismiss(message.optString("key"))

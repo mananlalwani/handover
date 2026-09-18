@@ -1,4 +1,5 @@
 mod call_audio;
+mod clipboard;
 mod ipc_server;
 mod messaging;
 mod messaging_backend;
@@ -150,6 +151,9 @@ fn apply_backend_event(
     }
     if let StateEvent::Volume(command) = &event {
         volume::execute(command);
+    }
+    if let StateEvent::Clipboard(text) = &event {
+        clipboard::apply(text);
     }
     let call_started = match &event {
         StateEvent::Call(CallEvent::Updated(call))
