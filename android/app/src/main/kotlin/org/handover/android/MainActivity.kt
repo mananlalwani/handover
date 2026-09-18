@@ -23,12 +23,14 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.View
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
-    private lateinit var transferStatus: TextView
+    private lateinit var transferStatus: LinearLayout
     private lateinit var capabilitiesStatus: TextView
     private lateinit var updateStatus: TextView
     private lateinit var homeConnect: Button
@@ -134,10 +136,7 @@ class MainActivity : android.app.Activity() {
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
         mediaStatus.text = if (TestMediaSession.isActive()) "Test media: playing" else "Test media: stopped"
-        val transfers = TransferHistory.read(this)
-        transferStatus.text = if (transfers.isEmpty()) "No received transfers" else transfers.joinToString("\n") {
-            "${it.kind.replaceFirstChar { c -> c.uppercase() }} · ${it.name} · ${it.status}"
-        }
+        refreshTransferHistory()
         val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         val localNetwork = if (android.os.Build.VERSION.SDK_INT < 37 ||
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") == PackageManager.PERMISSION_GRANTED
@@ -173,6 +172,62 @@ class MainActivity : android.app.Activity() {
         refreshPermissionButtons()
     }
 
+    private fun refreshTransferHistory() {
+        if (!::transferStatus.isInitialized) return
+        transferStatus.removeAllViews()
+        val transfers = TransferHistory.read(this)
+        if (transfers.isEmpty()) {
+            transferStatus.addView(TextView(this).apply {
+                text = "No transfers"
+                textSize = 14f
+                setTextColor(Color.rgb(70, 77, 94))
+            })
+            return
+        }
+        transfers.forEachIndexed { index, record ->
+            val label = record.name.takeUnless { it == record.id }
+                ?: "Transfer ${record.id.take(8)}…"
+            val timestamp = if (record.timestamp > 0) {
+                DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                    .format(Date(record.timestamp))
+            } else "Time unavailable"
+            val details = TextView(this).apply {
+                text = "${record.kind.replaceFirstChar { it.uppercase() }} · ${record.status.replaceFirstChar { it.uppercase() }}\n" +
+                    "${label.take(120)}\n$timestamp"
+                textSize = 14f
+                setTextColor(Color.rgb(28, 34, 48))
+            }
+            val actions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                val open = secondary(Button(this@MainActivity).apply {
+                    text = "Open"
+                    isEnabled = record.uri != null
+                    setOnClickListener {
+                        if (!TransferHistory.open(this@MainActivity, record)) {
+                            android.widget.Toast.makeText(this@MainActivity,
+                                "This transfer cannot be opened here", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    }
+                })
+                val remove = secondary(Button(this@MainActivity).apply {
+                    text = "Remove"
+                    setOnClickListener {
+                        TransferHistory.remove(this@MainActivity, record.id)
+                        refreshStatus()
+                    }
+                })
+                addView(open, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(remove, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+            transferStatus.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, if (index == 0) 0 else dp(12), 0, dp(8))
+                addView(details, LinearLayout.LayoutParams(-1, -2))
+                addView(actions, LinearLayout.LayoutParams(-1, -2))
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+    }
+
     private fun scanForUpdates() {
         AppUpdater.scanDownloads(this)
         refreshStatus()
@@ -197,6 +252,10 @@ class MainActivity : android.app.Activity() {
                 return
             }
             if (intent.action == NativeTransport.ACTION_SHARE_RECEIVED) {
+                refreshStatus()
+                return
+            }
+            if (intent.action == NativeTransport.ACTION_TRANSFER_RESULT) {
                 refreshStatus()
                 return
             }
@@ -249,6 +308,7 @@ class MainActivity : android.app.Activity() {
             addAction(NativeTransport.ACTION_CONNECTION_STATE)
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
+            addAction(NativeTransport.ACTION_TRANSFER_RESULT)
         }, RECEIVER_NOT_EXPORTED)
         AppUpdater.scanDownloads(this)
         refreshStatus()
@@ -309,17 +369,8 @@ class MainActivity : android.app.Activity() {
             textSize = 14f
             setTextColor(Color.rgb(70, 77, 94))
         }
-        transferStatus = TextView(this).apply {
-            textSize = 14f
-            setTextColor(Color.rgb(70, 77, 94))
-            setOnClickListener {
-                TransferHistory.read(this@MainActivity).firstOrNull()?.let { record ->
-                    if (!TransferHistory.open(this@MainActivity, record)) {
-                        android.widget.Toast.makeText(this@MainActivity,
-                            "This transfer cannot be opened here", android.widget.Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
+        transferStatus = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
         capabilitiesStatus = TextView(this).apply {
             textSize = 14f
@@ -521,7 +572,7 @@ class MainActivity : android.app.Activity() {
             panel(sectionTitle("Media"), mediaStatus),
             panel(sectionTitle("Recent transfers"), transferStatus,
                 secondary(Button(this).apply {
-                    text = "Clear transfer history"
+                    text = "Clear all"
                     setOnClickListener { TransferHistory.clear(this@MainActivity); refreshStatus() }
                 })),
         )

@@ -13,6 +13,8 @@ import android.telephony.TelephonyManager
 /** Permission and observed-state gated controls. True means Android accepted
  * the request, never that a call connected. No automatic retries. */
 object CallController {
+    data class Result(val accepted: Boolean, val failure: String? = null)
+    private fun rejected(reason: String) = Result(false, reason)
     fun hasPermission(context: Context, permission: String): Boolean =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -23,35 +25,39 @@ object CallController {
     }.getOrNull()
 
     @Suppress("DEPRECATION")
-    fun place(context: Context, address: String): Boolean {
-        if (!validCallAddress(address) || !hasPermission(context, Manifest.permission.CALL_PHONE)
-            || state(context) != TelephonyManager.CALL_STATE_IDLE) return false
+    fun place(context: Context, address: String): Result {
+        if (!validCallAddress(address)) return rejected("invalid_address")
+        if (!hasPermission(context, Manifest.permission.CALL_PHONE)) return rejected("permission_denied")
+        if (state(context) != TelephonyManager.CALL_STATE_IDLE) return rejected("wrong_phase")
         return runCatching {
             val emergency = if (Build.VERSION.SDK_INT >= 29) {
                 context.getSystemService(TelephonyManager::class.java).isEmergencyNumber(address)
             } else PhoneNumberUtils.isEmergencyNumber(address)
-            if (emergency) return false
+            if (emergency) return rejected("emergency_number")
             context.getSystemService(TelecomManager::class.java)
                 .placeCall(Uri.fromParts("tel", address, null), Bundle())
-            true
-        }.getOrDefault(false)
+            Result(true)
+        }.getOrElse { rejected("rejected") }
     }
 
     @Suppress("DEPRECATION")
-    fun answer(context: Context): Boolean {
-        if (!hasPermission(context, Manifest.permission.ANSWER_PHONE_CALLS)
-            || state(context) != TelephonyManager.CALL_STATE_RINGING) return false
+    fun answer(context: Context): Result {
+        if (!hasPermission(context, Manifest.permission.ANSWER_PHONE_CALLS)) return rejected("permission_denied")
+        if (state(context) != TelephonyManager.CALL_STATE_RINGING) return rejected("wrong_phase")
         return runCatching {
             context.getSystemService(TelecomManager::class.java).acceptRingingCall()
-            true
-        }.getOrDefault(false)
+            Result(true)
+        }.getOrElse { rejected("rejected") }
     }
 
     @Suppress("DEPRECATION")
-    fun hangup(context: Context, decline: Boolean = false): Boolean {
+    fun hangup(context: Context, decline: Boolean = false): Result {
         val expected = if (decline) TelephonyManager.CALL_STATE_RINGING else TelephonyManager.CALL_STATE_OFFHOOK
-        if (!hasPermission(context, Manifest.permission.ANSWER_PHONE_CALLS)
-            || state(context) != expected) return false
-        return runCatching { context.getSystemService(TelecomManager::class.java).endCall() }.getOrDefault(false)
+        if (!hasPermission(context, Manifest.permission.ANSWER_PHONE_CALLS)) return rejected("permission_denied")
+        if (state(context) != expected) return rejected("wrong_phase")
+        return runCatching {
+            if (context.getSystemService(TelecomManager::class.java).endCall()) Result(true)
+            else rejected("rejected")
+        }.getOrElse { rejected("rejected") }
     }
 }

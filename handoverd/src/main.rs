@@ -238,6 +238,14 @@ fn log_change(change: StateChange) {
             tracing::debug!(device_id = %call.device_id, "call state changed")
         }
         StateChange::CallRemoved(id) => tracing::debug!(device_id = %id, "call state unavailable"),
+        StateChange::CallCommandResult(result) => tracing::debug!(
+            device_id = %result.device_id,
+            request_id = %result.request_id,
+            action = ?result.action,
+            accepted = result.accepted,
+            failure = ?result.failure,
+            "phone call command result"
+        ),
         StateChange::ShareReceived(share) => {
             let kind = match share.resource {
                 SharedResource::File { .. } => "file",

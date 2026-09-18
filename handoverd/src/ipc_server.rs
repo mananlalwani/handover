@@ -1359,7 +1359,7 @@ fn route_call(
         native_backend().map(|native| native.call_control(id, action.as_str(), address, generation))
     });
     match result {
-        Some(Ok(())) => ServerPayload::NativeAccepted,
+        Some(Ok(request_id)) => ServerPayload::CallQueued { request_id },
         Some(Err(_)) => ServerPayload::Error {
             code: ErrorCode::BackendRejected,
             message: "call command could not be queued".into(),
@@ -1442,6 +1442,9 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
         StateEvent::Media(event) => ServerMessage::from_media_event(event),
         StateEvent::Call(event) => ServerMessage::from_call_event(event),
+        StateEvent::CallCommandResult(result) => {
+            ServerMessage::new(ServerPayload::CallCommandResult { result })
+        }
         StateEvent::Messaging(event) => ServerMessage::from_messaging_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })

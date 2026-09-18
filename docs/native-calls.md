@@ -38,15 +38,19 @@ phone. A selected audio-gateway profile does not prove an audio stream; running
 input/output endpoints do not prove audibility or speaker/microphone routing.
 Unavailable inspection is shown as unavailable, not disconnected.
 
-Command acceptance currently means **queued for the live session**. It is not an
-Android acknowledgement or a confirmed effect. Android/OEM restrictions can
-reject an operation. Answer/decline/hangup effects still need user-authorized
-live validation; no automatic calls should be used for testing. Multi-call,
-per-SIM selection, hold, DTMF, per-call identities, VoIP and automated audio
-routing are not implemented by this aggregate telephony interface. The current
-observer follows Android's default telephony subscription; dual-SIM aggregate
-state is not guaranteed. Phone-side rejection reasons are not yet correlated
-back to individual desktop commands.
+Command queuing currently returns a `request_id` without promising execution.
+Android then reports a correlated verdict (`call_result` / `call_command_result`)
+for accepted execution, permission denial, stale state, emergency-number
+rejection, invalid address, wrong phase, or platform rejection. `accepted`
+means Android's telephony API accepted the operation, never that a call
+connected or the remote party answered. Answer/decline/hangup effects still
+need deliberate user-authorized validation; no automatic calls should be used
+for testing. Ringing takes precedence over off-hook, off-hook takes precedence
+over idle, and the observer re-registers when Android reports subscription
+changes; no subscription identifiers, phone numbers, or call logs are exposed.
+Multi-call, hold, DTMF, per-call selection, per-call identities, VoIP, and
+automated audio routing are not implemented by this aggregate telephony
+interface.
 
 Controls are bound to the phone's reported state generation. The native session
 drops a queued command after any newer phone state report, and Android rechecks

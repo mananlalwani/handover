@@ -479,8 +479,14 @@ Singleton {
         case "call_audio":
             callAudio = message.status;
             break;
-        case "native_accepted":
+        case "call_queued":
             callNotice = "Command queued; phone effect not confirmed";
+            break;
+        case "call_command_result":
+            callNotice = message.result.accepted
+                ? "Phone accepted " + message.result.action + "; call effect is not confirmed"
+                : "Phone rejected " + message.result.action + ": "
+                    + String(message.result.failure || "rejected").replaceAll("_", " ");
             break;
         case "call_updated":
             calls = calls.filter(call => call.device_id !== message.call.device_id).concat([message.call]);

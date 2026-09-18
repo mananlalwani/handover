@@ -842,6 +842,11 @@ fn print_message(payload: ServerPayload) {
             println!("call state: {} {:?}", call.device_id, call.phase)
         }
         ServerPayload::CallRemoved { device_id } => println!("call state unavailable: {device_id}"),
+        ServerPayload::CallCommandResult { result } => println!(
+            "call command result: {} {:?} accepted={} failure={:?}",
+            result.device_id, result.action, result.accepted, result.failure
+        ),
+        ServerPayload::CallQueued { request_id } => println!("call command queued: {request_id}"),
         ServerPayload::Calls { .. } | ServerPayload::CallAudio { .. } => {}
         ServerPayload::DeviceAdded { device } => {
             println!("device added: {}", describe_device(&device));

@@ -171,6 +171,28 @@ pub enum CallEvent {
     Removed(DeviceId),
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallCommandFailure {
+    PermissionDenied,
+    StaleState,
+    EmergencyNumber,
+    InvalidAddress,
+    WrongPhase,
+    Rejected,
+}
+
+/// Android's verdict on attempting a queued call control. `accepted` means
+/// the platform API accepted the operation, never that a call connected.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CallCommandResult {
+    pub device_id: DeviceId,
+    pub request_id: String,
+    pub action: CallAction,
+    pub accepted: bool,
+    pub failure: Option<CallCommandFailure>,
+}
+
 /// A change to the set of devices or to a device's normalized state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DeviceEvent {
@@ -266,6 +288,7 @@ pub enum StateEvent {
     Notification(NotificationEvent),
     Media(MediaEvent),
     Call(CallEvent),
+    CallCommandResult(CallCommandResult),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
     Messaging(MessagingEvent),

@@ -304,6 +304,9 @@ pub enum ServerPayload {
         pending: Vec<NativePendingPeer>,
     },
     NativeAccepted,
+    CallQueued {
+        request_id: String,
+    },
     Notifications {
         notifications: Vec<Notification>,
     },
@@ -382,6 +385,9 @@ pub enum ServerPayload {
     },
     CallRemoved {
         device_id: DeviceId,
+    },
+    CallCommandResult {
+        result: handover_core::CallCommandResult,
     },
     ShareReceived {
         share: ReceivedShare,
@@ -646,7 +652,7 @@ impl Client {
     pub async fn native_pair(&mut self, id: String, code: String) -> Result<(), IpcError> {
         self.send(Method::NativePair { id, code }).await?;
         match self.receive().await?.payload {
-            ServerPayload::NativeAccepted => Ok(()),
+            ServerPayload::NativeAccepted | ServerPayload::CallQueued { .. } => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }
@@ -672,7 +678,7 @@ impl Client {
         })
         .await?;
         match self.receive().await?.payload {
-            ServerPayload::NativeAccepted => Ok(()),
+            ServerPayload::CallQueued { .. } => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }
@@ -700,7 +706,7 @@ impl Client {
         })
         .await?;
         match self.receive().await?.payload {
-            ServerPayload::NativeAccepted => Ok(()),
+            ServerPayload::CallQueued { .. } => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }

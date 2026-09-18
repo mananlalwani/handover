@@ -57,7 +57,7 @@ class NativeTransport(private val context: Context) {
     private val writerExecutor = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(32)) { _, _ -> Thread { runCatching { socket?.close() } }.start() }
     private val transferExpiry = Executors.newSingleThreadScheduledExecutor()
-    private val pendingTransfers = ConcurrentHashMap<String, Long>()
+    private val pendingTransfers = ConcurrentHashMap<String, PendingTransfer>()
     private val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: BufferedOutputStream? = null
@@ -209,7 +209,7 @@ class NativeTransport(private val context: Context) {
     /** Sends a URL to the one explicitly paired desktop. */
     fun shareUrl(url: String): Boolean {
         if (serverFingerprint == null || socket?.isClosed != false || output == null || !validShareUrl(url)) return false
-        val transferId = registerTransfer() ?: return false
+        val transferId = registerTransfer("url", url, Uri.parse(url)) ?: return false
         return if (enqueue {
             announceAccepted(transferId)
             writeNow(JSONObject().put("type", "share_url").put("protocol", 1)
@@ -227,7 +227,7 @@ class NativeTransport(private val context: Context) {
     fun shareFile(uri: Uri, requestedName: String? = null): Boolean {
         if (serverFingerprint == null || socket?.isClosed != false || output == null) return false
         val metadata = runCatching { fileMetadata(context.contentResolver, uri, requestedName) }.getOrNull() ?: return false
-        val transferId = registerTransfer() ?: return false
+        val transferId = registerTransfer("file", metadata.first, uri) ?: return false
         return enqueue {
             announceAccepted(transferId)
             try {
@@ -426,18 +426,26 @@ class NativeTransport(private val context: Context) {
             }
             "call_control" -> {
                 if (serverFingerprint == null) return
+                val requestId = message.optString("request_id")
+                val action = message.optString("action")
                 val requested = message.optLong("generation", -1L)
                 val stale = requested != callObserver.generation
-                when (message.optString("action")) {
-                    "place" -> if (stale) Log.w(TAG, "call place refused: stale generation")
+                val result = when (action) {
+                    "place" -> if (stale) CallController.Result(false, "stale_state")
                         else CallController.place(context, message.optString("address"))
-                    "answer" -> if (stale) Log.w(TAG, "call answer refused: stale generation")
+                    "answer" -> if (stale) CallController.Result(false, "stale_state")
                         else CallController.answer(context)
-                    "decline" -> if (stale) Log.w(TAG, "call decline refused: stale generation")
+                    "decline" -> if (stale) CallController.Result(false, "stale_state")
                         else CallController.hangup(context, decline = true)
-                    "hangup" -> if (stale) Log.w(TAG, "call hangup refused: stale generation")
+                    "hangup" -> if (stale) CallController.Result(false, "stale_state")
                         else CallController.hangup(context)
+                    else -> CallController.Result(false, "rejected")
                 }
+                send(JSONObject().put("type", "call_result").put("protocol", 1)
+                    .put("request_id", requestId).put("action", action)
+                    .put("accepted", result.accepted).apply {
+                        result.failure?.let { put("failure", it) }
+                    })
                 callObserver.refresh()
             }
             "media_request" -> {
@@ -651,27 +659,42 @@ class NativeTransport(private val context: Context) {
         socket?.close()
     }
 
-    private fun registerTransfer(): String? {
+    private fun registerTransfer(kind: String, name: String, uri: Uri?): String? {
         if (pendingTransfers.size >= MAX_PENDING_TRANSFERS) return null
         val id = UUID.randomUUID().toString().replace("-", "")
-        pendingTransfers[id] = android.os.SystemClock.elapsedRealtime() + TRANSFER_TIMEOUT_MS
+        pendingTransfers[id] = PendingTransfer(
+            android.os.SystemClock.elapsedRealtime() + TRANSFER_TIMEOUT_MS, kind, name, uri,
+        )
         return id
     }
 
     private fun announceAccepted(id: String) {
-        broadcast(ACTION_TRANSFER_RESULT, JSONObject().put("transfer_id", id).put("status", "accepted"))
+        val transfer = pendingTransfers[id] ?: return
+        publishTransferResult(transfer.result(id, "accepted"))
     }
 
     private fun completeTransfer(id: String, status: String, reason: String?) {
-        if (pendingTransfers.remove(id) == null) return
-        val result = JSONObject().put("transfer_id", id).put("status", status)
+        val transfer = pendingTransfers.remove(id) ?: return
+        val result = transfer.result(id, status)
         reason?.let { result.put("reason", it) }
+        publishTransferResult(result)
+    }
+
+    private fun publishTransferResult(result: JSONObject) {
+        TransferHistory.recordResult(
+            context,
+            result.optString("transfer_id"),
+            result.optString("status"),
+            result.optString("kind").takeIf(String::isNotEmpty),
+            result.optString("name").takeIf(String::isNotEmpty),
+            result.optString("uri").takeIf(String::isNotEmpty)?.let(Uri::parse),
+        )
         broadcast(ACTION_TRANSFER_RESULT, result)
     }
 
     private fun expireTransfers() {
         val now = android.os.SystemClock.elapsedRealtime()
-        val expired = pendingTransfers.entries.filter { it.value <= now }
+        val expired = pendingTransfers.entries.filter { it.value.deadline <= now }
         expired.forEach {
             completeTransfer(it.key, "failed", TRANSFER_TIMED_OUT)
         }
@@ -680,6 +703,17 @@ class NativeTransport(private val context: Context) {
 
     private fun failPendingTransfers(reason: String) {
         pendingTransfers.keys.toList().forEach { completeTransfer(it, "failed", reason) }
+    }
+
+    private data class PendingTransfer(
+        val deadline: Long,
+        val kind: String,
+        val name: String,
+        val uri: Uri?,
+    ) {
+        fun result(id: String, status: String) = JSONObject()
+            .put("transfer_id", id).put("status", status).put("kind", kind).put("name", name)
+            .apply { uri?.let { put("uri", it.toString()) } }
     }
 
     private fun send(message: JSONObject) {

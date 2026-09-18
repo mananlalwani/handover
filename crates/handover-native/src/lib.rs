@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use handover_core::{
-    BatteryState, CallEvent, CallPhase, CallState, Capability, Device, DeviceEvent, DeviceId,
-    MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId, Notification,
-    NotificationAction, NotificationCommand, NotificationEvent, NotificationId, PlaybackState,
-    ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
+    BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
+    CallState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
+    MediaSession, MediaSessionId, Notification, NotificationAction, NotificationCommand,
+    NotificationEvent, NotificationId, PlaybackState, ReceivedShare, ShareFailure, ShareResult,
+    ShareStatus, SharedResource, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -130,6 +131,7 @@ struct Runtime {
     // command stamped with an older generation is stale: a new call may have
     // started or ended since the user acted, so the command is dropped.
     call_generations: BTreeMap<String, u64>,
+    pending_call_results: BTreeMap<String, BTreeMap<String, CallAction>>,
 }
 
 #[derive(Clone)]
@@ -177,6 +179,7 @@ impl Drop for Session<'_> {
                 .remove(&self.peer.id)
                 .unwrap_or_default();
             inner.media_enabled.remove(&self.peer.id);
+            inner.pending_call_results.remove(&self.peer.id);
             let device_id = device(&self.peer, false, None, false, false).id;
             let mut removals: Vec<NotificationId> = removed_keys
                 .into_iter()
@@ -375,6 +378,7 @@ enum Message {
     },
     CallControl {
         protocol: u32,
+        request_id: String,
         action: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         address: Option<String>,
@@ -383,6 +387,14 @@ enum Message {
         /// the phone independently re-checks its own current generation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generation: Option<u64>,
+    },
+    CallResult {
+        protocol: u32,
+        request_id: String,
+        action: CallAction,
+        accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<CallCommandFailure>,
     },
     CallState {
         protocol: u32,
@@ -486,6 +498,7 @@ impl Message {
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
             | Self::CallControl { protocol, .. }
+            | Self::CallResult { protocol, .. }
             | Self::CallState { protocol, .. }
             | Self::CallRequest { protocol }
             | Self::MediaPost { protocol, .. }
@@ -542,6 +555,7 @@ impl NativeBackend {
                 outbox: BTreeMap::new(),
                 pending_shares: BTreeMap::new(),
                 call_generations: BTreeMap::new(),
+                pending_call_results: BTreeMap::new(),
             })),
             directory,
             certificate,
@@ -708,7 +722,7 @@ impl NativeBackend {
         action: &str,
         address: Option<String>,
         generation: Option<u64>,
-    ) -> Result<(), NativeCommandError> {
+    ) -> Result<String, NativeCommandError> {
         if !matches!(action, "place" | "answer" | "decline" | "hangup") {
             return Err(NativeCommandError::QueueFull);
         }
@@ -720,13 +734,15 @@ impl NativeBackend {
         if queue.len() >= MAX_OUTBOX_PER_PEER {
             return Err(NativeCommandError::QueueFull);
         }
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         queue.push(Message::CallControl {
             protocol: WIRE_VERSION,
+            request_id: request_id.clone(),
             action: action.into(),
             address,
             generation,
         });
-        Ok(())
+        Ok(request_id)
     }
 
     /// Queue a validated media command for the live native session. Success
@@ -1331,6 +1347,25 @@ impl NativeBackend {
                     tracing::debug!(peer = %id, %error, "native notification command write failed");
                     return Err(error);
                 }
+                if let Message::CallControl {
+                    request_id, action, ..
+                } = &message
+                    && let Some(action) = match action.as_str() {
+                        "place" => Some(CallAction::Place),
+                        "answer" => Some(CallAction::Answer),
+                        "decline" => Some(CallAction::Decline),
+                        "hangup" => Some(CallAction::Hangup),
+                        _ => None,
+                    }
+                {
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .pending_call_results
+                        .entry(id.clone())
+                        .or_default()
+                        .insert(request_id.clone(), action);
+                }
                 if let Message::ShareFile {
                     path,
                     size,
@@ -1545,6 +1580,37 @@ impl NativeBackend {
                         controls,
                         generation,
                     })));
+                }
+                Ok(Message::CallResult {
+                    protocol: WIRE_VERSION,
+                    request_id,
+                    action,
+                    accepted,
+                    failure,
+                }) => {
+                    last_received = Instant::now();
+                    let pending_action = self
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .pending_call_results
+                        .entry(id.clone())
+                        .or_default()
+                        .remove(&request_id);
+                    if !valid_transfer_id(&request_id)
+                        || pending_action != Some(action)
+                        || (accepted && failure.is_some())
+                        || (!accepted && failure.is_none())
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    event(StateEvent::CallCommandResult(CallCommandResult {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        request_id,
+                        action,
+                        accepted,
+                        failure,
+                    }));
                 }
                 Ok(Message::NotificationPost {
                     protocol: WIRE_VERSION,

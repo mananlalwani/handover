@@ -774,6 +774,59 @@ fn wait_call(harness: &Harness) -> CallEvent {
     }
 }
 
+fn wait_call_result(harness: &Harness) -> handover_core::CallCommandResult {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::CallCommandResult(result) =
+            harness.events.recv_timeout(remaining).unwrap()
+        {
+            return result;
+        }
+    }
+}
+
+#[test]
+fn native_call_result_is_correlated_without_claiming_effect() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"call_state","protocol":1,
+        "phase":"ringing","controls":["answer"],"generation":9}),
+    );
+    let _ = wait_call(&harness);
+
+    let stale_request_id = harness
+        .backend
+        .call_control(&client.fingerprint, "answer", None, Some(8))
+        .unwrap();
+    let request_id = harness
+        .backend
+        .call_control(&client.fingerprint, "answer", None, Some(9))
+        .unwrap();
+    let command = recv(&mut peer);
+    assert_eq!(command["request_id"], request_id);
+    assert_ne!(request_id, stale_request_id);
+    assert_eq!(command["generation"], 9);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"call_result","protocol":1,
+        "request_id":request_id,"action":"answer","accepted":false,
+        "failure":"permission_denied"}),
+    );
+    let result = wait_call_result(&harness);
+    assert_eq!(result.request_id, request_id);
+    assert_eq!(result.action, CallAction::Answer);
+    assert!(!result.accepted);
+    assert_eq!(
+        result.failure,
+        Some(handover_core::CallCommandFailure::PermissionDenied)
+    );
+}
+
 #[test]
 fn native_call_state_updates_and_disconnect_removes_state() {
     let harness = harness();
