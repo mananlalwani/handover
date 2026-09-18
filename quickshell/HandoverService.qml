@@ -56,6 +56,11 @@ Singleton {
         return contact ? contact.display_name
             : (participant.display_name || participant.address || participant.local_id);
     }
+
+    function contactPhoto(participant) {
+        const contact = contactForParticipant(participant);
+        return contact && contact.photo ? "data:image/jpeg;base64," + contact.photo : "";
+    }
     property var lastReceivedShare: null
     property var lastShareResult: null
     property string lastError: ""

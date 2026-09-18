@@ -307,6 +307,8 @@ struct WireContact {
     phones: Vec<String>,
     #[serde(default)]
     emails: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    photo: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -1858,6 +1860,7 @@ impl NativeBackend {
                             display_name: contact.display_name,
                             phones: contact.phones,
                             emails: contact.emails,
+                            photo: contact.photo,
                         })
                         .collect();
                     event(StateEvent::Contacts(ContactsEvent::Synced {

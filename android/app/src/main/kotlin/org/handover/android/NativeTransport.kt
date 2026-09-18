@@ -24,6 +24,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.ContactsContract
 import android.util.Log
+import android.util.Base64
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -219,6 +220,7 @@ class NativeTransport(private val context: Context) {
         val projection = arrayOf(
             ContactsContract.Contacts._ID,
             ContactsContract.Contacts.DISPLAY_NAME,
+            ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
         )
         context.contentResolver.query(
             ContactsContract.Contacts.CONTENT_URI, projection, null, null,
@@ -226,6 +228,7 @@ class NativeTransport(private val context: Context) {
         )?.use { cursor ->
             val idIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
             val nameIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME)
+            val photoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
             while (cursor.moveToNext()) {
                 val id = cursor.getString(idIndex)
                 val item = JSONObject().put("local_id", id)
@@ -239,6 +242,18 @@ class NativeTransport(private val context: Context) {
                     while (phoneCursor.moveToNext()) phones.put(phoneCursor.getString(0))
                 }
                 item.put("phones", phones).put("emails", org.json.JSONArray())
+                val photoUri = cursor.getString(photoIndex)
+                if (photoUri != null) {
+                    val photo = runCatching {
+                        context.contentResolver.openInputStream(Uri.parse(photoUri))?.use { input ->
+                            val bytes = ByteArray(6 * 1024)
+                            val count = input.read(bytes)
+                            if (count > 0) Base64.encodeToString(bytes.copyOf(count), Base64.NO_WRAP) else null
+                        }
+                    }.getOrNull()
+                    if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
+                        item.put("photo", photo)
+                }
                 contacts.put(item)
             }
         }

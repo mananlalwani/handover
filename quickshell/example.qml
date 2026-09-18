@@ -173,8 +173,8 @@ ShellRoot {
                                     onClicked: {
                                         forgetDeviceDialog.deviceToForget = modelData;
                                         forgetDeviceDialog.open();
-                                    }
-                                }
+                                         }
+                                     }
                             }
                         }
                     }
@@ -390,6 +390,13 @@ ShellRoot {
                                 text: modelData.display_name
                                 color: "#f3f4f6"
                                 font.bold: true
+                            }
+                            Image {
+                                Layout.preferredWidth: 42
+                                Layout.preferredHeight: 42
+                                source: "data:image/jpeg;base64," + (modelData.photo || "")
+                                visible: !!modelData.photo
+                                fillMode: Image.PreserveAspectCrop
                             }
                             Text {
                                 Layout.fillWidth: true
@@ -1049,10 +1056,25 @@ ShellRoot {
                                             text: messagesCard.conversationLabel(modelData).charAt(0).toUpperCase()
                                             color: "#ffffff"
                                             font.pixelSize: 18
-                                            font.bold: true
-                                        }
-                                    }
-                                    Column {
+                                             font.bold: true
+                                         }
+                                     }
+                                     Image {
+                                         anchors.left: parent.left
+                                         anchors.leftMargin: 8
+                                         anchors.verticalCenter: parent.verticalCenter
+                                         width: 40
+                                         height: 40
+                                         source: {
+                                             const participant = modelData.participants
+                                                 .find(item => !item.is_self);
+                                             return HandoverService.contactPhoto(participant);
+                                         }
+                                         fillMode: Image.PreserveAspectCrop
+                                         visible: source !== ""
+                                         z: 2
+                                     }
+                                     Column {
                                         anchors.left: parent.left
                                         anchors.leftMargin: 58
                                         anchors.right: parent.right
