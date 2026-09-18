@@ -92,6 +92,8 @@ class HandoverForegroundService : Service() {
         fun volume(action: String) { activeTransport?.volumeControl(action) }
         fun syncContacts() { activeTransport?.requestContactsSync() }
         fun sendClipboard() { activeTransport?.sendClipboardToLinux() }
+        fun setClipboardSync(enabled: Boolean) { activeTransport?.setClipboardSync(enabled) }
+        fun clipboardSyncEnabled(): Boolean = activeTransport?.clipboardSyncEnabled() == true
 
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"

@@ -43,6 +43,7 @@ import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
+import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -85,6 +86,8 @@ class NativeTransport(private val context: Context) {
     @Volatile private var endpoint: Pair<InetAddress, Int>? = null
     @Volatile private var manualEndpoint = false
     @Volatile private var workerStarted = false
+    @Volatile private var remoteClipboardHash: String? = null
+    private var clipboardListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
 
     /** Reconnects to the stored manual endpoint after a restart when already paired. */
     fun connectToSavedEndpoint() {
@@ -96,6 +99,7 @@ class NativeTransport(private val context: Context) {
         transferExpiry.scheduleWithFixedDelay({ expireTransfers() }, TRANSFER_SWEEP_MS,
             TRANSFER_SWEEP_MS, TimeUnit.MILLISECONDS)
         serverFingerprint = preferences.getString(PIN_KEY, null)
+        configureClipboardSync(preferences.getBoolean(CLIPBOARD_SYNC_KEY, false))
         multicastLock.acquire()
         discovery = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) { Log.i(TAG, "LAN discovery started") }
@@ -125,6 +129,11 @@ class NativeTransport(private val context: Context) {
     fun refreshCalls() = callObserver.refresh()
 
     fun stop() {
+        clipboardListener?.let {
+            context.getSystemService(android.content.ClipboardManager::class.java)
+                .removePrimaryClipChangedListener(it)
+        }
+        clipboardListener = null
         callObserver.stop()
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         discovery = null
@@ -138,6 +147,36 @@ class NativeTransport(private val context: Context) {
         failPendingTransfers(TRANSFER_DISCONNECTED)
         transferExpiry.shutdownNow()
     }
+
+    fun setClipboardSync(enabled: Boolean) {
+        preferences.edit().putBoolean(CLIPBOARD_SYNC_KEY, enabled).apply()
+        configureClipboardSync(enabled)
+    }
+
+    fun clipboardSyncEnabled(): Boolean = preferences.getBoolean(CLIPBOARD_SYNC_KEY, false)
+
+    private fun configureClipboardSync(enabled: Boolean) {
+        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
+        clipboardListener?.let(manager::removePrimaryClipChangedListener)
+        clipboardListener = null
+        if (!enabled) return
+        val listener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
+            if (serverFingerprint == null) return@OnPrimaryClipChangedListener
+            val text = manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: return@OnPrimaryClipChangedListener
+            if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return@OnPrimaryClipChangedListener
+            val hash = clipboardHash(text)
+            if (remoteClipboardHash == hash) {
+                remoteClipboardHash = null
+                return@OnPrimaryClipChangedListener
+            }
+            send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text))
+        }
+        clipboardListener = listener
+        manager.addPrimaryClipChangedListener(listener)
+    }
+
+    private fun clipboardHash(text: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
     fun connectTo(rawAddress: String): Boolean {
         Log.i(TAG, "Manual LAN endpoint requested")
@@ -601,6 +640,7 @@ class NativeTransport(private val context: Context) {
                 if (serverFingerprint != null) {
                     val text = message.optString("text")
                     if (text.toByteArray(Charsets.UTF_8).size <= 32 * 1024) {
+                        remoteClipboardHash = clipboardHash(text)
                         context.getSystemService(android.content.ClipboardManager::class.java)
                             .setPrimaryClip(android.content.ClipData.newPlainText("Handover", text))
                     }
@@ -1005,6 +1045,7 @@ class NativeTransport(private val context: Context) {
         private const val PENDING_CODE_KEY = "pending_pair_code"
         private const val MANUAL_ENDPOINT_KEY = "manual_endpoint"
         private const val MAX_FRAME = 64 * 1024
+        private const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"
         private const val MAX_FILE_BYTES = 100L * 1024 * 1024
         private const val MAX_URL_BYTES = 8 * 1024
         private const val MAX_NAME_BYTES = 255

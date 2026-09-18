@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Switch
 import android.widget.EditText
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
@@ -589,6 +590,13 @@ class MainActivity : android.app.Activity() {
             panel(sectionTitle("Calls"), callAccess),
             panel(sectionTitle("Connectivity & background"), localNetworkAccess,
                 batteryAccess, backgroundAccess),
+            panel(sectionTitle("Clipboard"), Switch(this).apply {
+                text = "Sync clipboard in the foreground service"
+                isChecked = HandoverForegroundService.clipboardSyncEnabled()
+                setOnCheckedChangeListener { _, enabled ->
+                    HandoverForegroundService.setClipboardSync(enabled)
+                }
+            }),
         )
         val activityPage = page(
             "Activity", "Current phone-side Handover activity.",

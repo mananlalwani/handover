@@ -131,6 +131,9 @@ handoverctl clipboard "Phone name"
 
 The native path limits clipboard text to 32 KiB and does not store it in daemon
 state. KDE Connect may still provide its own background clipboard behavior.
+An opt-in Android setting can mirror text clipboard changes while the Handover
+foreground service is active. It uses content hashes to avoid echoing a change
+back to its origin.
 
 The Android app also provides presentation controls, a pointer pad, and Linux
 volume controls. These commands report acceptance of the request; they do not
