@@ -271,6 +271,11 @@ class NativeTransport(private val context: Context) {
         val mime = clip.description?.getMimeType(0)
         if (uri != null && mime != null && !mime.startsWith("text/"))
             return sendClipboardFile(item.uri!!, mime)
+        val richSize = text.toByteArray(Charsets.UTF_8).size +
+            (html?.toByteArray(Charsets.UTF_8)?.size ?: 0) +
+            (uri?.toByteArray(Charsets.UTF_8)?.size ?: 0)
+        if (richSize > 48 * 1024 || (html?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 32 * 1024 ||
+            (uri?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 32 * 1024) return false
         send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text).apply {
             if (!html.isNullOrEmpty()) put("html", html)
             if (!uri.isNullOrEmpty()) put("uri", uri)
@@ -285,7 +290,9 @@ class NativeTransport(private val context: Context) {
         return enqueue {
             try {
                 context.contentResolver.openInputStream(uri)?.use { input ->
+                    val transferId = UUID.randomUUID().toString().replace("-", "")
                     writeNow(JSONObject().put("type", "clipboard_file").put("protocol", 1)
+                        .put("transfer_id", transferId)
                         .put("name", metadata.first).put("size", metadata.second).put("mime", mime))
                     val buffer = ByteArray(STREAM_BUFFER_BYTES)
                     var remaining = metadata.second
@@ -766,6 +773,15 @@ class NativeTransport(private val context: Context) {
                 if ((status == "completed" && reason != null) ||
                     (status == "failed" && reason !in TRANSFER_REASONS)) return
                 completeTransfer(transferId, status, reason)
+            }
+            "clipboard_result" -> {
+                if (serverFingerprint == null) return
+                val transferId = message.optString("transfer_id")
+                val status = message.optString("status")
+                if (!isTransferId(transferId) || (status != "completed" && status != "failed")) return
+                val reason = message.optString("reason").takeIf { it.isNotEmpty() }
+                broadcast(ACTION_TRANSFER_RESULT, JSONObject().put("transfer_id", transferId)
+                    .put("status", status).apply { reason?.let { put("reason", it) } })
             }
             "share_url" -> {
                 if (serverFingerprint == null) return

@@ -409,9 +409,17 @@ enum Message {
     },
     ClipboardFile {
         protocol: u32,
+        transfer_id: String,
         name: String,
         size: u64,
         mime: String,
+    },
+    ClipboardResult {
+        protocol: u32,
+        transfer_id: String,
+        status: ShareStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<ShareFailure>,
     },
     NotificationDismiss {
         protocol: u32,
@@ -578,6 +586,7 @@ impl Message {
             | Self::ClipboardPost { protocol, .. }
             | Self::ClipboardSet { protocol, .. }
             | Self::ClipboardFile { protocol, .. }
+            | Self::ClipboardResult { protocol, .. }
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
@@ -1921,7 +1930,14 @@ impl NativeBackend {
                     uri,
                 }) => {
                     last_received = Instant::now();
-                    if text.len() <= 32 * 1024 {
+                    let rich_size = text.len()
+                        + html.as_ref().map_or(0, String::len)
+                        + uri.as_ref().map_or(0, String::len);
+                    if text.len() <= 32 * 1024
+                        && html.as_ref().is_none_or(|value| value.len() <= 32 * 1024)
+                        && uri.as_ref().is_none_or(|value| value.len() <= 32 * 1024)
+                        && rich_size <= 48 * 1024
+                    {
                         event(StateEvent::Clipboard(ClipboardText {
                             device_id: DeviceId::new(format!("native:{id}")),
                             text,
@@ -1932,20 +1948,67 @@ impl NativeBackend {
                 }
                 Ok(Message::ClipboardFile {
                     protocol: WIRE_VERSION,
+                    transfer_id,
                     name,
                     size,
                     mime,
                 }) => {
-                    if size > 10 * 1024 * 1024 || name.len() > 255 || mime.len() > 128 {
+                    if !valid_transfer_id(&transfer_id)
+                        || size > 10 * 1024 * 1024
+                        || !safe_share_name(&name)
+                        || name.len() > 255
+                        || mime.is_empty()
+                        || mime.len() > 128
+                    {
+                        let _ = write_frame(
+                            &mut tls,
+                            &Message::ClipboardResult {
+                                protocol: WIRE_VERSION,
+                                transfer_id,
+                                status: ShareStatus::Failed,
+                                reason: Some(ShareFailure::InvalidResource),
+                            },
+                        );
                         return Err(NativeError::InvalidFrame);
                     }
-                    let path = self.receive_share_file(&mut tls, &name, size)?;
+                    let path = match self.receive_share_file(&mut tls, &name, size) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            let reason = match &error {
+                                NativeError::Io(io)
+                                    if io.kind() == std::io::ErrorKind::UnexpectedEof =>
+                                {
+                                    ShareFailure::Interrupted
+                                }
+                                _ => ShareFailure::Storage,
+                            };
+                            let _ = write_frame(
+                                &mut tls,
+                                &Message::ClipboardResult {
+                                    protocol: WIRE_VERSION,
+                                    transfer_id,
+                                    status: ShareStatus::Failed,
+                                    reason: Some(reason),
+                                },
+                            );
+                            return Err(error);
+                        }
+                    };
                     event(StateEvent::ClipboardFile(ClipboardFile {
                         device_id: DeviceId::new(format!("native:{id}")),
                         path: path.to_string_lossy().into_owned(),
                         mime,
                     }));
                     last_received = Instant::now();
+                    write_frame(
+                        &mut tls,
+                        &Message::ClipboardResult {
+                            protocol: WIRE_VERSION,
+                            transfer_id,
+                            status: ShareStatus::Completed,
+                            reason: None,
+                        },
+                    )?;
                 }
                 Ok(Message::NotificationPost {
                     protocol: WIRE_VERSION,
