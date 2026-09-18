@@ -26,6 +26,8 @@ Singleton {
     property var lastReceivedShare: null
     property var lastShareResult: null
     property string lastError: ""
+    property string nativeNotice: ""
+    property bool nativePending: false
     property var pendingCommand: null
     signal commandFinished(string method, var notificationId, bool success, string error)
     signal shareFinished(string method, string deviceId, bool success, string error)
@@ -322,6 +324,23 @@ Singleton {
         return sendShare("share.file", device, { file_url: fileUrl });
     }
 
+    function nativeAction(device, action) {
+        if (!device || !device.id || !device.id.startsWith("native:"))
+            return false;
+        if (nativePending) {
+            nativeNotice = "Another phone action is still pending";
+            return false;
+        }
+        const id = device.id.substring("native:".length);
+        if (!sendRequest("native." + action, { id: id })) {
+            nativeNotice = "handoverd is disconnected";
+            return false;
+        }
+        nativePending = true;
+        nativeNotice = "";
+        return true;
+    }
+
     function mediaCommand(session, action, value) {
         if (!session || !session.id || !action)
             return false;
@@ -370,6 +389,8 @@ Singleton {
         typingStates = [];
         readStates = [];
         pairingPrompt = null;
+        nativePending = false;
+        nativeNotice = "";
         if (pendingCommand) {
             finishPending(false, message);
             pendingCommand = null;
@@ -478,6 +499,12 @@ Singleton {
             break;
         case "call_audio":
             callAudio = message.status;
+            break;
+        case "native_accepted":
+            if (nativePending) {
+                nativePending = false;
+                nativeNotice = "Phone action accepted";
+            }
             break;
         case "call_queued":
             callNotice = "Command queued; phone effect not confirmed";
@@ -625,6 +652,10 @@ Singleton {
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
             finishPending(false, lastError);
+            if (nativePending) {
+                nativePending = false;
+                nativeNotice = lastError;
+            }
             if (pendingMessaging)
                 finishMessaging(false, lastError);
             break;

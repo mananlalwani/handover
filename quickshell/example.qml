@@ -33,6 +33,26 @@ ShellRoot {
             }
         }
 
+        Dialog {
+            id: forgetDeviceDialog
+            property var deviceToForget: null
+            title: "Forget native phone?"
+            modal: true
+            standardButtons: Dialog.Ok | Dialog.Cancel
+            Label {
+                text: forgetDeviceDialog.deviceToForget
+                    ? "Remove trust for " + forgetDeviceDialog.deviceToForget.name + "?"
+                    : "Remove native phone trust?"
+                wrapMode: Text.WordWrap
+            }
+            onAccepted: {
+                if (deviceToForget)
+                    HandoverService.nativeAction(deviceToForget, "unpair");
+                deviceToForget = null;
+            }
+            onRejected: deviceToForget = null
+        }
+
         ColumnLayout {
             id: mainLayout
             anchors.fill: parent
@@ -76,6 +96,107 @@ ShellRoot {
                         flat: window.page !== modelData.key
                         highlighted: window.page === modelData.key
                         onClicked: window.page = modelData.key
+                    }
+                }
+            }
+
+            Rectangle {
+                id: deviceCard
+                Layout.fillWidth: true
+                implicitHeight: deviceColumn.implicitHeight + 24
+                radius: 8
+                color: "#303741"
+                visible: window.page === "overview"
+
+                ColumnLayout {
+                    id: deviceColumn
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 6
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Native phones"
+                        color: "#ffffff"
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+
+                    Repeater {
+                        model: window.appDevices
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: 3
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.name + " · "
+                                    + (modelData.connected ? "connected" : "offline")
+                                    + (modelData.paired ? " · paired" : " · not paired")
+                                color: "#f3f4f6"
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: {
+                                    const connectivity = modelData.connectivity;
+                                    if (!connectivity)
+                                        return "Network: unavailable";
+                                    return "Network: " + connectivity.transport
+                                        + (connectivity.metered ? " · metered" : " · unmetered")
+                                        + (connectivity.validated ? " · validated" : " · unvalidated");
+                                }
+                                color: "#b9c2cf"
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                Button {
+                                    text: "Ping"
+                                    enabled: modelData.connected && modelData.paired
+                                        && !HandoverService.nativePending
+                                    onClicked: HandoverService.nativeAction(modelData, "ping")
+                                }
+                                Button {
+                                    text: "Ring"
+                                    enabled: modelData.connected && modelData.paired
+                                        && !HandoverService.nativePending
+                                    onClicked: HandoverService.nativeAction(modelData, "ring")
+                                }
+                                Button {
+                                    text: "Forget"
+                                    enabled: modelData.paired && !HandoverService.nativePending
+                                    onClicked: {
+                                        forgetDeviceDialog.deviceToForget = modelData;
+                                        forgetDeviceDialog.open();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: HandoverService.nativeNotice
+                        color: HandoverService.nativeNotice.startsWith("Phone action")
+                            ? "#a7e3b5" : "#ffb4ab"
+                        visible: text.length > 0
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Screensaver inhibition is automatic while a native phone is connected."
+                        color: "#b9c2cf"
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Desktop media pauses automatically when a phone call starts."
+                        color: "#b9c2cf"
+                        wrapMode: Text.WordWrap
                     }
                 }
             }
