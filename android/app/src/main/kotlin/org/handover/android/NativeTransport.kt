@@ -25,6 +25,9 @@ import android.provider.MediaStore
 import android.provider.ContactsContract
 import android.util.Log
 import android.util.Base64
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -255,13 +258,7 @@ class NativeTransport(private val context: Context) {
                 item.put("emails", emails)
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
-                    val photo = runCatching {
-                        context.contentResolver.openInputStream(Uri.parse(photoUri))?.use { input ->
-                            val bytes = ByteArray(6 * 1024)
-                            val count = input.read(bytes)
-                            if (count > 0) Base64.encodeToString(bytes.copyOf(count), Base64.NO_WRAP) else null
-                        }
-                    }.getOrNull()
+                    val photo = encodeContactPhoto(Uri.parse(photoUri))
                     if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
                         item.put("photo", photo)
                 }
@@ -271,6 +268,26 @@ class NativeTransport(private val context: Context) {
         send(JSONObject().put("type", "contacts_sync").put("protocol", 1).put("contacts", contacts))
         return true
     }
+
+    private fun encodeContactPhoto(uri: Uri): String? = runCatching {
+        val bitmap = context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+            ?: return@runCatching null
+        val size = maxOf(bitmap.width, bitmap.height)
+        val scaled = if (size > 96) {
+            val scale = 96f / size
+            Bitmap.createScaledBitmap(
+                bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1), true,
+            )
+        } else bitmap
+        ByteArrayOutputStream().use { output ->
+            if (!scaled.compress(Bitmap.CompressFormat.JPEG, 70, output)) return@runCatching null
+            Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+        }.also {
+            if (scaled !== bitmap) scaled.recycle()
+            bitmap.recycle()
+        }
+    }.getOrNull()
 
     /** Never send notification content before the peer is authenticated. */
     fun publishNotification(notification: WireNotification) {
