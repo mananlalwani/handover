@@ -38,11 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update
-      - run: sudo add-apt-repository --yes ppa:avengemedia/danklinux
-      - run: sudo apt-get update
-      - run: sudo apt-get install --yes qt6-declarative-dev-tools quickshell
-      - run: >-
-          qmllint
-          -I /usr/lib/qt6/qml
-          -I /usr/lib/x86_64-linux-gnu/qt6/qml
-          quickshell/HandoverService.qml quickshell/example.qml
+      - run: sudo apt-get install --yes qt6-declarative-dev-tools
+      # qmllint checks syntax without requiring Quickshell's runtime package.
+      - run: qmllint quickshell/HandoverService.qml quickshell/example.qml
