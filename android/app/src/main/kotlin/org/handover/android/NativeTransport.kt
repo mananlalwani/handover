@@ -1,5 +1,6 @@
 package org.handover.android
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.ContentResolver
@@ -80,7 +81,7 @@ class NativeTransport(private val context: Context) {
     }
 
     fun start() {
-        transferExpiry.scheduleAtFixedRate({ expireTransfers() }, TRANSFER_SWEEP_MS,
+        transferExpiry.scheduleWithFixedDelay({ expireTransfers() }, TRANSFER_SWEEP_MS,
             TRANSFER_SWEEP_MS, TimeUnit.MILLISECONDS)
         serverFingerprint = preferences.getString(PIN_KEY, null)
         multicastLock.acquire()
@@ -543,6 +544,7 @@ class NativeTransport(private val context: Context) {
         }
     }
 
+    @SuppressLint("NewApi")
     private fun receivePublicDownload(
         input: BufferedInputStream, transferId: String, name: String, size: Long,
     ) {
@@ -732,13 +734,13 @@ class NativeTransport(private val context: Context) {
         return SSLContext.getInstance("TLSv1.3").apply { init(keyManagers, arrayOf(trust), SecureRandom()) }
     }
 
-    private fun pinnedTrustManager(pin: String?): X509TrustManager = object : X509TrustManager {
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
-            if (pin != null && (chain.isEmpty() || chain[0].fingerprint() != pin)) throw java.security.cert.CertificateException("server certificate pin mismatch")
-        }
-    }
+    private fun pinnedTrustManager(pin: String?): X509TrustManager =
+        // This is deliberately custom: the first pairing handshake has no CA
+        // trust anchor. It accepts only a non-empty, currently valid leaf for
+        // the user-visible pairing ceremony; every subsequent handshake is
+        // restricted to the stored certificate fingerprint. It never accepts
+        // an empty chain and never disables TLS verification for a paired peer.
+        PinnedIdentityTrustManager(pin)
 
     private fun peerFingerprint(): String? = (socket?.session?.peerCertificates?.firstOrNull() as? X509Certificate)?.fingerprint()
 

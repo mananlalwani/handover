@@ -1,5 +1,6 @@
 package org.handover.android
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.content.Context
 import android.os.Handler
@@ -14,6 +15,7 @@ import org.json.JSONObject
  * to the default TelephonyManager when subscription enumeration is unavailable.
  * No subscription identifiers, phone numbers, or call logs leave this class. */
 @Suppress("DEPRECATION")
+@SuppressLint("MissingPermission")
 class CallObserver(private val context: Context, private val publish: (JSONObject) -> Unit) {
     private val handler = Handler(Looper.getMainLooper())
     private val baseTelephony = context.getSystemService(TelephonyManager::class.java)

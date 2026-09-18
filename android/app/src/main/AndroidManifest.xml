@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission
+        android:name="org.handover.android.permission.TEST_CONTROL"
+        android:protectionLevel="signature" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -11,11 +14,16 @@
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/backup_rules"
+        android:fullBackupContent="@xml/backup_rules_legacy"
         android:label="Handover"
+        android:icon="@drawable/ic_handover"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
         android:theme="@style/Theme.Handover">
         <activity
             android:name=".MainActivity"
@@ -52,7 +60,8 @@
              actions only manage this app's own test notification. -->
         <receiver
             android:name=".TestNotificationReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="org.handover.android.permission.TEST_CONTROL">
             <intent-filter>
                 <action android:name="org.handover.android.TEST_REPLY" />
                 <action android:name="org.handover.android.TEST_POST" />

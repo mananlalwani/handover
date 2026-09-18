@@ -1,5 +1,6 @@
 package org.handover.android
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.ComponentName
 import android.content.pm.PackageManager
@@ -26,6 +27,10 @@ import android.view.View
 import java.text.DateFormat
 import java.util.Date
 
+// This compact control surface intentionally formats runtime state inline:
+// identity, permissions, and transfer metadata are not secrets and are not
+// logged or persisted by the activity.
+@SuppressLint("SetTextI18n", "InlinedApi", "UnspecifiedRegisterReceiverFlag", "GestureBackNavigation")
 class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
@@ -89,7 +94,7 @@ class MainActivity : android.app.Activity() {
 
     private fun startHandoverConnection() {
         val service = Intent(this, HandoverForegroundService::class.java)
-        if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+        startForegroundService(service)
         AppUpdater.clearReconnectNeeded(this)
         refreshStatus()
     }
@@ -117,14 +122,21 @@ class MainActivity : android.app.Activity() {
         pageHost.addView(page, LinearLayout.LayoutParams(-1, -2))
     }
 
-    @Suppress("DEPRECATION")
-    override fun onBackPressed() {
+    private fun handleBackNavigation() {
         val home = homePage
         if (home != null && pageHost.childCount > 0 && pageHost.getChildAt(0) !== home) {
             showPage(home)
         } else {
-            super.onBackPressed()
+            finish()
         }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+            handleBackNavigation()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
     private fun permissionLabel(permission: String): String =
         if (CallController.hasPermission(this, permission)) "granted" else "not granted"
@@ -301,7 +313,7 @@ class MainActivity : android.app.Activity() {
 
     override fun onStart() {
         super.onStart()
-        registerReceiver(pairReceiver, IntentFilter().apply {
+        val filter = IntentFilter().apply {
             addAction(NativeTransport.ACTION_PAIR_REQUEST)
             addAction(NativeTransport.ACTION_PAIRED)
             addAction(NativeTransport.ACTION_REVOKED)
@@ -309,7 +321,13 @@ class MainActivity : android.app.Activity() {
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
             addAction(NativeTransport.ACTION_TRANSFER_RESULT)
-        }, RECEIVER_NOT_EXPORTED)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(pairReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(pairReceiver, filter)
+        }
         AppUpdater.scanDownloads(this)
         refreshStatus()
         NativeTransport.pendingPairingCode(this)?.let(::showPairDialog)
@@ -352,6 +370,11 @@ class MainActivity : android.app.Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            ) { handleBackNavigation() }
+        }
         handleShareIntent(intent)
         if (android.os.Build.VERSION.SDK_INT >= 37 &&
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -683,7 +706,7 @@ class MainActivity : android.app.Activity() {
             .setMessage("Send to paired desktop $target?")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Send") { _, _ ->
-                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+                startForegroundService(service)
             }.show()
     }
 

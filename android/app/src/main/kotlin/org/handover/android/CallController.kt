@@ -1,5 +1,6 @@
 package org.handover.android
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -25,6 +26,7 @@ object CallController {
     }.getOrNull()
 
     @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission")
     fun place(context: Context, address: String): Result {
         if (!validCallAddress(address)) return rejected("invalid_address")
         if (!hasPermission(context, Manifest.permission.CALL_PHONE)) return rejected("permission_denied")
@@ -41,6 +43,7 @@ object CallController {
     }
 
     @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission")
     fun answer(context: Context): Result {
         if (!hasPermission(context, Manifest.permission.ANSWER_PHONE_CALLS)) return rejected("permission_denied")
         if (state(context) != TelephonyManager.CALL_STATE_RINGING) return rejected("wrong_phase")
@@ -51,12 +54,14 @@ object CallController {
     }
 
     @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission", "NewApi")
     fun hangup(context: Context, decline: Boolean = false): Result {
         val expected = if (decline) TelephonyManager.CALL_STATE_RINGING else TelephonyManager.CALL_STATE_OFFHOOK
         if (!hasPermission(context, Manifest.permission.ANSWER_PHONE_CALLS)) return rejected("permission_denied")
         if (state(context) != expected) return rejected("wrong_phase")
         return runCatching {
-            if (context.getSystemService(TelecomManager::class.java).endCall()) Result(true)
+            if (Build.VERSION.SDK_INT < 28) rejected("unsupported")
+            else if (context.getSystemService(TelecomManager::class.java).endCall()) Result(true)
             else rejected("rejected")
         }.getOrElse { rejected("rejected") }
     }

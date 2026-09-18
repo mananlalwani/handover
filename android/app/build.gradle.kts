@@ -9,7 +9,7 @@ android {
     defaultConfig {
         applicationId = "org.handover.android"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 9
         versionName = "0.2.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -10,6 +10,7 @@ import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import java.lang.ref.WeakReference
 import org.json.JSONObject
 
 /** Phone-side media state for the native backend.
@@ -48,7 +49,7 @@ class MediaObserver(private val context: Context) {
         }
 
     fun start() {
-        activeInstance = this
+        activeInstance = WeakReference(this)
         try {
             manager.addOnActiveSessionsChangedListener(sessionsListener, listenerComponent)
         } catch (error: SecurityException) {
@@ -62,7 +63,7 @@ class MediaObserver(private val context: Context) {
     }
 
     fun stop() {
-        if (activeInstance === this) activeInstance = null
+        if (activeInstance?.get() === this) activeInstance = null
         runCatching { manager.removeOnActiveSessionsChangedListener(sessionsListener) }
         synchronized(controllers) {
             controllers.forEach { (player, controller) ->
@@ -144,13 +145,12 @@ class MediaObserver(private val context: Context) {
 
     companion object {
         private const val TAG = "HandoverMedia"
-        @SuppressLint("StaticFieldLeak")
         @Volatile var transport: NativeTransport? = null
-        @Volatile private var activeInstance: MediaObserver? = null
+        @Volatile private var activeInstance: WeakReference<MediaObserver>? = null
 
         /** Push a sync from the current observer, if one is running. */
         fun activePushSync() {
-            activeInstance?.pushSync()
+            activeInstance?.get()?.pushSync()
         }
 
         const val MAX_PLAYER = 128
@@ -236,7 +236,7 @@ class MediaObserver(private val context: Context) {
         /** Execute one validated server command on the matching controller. */
         fun executeControl(player: String, action: String, positionMs: Long?): Boolean {
             if (!isValidPlayer(player) || !isValidCommand(action, positionMs)) return false
-            val observer = activeInstance ?: return false
+            val observer = activeInstance?.get() ?: return false
             val controller = synchronized(observer.controllers) {
                 observer.controllers[player]
             } ?: return false
