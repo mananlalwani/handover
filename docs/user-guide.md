@@ -124,6 +124,8 @@ phone, use "Send current clipboard to Linux". From Linux, use:
 
 ```sh
 handoverctl clipboard "Phone name" "text to put on the phone"
+# Or read the current Wayland clipboard:
+handoverctl clipboard "Phone name"
 ```
 
 The native path limits clipboard text to 32 KiB and does not store it in daemon

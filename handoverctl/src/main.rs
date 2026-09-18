@@ -51,7 +51,11 @@ enum Command {
         body: String,
     },
     /// Set the clipboard on one native phone
-    Clipboard { device: String, text: String },
+    Clipboard {
+        device: String,
+        /// Text to send. If omitted, read the current Wayland clipboard.
+        text: Option<String>,
+    },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
     /// Print current normalized call state for one device
@@ -229,7 +233,22 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn send_clipboard(selector: &str, text: String) -> Result<(), CliError> {
+async fn send_clipboard(selector: &str, text: Option<String>) -> Result<(), CliError> {
+    let text = match text {
+        Some(text) => text,
+        None => {
+            let output = std::process::Command::new("wl-paste")
+                .arg("--no-newline")
+                .output()?;
+            if !output.status.success() {
+                return Err(CliError::DeviceSelection(
+                    "could not read the Wayland clipboard".into(),
+                ));
+            }
+            String::from_utf8(output.stdout)
+                .map_err(|_| CliError::DeviceSelection("Wayland clipboard was not UTF-8".into()))?
+        }
+    };
     let mut client = connected_client().await?;
     let device = select_device(&client.devices().await?, selector)?;
     client.send_clipboard(device, text).await?;
