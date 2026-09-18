@@ -144,6 +144,7 @@ class MainActivity : android.app.Activity() {
         if (CallController.hasPermission(this, permission)) "granted" else "not granted"
 
     private fun refreshStatus() {
+        connectionState = HandoverForegroundService.connectionState()
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
         status.text = "Connection: ${connectionState.replaceFirstChar { it.uppercase() }}\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
         val listener = if (HandoverNotificationService.isEnabled(this)) "granted" else "not granted"

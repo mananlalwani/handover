@@ -87,6 +87,7 @@ class NativeTransport(private val context: Context) {
     @Volatile private var manualEndpoint = false
     @Volatile private var workerStarted = false
     @Volatile private var remoteClipboardHash: String? = null
+    @Volatile private var connectionStatus = "offline"
     private var clipboardListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
 
     /** Reconnects to the stored manual endpoint after a restart when already paired. */
@@ -154,6 +155,8 @@ class NativeTransport(private val context: Context) {
     }
 
     fun clipboardSyncEnabled(): Boolean = preferences.getBoolean(CLIPBOARD_SYNC_KEY, false)
+
+    fun connectionState(): String = connectionStatus
 
     private fun configureClipboardSync(enabled: Boolean) {
         val manager = context.getSystemService(android.content.ClipboardManager::class.java)
@@ -1094,6 +1097,9 @@ class NativeTransport(private val context: Context) {
     }
 
     private fun broadcast(action: String, payload: JSONObject) {
+        if (action == ACTION_CONNECTION_STATE) {
+            connectionStatus = payload.optString("state", "offline")
+        }
         context.sendBroadcast(Intent(action).putExtra(EXTRA_JSON, payload.toString()).setPackage(context.packageName))
     }
 

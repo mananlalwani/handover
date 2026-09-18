@@ -94,6 +94,7 @@ class HandoverForegroundService : Service() {
         fun sendClipboard() { activeTransport?.sendClipboardToLinux() }
         fun setClipboardSync(enabled: Boolean) { activeTransport?.setClipboardSync(enabled) }
         fun clipboardSyncEnabled(): Boolean = activeTransport?.clipboardSyncEnabled() == true
+        fun connectionState(): String = activeTransport?.connectionState() ?: "offline"
 
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"
