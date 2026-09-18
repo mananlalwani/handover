@@ -28,7 +28,8 @@ types (`crates/handover-core/src/messaging.rs`).
 ## Why a separate process
 
 `mautrix/gmessages` (`pkg/libgm`) is AGPL-3.0 with exceptions granted
-only to Beeper and Element (see `docs/research/google-messages-rcs.md`).
+only to Beeper and Element. The production adapter repository documents its
+upstream dependency and license terms.
 Linking, importing, FFI, or copying its sources (including generated
 protobuf) into Handover would place the combined work under AGPL-3.0 and
 end Handover's MIT licensing. An unmodified upstream binary driven over

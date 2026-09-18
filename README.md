@@ -15,6 +15,7 @@ commands, troubleshooting, privacy notes, and optional Google Messages setup.
 
 ## Project documentation
 
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) explains the public development workflow.
 - [`DESIGN.md`](DESIGN.md) describes the architecture and backend boundaries.
 - [`docs/gmessages-sidecar.md`](docs/gmessages-sidecar.md) defines the separate
   Google Messages helper contract.

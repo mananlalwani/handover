@@ -93,7 +93,7 @@ DNS-SD registration/discovery, reconnect attempts, and event-driven battery
 observation. Android lifecycle restarts and network changes recreate the
 connection from the persisted identity and allowlist; they do not bypass
 pairing. The API constraints and source links are recorded in
-[`docs/research/native-backend-apis.md`](docs/research/native-backend-apis.md).
+[`docs/native-backend-apis.md`](docs/native-backend-apis.md).
 
 KDE Connect remains optional and independent. Its disappearance removes only
 KDE-derived runtime entries; a native paired phone remains present and can
