@@ -70,11 +70,7 @@ address is also supported. Unpairing removes the local trust record and closes
 the connection on that endpoint.
 
 See [`docs/native-interop.md`](docs/native-interop.md) for protocol details,
-live verification history, and known native-backend limitations. Android
-security decisions are recorded in
-[`docs/android-security-review.md`](docs/android-security-review.md), and the
-latest lifecycle run is in
-[`docs/android-live-reliability-2026-09-17.md`](docs/android-live-reliability-2026-09-17.md).
+verification history, and known native-backend limitations.
 
 ## Clients and common commands
 
