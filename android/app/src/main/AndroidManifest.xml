@@ -84,7 +84,8 @@
             android:name=".HandoverDeviceAdminReceiver"
             android:description="@string/device_admin_description"
             android:exported="true"
-            android:label="Handover">
+            android:label="Handover"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
             <meta-data
                 android:name="android.app.device_admin"
                 android:resource="@xml/device_admin" />
