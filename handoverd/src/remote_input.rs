@@ -3,6 +3,16 @@ use std::process::{Command, Stdio};
 use handover_core::{RemoteInputAction, RemoteInputCommand};
 
 pub(crate) fn execute(command: &RemoteInputCommand) {
+    if matches!(command.action, RemoteInputAction::Type)
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && command_available("wtype")
+    {
+        let _ = Command::new("wtype")
+            .arg("--")
+            .arg(command.text.as_deref().unwrap_or_default())
+            .status();
+        return;
+    }
     let mut process = Command::new("xdotool");
     process
         .stdin(Stdio::null())
@@ -32,4 +42,16 @@ pub(crate) fn execute(command: &RemoteInputCommand) {
         }
     }
     let _ = process.status();
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new("sh")
+        .args([
+            "-c",
+            "command -v -- \"$1\" >/dev/null 2>&1",
+            "handover",
+            command,
+        ])
+        .status()
+        .is_ok_and(|status| status.success())
 }
