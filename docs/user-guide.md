@@ -80,6 +80,7 @@ Inspect notifications and media sessions:
 ```sh
 handoverctl notifications
 handoverctl media
+handoverctl contacts list
 ```
 
 Send a URL or file to one device selected by name or ID:
@@ -130,6 +131,10 @@ handoverctl clipboard "Phone name"
 
 The native path limits clipboard text to 32 KiB and does not store it in daemon
 state. KDE Connect may still provide its own background clipboard behavior.
+
+The Android app also provides presentation controls, a pointer pad, and Linux
+volume controls. These commands report acceptance of the request; they do not
+claim that the presentation or volume changed.
 
 ## Privacy and security
 

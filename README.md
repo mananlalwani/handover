@@ -41,6 +41,10 @@ KDE Connect backend, common commands, troubleshooting, and removal.
 - Supports phone-call actions where the phone and backend allow them.
 - Sends files and links to a phone.
 - Sends explicit desktop notifications to a native phone with `handoverctl notify`.
+- Supports an on-demand contacts snapshot, including phone numbers, emails, and photos.
+- Provides a phone presentation remote with slide and pointer controls.
+- Provides explicit phone controls for Linux volume up, down, and mute.
+- Supports explicit clipboard transfer in both directions.
 - Can ring or ping a connected native phone.
 - Reports the phone's active network transport.
 - Inhibits idle and sleep while a native phone is connected.
