@@ -1183,6 +1183,7 @@ fn normalize(raw: ExternalDevice) -> (Device, Option<InvalidExternalData>) {
             connected: raw.connected,
             paired: raw.paired,
             battery,
+            connectivity: None,
             capabilities,
         },
         warning,

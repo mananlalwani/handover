@@ -46,7 +46,29 @@ pub struct Device {
     pub connected: bool,
     pub paired: bool,
     pub battery: Option<BatteryState>,
+    #[serde(default)]
+    pub connectivity: Option<ConnectivityState>,
     pub capabilities: BTreeSet<Capability>,
+}
+
+/// Network state reported by the device. This describes the active transport,
+/// not reachability of the Handover session itself.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConnectivityState {
+    pub transport: ConnectivityTransport,
+    pub validated: bool,
+    pub metered: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectivityTransport {
+    Wifi,
+    Ethernet,
+    Cellular,
+    Bluetooth,
+    Other,
+    None,
 }
 
 /// The battery information most recently reported by a device.
@@ -100,6 +122,7 @@ pub enum BatteryStateError {
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     Battery,
+    Connectivity,
     FileTransfer,
     Media,
     Notifications,
@@ -566,6 +589,7 @@ mod tests {
             connected: true,
             paired: true,
             battery: Some(BatteryState::new(82, false).expect("valid battery state")),
+            connectivity: None,
             capabilities: BTreeSet::from([Capability::Battery]),
         };
 

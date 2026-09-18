@@ -443,6 +443,7 @@ mod tests {
             battery: percentage.map(|percentage| {
                 BatteryState::new(percentage, false).expect("test battery is valid")
             }),
+            connectivity: None,
             capabilities: BTreeSet::from([Capability::Battery]),
         }
     }

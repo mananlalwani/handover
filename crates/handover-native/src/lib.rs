@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 
 use handover_core::{
     BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
-    CallState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
-    MediaSession, MediaSessionId, Notification, NotificationAction, NotificationCommand,
-    NotificationEvent, NotificationId, PlaybackState, ReceivedShare, ShareFailure, ShareResult,
-    ShareStatus, SharedResource, StateEvent,
+    CallState, Capability, ConnectivityState, ConnectivityTransport, Device, DeviceEvent, DeviceId,
+    MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId, Notification,
+    NotificationAction, NotificationCommand, NotificationEvent, NotificationId, PlaybackState,
+    ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -115,6 +115,7 @@ struct Runtime {
     sessions: usize,
     connecting: BTreeSet<String>,
     batteries: BTreeMap<String, BatteryState>,
+    connectivity: BTreeMap<String, ConnectivityState>,
     // Native notification state, owned per paired peer. Keys are the Android
     // notification keys advertised as `local_id` in the normalized model.
     notif_enabled: BTreeMap<String, bool>,
@@ -179,6 +180,7 @@ impl Drop for Session<'_> {
                 .remove(&self.peer.id)
                 .unwrap_or_default();
             inner.media_enabled.remove(&self.peer.id);
+            inner.connectivity.remove(&self.peer.id);
             inner.pending_call_results.remove(&self.peer.id);
             let device_id = device(&self.peer, false, None, false, false).id;
             let mut removals: Vec<NotificationId> = removed_keys
@@ -331,6 +333,12 @@ enum Message {
         percentage: u8,
         charging: bool,
     },
+    Connectivity {
+        protocol: u32,
+        transport: ConnectivityTransport,
+        validated: bool,
+        metered: bool,
+    },
     // Phone-to-Linux notification state. `notification_post` upserts one
     // notification; `notification_removed` retracts it; `notifications_sync`
     // carries the phone's full current list so a (re)connect reconciles stale
@@ -451,6 +459,12 @@ enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         position_ms: Option<u64>,
     },
+    Ring {
+        protocol: u32,
+    },
+    UserPing {
+        protocol: u32,
+    },
     ShareUrl {
         protocol: u32,
         transfer_id: String,
@@ -490,6 +504,7 @@ impl Message {
             | Self::PairConfirm { protocol, .. }
             | Self::Paired { protocol }
             | Self::Battery { protocol, .. }
+            | Self::Connectivity { protocol, .. }
             | Self::NotificationPost { protocol, .. }
             | Self::NotificationRemoved { protocol, .. }
             | Self::NotificationsSync { protocol, .. }
@@ -506,6 +521,8 @@ impl Message {
             | Self::MediaSync { protocol, .. }
             | Self::MediaRequest { protocol }
             | Self::MediaControl { protocol, .. }
+            | Self::Ring { protocol }
+            | Self::UserPing { protocol }
             | Self::ShareUrl { protocol, .. }
             | Self::ShareFile { protocol, .. }
             | Self::ShareResult { protocol, .. }
@@ -548,6 +565,7 @@ impl NativeBackend {
                 sessions: 0,
                 connecting: BTreeSet::new(),
                 batteries: BTreeMap::new(),
+                connectivity: BTreeMap::new(),
                 notif_enabled: BTreeMap::new(),
                 notif_keys: BTreeMap::new(),
                 media_enabled: BTreeMap::new(),
@@ -639,6 +657,7 @@ impl NativeBackend {
             self.save_peers(&peers)?;
             inner.peers = peers;
             inner.batteries.remove(id);
+            inner.connectivity.remove(id);
         }
         inner.notif_enabled.remove(id);
         inner.notif_keys.remove(id);
@@ -801,6 +820,39 @@ impl NativeBackend {
             protocol: WIRE_VERSION,
         });
         true
+    }
+
+    /// Queue a user-visible liveness ping for a live native session.
+    pub fn ping(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        self.queue_simple(
+            peer_id,
+            Message::UserPing {
+                protocol: WIRE_VERSION,
+            },
+        )
+    }
+
+    /// Queue a request for the phone to ring and vibrate.
+    pub fn ring(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        self.queue_simple(
+            peer_id,
+            Message::Ring {
+                protocol: WIRE_VERSION,
+            },
+        )
+    }
+
+    fn queue_simple(&self, peer_id: &str, message: Message) -> Result<(), NativeCommandError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return Err(NativeCommandError::Offline);
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return Err(NativeCommandError::QueueFull);
+        }
+        queue.push(message);
+        Ok(())
     }
 
     /// Accept one share for a live paired peer. Delivery is asynchronous; a
@@ -1551,13 +1603,46 @@ impl NativeBackend {
                     let notifications_supported =
                         inner.notif_enabled.get(&id).copied().unwrap_or(false);
                     let media_supported = inner.media_enabled.get(&id).copied().unwrap_or(false);
-                    event(StateEvent::Device(DeviceEvent::Updated(device(
+                    let mut updated = device(
                         &peer,
                         true,
                         Some(battery),
                         notifications_supported,
                         media_supported,
-                    ))));
+                    );
+                    updated.connectivity = inner.connectivity.get(&id).copied();
+                    if updated.connectivity.is_some() {
+                        updated.capabilities.insert(Capability::Connectivity);
+                    }
+                    event(StateEvent::Device(DeviceEvent::Updated(updated)));
+                }
+                Ok(Message::Connectivity {
+                    protocol: WIRE_VERSION,
+                    transport,
+                    validated,
+                    metered,
+                }) => {
+                    last_received = Instant::now();
+                    let connectivity = ConnectivityState {
+                        transport,
+                        validated,
+                        metered,
+                    };
+                    let mut inner = self.inner.lock().unwrap();
+                    if !inner.peers.peers.contains_key(&id) {
+                        break;
+                    }
+                    inner.connectivity.insert(id.clone(), connectivity);
+                    let mut updated = device(
+                        &peer,
+                        true,
+                        inner.batteries.get(&id).cloned(),
+                        inner.notif_enabled.get(&id).copied().unwrap_or(false),
+                        inner.media_enabled.get(&id).copied().unwrap_or(false),
+                    );
+                    updated.connectivity = Some(connectivity);
+                    updated.capabilities.insert(Capability::Connectivity);
+                    event(StateEvent::Device(DeviceEvent::Updated(updated)));
                 }
                 Ok(Message::CallState {
                     protocol: WIRE_VERSION,
@@ -1824,6 +1909,7 @@ fn device(
         connected,
         paired: true,
         battery,
+        connectivity: None,
         capabilities,
     }
 }

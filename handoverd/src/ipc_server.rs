@@ -295,6 +295,14 @@ where
                 message: "native backend unavailable".into(),
             },
         },
+        Method::NativePing { id } => native_command_response(
+            native_backend().map(|native| native.ping(&id)),
+            "native ping",
+        ),
+        Method::NativeRing { id } => native_command_response(
+            native_backend().map(|native| native.ring(&id)),
+            "native ring",
+        ),
         Method::NativeCall {
             id,
             action,
@@ -504,6 +512,26 @@ where
     };
     write_json_line(writer, &ServerMessage::new(response)).await?;
     Ok(true)
+}
+
+fn native_command_response(
+    result: Option<Result<(), handover_native::NativeCommandError>>,
+    operation: &str,
+) -> ServerPayload {
+    match result {
+        Some(Ok(())) => ServerPayload::NativeAccepted,
+        Some(Err(error)) => ServerPayload::Error {
+            code: match error {
+                handover_native::NativeCommandError::Offline => ErrorCode::DeviceDisconnected,
+                handover_native::NativeCommandError::QueueFull => ErrorCode::BackendRejected,
+            },
+            message: format!("{operation} was not accepted"),
+        },
+        None => ServerPayload::Error {
+            code: ErrorCode::BackendUnavailable,
+            message: "native backend unavailable".into(),
+        },
+    }
 }
 
 async fn handle_media_command<W>(
@@ -1804,6 +1832,7 @@ mod tests {
             connected: true,
             paired: true,
             battery: Some(BatteryState::new(percentage, false).expect("valid battery")),
+            connectivity: None,
             capabilities: BTreeSet::from([Capability::Battery]),
         }
     }
@@ -2060,6 +2089,7 @@ mod tests {
             connected: true,
             paired: true,
             battery: None,
+            connectivity: None,
             capabilities: BTreeSet::from([
                 handover_core::Capability::Battery,
                 handover_core::Capability::Media,
@@ -2580,6 +2610,7 @@ mod messaging_live_tests {
             battery: Some(
                 handover_core::BatteryState::new(percentage, false).expect("valid battery"),
             ),
+            connectivity: None,
             capabilities: std::collections::BTreeSet::from([handover_core::Capability::Battery]),
         }
     }
@@ -3141,6 +3172,7 @@ mod messaging_failure_tests {
                 connected: true,
                 paired: true,
                 battery: Some(BatteryState::new(72, false).expect("valid")),
+                connectivity: None,
                 capabilities: BTreeSet::from([Capability::Battery]),
             })));
         let (_directory, path, task) = server_without_helper(state).await;

@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.IBinder
 
 /** Owns the native transport while the user has enabled Handover connectivity. */
@@ -13,12 +15,23 @@ class HandoverForegroundService : Service() {
     private lateinit var batteryObserver: BatteryObserver
     private lateinit var mediaObserver: MediaObserver
     private lateinit var transport: NativeTransport
+    private lateinit var connectivityManager: ConnectivityManager
+    private lateinit var connectivityCallback: ConnectivityManager.NetworkCallback
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, notification())
         transport = NativeTransport(applicationContext)
+        connectivityManager = getSystemService(ConnectivityManager::class.java)
+        connectivityCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = transport.publishConnectivity()
+            override fun onLost(network: Network) = transport.publishConnectivity()
+            override fun onCapabilitiesChanged(network: Network, capabilities: android.net.NetworkCapabilities) {
+                transport.publishConnectivity()
+            }
+        }
+        connectivityManager.registerDefaultNetworkCallback(connectivityCallback)
         activeTransport = transport
         HandoverNotificationService.transport = transport
         MediaObserver.transport = transport
@@ -44,6 +57,7 @@ class HandoverForegroundService : Service() {
     override fun onDestroy() {
         batteryObserver.stop()
         mediaObserver.stop()
+        connectivityManager.unregisterNetworkCallback(connectivityCallback)
         if (activeTransport === transport) activeTransport = null
         transport.stop()
         if (HandoverNotificationService.transport === transport) {

@@ -40,6 +40,11 @@ KDE Connect backend, common commands, troubleshooting, and removal.
 - Controls media playing on the phone.
 - Supports phone-call actions where the phone and backend allow them.
 - Sends files and links to a phone.
+- Can ring or ping a connected native phone.
+- Reports the phone's active network transport.
+- Inhibits idle and sleep while a native phone is connected.
+- Pauses local MPRIS players when a phone call becomes active, when `playerctl`
+  is installed.
 - Provides a Quickshell example panel.
 
 Clipboard synchronization is currently provided by the optional KDE Connect

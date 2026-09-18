@@ -58,6 +58,10 @@ pub enum Method {
     NativePair { id: String, code: String },
     #[serde(rename = "native.unpair")]
     NativeUnpair { id: String },
+    #[serde(rename = "native.ping")]
+    NativePing { id: String },
+    #[serde(rename = "native.ring")]
+    NativeRing { id: String },
     #[serde(rename = "calls.control")]
     CallsControl {
         device_id: DeviceId,
@@ -665,6 +669,22 @@ impl Client {
         }
     }
 
+    pub async fn native_ping(&mut self, id: String) -> Result<(), IpcError> {
+        self.send(Method::NativePing { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_ring(&mut self, id: String) -> Result<(), IpcError> {
+        self.send(Method::NativeRing { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     pub async fn call_control(
         &mut self,
         device_id: DeviceId,
@@ -1131,6 +1151,7 @@ mod tests {
             connected: true,
             paired: true,
             battery: Some(BatteryState::new(76, false).expect("valid battery")),
+            connectivity: None,
             capabilities: BTreeSet::from([Capability::Battery]),
         }
     }

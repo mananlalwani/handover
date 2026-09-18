@@ -3,15 +3,17 @@ mod ipc_server;
 mod messaging;
 mod messaging_backend;
 mod messaging_cache;
+mod screensaver;
 mod state;
 
-use std::sync::OnceLock;
+use std::collections::BTreeSet;
+use std::sync::{Mutex, OnceLock};
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use handover_core::{
-    DeviceEvent, DeviceId, MediaEvent, NotificationEvent, SharedResource, StateEvent,
+    CallEvent, DeviceEvent, DeviceId, MediaEvent, NotificationEvent, SharedResource, StateEvent,
 };
 use handover_kdeconnect::KdeConnectBackend;
 use handover_native::NativeBackend;
@@ -24,6 +26,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 static NATIVE: OnceLock<NativeBackend> = OnceLock::new();
+static ACTIVE_CALLS: Mutex<BTreeSet<DeviceId>> = Mutex::new(BTreeSet::new());
 
 pub(crate) fn native_backend() -> Option<&'static NativeBackend> {
     NATIVE.get()
@@ -96,6 +99,7 @@ async fn main() {
     // outlive the daemon. An unclean kill can still orphan the helper; the
     // next supervisor generation replaces it on restart.
     messaging_hub.shutdown().await;
+    screensaver::update(false);
     tokio::time::sleep(Duration::from_millis(300)).await;
     info!("handoverd stopped");
 }
@@ -139,6 +143,22 @@ fn apply_backend_event(
     events: &broadcast::Sender<StateEvent>,
     event: StateEvent,
 ) {
+    let call_started = match &event {
+        StateEvent::Call(CallEvent::Updated(call))
+            if call.phase == handover_core::CallPhase::OffHook =>
+        {
+            ACTIVE_CALLS.lock().unwrap().insert(call.device_id.clone())
+        }
+        StateEvent::Call(CallEvent::Updated(call)) => {
+            ACTIVE_CALLS.lock().unwrap().remove(&call.device_id);
+            false
+        }
+        StateEvent::Call(CallEvent::Removed(id)) => {
+            ACTIVE_CALLS.lock().unwrap().remove(id);
+            false
+        }
+        _ => false,
+    };
     let media_device = match &event {
         StateEvent::Device(DeviceEvent::Removed(id)) => Some(id),
         StateEvent::Device(DeviceEvent::Updated(device)) if !device.connected || !device.paired => {
@@ -181,6 +201,30 @@ fn apply_backend_event(
         if messaging_event && let Err(error) = messaging_cache::persist(state) {
             warn!(%error, "could not persist messaging cache");
         }
+    }
+    let native_connected = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .snapshot()
+        .devices
+        .iter()
+        .any(|device| is_native_device(&device.id) && device.connected && device.paired);
+    screensaver::update(native_connected);
+    if call_started {
+        pause_desktop_media();
+    }
+}
+
+fn pause_desktop_media() {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async {
+            // playerctl talks to the local MPRIS session, unlike the Handover
+            // media map, which describes remote phone players.
+            let _ = tokio::process::Command::new("playerctl")
+                .args(["--all-players", "pause"])
+                .output()
+                .await;
+        });
     }
 }
 
@@ -390,6 +434,7 @@ mod native_coexistence_tests {
             connected: true,
             paired: true,
             battery: None,
+            connectivity: None,
             capabilities,
         }
     }
@@ -465,6 +510,7 @@ mod native_coexistence_tests {
                     connected: true,
                     paired: true,
                     battery: None,
+                    connectivity: None,
                     capabilities: [Capability::Battery].into(),
                 })),
             );

@@ -60,11 +60,11 @@ encrypts the stream; the stored certificate fingerprint supplies the pairing
 decision. Discovery addresses and TXT values are treated as untrusted hints.
 The application protocol uses a four-byte big-endian length followed by a
 versioned JSON message, with a 64 KiB maximum frame. The native messages are
-`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `notification_post`,
+`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `connectivity`, `notification_post`,
 `notification_removed`, `notifications_sync`, `notifications_request`,
 `notification_dismiss`, `notification_reply`, `notification_action`,
 `media_post`, `media_removed`, `media_sync`, `media_request`, `media_control`,
-`revoke`, `ping`, and `pong`.
+`revoke`, `ring`, `user_ping`, `ping`, and `pong`.
 An Android `hello` may include the previously trusted server ID. If Linux has
 revoked that phone, it replies with `revoke` so Android clears its stale pin
 before presenting a new pairing request.

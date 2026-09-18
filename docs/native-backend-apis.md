@@ -72,7 +72,8 @@ must tolerate stale, duplicated, renamed, or malicious advertisements.
 ## Scope boundary
 
 These APIs support persistent identities, explicit pairing, authenticated TLS,
-LAN discovery/reconnection, peer revocation, presence, and battery reporting.
+LAN discovery/reconnection, peer revocation, presence, battery reporting, and
+network transport reporting.
 The notification-listener service (`NotificationListenerService`) supplies the
 platform notification stream for the native notification path: posted/removed
 callbacks, `activeNotifications` snapshots on connect, `cancelNotification`

@@ -60,6 +60,14 @@ enum NativeCommand {
     Unpair {
         id: String,
     },
+    /// Send a user-visible liveness ping
+    Ping {
+        id: String,
+    },
+    /// Ring and vibrate the phone
+    Ring {
+        id: String,
+    },
     Call {
         id: String,
         action: String,
@@ -211,6 +219,14 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
         NativeCommand::Unpair { id } => {
             client.native_unpair(id).await?;
             println!("Native peer revoked");
+        }
+        NativeCommand::Ping { id } => {
+            client.native_ping(id).await?;
+            println!("Ping accepted; phone response is not guaranteed");
+        }
+        NativeCommand::Ring { id } => {
+            client.native_ring(id).await?;
+            println!("Ring accepted; effect is not confirmed");
         }
         NativeCommand::Call {
             id,
@@ -1085,6 +1101,7 @@ mod tests {
             connected: true,
             paired: true,
             battery: Some(BatteryState::new(55, false).expect("valid battery")),
+            connectivity: None,
             capabilities: BTreeSet::from([Capability::Battery]),
         };
 
@@ -1102,6 +1119,7 @@ mod tests {
             connected: true,
             paired: true,
             battery: None,
+            connectivity: None,
             capabilities: BTreeSet::new(),
         };
         let second = Device {

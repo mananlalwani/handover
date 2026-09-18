@@ -6,13 +6,20 @@ import android.content.Intent
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.media.RingtoneManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.Handler
+import android.os.Looper
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
@@ -168,6 +175,25 @@ class NativeTransport(private val context: Context) {
         if (serverFingerprint == null) return
         send(JSONObject().put("type", "battery").put("protocol", 1)
             .put("percentage", reading.percentage).put("charging", reading.charging))
+    }
+
+    fun publishConnectivity() {
+        if (serverFingerprint == null) return
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val network = manager.activeNetwork
+        val capabilities = network?.let(manager::getNetworkCapabilities)
+        val transport = when {
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "ethernet"
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "cellular"
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) == true -> "bluetooth"
+            capabilities != null -> "other"
+            else -> "none"
+        }
+        send(JSONObject().put("type", "connectivity").put("protocol", 1)
+            .put("transport", transport)
+            .put("validated", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
+            .put("metered", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true))
     }
 
     /** Never send notification content before the peer is authenticated. */
@@ -385,6 +411,7 @@ class NativeTransport(private val context: Context) {
                 preferences.edit().remove(PENDING_CODE_KEY).apply()
                 broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
                 sendBattery()
+                publishConnectivity()
                 // Proactively share the current notification list; the server
                 // also requests it, so a lost frame is recovered on request.
                 HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
@@ -401,6 +428,8 @@ class NativeTransport(private val context: Context) {
                 socket?.close()
             }
             "battery_request" -> sendBattery()
+            "ring" -> ringPhone()
+            "user_ping" -> ringPhone()
             "notifications_request" -> {
                 if (serverFingerprint == null) return
                 HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
@@ -500,6 +529,21 @@ class NativeTransport(private val context: Context) {
                 if (!isTransferId(transferId)) { socket?.close(); return }
                 receiveFile(input, transferId, name, size)
             }
+        }
+    }
+
+    private fun ringPhone() {
+        if (serverFingerprint == null) return
+        val ringtone = RingtoneManager.getRingtone(
+            context,
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+        )
+        ringtone?.play()
+        Handler(Looper.getMainLooper()).postDelayed({ ringtone?.stop() }, 4_000)
+        val vibrator = context.getSystemService(Vibrator::class.java)
+        if (vibrator?.hasVibrator() == true) {
+            val effect = VibrationEffect.createOneShot(1200, VibrationEffect.DEFAULT_AMPLITUDE)
+            vibrator.vibrate(effect)
         }
     }
 
