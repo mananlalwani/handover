@@ -1002,20 +1002,20 @@ ShellRoot {
                                     required property var modelData
                                     property var messageData: modelData
                                     width: modernMessageList.width
-                                    height: bubble.implicitHeight + 4
+                                    height: modernBubble.implicitHeight + 4
                                     Rectangle {
                                         id: bubbleBackground
                                         anchors.left: modelData.sender.is_self ? undefined : parent.left
                                         anchors.right: modelData.sender.is_self ? parent.right : undefined
                                         width: Math.min(parent.width * 0.78, 500)
-                                        height: bubble.implicitHeight
+                                        height: modernBubble.implicitHeight
                                         radius: 14
                                         color: modelData.transport === "sms"
                                             ? (modelData.sender.is_self ? "#765126" : "#493a2b")
                                             : (modelData.sender.is_self ? "#28649b" : "#2a3442")
                                     }
                                     ColumnLayout {
-                                        id: bubble
+                                        id: modernBubble
                                         anchors.left: modelData.sender.is_self ? undefined : parent.left
                                         anchors.right: modelData.sender.is_self ? parent.right : undefined
                                         width: Math.min(parent.width * 0.78, 500)
