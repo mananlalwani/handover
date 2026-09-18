@@ -395,38 +395,30 @@ where
                 },
             }
         }
-        Method::ClipboardSendCurrent { device_id } => {
-            match tokio::process::Command::new("wl-paste")
-                .arg("--no-newline")
-                .output()
-                .await
-            {
-                Ok(output) if output.status.success() => {
-                    let text = String::from_utf8(output.stdout).unwrap_or_default();
-                    let peer_id = device_id
-                        .as_str()
-                        .strip_prefix("native:")
-                        .unwrap_or_default();
-                    match native_backend()
-                        .map(|native| native.clipboard_set(peer_id, &text, None, None))
-                    {
-                        Some(Ok(())) => ServerPayload::NativeAccepted,
-                        Some(Err(_)) => ServerPayload::Error {
-                            code: ErrorCode::BackendRejected,
-                            message: "clipboard was not accepted".into(),
-                        },
-                        None => ServerPayload::Error {
-                            code: ErrorCode::BackendUnavailable,
-                            message: "native backend unavailable".into(),
-                        },
-                    }
+        Method::ClipboardSendCurrent { device_id } => match read_wayland_clipboard().await {
+            Ok((text, html, uri)) => {
+                let peer_id = device_id
+                    .as_str()
+                    .strip_prefix("native:")
+                    .unwrap_or_default();
+                match native_backend().map(|native| native.clipboard_set(peer_id, &text, html, uri))
+                {
+                    Some(Ok(())) => ServerPayload::NativeAccepted,
+                    Some(Err(_)) => ServerPayload::Error {
+                        code: ErrorCode::BackendRejected,
+                        message: "clipboard was not accepted".into(),
+                    },
+                    None => ServerPayload::Error {
+                        code: ErrorCode::BackendUnavailable,
+                        message: "native backend unavailable".into(),
+                    },
                 }
-                _ => ServerPayload::Error {
-                    code: ErrorCode::BackendRejected,
-                    message: "could not read the Wayland clipboard".into(),
-                },
             }
-        }
+            _ => ServerPayload::Error {
+                code: ErrorCode::BackendRejected,
+                message: "could not read the Wayland clipboard".into(),
+            },
+        },
         Method::ContactsList => ServerPayload::Contacts {
             contacts: snapshot(state).contacts,
         },
@@ -623,6 +615,55 @@ where
     };
     write_json_line(writer, &ServerMessage::new(response)).await?;
     Ok(true)
+}
+
+async fn read_wayland_clipboard() -> Result<(String, Option<String>, Option<String>), ()> {
+    let types = tokio::process::Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .await
+        .map_err(|_| ())?;
+    if !types.status.success() {
+        return Err(());
+    }
+    let types = String::from_utf8(types.stdout).map_err(|_| ())?;
+    let selected = types
+        .lines()
+        .find(|mime| *mime == "text/html")
+        .or_else(|| types.lines().find(|mime| *mime == "text/uri-list"));
+    let output = tokio::process::Command::new("wl-paste")
+        .args(["--no-newline"])
+        .args(
+            selected
+                .map(|mime| ["--type", mime])
+                .unwrap_or(["--type", "text/plain"]),
+        )
+        .output()
+        .await
+        .map_err(|_| ())?;
+    if !output.status.success() {
+        return Err(());
+    }
+    let value = String::from_utf8(output.stdout).map_err(|_| ())?;
+    match selected {
+        Some("text/html") => Ok((strip_html_text(&value), Some(value), None)),
+        Some("text/uri-list") => Ok((value.clone(), None, Some(value))),
+        _ => Ok((value, None, None)),
+    }
+}
+
+fn strip_html_text(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for character in html.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(character),
+            _ => {}
+        }
+    }
+    text
 }
 
 fn native_command_response(

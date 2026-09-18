@@ -805,11 +805,21 @@ impl Client {
         device_id: DeviceId,
         text: String,
     ) -> Result<(), IpcError> {
+        self.send_clipboard_rich(device_id, text, None, None).await
+    }
+
+    pub async fn send_clipboard_rich(
+        &mut self,
+        device_id: DeviceId,
+        text: String,
+        html: Option<String>,
+        uri: Option<String>,
+    ) -> Result<(), IpcError> {
         self.send(Method::ClipboardSend {
             device_id,
             text,
-            html: None,
-            uri: None,
+            html,
+            uri,
         })
         .await?;
         match self.receive().await?.payload {
