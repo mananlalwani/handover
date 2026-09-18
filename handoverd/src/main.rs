@@ -155,6 +155,10 @@ fn apply_backend_event(
     if let StateEvent::Clipboard(text) = &event {
         clipboard::apply(text);
     }
+    if let StateEvent::ClipboardFile(file) = &event {
+        clipboard::apply_file(&file.path, &file.mime);
+        let _ = std::fs::remove_file(&file.path);
+    }
     let call_started = match &event {
         StateEvent::Call(CallEvent::Updated(call))
             if call.phase == handover_core::CallPhase::OffHook =>

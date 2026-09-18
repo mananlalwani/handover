@@ -1,4 +1,6 @@
+use std::fs::File;
 use std::io::Write;
+use std::io::copy;
 use std::process::{Command, Stdio};
 
 use handover_core::ClipboardText;
@@ -23,6 +25,23 @@ pub(crate) fn apply(text: &ClipboardText) {
     };
     if let Some(stdin) = child.stdin.as_mut() {
         let _ = stdin.write_all(value.as_bytes());
+    }
+    let _ = child.wait();
+}
+
+pub(crate) fn apply_file(path: &str, mime: &str) {
+    let mut child = match Command::new("wl-copy")
+        .args(["--type", mime])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return,
+    };
+    if let (Ok(mut input), Some(stdin)) = (File::open(path), child.stdin.as_mut()) {
+        let _ = copy(&mut input, stdin);
     }
     let _ = child.wait();
 }

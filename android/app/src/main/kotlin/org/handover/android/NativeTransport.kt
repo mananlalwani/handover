@@ -268,11 +268,39 @@ class NativeTransport(private val context: Context) {
         if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return false
         val html = item.htmlText
         val uri = item.uri?.toString()
+        val mime = clip.description?.getMimeType(0)
+        if (uri != null && mime != null && !mime.startsWith("text/"))
+            return sendClipboardFile(item.uri!!, mime)
         send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text).apply {
             if (!html.isNullOrEmpty()) put("html", html)
             if (!uri.isNullOrEmpty()) put("uri", uri)
         })
         return true
+    }
+
+    private fun sendClipboardFile(uri: Uri, mime: String): Boolean {
+        if (serverFingerprint == null || socket?.isClosed != false || output == null) return false
+        val metadata = runCatching { fileMetadata(context.contentResolver, uri, null) }.getOrNull() ?: return false
+        if (metadata.second > 10 * 1024 * 1024) return false
+        return enqueue {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    writeNow(JSONObject().put("type", "clipboard_file").put("protocol", 1)
+                        .put("name", metadata.first).put("size", metadata.second).put("mime", mime))
+                    val buffer = ByteArray(STREAM_BUFFER_BYTES)
+                    var remaining = metadata.second
+                    while (remaining > 0) {
+                        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                        if (count <= 0) throw java.io.EOFException("clipboard changed while reading")
+                        synchronized(outputLock) { output?.write(buffer, 0, count) ?: throw java.io.IOException("disconnected") }
+                        remaining -= count
+                    }
+                    synchronized(outputLock) { output?.flush() ?: throw java.io.IOException("disconnected") }
+                } ?: throw java.io.FileNotFoundException(uri.toString())
+            } catch (_: Exception) {
+                socket?.close()
+            }
+        }
     }
 
     fun requestContactsSync(): Boolean {

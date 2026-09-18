@@ -175,6 +175,13 @@ pub struct ClipboardText {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ClipboardFile {
+    pub device_id: DeviceId,
+    pub path: String,
+    pub mime: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Contact {
     pub device_id: DeviceId,
     pub local_id: String,
@@ -384,6 +391,7 @@ pub enum StateEvent {
     Presentation(PresentationCommand),
     Volume(VolumeCommand),
     Clipboard(ClipboardText),
+    ClipboardFile(ClipboardFile),
     Contacts(ContactsEvent),
 }
 

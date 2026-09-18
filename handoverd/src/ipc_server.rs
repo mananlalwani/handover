@@ -1607,6 +1607,10 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
             ErrorCode::BackendRejected,
             "clipboard changes are not broadcast to desktop clients",
         ),
+        StateEvent::ClipboardFile(_) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "clipboard changes are not broadcast to desktop clients",
+        ),
     }
 }
 

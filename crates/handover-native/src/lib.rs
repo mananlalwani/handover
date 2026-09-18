@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use handover_core::{
     BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
-    CallState, Capability, ClipboardText, ConnectivityState, ConnectivityTransport, Contact,
-    ContactsEvent, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
+    CallState, Capability, ClipboardFile, ClipboardText, ConnectivityState, ConnectivityTransport,
+    Contact, ContactsEvent, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
     MediaSession, MediaSessionId, Notification, NotificationAction, NotificationCommand,
     NotificationEvent, NotificationId, PlaybackState, PresentationAction, PresentationCommand,
     ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
@@ -407,6 +407,12 @@ enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uri: Option<String>,
     },
+    ClipboardFile {
+        protocol: u32,
+        name: String,
+        size: u64,
+        mime: String,
+    },
     NotificationDismiss {
         protocol: u32,
         key: String,
@@ -571,6 +577,7 @@ impl Message {
             | Self::ContactsSync { protocol, .. }
             | Self::ClipboardPost { protocol, .. }
             | Self::ClipboardSet { protocol, .. }
+            | Self::ClipboardFile { protocol, .. }
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
@@ -1922,6 +1929,23 @@ impl NativeBackend {
                             uri,
                         }));
                     }
+                }
+                Ok(Message::ClipboardFile {
+                    protocol: WIRE_VERSION,
+                    name,
+                    size,
+                    mime,
+                }) => {
+                    if size > 10 * 1024 * 1024 || name.len() > 255 || mime.len() > 128 {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    let path = self.receive_share_file(&mut tls, &name, size)?;
+                    event(StateEvent::ClipboardFile(ClipboardFile {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        path: path.to_string_lossy().into_owned(),
+                        mime,
+                    }));
+                    last_received = Instant::now();
                 }
                 Ok(Message::NotificationPost {
                     protocol: WIRE_VERSION,

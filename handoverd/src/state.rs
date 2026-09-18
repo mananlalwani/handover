@@ -63,6 +63,10 @@ impl StateStore {
                 changed: false,
                 changes: Vec::new(),
             },
+            StateEvent::ClipboardFile(_) => ApplyOutcome {
+                changed: false,
+                changes: Vec::new(),
+            },
         }
     }
 
