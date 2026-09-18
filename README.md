@@ -7,21 +7,21 @@ views from daemon snapshots.
 
 ## Components
 
-- **`handoverd`** — daemon, normalized state model, backend supervision, and
+- **`handoverd`.** The daemon owns normalized state, backend supervision, and
   Unix-socket IPC.
-- **`handoverctl`** — one-shot inspection and control CLI.
-- **Quickshell example** — disposable reference client in `quickshell/`.
-- **Android companion** — native authenticated transport plus notification,
+- **`handoverctl`.** The CLI performs one-shot inspection and control.
+- **Quickshell example.** A disposable reference client in `quickshell/`.
+- **Android companion.** It provides the native authenticated transport plus notification,
   media, call, and share integrations under `android/`.
-- **KDE Connect backend** — current compatibility backend; its D-Bus details
+- **KDE Connect backend.** It is the current compatibility backend. Its D-Bus details
   stay below Handover's public model.
 - **[Google Messages adapter](https://github.com/mananlalwani/handover-gmessages)**
-  — separate AGPL-licensed production relay. It communicates with Handover
+  is a separate AGPL-licensed production relay. It communicates with Handover
   through the coarse helper IPC contract; it is not vendored here.
 
 Native Android currently provides authenticated presence, battery, notifications,
 media, calls, and shares. KDE Connect remains the compatibility path for
-features not yet migrated to the native backend.
+capabilities not yet migrated to the native backend.
 
 ## Install and run
 

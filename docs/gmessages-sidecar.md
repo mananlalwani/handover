@@ -48,9 +48,9 @@ stays MIT. For that reason:
 
 Defined in `crates/handover-gmessages/src/contract.rs`
 (`HELPER_PROTOCOL = 1`). Daemon commands: `hello`, `login` (one-way
-credential bundle, base64, piped — never argv), `logout`,
+credential bundle, base64, piped, never argv), `logout`,
 `list_conversations`, `fetch_history`, `send_text`, `send_media`,
-`react`, `mark_read`, `typing` (start only — upstream cannot send
+`react`, `mark_read`, `typing` (start only; upstream cannot send
 typing-stop, so no stop command exists), `delete_message`,
 `open_conversation`, `sync`, `shutdown`. Helper events: `hello`,
 `account`, `account_removed`, `pairing` (opaque human-readable prompt),
