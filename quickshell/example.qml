@@ -626,11 +626,11 @@ ShellRoot {
                     return conversation.title;
                 const others = conversation.participants.filter(item => !item.is_self);
                 return others.map(item =>
-                    item.display_name || item.address || item.local_id).join(", ");
+                    HandoverService.contactLabel(item)).join(", ");
             }
 
             function senderLabel(sender) {
-                return sender.display_name || sender.address || sender.local_id;
+                return HandoverService.contactLabel(sender);
             }
 
             function messageTimestamp(message) {

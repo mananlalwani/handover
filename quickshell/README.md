@@ -69,3 +69,5 @@ Quickshell's `NotificationServer`.
 
 `refreshContacts()` reads the contacts snapshot held by the daemon. `syncContacts(device)` asks
 one connected native phone for a fresh snapshot. Android must grant Contacts access first.
+The Messages view uses matching phone numbers and email addresses from that snapshot for
+conversation and sender names.

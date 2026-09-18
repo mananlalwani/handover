@@ -35,6 +35,27 @@ Singleton {
         }
         return sendRequest("contacts.sync", { device_id: device.id });
     }
+
+    function contactForParticipant(participant) {
+        if (!participant)
+            return null;
+        const address = String(participant.address || "").trim();
+        if (!address)
+            return null;
+        const normalized = address.replace(/[^0-9]/g, "");
+        const email = address.toLowerCase();
+        return contacts.find(contact =>
+            (normalized.length > 0 && (contact.phones || []).some(phone =>
+                String(phone).replace(/[^0-9]/g, "") === normalized))
+            || (email.includes("@") && (contact.emails || []).some(candidate =>
+                String(candidate).toLowerCase() === email))) || null;
+    }
+
+    function contactLabel(participant) {
+        const contact = contactForParticipant(participant);
+        return contact ? contact.display_name
+            : (participant.display_name || participant.address || participant.local_id);
+    }
     property var lastReceivedShare: null
     property var lastShareResult: null
     property string lastError: ""
