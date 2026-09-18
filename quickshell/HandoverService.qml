@@ -379,6 +379,18 @@ Singleton {
         return true;
     }
 
+    function sendClipboard(device, text) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        if (!text || text.length === 0 || text.length > 32768) {
+            lastError = "clipboard text must be between 1 and 32 KiB";
+            return false;
+        }
+        return sendRequest("clipboard.send", { device_id: device.id, text: text });
+    }
+
     function mediaCommand(session, action, value) {
         if (!session || !session.id || !action)
             return false;
