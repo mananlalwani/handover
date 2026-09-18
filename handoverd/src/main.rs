@@ -175,6 +175,13 @@ fn apply_backend_event(
         _ => None,
     };
     if let Some(device_id) = media_device {
+        if is_native_device(device_id) {
+            apply_backend_event(
+                state,
+                events,
+                StateEvent::Contacts(handover_core::ContactsEvent::Removed(device_id.clone())),
+            );
+        }
         apply_backend_event(
             state,
             events,

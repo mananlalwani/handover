@@ -10,6 +10,7 @@ connects directly to `$XDG_RUNTIME_DIR/handover/handoverd.sock`; it does not run
 - `notifications`: current active phone notifications
 - `mediaSessions`: current remote media sessions, including metadata, playback
   state, and supported controls
+- `contacts`: the latest on-demand native contacts snapshot
 - `connected`: whether the daemon socket is connected
 - `lastError`: the most recent connection or protocol error
 - `lastReceivedShare`: the most recent transient incoming file/URL event in this shell instance
@@ -65,3 +66,6 @@ card, and one phone notification card. Repliable notifications have a text
 field and clearable notifications have a Dismiss button. The cards are
 intentionally not a full media or notification center and do not take over
 Quickshell's `NotificationServer`.
+
+`refreshContacts()` reads the contacts snapshot held by the daemon. `syncContacts(device)` asks
+one connected native phone for a fresh snapshot. Android must grant Contacts access first.

@@ -17,11 +17,23 @@ Singleton {
     property var notifications: []
     property var mediaSessions: []
     property var calls: []
+    property var contacts: []
     property var callAudio: null
     property string callNotice: ""
     function refreshCallAudio() {
         callAudio = null;
         sendRequest("calls.audio", {});
+    }
+    function refreshContacts() {
+        return sendRequest("contacts.list", {});
+    }
+
+    function syncContacts(device) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        return sendRequest("contacts.sync", { device_id: device.id });
     }
     property var lastReceivedShare: null
     property var lastShareResult: null
@@ -369,6 +381,7 @@ Singleton {
         lastError = "";
         sendRequest("hello", null, socket);
         sendRequest("devices.list", null, socket);
+        sendRequest("contacts.list", null, socket);
         sendRequest("subscribe", { shares: true, media: true, messages: true }, socket);
     }
 
@@ -378,6 +391,7 @@ Singleton {
         notifications = [];
         mediaSessions = [];
         calls = [];
+        contacts = [];
         callAudio = null;
         callNotice = "";
         lastReceivedShare = null;
@@ -479,6 +493,9 @@ Singleton {
             break;
         case "media":
             mediaSessions = message.media_sessions || [];
+            break;
+        case "contacts":
+            contacts = message.contacts || [];
             break;
         case "subscribed":
         case "snapshot":
