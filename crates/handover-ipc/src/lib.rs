@@ -62,6 +62,8 @@ pub enum Method {
     NativePing { id: String },
     #[serde(rename = "native.ring")]
     NativeRing { id: String },
+    #[serde(rename = "native.lock")]
+    NativeLock { id: String },
     #[serde(rename = "calls.control")]
     CallsControl {
         device_id: DeviceId,
@@ -704,6 +706,14 @@ impl Client {
 
     pub async fn native_ring(&mut self, id: String) -> Result<(), IpcError> {
         self.send(Method::NativeRing { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_lock(&mut self, id: String) -> Result<(), IpcError> {
+        self.send(Method::NativeLock { id }).await?;
         match self.receive().await?.payload {
             ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),

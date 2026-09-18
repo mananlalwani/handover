@@ -537,6 +537,9 @@ enum Message {
     UserPing {
         protocol: u32,
     },
+    LockDevice {
+        protocol: u32,
+    },
     ShareUrl {
         protocol: u32,
         transfer_id: String,
@@ -604,6 +607,7 @@ impl Message {
             | Self::MediaControl { protocol, .. }
             | Self::Ring { protocol }
             | Self::UserPing { protocol }
+            | Self::LockDevice { protocol }
             | Self::ShareUrl { protocol, .. }
             | Self::ShareFile { protocol, .. }
             | Self::ShareResult { protocol, .. }
@@ -1017,6 +1021,17 @@ impl NativeBackend {
         self.queue_simple(
             peer_id,
             Message::Ring {
+                protocol: WIRE_VERSION,
+            },
+        )
+    }
+
+    /// Queue a request for the phone to lock itself. Android applies its
+    /// device-admin permission check before executing the request.
+    pub fn lock_device(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        self.queue_simple(
+            peer_id,
+            Message::LockDevice {
                 protocol: WIRE_VERSION,
             },
         )

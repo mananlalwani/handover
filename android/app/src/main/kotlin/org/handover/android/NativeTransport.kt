@@ -3,6 +3,7 @@ package org.handover.android
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.net.Uri
@@ -678,6 +679,13 @@ class NativeTransport(private val context: Context) {
             "battery_request" -> sendBattery()
             "ring" -> ringPhone()
             "user_ping" -> ringPhone()
+            "lock_device" -> {
+                if (serverFingerprint == null) return
+                val admin = ComponentName(context, HandoverDeviceAdminReceiver::class.java)
+                val manager = context.getSystemService(android.app.admin.DevicePolicyManager::class.java)
+                if (manager.isAdminActive(admin)) manager.lockNow()
+                else broadcast(ACTION_TRANSFER_RESULT, JSONObject().put("kind", "lock").put("status", "permission_denied"))
+            }
             "notifications_request" -> {
                 if (serverFingerprint == null) return
                 HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->

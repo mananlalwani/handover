@@ -1,0 +1,3 @@
+<resources>
+    <string name="device_admin_description">Allow Handover to lock this phone when you request it from a trusted desktop.</string>
+</resources>

@@ -303,6 +303,10 @@ where
             native_backend().map(|native| native.ring(&id)),
             "native ring",
         ),
+        Method::NativeLock { id } => native_command_response(
+            native_backend().map(|native| native.lock_device(&id)),
+            "native lock",
+        ),
         Method::NativeCall {
             id,
             action,

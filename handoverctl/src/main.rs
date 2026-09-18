@@ -94,6 +94,10 @@ enum NativeCommand {
     Ring {
         device: String,
     },
+    /// Lock a native phone when device-admin access is enabled
+    Lock {
+        device: String,
+    },
     Call {
         device: String,
         action: String,
@@ -350,6 +354,11 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
             let id = select_native_peer(&mut client, &device).await?;
             client.native_ring(id).await?;
             println!("Ring accepted; effect is not confirmed");
+        }
+        NativeCommand::Lock { device } => {
+            let id = select_native_peer(&mut client, &device).await?;
+            client.native_lock(id).await?;
+            println!("Lock accepted; effect is not confirmed");
         }
         NativeCommand::Call {
             device,

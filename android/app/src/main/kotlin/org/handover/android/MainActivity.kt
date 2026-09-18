@@ -143,6 +143,12 @@ class MainActivity : android.app.Activity() {
     private fun permissionLabel(permission: String): String =
         if (CallController.hasPermission(this, permission)) "granted" else "not granted"
 
+    private fun deviceAdminComponent() = ComponentName(this, HandoverDeviceAdminReceiver::class.java)
+
+    private fun deviceAdminEnabled(): Boolean =
+        getSystemService(android.app.admin.DevicePolicyManager::class.java)
+            .isAdminActive(deviceAdminComponent())
+
     private fun refreshStatus() {
         connectionState = HandoverForegroundService.connectionState()
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
@@ -169,6 +175,7 @@ class MainActivity : android.app.Activity() {
             append("Call state: ${permissionLabel(android.Manifest.permission.READ_PHONE_STATE)}\n")
             append("Place calls: ${permissionLabel(android.Manifest.permission.CALL_PHONE)}\n")
             append("Answer/end calls: ${permissionLabel(android.Manifest.permission.ANSWER_PHONE_CALLS)}")
+            append("\nRemote lock: ${if (deviceAdminEnabled()) "granted" else "not granted"}")
         }
         val installed = packageManager.getPackageInfo(packageName, 0)
         val pending = AppUpdater.pending(this)
@@ -500,6 +507,19 @@ class MainActivity : android.app.Activity() {
                 }
             }
         }
+        val deviceAdminAccess = Button(this).apply {
+            text = "Enable remote lock"
+            setOnClickListener {
+                if (deviceAdminEnabled()) {
+                    refreshStatus()
+                    return@setOnClickListener
+                }
+                startActivity(Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                    .putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, deviceAdminComponent())
+                    .putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        "Handover uses this permission only to lock the phone from a trusted paired desktop."))
+            }
+        }
         val postTest = Button(this).apply {
             text = "Post test notification"
             setOnClickListener { postTestNotification(false) }
@@ -529,7 +549,7 @@ class MainActivity : android.app.Activity() {
         primary(start)
         secondary(manualConnect)
         listOf(notificationAccess, appNotificationAccess, localNetworkAccess, batteryAccess,
-            backgroundAccess, callAccess, postTest, updateTest, removeTest, startTestMedia,
+            backgroundAccess, callAccess, deviceAdminAccess, postTest, updateTest, removeTest, startTestMedia,
             stopTestMedia, revoke).forEach(::secondary)
         permissionButtons += notificationAccess to {
             HandoverNotificationService.isEnabled(this@MainActivity)
@@ -543,6 +563,7 @@ class MainActivity : android.app.Activity() {
                 CallController.hasPermission(this@MainActivity, it)
             }
         }
+        permissionButtons += deviceAdminAccess to { deviceAdminEnabled() }
         permissionButtons += localNetworkAccess to {
             android.os.Build.VERSION.SDK_INT < 37 ||
                 checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") == PackageManager.PERMISSION_GRANTED
