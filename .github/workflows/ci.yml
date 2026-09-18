@@ -37,7 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update
-      - run: sudo apt-get install --yes qt6-declarative-dev-tools
-      # qmllint checks syntax without requiring Quickshell's runtime package.
-      - run: qmllint quickshell/HandoverService.qml quickshell/example.qml
+      - uses: cachix/install-nix-action@v30
+      - run: nix profile install nixpkgs#quickshell nixpkgs#qt6Packages.qtdeclarative
+      - name: Lint Quickshell files
+        run: |
+          quickshell_qml="$(nix eval --raw nixpkgs#quickshell)/lib/qt-6/qml"
+          qt_qml="$(nix eval --raw nixpkgs#qt6Packages.qtdeclarative)/lib/qt-6/qml"
+          qmllint -I "$quickshell_qml" -I "$qt_qml" \
+            quickshell/HandoverService.qml quickshell/example.qml
