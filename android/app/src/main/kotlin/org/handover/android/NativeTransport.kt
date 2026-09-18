@@ -276,7 +276,17 @@ class NativeTransport(private val context: Context) {
             ?: ContactsContract.Contacts.openContactPhotoInputStream(
                 context.contentResolver, contactUri, true,
             )
-        val bitmap = input?.use(BitmapFactory::decodeStream)
+        val bitmap = input?.use(BitmapFactory::decodeStream) ?: context.contentResolver.query(
+            ContactsContract.Data.CONTENT_URI,
+            arrayOf(ContactsContract.CommonDataKinds.Photo.PHOTO),
+            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
+            arrayOf(contactId, ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE),
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst() && !cursor.isNull(0))
+                BitmapFactory.decodeByteArray(cursor.getBlob(0), 0, cursor.getBlob(0).size)
+            else null
+        }
             ?: return@runCatching null
         val size = maxOf(bitmap.width, bitmap.height)
         val scaled = if (size > 96) {
