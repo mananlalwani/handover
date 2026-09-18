@@ -226,7 +226,6 @@ class NativeTransport(private val context: Context) {
             ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
             ContactsContract.Contacts.PHOTO_URI,
             ContactsContract.Contacts.PHOTO_FILE_ID,
-            ContactsContract.Contacts.PHOTO_ID,
             ContactsContract.Contacts.LOOKUP_KEY,
         )
         context.contentResolver.query(
@@ -238,7 +237,6 @@ class NativeTransport(private val context: Context) {
             val photoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
             val fullPhotoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_URI)
             val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
-            val photoIdIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_ID)
             val lookupIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY)
             while (cursor.moveToNext()) {
                 val id = cursor.getString(idIndex)
@@ -267,14 +265,12 @@ class NativeTransport(private val context: Context) {
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
                     val photoFileId = cursor.getLong(photoFileIndex).takeIf { it > 0 }
-                    val photoId = cursor.getLong(photoIdIndex).takeIf { it > 0 }
                     val lookupKey = cursor.getString(lookupIndex)
                     val fullPhotoUri = cursor.getString(fullPhotoIndex)
                     val photo = encodeContactPhoto(
                         id,
                         photoUri?.let(Uri::parse) ?: fullPhotoUri?.let(Uri::parse),
                         photoFileId,
-                        photoId,
                         lookupKey,
                     )
                     if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
@@ -291,7 +287,6 @@ class NativeTransport(private val context: Context) {
         contactId: String,
         thumbnailUri: Uri?,
         photoFileId: Long?,
-        photoId: Long?,
         lookupKey: String?,
     ): String? = runCatching {
         val contactUri = ContactsContract.Contacts.CONTENT_URI.buildUpon()
@@ -312,18 +307,27 @@ class NativeTransport(private val context: Context) {
             )
         val bitmap = input?.use(BitmapFactory::decodeStream) ?: context.contentResolver.query(
             ContactsContract.Data.CONTENT_URI,
-            arrayOf(ContactsContract.CommonDataKinds.Photo.PHOTO),
-            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data._ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
+            arrayOf(
+                ContactsContract.CommonDataKinds.Photo.PHOTO,
+                ContactsContract.CommonDataKinds.Photo.PHOTO_FILE_ID,
+            ),
+            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
             arrayOf(
                 contactId,
-                photoId?.toString() ?: "-1",
                 ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE,
             ),
             null,
         )?.use { cursor ->
-            if (cursor.moveToFirst() && !cursor.isNull(0))
-                BitmapFactory.decodeByteArray(cursor.getBlob(0), 0, cursor.getBlob(0).size)
-            else null
+            if (!cursor.moveToFirst()) return@use null
+            if (!cursor.isNull(0)) {
+                val blob = cursor.getBlob(0)
+                BitmapFactory.decodeByteArray(blob, 0, blob.size)
+            } else if (!cursor.isNull(1)) {
+                val id = cursor.getLong(1)
+                val uri = ContactsContract.DisplayPhoto.CONTENT_URI.buildUpon()
+                    .appendPath(id.toString()).build()
+                context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+            } else null
         }
             ?: return@runCatching null
         val size = maxOf(bitmap.width, bitmap.height)
