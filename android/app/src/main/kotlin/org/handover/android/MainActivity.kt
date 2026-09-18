@@ -610,6 +610,7 @@ class MainActivity : android.app.Activity() {
             panel(sectionTitle("Current access"), capabilitiesStatus),
             panel(sectionTitle("Notifications"), notificationAccess, appNotificationAccess),
             panel(sectionTitle("Calls"), callAccess),
+            panel(sectionTitle("Device actions"), deviceAdminAccess),
             panel(sectionTitle("Connectivity & background"), localNetworkAccess,
                 batteryAccess, backgroundAccess),
             panel(sectionTitle("Clipboard"), Switch(this).apply {
