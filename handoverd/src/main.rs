@@ -3,6 +3,7 @@ mod ipc_server;
 mod messaging;
 mod messaging_backend;
 mod messaging_cache;
+mod presentation;
 mod screensaver;
 mod state;
 
@@ -143,6 +144,9 @@ fn apply_backend_event(
     events: &broadcast::Sender<StateEvent>,
     event: StateEvent,
 ) {
+    if let StateEvent::Presentation(command) = &event {
+        presentation::execute(command);
+    }
     let call_started = match &event {
         StateEvent::Call(CallEvent::Updated(call))
             if call.phase == handover_core::CallPhase::OffHook =>

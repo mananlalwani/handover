@@ -196,6 +196,15 @@ class NativeTransport(private val context: Context) {
             .put("metered", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true))
     }
 
+    fun presentationControl(action: String, deltaX: Int = 0, deltaY: Int = 0): Boolean {
+        if (serverFingerprint == null || action !in setOf(
+                "previous", "next", "start", "stop", "fullscreen", "pointer_move", "pointer_click",
+            )) return false
+        send(JSONObject().put("type", "presentation_control").put("protocol", 1)
+            .put("action", action).put("delta_x", deltaX).put("delta_y", deltaY))
+        return true
+    }
+
     /** Never send notification content before the peer is authenticated. */
     fun publishNotification(notification: WireNotification) {
         if (serverFingerprint == null) return

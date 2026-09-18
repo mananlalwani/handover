@@ -130,6 +130,28 @@ pub enum Capability {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum PresentationAction {
+    Previous,
+    Next,
+    Start,
+    Stop,
+    Fullscreen,
+    PointerMove,
+    PointerClick,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PresentationCommand {
+    pub device_id: DeviceId,
+    pub action: PresentationAction,
+    #[serde(default)]
+    pub delta_x: i32,
+    #[serde(default)]
+    pub delta_y: i32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CallPhase {
     Unknown,
     Idle,
@@ -315,6 +337,7 @@ pub enum StateEvent {
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
     Messaging(MessagingEvent),
+    Presentation(PresentationCommand),
 }
 
 /// A media player identity scoped to its source device.

@@ -86,6 +86,9 @@ class HandoverForegroundService : Service() {
     companion object {
         @Volatile private var activeTransport: NativeTransport? = null
         fun refreshCallsIfRunning() { activeTransport?.refreshCalls() }
+        fun presentation(action: String, deltaX: Int = 0, deltaY: Int = 0) {
+            activeTransport?.presentationControl(action, deltaX, deltaY)
+        }
 
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"

@@ -13,7 +13,8 @@ use handover_core::{
     CallState, Capability, ConnectivityState, ConnectivityTransport, Device, DeviceEvent, DeviceId,
     MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId, Notification,
     NotificationAction, NotificationCommand, NotificationEvent, NotificationId, PlaybackState,
-    ReceivedShare, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
+    PresentationAction, PresentationCommand, ReceivedShare, ShareFailure, ShareResult, ShareStatus,
+    SharedResource, StateEvent,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -393,6 +394,14 @@ enum Message {
         title: String,
         body: String,
     },
+    PresentationControl {
+        protocol: u32,
+        action: PresentationAction,
+        #[serde(default)]
+        delta_x: i32,
+        #[serde(default)]
+        delta_y: i32,
+    },
     CallControl {
         protocol: u32,
         request_id: String,
@@ -522,6 +531,7 @@ impl Message {
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
             | Self::RemoteNotification { protocol, .. }
+            | Self::PresentationControl { protocol, .. }
             | Self::CallControl { protocol, .. }
             | Self::CallResult { protocol, .. }
             | Self::CallState { protocol, .. }
@@ -754,6 +764,25 @@ impl NativeBackend {
                 app,
                 title,
                 body,
+            },
+        )
+    }
+
+    pub fn presentation_control(
+        &self,
+        peer_id: &str,
+        command: &PresentationCommand,
+    ) -> Result<(), NativeCommandError> {
+        if command.delta_x.abs() > 2000 || command.delta_y.abs() > 2000 {
+            return Err(NativeCommandError::QueueFull);
+        }
+        self.queue_simple(
+            peer_id,
+            Message::PresentationControl {
+                protocol: WIRE_VERSION,
+                action: command.action,
+                delta_x: command.delta_x,
+                delta_y: command.delta_y,
             },
         )
     }
@@ -1735,6 +1764,20 @@ impl NativeBackend {
                         action,
                         accepted,
                         failure,
+                    }));
+                }
+                Ok(Message::PresentationControl {
+                    protocol: WIRE_VERSION,
+                    action,
+                    delta_x,
+                    delta_y,
+                }) => {
+                    last_received = Instant::now();
+                    event(StateEvent::Presentation(PresentationCommand {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        action,
+                        delta_x,
+                        delta_y,
                     }));
                 }
                 Ok(Message::NotificationPost {

@@ -1510,6 +1510,10 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::ShareResult(result) => {
             ServerMessage::new(ServerPayload::ShareResult { result })
         }
+        StateEvent::Presentation(_) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "presentation commands are not broadcast to desktop clients",
+        ),
     }
 }
 

@@ -24,6 +24,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.View
+import android.view.MotionEvent
 import java.text.DateFormat
 import java.util.Date
 
@@ -599,6 +600,76 @@ class MainActivity : android.app.Activity() {
                     setOnClickListener { TransferHistory.clear(this@MainActivity); refreshStatus() }
                 })),
         )
+        var pointerX = 0f
+        var pointerY = 0f
+        var pointerMoved = false
+        val pointerPad = View(this).apply {
+            minimumHeight = dp(220)
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(225, 229, 239))
+                cornerRadius = dp(14).toFloat()
+            }
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        pointerX = event.x
+                        pointerY = event.y
+                        pointerMoved = false
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = ((event.x - pointerX) / 2f).toInt()
+                        val dy = ((event.y - pointerY) / 2f).toInt()
+                        if (dx != 0 || dy != 0) {
+                            pointerMoved = true
+                            HandoverForegroundService.presentation("pointer_move", dx, dy)
+                            pointerX = event.x
+                            pointerY = event.y
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!pointerMoved) {
+                            HandoverForegroundService.presentation("pointer_click")
+                        }
+                        true
+                    }
+                    else -> true
+                }
+            }
+        }
+        val presentationPage = page(
+            "Presentation remote", "Control the active presentation on Linux.",
+            panel(sectionTitle("Slides"), LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Previous"
+                    setOnClickListener { HandoverForegroundService.presentation("previous") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Next"
+                    setOnClickListener { HandoverForegroundService.presentation("next") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+            }, LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Start"
+                    setOnClickListener { HandoverForegroundService.presentation("start") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Stop"
+                    setOnClickListener { HandoverForegroundService.presentation("stop") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Fullscreen"
+                    setOnClickListener { HandoverForegroundService.presentation("fullscreen") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+            }),
+            panel(sectionTitle("Pointer"), TextView(this).apply {
+                text = "Drag to move. Tap to click."
+                setTextColor(Color.rgb(70, 77, 94))
+            }, pointerPad),
+        )
         val diagnosticsPage = page(
             "Diagnostics", "Local test tools. These do not contact anyone.",
             panel(sectionTitle("Notification test"), postTest, updateTest, removeTest),
@@ -649,6 +720,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
+                menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
                 menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },
                 menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
             ).forEach { item ->
