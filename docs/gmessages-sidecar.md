@@ -1,7 +1,9 @@
 # Google Messages sidecar: process boundary, contract, and operations
 
-Status: implemented (loopback relay). The production Google relay is
-operator-supplied; see §Production relay.
+Status: implemented. The loopback helper remains in this repository for
+development. The production relay is the external
+[`handover-gmessages`](https://github.com/mananlalwani/handover-gmessages)
+adapter.
 
 ## Architecture
 
@@ -11,10 +13,10 @@ handoverctl / Quickshell
 handoverd (MIT)
   owns normalized messaging state, validates every record and command
         |  helper IPC v1: JSON lines over helper stdin/stdout
-handover-gmessages-helper (MIT, separate OS process)
+handover-gmessages adapter (AGPL-3.0-only, separate OS process)
   owns credential bundles, pairing ceremony, relay RPCs, polling,
   recovery, media transfer
-        |  (production relay only) Google companion RPCs + phone
+        |  (external adapter only) Google companion RPCs + phone
 ```
 
 No shared address space, no FFI, no shared structs beyond the coarse
@@ -27,14 +29,12 @@ types (`crates/handover-core/src/messaging.rs`).
 
 ## Why a separate process
 
-`mautrix/gmessages` (`pkg/libgm`) is AGPL-3.0 with exceptions granted
-only to Beeper and Element. The production adapter repository documents its
-upstream dependency and license terms.
-Linking, importing, FFI, or copying its sources (including generated
-protobuf) into Handover would place the combined work under AGPL-3.0 and
-end Handover's MIT licensing. An unmodified upstream binary driven over
-an arm's-length JSON protocol is a separate-program posture: Handover
-stays MIT. For that reason:
+The production adapter uses the upstream Google Messages protocol library and
+keeps that code in its own AGPL-3.0-only repository. Handover keeps a coarse
+JSON process contract and does not import that implementation. This is the
+intended engineering and licensing boundary for the two repositories. It is not
+a legal guarantee for every way the software might be combined or distributed.
+For that reason:
 
 * `crates/handover-gmessages` contains framing, normalization, secret
   paths, staging, and supervision only. It contains no companion-protocol
@@ -75,14 +75,15 @@ Rules both sides follow:
 
 ## Auth and secret storage
 
-* The user pastes (or automation supplies) the upstream credential bundle
-  once. `handoverctl messages login <account> [--from-file PATH]` reads
-  it from a file or stdin and base64-encodes it locally; bundles never
-  appear in argv, shell history, logs, or crash reports.
+* The user supplies the upstream credential bundle once. The external adapter's
+  pairing runbook creates its JSON cookie envelope from a local browser export,
+  then pipes it to `handoverctl messages login <account>`. The CLI reads stdin
+  or `--from-file PATH` and base64-encodes it locally. Bundles never appear in
+  argv, shell history, logs, or crash reports.
 * The bundle travels CLI → daemon → helper over local sockets/pipes only
   (bounded: 64 KiB IPC line, 256 KiB helper cap). The daemon never
-  persists it. The helper stores one 0600 file per account below
-  `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages` (0700 directory,
+  persists it. The external adapter stores one 0600 session file per account below
+  `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-adapter` (0700 directory,
   temp-file + atomic rename) and confirms with account/pairing events
   that echo no secret material.
 * Pairing verification (e.g. the emoji to confirm on the phone) arrives
@@ -129,17 +130,15 @@ typing announces inbound peer typing; deletes apply to own messages
 only. It exists so the full Handover surface (daemon, CLI, UI, tests)
 is exercisable without Google credentials.
 
-## Production relay
+## Production adapter
 
-To drive real Google Messages history, an operator runs the unmodified
-upstream bridge (or equivalent) plus a small out-of-tree adapter that
-implements contract v1 against it (login/pairing ceremony, relay RPC
-mapping, long-poll recovery, media upload/download). That adapter lives
-outside this repository to preserve the license boundary. It must honor
-the same rules: coarse normalized records only, no secret or body
-logging, bounded queues, explicit revoke, and no invented delivery
-state. Point `HANDOVER_GMESSAGES_HELPER` (or `PATH`) at it; `handoverd`
-supervises it exactly like the loopback.
+The external `handover-gmessages` adapter implements contract v1 against the
+upstream relay. It handles login and pairing, relay mapping, long-poll
+recovery, media upload and download, session storage, and remote revoke. It
+must honor the same rules: coarse normalized records only, no secret or body
+logging, bounded queues, explicit revoke, and no invented delivery state.
+Point `HANDOVER_GMESSAGES_HELPER` (or `PATH`) at its binary; `handoverd`
+supervises it exactly like the loopback helper.
 
 ## Capabilities: implemented vs unsupported
 
@@ -158,15 +157,19 @@ per-participant group read truth derived from status-text heuristics
 (group reads stay conversation-level unless the relay attests
 per-participant data), and any persistent full-history database.
 
-## Verification
+## Live verification
 
-* `cargo test --workspace` (includes a live daemon↔loopback-helper
-  end-to-end walkthrough plus helper-down, gap, bundle, isolation, and
-  malformed/oversized contract tests).
+The external adapter has been exercised with a consenting test account and
+conversation. The live RCS checks verified real conversation and history
+access, text messages, PNG attachments, replies, reactions, accepted to
+delivered status, restart recovery, and delivery to a physical phone while
+the phone was in the background. These results describe the tested setup, not
+a guarantee about future Google protocol changes.
+
+The repository checks include `cargo test --workspace` with a daemon to loopback
+helper end-to-end walkthrough plus helper-down, gap, bundle, isolation, and
+malformed/oversized contract tests.
 * Manual loopback pass: `messages login/accounts/conversations/history/
   send/send-file/react/unreact/typing/read/open/logout`, daemon restart
   recovery, and KDE Connect coexistence were exercised against debug
   binaries during development.
-* Real Google credentials were never used: SMS/RCS behavior against the
-  production relay remains the live acceptance step (see research note
-  PoC), requiring a consenting test conversation.

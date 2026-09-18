@@ -2,20 +2,20 @@
 
 Handover connects an Android phone to a Linux desktop. It lets desktop apps
 see the phone and use capabilities such as notifications, media controls, calls,
-file sharing, and clipboard sync.
+and file sharing.
 
 Handover runs in the background. You can use its small command-line tool to
 check connected phones, or use the included Quickshell panel.
 
 ## Current status
 
-Handover is early software. KDE Connect currently provides the widest set of
-capabilities. A separate native Android connection is available for testing.
+Handover is early software. The native Handover Android connection is the main
+path and is available for testing. KDE Connect is an optional compatibility
+backend for capabilities that the native connection does not provide yet.
 
 ## Install
 
-Handover currently installs from source. On a Linux machine with Rust and KDE
-Connect installed:
+Handover currently installs from source. On a Linux machine with Rust installed:
 
 ```sh
 git clone https://github.com/mananlalwani/handover.git
@@ -23,14 +23,15 @@ cd handover
 make install-user
 ```
 
-Pair the phone with KDE Connect, then check the connection:
+Build and install the Android companion, enable its connection, and pair it
+with the Linux daemon. Then check the connection:
 
 ```sh
 handoverctl devices
 ```
 
-The full [user guide](docs/user-guide.md) covers pairing, the optional native
-Android connection, common commands, troubleshooting, and removal.
+The full [user guide](docs/user-guide.md) covers native pairing, the optional
+KDE Connect backend, common commands, troubleshooting, and removal.
 
 ## What Handover does
 
@@ -40,6 +41,9 @@ Android connection, common commands, troubleshooting, and removal.
 - Supports phone-call actions where the phone and backend allow them.
 - Sends files and links to a phone.
 - Provides a Quickshell example panel.
+
+Clipboard synchronization is currently provided by the optional KDE Connect
+backend. It is not a native Handover capability yet.
 
 The available capabilities depend on the connection method and Android permissions.
 Handover reports when a request was accepted. That does not always mean the

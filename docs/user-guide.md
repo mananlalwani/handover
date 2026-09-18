@@ -6,8 +6,7 @@ read a fresh snapshot when they start.
 
 ## Install
 
-Install KDE Connect, pair the phone in KDE Connect, and install Handover for
-your user:
+Install Handover for your user:
 
 ```sh
 make install-user
@@ -28,7 +27,8 @@ quickshell --path ~/.local/share/handover/quickshell/example.qml
 
 ## Native Android connection
 
-The native connection is optional. Build the companion from the repository:
+The native connection is the primary connection path. Build the companion from
+the repository:
 
 ```sh
 cd android
@@ -58,6 +58,14 @@ phone when needed.
 
 If multicast discovery does not work, enter the Linux address and port `24837`
 in the Android app. A reachable Tailscale address works as well.
+
+## KDE Connect compatibility backend
+
+KDE Connect is optional. Use it when you need a capability that the native
+connection does not provide yet. Install KDE Connect, pair the phone in KDE
+Connect, and let Handover discover the paired device. Clipboard synchronization
+is currently KDE Connect-owned; Handover does not implement a native clipboard
+service.
 
 ## Common commands
 
