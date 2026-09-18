@@ -450,6 +450,15 @@ class NativeTransport(private val context: Context) {
                     message.optString("key"), message.optString("action_id"),
                 )
             }
+            "remote_notification" -> {
+                if (serverFingerprint == null) return
+                HandoverNotificationService.postRemote(
+                    message.optString("request_id"),
+                    message.optString("app"),
+                    message.optString("title"),
+                    message.optString("body"),
+                )
+            }
             "call_request" -> {
                 if (serverFingerprint == null) return
                 callObserver.refresh()

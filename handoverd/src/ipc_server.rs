@@ -336,6 +336,36 @@ where
         Method::NotificationsList => ServerPayload::Notifications {
             notifications: snapshot(state).notifications,
         },
+        Method::NotificationSend {
+            device_id,
+            app,
+            title,
+            body,
+        } => {
+            let peer_id = device_id
+                .as_str()
+                .strip_prefix("native:")
+                .unwrap_or_default();
+            match native_backend().map(|native| native.send_notification(peer_id, app, title, body))
+            {
+                Some(Ok(())) => ServerPayload::NativeAccepted,
+                Some(Err(error)) => ServerPayload::Error {
+                    code: match error {
+                        handover_native::NativeCommandError::Offline => {
+                            ErrorCode::DeviceDisconnected
+                        }
+                        handover_native::NativeCommandError::QueueFull => {
+                            ErrorCode::BackendRejected
+                        }
+                    },
+                    message: "notification was not accepted".into(),
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "native backend unavailable".into(),
+                },
+            }
+        }
         Method::CallsAudio => ServerPayload::CallAudio {
             status: crate::call_audio::inspect().await,
         },

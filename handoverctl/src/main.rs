@@ -38,6 +38,13 @@ enum Command {
     Monitor,
     /// Send a URL to one paired device
     SendUrl { device: String, url: String },
+    /// Send a notification to one native phone
+    Notify {
+        device: String,
+        app: String,
+        title: String,
+        body: String,
+    },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
     /// Print current normalized call state for one device
@@ -178,6 +185,12 @@ async fn main() -> ExitCode {
         Some(Command::Media { command }) => media(command).await,
         Some(Command::Monitor) => monitor().await,
         Some(Command::SendUrl { device, url }) => send_url(&device, url).await,
+        Some(Command::Notify {
+            device,
+            app,
+            title,
+            body,
+        }) => send_notification(&device, app, title, body).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
         Some(Command::Messages { command }) => messages(command).await,
         Some(Command::Calls { device }) => calls(device).await,
@@ -387,6 +400,21 @@ async fn send_url(selector: &str, url: String) -> Result<(), CliError> {
         Some(id) => println!("URL share accepted: transfer {id}; awaiting receiver result"),
         None => println!("URL share accepted; delivery is not confirmed"),
     }
+    Ok(())
+}
+
+async fn send_notification(
+    selector: &str,
+    app: String,
+    title: String,
+    body: String,
+) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let device_id = select_device(&client.devices().await?, selector)?;
+    client
+        .send_notification(device_id, app, title, body)
+        .await?;
+    println!("Notification accepted; phone presentation is not confirmed");
     Ok(())
 }
 

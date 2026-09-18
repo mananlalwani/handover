@@ -76,6 +76,13 @@ pub enum Method {
     },
     #[serde(rename = "notifications.list")]
     NotificationsList,
+    #[serde(rename = "notification.send")]
+    NotificationSend {
+        device_id: DeviceId,
+        app: String,
+        title: String,
+        body: String,
+    },
     #[serde(rename = "calls.list")]
     CallsList,
     #[serde(rename = "calls.audio")]
@@ -735,6 +742,26 @@ impl Client {
         self.send(Method::NotificationsList).await?;
         match self.receive().await?.payload {
             ServerPayload::Notifications { notifications } => Ok(notifications),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn send_notification(
+        &mut self,
+        device_id: DeviceId,
+        app: String,
+        title: String,
+        body: String,
+    ) -> Result<(), IpcError> {
+        self.send(Method::NotificationSend {
+            device_id,
+            app,
+            title,
+            body,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }

@@ -40,6 +40,7 @@ KDE Connect backend, common commands, troubleshooting, and removal.
 - Controls media playing on the phone.
 - Supports phone-call actions where the phone and backend allow them.
 - Sends files and links to a phone.
+- Sends explicit desktop notifications to a native phone with `handoverctl notify`.
 - Can ring or ping a connected native phone.
 - Reports the phone's active network transport.
 - Inhibits idle and sleep while a native phone is connected.

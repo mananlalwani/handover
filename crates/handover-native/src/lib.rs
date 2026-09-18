@@ -384,6 +384,15 @@ enum Message {
         key: String,
         action_id: String,
     },
+    /// Linux-to-phone notification. The phone owns presentation and may
+    /// replace an existing notification with the same request id.
+    RemoteNotification {
+        protocol: u32,
+        request_id: String,
+        app: String,
+        title: String,
+        body: String,
+    },
     CallControl {
         protocol: u32,
         request_id: String,
@@ -512,6 +521,7 @@ impl Message {
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
+            | Self::RemoteNotification { protocol, .. }
             | Self::CallControl { protocol, .. }
             | Self::CallResult { protocol, .. }
             | Self::CallState { protocol, .. }
@@ -716,6 +726,36 @@ impl NativeBackend {
         }
         queue.push(message);
         Ok(())
+    }
+
+    pub fn send_notification(
+        &self,
+        peer_id: &str,
+        app: String,
+        title: String,
+        body: String,
+    ) -> Result<(), NativeCommandError> {
+        if app.is_empty()
+            || app.len() > MAX_NOTIFICATION_APP
+            || title.len() > MAX_NOTIFICATION_TITLE
+            || body.len() > MAX_NOTIFICATION_BODY
+            || app.chars().any(char::is_control)
+            || title.chars().any(char::is_control)
+            || body.chars().any(char::is_control)
+        {
+            return Err(NativeCommandError::QueueFull);
+        }
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
+        self.queue_simple(
+            peer_id,
+            Message::RemoteNotification {
+                protocol: WIRE_VERSION,
+                request_id,
+                app,
+                title,
+                body,
+            },
+        )
     }
 
     /// Ask the live session to request a fresh notification sync. Returns

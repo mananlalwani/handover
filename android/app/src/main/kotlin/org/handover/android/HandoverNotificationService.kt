@@ -2,6 +2,8 @@ package org.handover.android
 
 import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.RemoteInput
 import android.content.ComponentName
 import android.content.Context
@@ -63,8 +65,28 @@ class HandoverNotificationService : NotificationListenerService() {
         transport?.syncNotifications(enabled, list)
     }
 
+    /** Show a desktop-originated notification locally. The daemon only reports
+     * acceptance of the transport command; Android owns actual presentation. */
+    fun postRemote(requestId: String, app: String, title: String, body: String): Boolean {
+        if (requestId.isEmpty() || app.isEmpty() || title.isEmpty()) return false
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(REMOTE_CHANNEL, "Desktop notifications", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        val notification = Notification.Builder(this, REMOTE_CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setSubText(app)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(requestId.hashCode(), notification)
+        return true
+    }
+
     companion object {
         private const val TAG = "HandoverNotifications"
+        private const val REMOTE_CHANNEL = "handover_desktop_notifications"
         // Same-process service ownership: the foreground service sets this on
         // create and clears it on destroy. Suppressed because the transport
         // holds the application context, not an activity.
@@ -110,6 +132,9 @@ class HandoverNotificationService : NotificationListenerService() {
             Log.i(TAG, "Notification sync: ${list.size} active")
             return true to list
         }
+
+        fun postRemote(requestId: String, app: String, title: String, body: String): Boolean =
+            instance?.postRemote(requestId, app, title, body) == true
 
         /** Map one platform notification into the wire model. Null when unusable. */
         fun snapshot(context: Context, sbn: StatusBarNotification): WireNotification? {
