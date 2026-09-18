@@ -6,6 +6,7 @@ mod messaging_cache;
 mod presentation;
 mod screensaver;
 mod state;
+mod volume;
 
 use std::collections::BTreeSet;
 use std::sync::{Mutex, OnceLock};
@@ -146,6 +147,9 @@ fn apply_backend_event(
 ) {
     if let StateEvent::Presentation(command) = &event {
         presentation::execute(command);
+    }
+    if let StateEvent::Volume(command) = &event {
+        volume::execute(command);
     }
     let call_started = match &event {
         StateEvent::Call(CallEvent::Updated(call))

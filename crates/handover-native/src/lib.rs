@@ -14,7 +14,7 @@ use handover_core::{
     MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId, Notification,
     NotificationAction, NotificationCommand, NotificationEvent, NotificationId, PlaybackState,
     PresentationAction, PresentationCommand, ReceivedShare, ShareFailure, ShareResult, ShareStatus,
-    SharedResource, StateEvent,
+    SharedResource, StateEvent, VolumeAction, VolumeCommand,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -402,6 +402,10 @@ enum Message {
         #[serde(default)]
         delta_y: i32,
     },
+    VolumeControl {
+        protocol: u32,
+        action: VolumeAction,
+    },
     CallControl {
         protocol: u32,
         request_id: String,
@@ -532,6 +536,7 @@ impl Message {
             | Self::NotificationAction { protocol, .. }
             | Self::RemoteNotification { protocol, .. }
             | Self::PresentationControl { protocol, .. }
+            | Self::VolumeControl { protocol, .. }
             | Self::CallControl { protocol, .. }
             | Self::CallResult { protocol, .. }
             | Self::CallState { protocol, .. }
@@ -783,6 +788,20 @@ impl NativeBackend {
                 action: command.action,
                 delta_x: command.delta_x,
                 delta_y: command.delta_y,
+            },
+        )
+    }
+
+    pub fn volume_control(
+        &self,
+        peer_id: &str,
+        command: &VolumeCommand,
+    ) -> Result<(), NativeCommandError> {
+        self.queue_simple(
+            peer_id,
+            Message::VolumeControl {
+                protocol: WIRE_VERSION,
+                action: command.action,
             },
         )
     }
@@ -1778,6 +1797,16 @@ impl NativeBackend {
                         action,
                         delta_x,
                         delta_y,
+                    }));
+                }
+                Ok(Message::VolumeControl {
+                    protocol: WIRE_VERSION,
+                    action,
+                }) => {
+                    last_received = Instant::now();
+                    event(StateEvent::Volume(VolumeCommand {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        action,
                     }));
                 }
                 Ok(Message::NotificationPost {

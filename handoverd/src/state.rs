@@ -53,6 +53,10 @@ impl StateStore {
                 changed: false,
                 changes: Vec::new(),
             },
+            StateEvent::Volume(_) => ApplyOutcome {
+                changed: false,
+                changes: Vec::new(),
+            },
         }
     }
 

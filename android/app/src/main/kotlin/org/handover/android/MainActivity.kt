@@ -700,6 +700,24 @@ class MainActivity : android.app.Activity() {
                 setTextColor(Color.rgb(70, 77, 94))
             }),
         )
+        val volumePage = page(
+            "System volume", "Control the default Linux audio output.",
+            panel(sectionTitle("Volume"), LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "− 5%"
+                    setOnClickListener { HandoverForegroundService.volume("down") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "+ 5%"
+                    setOnClickListener { HandoverForegroundService.volume("up") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = "Mute"
+                    setOnClickListener { HandoverForegroundService.volume("toggle_mute") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+            }),
+        )
 
         val home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -721,6 +739,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
                 menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
+                menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
                 menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },
                 menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
             ).forEach { item ->

@@ -89,6 +89,7 @@ class HandoverForegroundService : Service() {
         fun presentation(action: String, deltaX: Int = 0, deltaY: Int = 0) {
             activeTransport?.presentationControl(action, deltaX, deltaY)
         }
+        fun volume(action: String) { activeTransport?.volumeControl(action) }
 
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"

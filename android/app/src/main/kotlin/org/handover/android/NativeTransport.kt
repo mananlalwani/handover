@@ -205,6 +205,12 @@ class NativeTransport(private val context: Context) {
         return true
     }
 
+    fun volumeControl(action: String): Boolean {
+        if (serverFingerprint == null || action !in setOf("up", "down", "toggle_mute")) return false
+        send(JSONObject().put("type", "volume_control").put("protocol", 1).put("action", action))
+        return true
+    }
+
     /** Never send notification content before the peer is authenticated. */
     fun publishNotification(notification: WireNotification) {
         if (serverFingerprint == null) return

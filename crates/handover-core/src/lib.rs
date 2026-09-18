@@ -152,6 +152,20 @@ pub struct PresentationCommand {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum VolumeAction {
+    Up,
+    Down,
+    ToggleMute,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct VolumeCommand {
+    pub device_id: DeviceId,
+    pub action: VolumeAction,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CallPhase {
     Unknown,
     Idle,
@@ -338,6 +352,7 @@ pub enum StateEvent {
     ShareResult(ShareResult),
     Messaging(MessagingEvent),
     Presentation(PresentationCommand),
+    Volume(VolumeCommand),
 }
 
 /// A media player identity scoped to its source device.

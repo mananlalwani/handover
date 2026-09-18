@@ -1514,6 +1514,10 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
             ErrorCode::BackendRejected,
             "presentation commands are not broadcast to desktop clients",
         ),
+        StateEvent::Volume(_) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "volume commands are not broadcast to desktop clients",
+        ),
     }
 }
 
