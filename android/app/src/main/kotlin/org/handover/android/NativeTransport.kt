@@ -224,6 +224,7 @@ class NativeTransport(private val context: Context) {
             ContactsContract.Contacts._ID,
             ContactsContract.Contacts.DISPLAY_NAME,
             ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
+            ContactsContract.Contacts.PHOTO_FILE_ID,
         )
         context.contentResolver.query(
             ContactsContract.Contacts.CONTENT_URI, projection, null, null,
@@ -232,6 +233,7 @@ class NativeTransport(private val context: Context) {
             val idIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
             val nameIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME)
             val photoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
+            val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
             while (cursor.moveToNext()) {
                 val id = cursor.getString(idIndex)
                 val item = JSONObject().put("local_id", id)
@@ -258,7 +260,8 @@ class NativeTransport(private val context: Context) {
                 item.put("emails", emails)
                 val photoUri = cursor.getString(photoIndex)
                 if (photoUri != null) {
-                    val photo = encodeContactPhoto(id, photoUri?.let(Uri::parse))
+                    val photoFileId = cursor.getLong(photoFileIndex).takeIf { it > 0 }
+                    val photo = encodeContactPhoto(id, photoUri?.let(Uri::parse), photoFileId)
                     if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
                         item.put("photo", photo)
                 }
@@ -269,10 +272,16 @@ class NativeTransport(private val context: Context) {
         return true
     }
 
-    private fun encodeContactPhoto(contactId: String, thumbnailUri: Uri?): String? = runCatching {
+    private fun encodeContactPhoto(
+        contactId: String, thumbnailUri: Uri?, photoFileId: Long?,
+    ): String? = runCatching {
         val contactUri = ContactsContract.Contacts.CONTENT_URI.buildUpon()
             .appendPath(contactId).build()
+        val fileUri = photoFileId?.let {
+            ContactsContract.DisplayPhoto.CONTENT_URI.buildUpon().appendPath(it.toString()).build()
+        }
         val input = thumbnailUri?.let { context.contentResolver.openInputStream(it) }
+            ?: fileUri?.let { context.contentResolver.openInputStream(it) }
             ?: ContactsContract.Contacts.openContactPhotoInputStream(
                 context.contentResolver, contactUri, true,
             )
