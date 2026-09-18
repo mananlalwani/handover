@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use handover_core::{
-    BatteryState, CallEvent, CallState, Capability, Device, DeviceEvent, DeviceId, MediaCommand,
-    MediaEvent, MediaSession, MediaSessionId, Notification, NotificationCommand, NotificationEvent,
-    NotificationId, ReceivedShare, ShareResult, StateEvent,
+    BatteryState, CallEvent, CallState, Capability, Contact, ContactsEvent, Device, DeviceEvent,
+    DeviceId, MediaCommand, MediaEvent, MediaSession, MediaSessionId, Notification,
+    NotificationCommand, NotificationEvent, NotificationId, ReceivedShare, ShareResult, StateEvent,
 };
 
 use crate::messaging::{MessagingChange, MessagingStore};
@@ -14,6 +14,7 @@ pub(crate) struct StateStore {
     notifications: BTreeMap<NotificationId, Notification>,
     media_sessions: BTreeMap<MediaSessionId, MediaSession>,
     calls: BTreeMap<DeviceId, CallState>,
+    contacts: BTreeMap<DeviceId, Vec<Contact>>,
     messaging: MessagingStore,
 }
 
@@ -57,6 +58,7 @@ impl StateStore {
                 changed: false,
                 changes: Vec::new(),
             },
+            StateEvent::Contacts(event) => self.apply_contacts(event),
         }
     }
 
@@ -74,6 +76,7 @@ impl StateStore {
             notifications: self.notifications.values().cloned().collect(),
             media_sessions: self.media_sessions.values().cloned().collect(),
             calls: self.calls.values().cloned().collect(),
+            contacts: self.contacts(),
         }
     }
 
@@ -265,6 +268,35 @@ impl StateStore {
         self.devices.get(id)
     }
 
+    pub(crate) fn contacts(&self) -> Vec<Contact> {
+        self.contacts.values().flatten().cloned().collect()
+    }
+
+    fn apply_contacts(&mut self, event: ContactsEvent) -> ApplyOutcome {
+        match event {
+            ContactsEvent::Synced {
+                device_id,
+                contacts,
+            } => {
+                self.contacts.insert(device_id, contacts);
+                ApplyOutcome {
+                    changed: true,
+                    changes: Vec::new(),
+                }
+            }
+            ContactsEvent::Removed(device_id) => {
+                if self.contacts.remove(&device_id).is_some() {
+                    ApplyOutcome {
+                        changed: true,
+                        changes: Vec::new(),
+                    }
+                } else {
+                    ApplyOutcome::unchanged()
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     fn get_notification(&self, id: &NotificationId) -> Option<&Notification> {
         self.notifications.get(id)
@@ -276,6 +308,7 @@ pub(crate) struct StateSnapshot {
     pub(crate) notifications: Vec<Notification>,
     pub(crate) media_sessions: Vec<MediaSession>,
     pub(crate) calls: Vec<CallState>,
+    pub(crate) contacts: Vec<Contact>,
 }
 
 pub(crate) struct ApplyOutcome {

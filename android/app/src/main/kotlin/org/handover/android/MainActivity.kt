@@ -718,6 +718,27 @@ class MainActivity : android.app.Activity() {
                 }), LinearLayout.LayoutParams(0, -2, 1f))
             }),
         )
+        val contactsPage = page(
+            "Contacts", "Send a fresh, on-demand contacts snapshot to Linux.",
+            panel(sectionTitle("Privacy"), TextView(this).apply {
+                text = "Contacts are read only when you request a sync and are not retained in phone-side history."
+                setTextColor(Color.rgb(70, 77, 94))
+            }, secondary(Button(this).apply {
+                text = "Allow contacts access"
+                setOnClickListener {
+                    requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), CONTACTS_PERMISSION_REQUEST)
+                }
+            }), secondary(Button(this).apply {
+                text = "Sync contacts now"
+                setOnClickListener {
+                    if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+                        HandoverForegroundService.syncContacts()
+                    } else {
+                        requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), CONTACTS_PERMISSION_REQUEST)
+                    }
+                }
+            })),
+        )
 
         val home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -740,6 +761,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
                 menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
                 menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
+                menuButton("Contacts", "Send an on-demand contacts snapshot") { showPage(contactsPage) },
                 menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },
                 menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
             ).forEach { item ->
@@ -813,5 +835,6 @@ class MainActivity : android.app.Activity() {
         private const val LOCAL_NETWORK_REQUEST = 42
         private const val POST_NOTIFICATIONS_REQUEST = 43
         private const val CALL_PERMISSIONS_REQUEST = 45
+        private const val CONTACTS_PERMISSION_REQUEST = 46
     }
 }

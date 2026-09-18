@@ -1014,6 +1014,7 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::Hello { .. }
         | ServerPayload::Devices { .. }
         | ServerPayload::Notifications { .. }
+        | ServerPayload::Contacts { .. }
         | ServerPayload::Media { .. }
         | ServerPayload::Accounts { .. }
         | ServerPayload::Conversations { .. }

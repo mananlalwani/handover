@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.ContactsContract
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -208,6 +209,40 @@ class NativeTransport(private val context: Context) {
     fun volumeControl(action: String): Boolean {
         if (serverFingerprint == null || action !in setOf("up", "down", "toggle_mute")) return false
         send(JSONObject().put("type", "volume_control").put("protocol", 1).put("action", action))
+        return true
+    }
+
+    fun requestContactsSync(): Boolean {
+        if (serverFingerprint == null || context.checkSelfPermission("android.permission.READ_CONTACTS") !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return false
+        val contacts = org.json.JSONArray()
+        val projection = arrayOf(
+            ContactsContract.Contacts._ID,
+            ContactsContract.Contacts.DISPLAY_NAME,
+        )
+        context.contentResolver.query(
+            ContactsContract.Contacts.CONTENT_URI, projection, null, null,
+            ContactsContract.Contacts.DISPLAY_NAME + " COLLATE NOCASE ASC",
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
+            val nameIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME)
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(idIndex)
+                val item = JSONObject().put("local_id", id)
+                    .put("display_name", cursor.getString(nameIndex) ?: "")
+                val phones = org.json.JSONArray()
+                context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                    "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID}=?", arrayOf(id), null,
+                )?.use { phoneCursor ->
+                    while (phoneCursor.moveToNext()) phones.put(phoneCursor.getString(0))
+                }
+                item.put("phones", phones).put("emails", org.json.JSONArray())
+                contacts.put(item)
+            }
+        }
+        send(JSONObject().put("type", "contacts_sync").put("protocol", 1).put("contacts", contacts))
         return true
     }
 
@@ -451,6 +486,7 @@ class NativeTransport(private val context: Context) {
                     syncNotifications(enabled, list)
                 }
             }
+            "contacts_request" -> requestContactsSync()
             "notification_dismiss" -> {
                 if (serverFingerprint == null) return
                 HandoverNotificationService.dismiss(message.optString("key"))

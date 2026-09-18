@@ -366,6 +366,26 @@ where
                 },
             }
         }
+        Method::ContactsList => ServerPayload::Contacts {
+            contacts: snapshot(state).contacts,
+        },
+        Method::ContactsSync { device_id } => {
+            let peer_id = device_id
+                .as_str()
+                .strip_prefix("native:")
+                .unwrap_or_default();
+            match native_backend().map(|native| native.request_contacts_sync(peer_id)) {
+                Some(true) => ServerPayload::NativeAccepted,
+                Some(false) => ServerPayload::Error {
+                    code: ErrorCode::DeviceDisconnected,
+                    message: "contacts sync was not accepted".into(),
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "native backend unavailable".into(),
+                },
+            }
+        }
         Method::CallsAudio => ServerPayload::CallAudio {
             status: crate::call_audio::inspect().await,
         },
@@ -1517,6 +1537,10 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Volume(_) => ServerMessage::protocol_error(
             ErrorCode::BackendRejected,
             "volume commands are not broadcast to desktop clients",
+        ),
+        StateEvent::Contacts(_) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "contact snapshots are requested explicitly",
         ),
     }
 }

@@ -83,6 +83,10 @@ pub enum Method {
         title: String,
         body: String,
     },
+    #[serde(rename = "contacts.list")]
+    ContactsList,
+    #[serde(rename = "contacts.sync")]
+    ContactsSync { device_id: DeviceId },
     #[serde(rename = "calls.list")]
     CallsList,
     #[serde(rename = "calls.audio")]
@@ -320,6 +324,9 @@ pub enum ServerPayload {
     },
     Notifications {
         notifications: Vec<Notification>,
+    },
+    Contacts {
+        contacts: Vec<handover_core::Contact>,
     },
     Calls {
         calls: Vec<CallState>,
@@ -742,6 +749,22 @@ impl Client {
         self.send(Method::NotificationsList).await?;
         match self.receive().await?.payload {
             ServerPayload::Notifications { notifications } => Ok(notifications),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn contacts(&mut self) -> Result<Vec<handover_core::Contact>, IpcError> {
+        self.send(Method::ContactsList).await?;
+        match self.receive().await?.payload {
+            ServerPayload::Contacts { contacts } => Ok(contacts),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn sync_contacts(&mut self, device_id: DeviceId) -> Result<(), IpcError> {
+        self.send(Method::ContactsSync { device_id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }

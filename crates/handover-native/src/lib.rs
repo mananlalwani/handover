@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 use handover_core::{
     BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
-    CallState, Capability, ConnectivityState, ConnectivityTransport, Device, DeviceEvent, DeviceId,
-    MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId, Notification,
-    NotificationAction, NotificationCommand, NotificationEvent, NotificationId, PlaybackState,
-    PresentationAction, PresentationCommand, ReceivedShare, ShareFailure, ShareResult, ShareStatus,
-    SharedResource, StateEvent, VolumeAction, VolumeCommand,
+    CallState, Capability, ConnectivityState, ConnectivityTransport, Contact, ContactsEvent,
+    Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent, MediaSession,
+    MediaSessionId, Notification, NotificationAction, NotificationCommand, NotificationEvent,
+    NotificationId, PlaybackState, PresentationAction, PresentationCommand, ReceivedShare,
+    ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent, VolumeAction,
+    VolumeCommand,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -298,6 +299,16 @@ struct WireMediaSession {
     controls: Vec<WireControl>,
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+struct WireContact {
+    local_id: String,
+    display_name: String,
+    #[serde(default)]
+    phones: Vec<String>,
+    #[serde(default)]
+    emails: Vec<String>,
+}
+
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message {
@@ -370,6 +381,13 @@ enum Message {
     // for the live session, not that Android confirmed the effect.
     NotificationsRequest {
         protocol: u32,
+    },
+    ContactsRequest {
+        protocol: u32,
+    },
+    ContactsSync {
+        protocol: u32,
+        contacts: Vec<WireContact>,
     },
     NotificationDismiss {
         protocol: u32,
@@ -531,6 +549,8 @@ impl Message {
             | Self::NotificationRemoved { protocol, .. }
             | Self::NotificationsSync { protocol, .. }
             | Self::NotificationsRequest { protocol }
+            | Self::ContactsRequest { protocol }
+            | Self::ContactsSync { protocol, .. }
             | Self::NotificationDismiss { protocol, .. }
             | Self::NotificationReply { protocol, .. }
             | Self::NotificationAction { protocol, .. }
@@ -818,6 +838,21 @@ impl NativeBackend {
             return false;
         }
         queue.push(Message::NotificationsRequest {
+            protocol: WIRE_VERSION,
+        });
+        true
+    }
+
+    pub fn request_contacts_sync(&self, peer_id: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.active.contains_key(peer_id) {
+            return false;
+        }
+        let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
+        if queue.len() >= MAX_OUTBOX_PER_PEER {
+            return false;
+        }
+        queue.push(Message::ContactsRequest {
             protocol: WIRE_VERSION,
         });
         true
@@ -1807,6 +1842,27 @@ impl NativeBackend {
                     event(StateEvent::Volume(VolumeCommand {
                         device_id: DeviceId::new(format!("native:{id}")),
                         action,
+                    }));
+                }
+                Ok(Message::ContactsSync {
+                    protocol: WIRE_VERSION,
+                    contacts,
+                }) => {
+                    last_received = Instant::now();
+                    let device_id = DeviceId::new(format!("native:{id}"));
+                    let contacts = contacts
+                        .into_iter()
+                        .map(|contact| Contact {
+                            device_id: device_id.clone(),
+                            local_id: contact.local_id,
+                            display_name: contact.display_name,
+                            phones: contact.phones,
+                            emails: contact.emails,
+                        })
+                        .collect();
+                    event(StateEvent::Contacts(ContactsEvent::Synced {
+                        device_id,
+                        contacts,
                     }));
                 }
                 Ok(Message::NotificationPost {

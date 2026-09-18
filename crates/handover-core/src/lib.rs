@@ -164,6 +164,24 @@ pub struct VolumeCommand {
     pub action: VolumeAction,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Contact {
+    pub device_id: DeviceId,
+    pub local_id: String,
+    pub display_name: String,
+    pub phones: Vec<String>,
+    pub emails: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ContactsEvent {
+    Synced {
+        device_id: DeviceId,
+        contacts: Vec<Contact>,
+    },
+    Removed(DeviceId),
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallPhase {
@@ -353,6 +371,7 @@ pub enum StateEvent {
     Messaging(MessagingEvent),
     Presentation(PresentationCommand),
     Volume(VolumeCommand),
+    Contacts(ContactsEvent),
 }
 
 /// A media player identity scoped to its source device.
