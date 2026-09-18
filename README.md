@@ -18,6 +18,10 @@ migrated.
 It also tracks active Android notifications and their reply/dismissal support.
 Clients read that state through a local Unix socket.
 
+The production Google Messages relay lives in the separate
+[`handover-gmessages-adapter`](https://github.com/mananlalwani/handover-gmessages)
+repository to preserve the AGPL/MIT licensing boundary.
+
 ## Quick start
 
 Install KDE Connect, pair your Android device, then install Handover for the
