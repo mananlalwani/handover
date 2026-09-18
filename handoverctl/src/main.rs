@@ -86,16 +86,16 @@ enum NativeCommand {
     Unpair {
         id: String,
     },
-    /// Send a user-visible liveness ping
+    /// Send a user-visible liveness ping to a native device name or ID
     Ping {
-        id: String,
+        device: String,
     },
-    /// Ring and vibrate the phone
+    /// Ring and vibrate a native device selected by name or ID
     Ring {
-        id: String,
+        device: String,
     },
     Call {
-        id: String,
+        device: String,
         action: String,
         address: Option<String>,
         /// Explicitly authorize placing a real phone call (required for place)
@@ -341,20 +341,23 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
             client.native_unpair(id).await?;
             println!("Native peer revoked");
         }
-        NativeCommand::Ping { id } => {
+        NativeCommand::Ping { device } => {
+            let id = select_native_peer(&mut client, &device).await?;
             client.native_ping(id).await?;
             println!("Ping accepted; phone response is not guaranteed");
         }
-        NativeCommand::Ring { id } => {
+        NativeCommand::Ring { device } => {
+            let id = select_native_peer(&mut client, &device).await?;
             client.native_ring(id).await?;
             println!("Ring accepted; effect is not confirmed");
         }
         NativeCommand::Call {
-            id,
+            device,
             action,
             address,
             confirm,
         } => {
+            let id = select_native_peer(&mut client, &device).await?;
             if action == "place" && !confirm {
                 return Err(CliError::DeviceSelection(
                     "placing a real call requires --confirm".into(),
@@ -933,6 +936,32 @@ fn select_device(devices: &[Device], selector: &str) -> Result<DeviceId, CliErro
     Ok(first.id.clone())
 }
 
+async fn select_native_peer(client: &mut Client, selector: &str) -> Result<String, CliError> {
+    let peers = client.native_peers().await?;
+    select_native_peer_from_slice(&peers, selector)
+}
+
+fn select_native_peer_from_slice(
+    peers: &[handover_ipc::NativePeer],
+    selector: &str,
+) -> Result<String, CliError> {
+    if let Some(peer) = peers.iter().find(|peer| peer.id == selector) {
+        return Ok(peer.id.clone());
+    }
+    let mut matches = peers.iter().filter(|peer| peer.name == selector);
+    let first = matches.next().ok_or_else(|| {
+        CliError::DeviceSelection(format!(
+            "no native device named or identified by {selector:?}"
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(CliError::DeviceSelection(format!(
+            "multiple native devices are named {selector:?}; use a peer ID"
+        )));
+    }
+    Ok(first.id.clone())
+}
+
 async fn connected_client() -> Result<Client, IpcError> {
     let mut client = Client::connect().await?;
     let supported = client.hello().await?;
@@ -1281,6 +1310,30 @@ mod tests {
             select_device(&[], "missing"),
             Err(CliError::DeviceSelection(message)) if message.contains("no device")
         ));
+    }
+
+    #[test]
+    fn native_commands_select_peers_by_name_or_id() {
+        let peers = vec![
+            handover_ipc::NativePeer {
+                id: "peer-a".into(),
+                name: "SM-S948U1".into(),
+                fingerprint: "peer-a".into(),
+            },
+            handover_ipc::NativePeer {
+                id: "peer-b".into(),
+                name: "Tablet".into(),
+                fingerprint: "peer-b".into(),
+            },
+        ];
+        assert_eq!(
+            select_native_peer_from_slice(&peers, "SM-S948U1").expect("name"),
+            "peer-a"
+        );
+        assert_eq!(
+            select_native_peer_from_slice(&peers, "peer-b").expect("ID"),
+            "peer-b"
+        );
     }
 
     fn media_session(device_id: &str, player_id: &str, application: &str) -> MediaSession {
