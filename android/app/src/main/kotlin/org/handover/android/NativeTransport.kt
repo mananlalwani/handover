@@ -230,12 +230,18 @@ class NativeTransport(private val context: Context) {
         val listener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
             if (serverFingerprint == null) return@OnPrimaryClipChangedListener
             val clip = manager.primaryClip
+            Log.i(TAG, "clipboard changed, direct read null=${clip == null}")
             if (clip == null) {
                 // Android 10+ denies background clipboard reads. With a
                 // separate explicit opt-in and the system overlay grant, a
                 // transient 1px overlay briefly foregrounds us so this one
                 // read is legal; the view is removed in the same block.
-                if (shouldAssistBackgroundRead(true)) tryOverlayAssistedRead()
+                val assist = shouldAssistBackgroundRead(true)
+                Log.i(TAG, "clipboard assist gate=$assist")
+                if (assist) {
+                    val sent = tryOverlayAssistedRead()
+                    Log.i(TAG, "clipboard assist sent=$sent")
+                }
                 return@OnPrimaryClipChangedListener
             }
             val item = clip.getItemAt(0) ?: return@OnPrimaryClipChangedListener
