@@ -15,8 +15,8 @@ use handover_core::{
     DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId,
     Notification, NotificationAction, NotificationCommand, NotificationEvent, NotificationId,
     PlaybackState, PresentationAction, PresentationCommand, ReceivedShare, RemoteInputAction,
-    RemoteInputCommand, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
-    VolumeAction, VolumeCommand,
+    RemoteInputCommand, ShareFailure, ShareProgress, ShareResult, ShareStatus, SharedResource,
+    StateEvent, VolumeAction, VolumeCommand,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -1736,9 +1736,22 @@ impl NativeBackend {
                         return Err(NativeError::InvalidFrame);
                     }
                     let started = started.ok_or(NativeError::InvalidFrame)?;
-                    if let Err(error) =
-                        stream_file_until(&mut file.take(*size), &mut tls, *size, started)
-                    {
+                    let device_id = DeviceId::new(format!("native:{id}"));
+                    let mut report_progress = |bytes_sent| {
+                        event(StateEvent::ShareProgress(ShareProgress {
+                            device_id: device_id.clone(),
+                            transfer_id: transfer_id.clone(),
+                            bytes_sent,
+                            total_bytes: *size,
+                        }));
+                    };
+                    if let Err(error) = stream_file_until(
+                        &mut file.take(*size),
+                        &mut tls,
+                        *size,
+                        started,
+                        &mut report_progress,
+                    ) {
                         if error.kind() == std::io::ErrorKind::TimedOut {
                             self.inner
                                 .lock()
@@ -2348,9 +2361,12 @@ fn stream_file_until<R: Read, W: Write>(
     output: &mut W,
     size: u64,
     started: Instant,
+    progress: &mut impl FnMut(u64),
 ) -> std::io::Result<()> {
     let mut remaining = size;
+    let mut next_progress = 256 * 1024;
     let mut buffer = [0u8; SHARE_BUFFER];
+    progress(0);
     while remaining > 0 {
         if started.elapsed() >= SHARE_RESULT_TIMEOUT {
             return Err(std::io::Error::new(
@@ -2362,6 +2378,11 @@ fn stream_file_until<R: Read, W: Write>(
         input.read_exact(&mut buffer[..amount])?;
         output.write_all(&buffer[..amount])?;
         remaining -= amount as u64;
+        let sent = size - remaining;
+        if sent >= next_progress || remaining == 0 {
+            progress(sent);
+            next_progress = sent.saturating_add(256 * 1024);
+        }
     }
     output.flush()
 }
@@ -2999,17 +3020,29 @@ mod tests {
     #[test]
     fn streaming_stops_at_transfer_deadline() {
         let mut output = Vec::new();
+        let mut progress = Vec::new();
         let error = stream_file_until(
             &mut [1u8; 4].as_slice(),
             &mut output,
             4,
             Instant::now() - SHARE_RESULT_TIMEOUT,
+            &mut |sent| progress.push(sent),
         )
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(output.is_empty());
-        stream_file_until(&mut [1u8; 4].as_slice(), &mut output, 4, Instant::now()).unwrap();
+        assert_eq!(progress, [0]);
+        progress.clear();
+        stream_file_until(
+            &mut [1u8; 4].as_slice(),
+            &mut output,
+            4,
+            Instant::now(),
+            &mut |sent| progress.push(sent),
+        )
+        .unwrap();
         assert_eq!(output, [1, 1, 1, 1]);
+        assert_eq!(progress, [0, 4]);
     }
 
     #[test]

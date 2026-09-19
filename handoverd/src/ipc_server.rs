@@ -147,7 +147,7 @@ async fn handle_client(
                 }
                 event = receiver.recv() => {
                     match event {
-                        Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareResult(_)) && !flags.shares => {}
+                        Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_)) && !flags.shares => {}
                         Ok(event) if matches!(event, StateEvent::Media(_)) && !flags.media => {}
                         Ok(event) if matches!(event, StateEvent::Messaging(_)) && !flags.messages => {}
                         Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
@@ -1785,6 +1785,9 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::Messaging(event) => ServerMessage::from_messaging_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })
+        }
+        StateEvent::ShareProgress(progress) => {
+            ServerMessage::new(ServerPayload::ShareProgress { progress })
         }
         StateEvent::ShareResult(result) => {
             ServerMessage::new(ServerPayload::ShareResult { result })

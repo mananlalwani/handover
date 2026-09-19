@@ -7,7 +7,8 @@ use handover_core::{
     CallEvent, CallState, Conversation, ConversationId, Device, DeviceEvent, DeviceId,
     MediaCommand, MediaEvent, MediaSession, MediaSessionId, Message, MessageId,
     MessageStatusUpdate, MessagingAccount, MessagingAccountId, MessagingEvent, Notification,
-    NotificationEvent, NotificationId, ReadState, ReceivedShare, ShareResult, TypingState,
+    NotificationEvent, NotificationId, ReadState, ReceivedShare, ShareProgress, ShareResult,
+    TypingState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -438,6 +439,9 @@ pub enum ServerPayload {
     },
     ShareReceived {
         share: ReceivedShare,
+    },
+    ShareProgress {
+        progress: ShareProgress,
     },
     ShareResult {
         result: ShareResult,

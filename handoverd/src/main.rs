@@ -332,6 +332,13 @@ fn log_change(change: StateChange) {
             };
             info!(device_id = %share.device_id, kind, "share received");
         }
+        StateChange::ShareProgress(progress) => tracing::debug!(
+            device_id = %progress.device_id,
+            transfer_id = %progress.transfer_id,
+            bytes_sent = progress.bytes_sent,
+            total_bytes = progress.total_bytes,
+            "share progress"
+        ),
         StateChange::ShareResult(result) => {
             info!(device_id = %result.device_id, transfer_id = %result.transfer_id,
                 status = ?result.status, reason = ?result.reason, "share result");

@@ -1041,6 +1041,10 @@ fn print_message(payload: ServerPayload) {
             };
             println!("share received: {kind} from {}", share.device_id);
         }
+        ServerPayload::ShareProgress { progress } => println!(
+            "share progress: transfer {} to {} sent {}/{} bytes",
+            progress.transfer_id, progress.device_id, progress.bytes_sent, progress.total_bytes
+        ),
         ServerPayload::ShareResult { result } => {
             println!(
                 "share {}: transfer {} to {}{}",

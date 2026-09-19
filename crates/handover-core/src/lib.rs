@@ -437,6 +437,7 @@ pub enum StateEvent {
     CallCommandResult(CallCommandResult),
     DeviceCommandResult(DeviceCommandResult),
     ShareReceived(ReceivedShare),
+    ShareProgress(ShareProgress),
     ShareResult(ShareResult),
     Messaging(MessagingEvent),
     Presentation(PresentationCommand),
@@ -582,6 +583,16 @@ pub struct ShareResult {
     pub status: ShareStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<ShareFailure>,
+}
+
+/// Transient sender progress for one native file transfer. This reports bytes
+/// written to the authenticated stream, not receiver storage or delivery.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ShareProgress {
+    pub device_id: DeviceId,
+    pub transfer_id: String,
+    pub bytes_sent: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use handover_core::{
     BatteryState, CallEvent, CallState, Capability, Contact, ContactsEvent, Device, DeviceEvent,
     DeviceId, MediaCommand, MediaEvent, MediaSession, MediaSessionId, Notification,
-    NotificationCommand, NotificationEvent, NotificationId, ReceivedShare, ShareResult, StateEvent,
+    NotificationCommand, NotificationEvent, NotificationId, ReceivedShare, ShareProgress,
+    ShareResult, StateEvent,
 };
 
 use crate::messaging::{MessagingChange, MessagingStore};
@@ -36,6 +37,10 @@ impl StateStore {
             StateEvent::ShareReceived(share) => ApplyOutcome {
                 changed: true,
                 changes: vec![StateChange::ShareReceived(share)],
+            },
+            StateEvent::ShareProgress(progress) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::ShareProgress(progress)],
             },
             StateEvent::ShareResult(result) => ApplyOutcome {
                 changed: true,
@@ -397,6 +402,7 @@ pub(crate) enum StateChange {
     CallCommandResult(handover_core::CallCommandResult),
     DeviceCommandResult(handover_core::DeviceCommandResult),
     ShareReceived(ReceivedShare),
+    ShareProgress(ShareProgress),
     ShareResult(ShareResult),
     Messaging(MessagingChange),
 }
