@@ -108,6 +108,7 @@ class HandoverForegroundService : Service() {
         }
         fun syncContacts() { activeTransport?.requestContactsSync() }
         fun sendClipboard() { activeTransport?.sendClipboardToLinux() }
+        fun sendAutomaticClipboard() { activeTransport?.sendAutomaticClipboardToLinux() }
         fun setClipboardSync(enabled: Boolean) { activeTransport?.setClipboardSync(enabled) }
         fun clipboardSyncEnabled(): Boolean = activeTransport?.clipboardSyncEnabled() == true
         fun setOverlayAssist(enabled: Boolean) { activeTransport?.setOverlayAssist(enabled) }

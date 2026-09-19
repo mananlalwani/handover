@@ -62,6 +62,11 @@ enum Command {
     Screensaver { action: String },
     /// Get or set Linux-to-phone background clipboard mirroring (off by default)
     ClipboardMirror { action: String },
+    /// List, pin, copy, and clear phone-to-Linux clipboard history
+    ClipboardHistory {
+        #[command(subcommand)]
+        command: ClipboardHistoryCommand,
+    },
     /// Cancel a queued native share that has not started streaming
     CancelShare { device: String, transfer_id: String },
     /// List or run allowlisted desktop commands
@@ -84,6 +89,25 @@ enum CustomCommand {
     List,
     /// Run one allowlisted desktop command by name
     Run { name: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum ClipboardHistoryCommand {
+    /// List recent and pinned entries
+    List,
+    /// Save a new pinned string
+    Save { text: String },
+    /// Pin an existing entry
+    Pin { id: u64 },
+    /// Unpin an existing entry
+    Unpin { id: u64 },
+    /// Copy an entry into the Linux clipboard
+    Copy { id: u64 },
+    /// Remove recent entries, retaining pins unless --all is passed
+    Clear {
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -249,6 +273,7 @@ async fn main() -> ExitCode {
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
         Some(Command::Screensaver { action }) => screensaver(&action).await,
         Some(Command::ClipboardMirror { action }) => clipboard_mirror(&action).await,
+        Some(Command::ClipboardHistory { command }) => clipboard_history(command).await,
         Some(Command::CancelShare {
             device,
             transfer_id,
@@ -617,6 +642,55 @@ async fn clipboard_mirror(action: &str) -> Result<(), CliError> {
             return Err(CliError::DeviceSelection(
                 "clipboard mirror action must be on, off, or status".into(),
             ));
+        }
+    }
+    Ok(())
+}
+
+async fn clipboard_history(command: ClipboardHistoryCommand) -> Result<(), CliError> {
+    let mut client = Client::connect().await?;
+    match command {
+        ClipboardHistoryCommand::List => {
+            let entries = client.clipboard_history().await?;
+            if entries.is_empty() {
+                println!("No phone clipboard history");
+            } else {
+                println!("ID\tPINNED\tTEXT");
+                for entry in entries {
+                    let mut preview: String = entry.text.escape_default().take(120).collect();
+                    if preview.len() < entry.text.escape_default().count() {
+                        preview.push_str("...");
+                    }
+                    println!("{}\t{}\t{}", entry.id, entry.pinned, preview);
+                }
+            }
+        }
+        ClipboardHistoryCommand::Save { text } => {
+            client.save_clipboard_history(text).await?;
+            println!("Pinned clipboard string saved");
+        }
+        ClipboardHistoryCommand::Pin { id } => {
+            client.set_clipboard_history_pin(id, true).await?;
+            println!("Clipboard history entry {id} pinned");
+        }
+        ClipboardHistoryCommand::Unpin { id } => {
+            client.set_clipboard_history_pin(id, false).await?;
+            println!("Clipboard history entry {id} unpinned");
+        }
+        ClipboardHistoryCommand::Copy { id } => {
+            client.copy_clipboard_history(id).await?;
+            println!("Clipboard history entry {id} copied");
+        }
+        ClipboardHistoryCommand::Clear { all } => {
+            client.clear_clipboard_history(all).await?;
+            println!(
+                "{}",
+                if all {
+                    "Clipboard history cleared"
+                } else {
+                    "Recent clipboard history cleared; pinned entries retained"
+                }
+            );
         }
     }
     Ok(())
@@ -1292,6 +1366,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::Subscribed { .. }
         | ServerPayload::NativePeers { .. }
         | ServerPayload::NativePending { .. }
+        | ServerPayload::ClipboardHistory { .. }
         | ServerPayload::NativeAccepted => {}
     }
 }

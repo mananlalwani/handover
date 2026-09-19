@@ -128,6 +128,16 @@ pub enum Method {
     ClipboardMirror { enable: bool },
     #[serde(rename = "clipboard.mirror_status")]
     ClipboardMirrorStatus,
+    #[serde(rename = "clipboard.history_list")]
+    ClipboardHistoryList,
+    #[serde(rename = "clipboard.history_pin")]
+    ClipboardHistoryPin { id: u64, pinned: bool },
+    #[serde(rename = "clipboard.history_save")]
+    ClipboardHistorySave { text: String },
+    #[serde(rename = "clipboard.history_copy")]
+    ClipboardHistoryCopy { id: u64 },
+    #[serde(rename = "clipboard.history_clear")]
+    ClipboardHistoryClear { include_pinned: bool },
     #[serde(rename = "contacts.list")]
     ContactsList,
     #[serde(rename = "contacts.sync")]
@@ -480,6 +490,9 @@ pub enum ServerPayload {
     ClipboardMirror {
         enabled: bool,
     },
+    ClipboardHistory {
+        entries: Vec<ClipboardHistoryEntry>,
+    },
     CustomCommands {
         commands: Vec<handover_core::CustomCommandEntry>,
     },
@@ -563,6 +576,14 @@ pub enum ServerPayload {
         code: ErrorCode,
         message: String,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ClipboardHistoryEntry {
+    pub id: u64,
+    pub text: String,
+    pub pinned: bool,
+    pub created_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -818,6 +839,52 @@ impl Client {
         self.send(Method::ClipboardMirrorStatus).await?;
         match self.receive().await?.payload {
             ServerPayload::ClipboardMirror { enabled } => Ok(enabled),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn clipboard_history(&mut self) -> Result<Vec<ClipboardHistoryEntry>, IpcError> {
+        self.send(Method::ClipboardHistoryList).await?;
+        match self.receive().await?.payload {
+            ServerPayload::ClipboardHistory { entries } => Ok(entries),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn set_clipboard_history_pin(
+        &mut self,
+        id: u64,
+        pinned: bool,
+    ) -> Result<(), IpcError> {
+        self.send(Method::ClipboardHistoryPin { id, pinned })
+            .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn save_clipboard_history(&mut self, text: String) -> Result<(), IpcError> {
+        self.send(Method::ClipboardHistorySave { text }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn copy_clipboard_history(&mut self, id: u64) -> Result<(), IpcError> {
+        self.send(Method::ClipboardHistoryCopy { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn clear_clipboard_history(&mut self, include_pinned: bool) -> Result<(), IpcError> {
+        self.send(Method::ClipboardHistoryClear { include_pinned })
+            .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }

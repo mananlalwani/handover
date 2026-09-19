@@ -29,6 +29,23 @@ pub(crate) fn apply(text: &ClipboardText) {
     let _ = child.wait();
 }
 
+pub(crate) fn apply_plain(text: &str) {
+    let mut child = match Command::new("wl-copy")
+        .args(["--type", "text/plain"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return,
+    };
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let _ = child.wait();
+}
+
 pub(crate) fn apply_file(path: &str, mime: &str) {
     let mut child = match Command::new("wl-copy")
         .args(["--type", mime])

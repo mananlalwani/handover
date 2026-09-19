@@ -23,7 +23,7 @@ class ClipboardReadActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) return
-        HandoverForegroundService.sendClipboard()
+        HandoverForegroundService.sendAutomaticClipboard()
         finish()
     }
 }

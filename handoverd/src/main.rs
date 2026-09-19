@@ -1,5 +1,6 @@
 mod call_audio;
 mod clipboard;
+mod clipboard_history;
 mod clipboard_mirror;
 mod custom_commands;
 mod ipc_server;
@@ -34,9 +35,14 @@ use tracing::{info, warn};
 static NATIVE: OnceLock<NativeBackend> = OnceLock::new();
 static ACTIVE_CALLS: Mutex<BTreeSet<DeviceId>> = Mutex::new(BTreeSet::new());
 static MIRROR: OnceLock<Arc<clipboard_mirror::Mirror>> = OnceLock::new();
+static CLIPBOARD_HISTORY: OnceLock<clipboard_history::ClipboardHistory> = OnceLock::new();
 
 pub(crate) fn mirror() -> Option<Arc<clipboard_mirror::Mirror>> {
     MIRROR.get().cloned()
+}
+
+pub(crate) fn clipboard_history() -> &'static clipboard_history::ClipboardHistory {
+    CLIPBOARD_HISTORY.get_or_init(clipboard_history::ClipboardHistory::load)
 }
 /// Explicit desktop inhibitor override from local IPC. `None` follows the
 /// automatic policy (any connected native phone or any phone keep-awake
@@ -57,6 +63,7 @@ pub(crate) fn set_manual_screensaver(inhibit: Option<bool>) {
 async fn main() {
     tracing_subscriber::fmt::init();
     info!("handoverd started");
+    let _ = clipboard_history();
 
     let mut initial_state = StateStore::default();
     if let Err(error) = messaging_cache::restore(&mut initial_state) {
@@ -181,6 +188,9 @@ fn apply_backend_event(
         volume::execute(command);
     }
     if let StateEvent::Clipboard(text) = &event {
+        if let Err(error) = clipboard_history().record_phone_text(&text.text) {
+            warn!(%error, "could not persist clipboard history");
+        }
         clipboard::apply(text);
         if let Some(mirror) = mirror() {
             mirror.note_remote(&text.text, &text.html, &text.uri);

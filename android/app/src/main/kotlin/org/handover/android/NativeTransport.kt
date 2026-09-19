@@ -238,6 +238,7 @@ class NativeTransport(private val context: Context) {
             if (clip == null) {
                 return@OnPrimaryClipChangedListener
             }
+            if (isSensitiveClip(clip)) return@OnPrimaryClipChangedListener
             val item = clip.getItemAt(0) ?: return@OnPrimaryClipChangedListener
             val text = item.coerceToText(context)?.toString() ?: ""
             if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return@OnPrimaryClipChangedListener
@@ -381,6 +382,18 @@ class NativeTransport(private val context: Context) {
         val manager = context.getSystemService(android.content.ClipboardManager::class.java)
         return sendClipboardPayload(manager.primaryClip)
     }
+
+    fun sendAutomaticClipboardToLinux(): Boolean {
+        if (serverFingerprint == null) return false
+        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
+        val clip = manager.primaryClip ?: return false
+        if (isSensitiveClip(clip)) return false
+        return sendClipboardPayload(clip)
+    }
+
+    private fun isSensitiveClip(clip: android.content.ClipData): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+            clip.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
 
     private fun sendClipboardPayload(clip: android.content.ClipData?): Boolean {
         val item = clip?.getItemAt(0) ?: return false

@@ -464,6 +464,54 @@ where
         Method::ClipboardMirrorStatus => ServerPayload::ClipboardMirror {
             enabled: crate::mirror().is_some_and(|mirror| mirror.enabled()),
         },
+        Method::ClipboardHistoryList => ServerPayload::ClipboardHistory {
+            entries: crate::clipboard_history().entries(),
+        },
+        Method::ClipboardHistoryPin { id, pinned } => {
+            match crate::clipboard_history().set_pinned(id, pinned) {
+                Ok(true) => ServerPayload::NativeAccepted,
+                Ok(false) => ServerPayload::Error {
+                    code: ErrorCode::ResourceNotFound,
+                    message: "clipboard history entry was not found".into(),
+                },
+                Err(_) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: "clipboard history could not be saved".into(),
+                },
+            }
+        }
+        Method::ClipboardHistorySave { text } => {
+            match crate::clipboard_history().save_pinned(&text) {
+                Ok(()) => ServerPayload::NativeAccepted,
+                Err(error) => ServerPayload::Error {
+                    code: if error.kind() == std::io::ErrorKind::InvalidInput {
+                        ErrorCode::InvalidResource
+                    } else {
+                        ErrorCode::BackendRejected
+                    },
+                    message: error.to_string(),
+                },
+            }
+        }
+        Method::ClipboardHistoryCopy { id } => match crate::clipboard_history().text(id) {
+            Some(text) => {
+                crate::clipboard::apply_plain(&text);
+                ServerPayload::NativeAccepted
+            }
+            None => ServerPayload::Error {
+                code: ErrorCode::ResourceNotFound,
+                message: "clipboard history entry was not found".into(),
+            },
+        },
+        Method::ClipboardHistoryClear { include_pinned } => {
+            match crate::clipboard_history().clear(include_pinned) {
+                Ok(()) => ServerPayload::NativeAccepted,
+                Err(_) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: "clipboard history could not be cleared".into(),
+                },
+            }
+        }
         Method::ClipboardSendCurrent { device_id } => match read_wayland_clipboard().await {
             Ok(WaylandClipboard::Text { text, html, uri }) => {
                 let peer_id = device_id

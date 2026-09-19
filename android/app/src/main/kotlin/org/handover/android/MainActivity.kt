@@ -633,11 +633,20 @@ class MainActivity : android.app.Activity() {
             panel(sectionTitle("Connectivity & background"), localNetworkAccess,
                 batteryAccess, backgroundAccess),
             panel(sectionTitle("Clipboard"), Switch(this).apply {
-                text = "Sync clipboard in the foreground service"
+                text = "Send clipboard changes while Handover is visible"
                 isChecked = HandoverForegroundService.clipboardSyncEnabled()
                 setOnCheckedChangeListener { _, enabled ->
                     HandoverForegroundService.setClipboardSync(enabled)
                 }
+            }, TextView(this).apply {
+                text = "For manual background sends, add the Handover 'Send clipboard' tile from the Quick Settings tile editor."
+                textSize = 14f
+                setTextColor(Color.rgb(92, 99, 116))
+            }),
+            panel(sectionTitle("Advanced automatic clipboard sync"), TextView(this).apply {
+                text = "Android blocks background clipboard access. This optional workaround reads only ClipboardService log events for Handover, then opens a transient 1x1 activity for one clipboard read. It requires an ADB READ_LOGS grant."
+                textSize = 14f
+                setTextColor(Color.rgb(92, 99, 116))
             }, Switch(this).apply {
                 text = "Background reads via transient activity (needs display permission and ADB READ_LOGS grant)"
                 isChecked = HandoverForegroundService.overlayAssistEnabled()

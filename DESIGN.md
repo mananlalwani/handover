@@ -116,22 +116,24 @@ text packets with the Android plugin. The per-device D-Bus interface exposes a
 remote clipboard text or a signal for remote text updates. Those updates are
 handled internally by `kdeconnectd`.
 
-Handover therefore does not duplicate this transport or add a separate
-clipboard engine at present. It does not persist clipboard contents, log them,
-or include them in normal IPC snapshots. KDE Connect's clipboard plugin must
-be enabled for the device.
+The native backend carries bounded text and rich-text clipboard bundles.
+`handoverd` can mirror Linux text to connected native phones. Clipboard
+contents never enter logs or normal daemon snapshots.
 
 KDE Connect suppresses clipboard write-back by comparing content and type,
 without a timer. Its enabled per-device plugins receive local changes, so a
 Linux copy can reach multiple connected devices. Remote writes share one Linux
 clipboard; differing simultaneous updates are last-writer-wins. Handover does
-not select a default device or maintain a clipboard history.
+not select a default device. It persists up to 25 recent phone-to-Linux text
+entries plus user-pinned strings in a mode-0600 state file. The dedicated
+clipboard-history IPC methods expose that list to local clients.
 
-Android 10 and later restrict background clipboard reads. KDE Connect can use
-its foreground "Send clipboard" action for the Android-to-Linux direction; its
-automatic path requires the user-granted privileged `READ_LOGS` setup. Linux-
-to-Android transfer can remain automatic when the plugin is enabled. This is an
-Android platform restriction, not a Handover protocol workaround.
+Android 10 and later restrict background clipboard reads. Handover provides a
+notification action and a Quick Settings tile for explicit sends. Its optional
+automatic path requires a user-granted `READ_LOGS` permission and display-over-
+apps access. It filters `ClipboardService` output for its package name, opens a
+transient activity for one permitted read, and does not retain log lines.
+Clipboard clips marked sensitive by Android are excluded from automatic sends.
 
 For future work that needs daemon-owned Wayland clipboard access, the platform
 boundary belongs outside `handover-core`. The current Wayland options are the
