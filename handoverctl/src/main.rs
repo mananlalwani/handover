@@ -58,8 +58,15 @@ enum Command {
     },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
+    /// Control the desktop idle inhibitor: inhibit, release, or follow
+    Screensaver { action: String },
     /// Cancel a queued native share that has not started streaming
     CancelShare { device: String, transfer_id: String },
+    /// List or run allowlisted desktop commands
+    Custom {
+        #[command(subcommand)]
+        command: CustomCommand,
+    },
     /// Print current normalized call state for one device
     Calls { device: String },
     /// Inspect and use messaging accounts and conversations
@@ -67,6 +74,14 @@ enum Command {
         #[command(subcommand)]
         command: MessagesCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum CustomCommand {
+    /// List allowlisted desktop commands
+    List,
+    /// Run one allowlisted desktop command by name
+    Run { name: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -99,6 +114,13 @@ enum NativeCommand {
     /// Lock a native phone when device-admin access is enabled
     Lock {
         device: String,
+    },
+    /// Ask a native phone to hold its wake lock (or release it with --release)
+    KeepAwake {
+        device: String,
+        /// Release the phone wake lock instead of holding it
+        #[arg(long)]
+        release: bool,
     },
     Call {
         device: String,
@@ -219,10 +241,12 @@ async fn main() -> ExitCode {
         }) => send_notification(&device, app, title, body).await,
         Some(Command::Clipboard { device, text }) => send_clipboard(&device, text).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
+        Some(Command::Screensaver { action }) => screensaver(&action).await,
         Some(Command::CancelShare {
             device,
             transfer_id,
         }) => cancel_share(&device, transfer_id).await,
+        Some(Command::Custom { command }) => custom(command).await,
         Some(Command::Messages { command }) => messages(command).await,
         Some(Command::Calls { device }) => calls(device).await,
         None => {
@@ -324,6 +348,11 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
             let id = select_native_peer(&mut client, &device).await?;
             client.native_lock(id).await?;
             println!("Lock queued; use monitor to observe the Android result");
+        }
+        NativeCommand::KeepAwake { device, release } => {
+            let id = select_native_peer(&mut client, &device).await?;
+            client.native_keep_awake(id, !release).await?;
+            println!("Keep-awake queued; use monitor to observe the Android result");
         }
         NativeCommand::Call {
             device,
@@ -514,6 +543,42 @@ async fn send_file(selector: &str, path: PathBuf) -> Result<(), CliError> {
     match transfer_id {
         Some(id) => println!("File share accepted: transfer {id}; awaiting receiver result"),
         None => println!("File share accepted; delivery is not confirmed"),
+    }
+    Ok(())
+}
+
+async fn screensaver(action: &str) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    match action {
+        "inhibit" => client.set_screensaver(Some(true)).await?,
+        "release" => client.set_screensaver(Some(false)).await?,
+        "follow" => client.set_screensaver(None).await?,
+        _ => {
+            return Err(CliError::DeviceSelection(
+                "screensaver action must be inhibit, release, or follow".into(),
+            ));
+        }
+    }
+    println!("Desktop inhibitor override: {action}");
+    Ok(())
+}
+
+async fn custom(command: CustomCommand) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    match command {
+        CustomCommand::List => {
+            println!("NAME  ARGV");
+            for entry in client.custom_commands().await? {
+                println!("{}  {}", entry.name, entry.argv.join(" "));
+            }
+        }
+        CustomCommand::Run { name } => {
+            let result = client.run_custom(name).await?;
+            println!(
+                "custom command {}: accepted={} exit={:?} failure={:?}",
+                result.name, result.accepted, result.exit_code, result.failure
+            );
+        }
     }
     Ok(())
 }
@@ -1084,6 +1149,18 @@ fn print_message(payload: ServerPayload) {
                 } else {
                     "was already sent or is unknown"
                 }
+            );
+        }
+        ServerPayload::CustomCommands { commands } => {
+            println!("NAME  ARGV");
+            for entry in commands {
+                println!("{}  {}", entry.name, entry.argv.join(" "));
+            }
+        }
+        ServerPayload::CustomResult { result } => {
+            println!(
+                "custom command {}: accepted={} exit={:?} failure={:?}",
+                result.name, result.accepted, result.exit_code, result.failure
             );
         }
         ServerPayload::Snapshot {

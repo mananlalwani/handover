@@ -37,6 +37,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
+    private lateinit var awakeStatus: TextView
     private lateinit var transferStatus: LinearLayout
     private lateinit var capabilitiesStatus: TextView
     private lateinit var updateStatus: TextView
@@ -157,6 +158,8 @@ class MainActivity : android.app.Activity() {
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
         mediaStatus.text = if (TestMediaSession.isActive()) "Test media: playing" else "Test media: stopped"
+        awakeStatus.text = "Desktop requested: ${HandoverForegroundService.desktopAwakeRequested()}\n" +
+            "Phone held awake: ${HandoverForegroundService.phoneAwakeHeld()}"
         refreshTransferHistory()
         val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         val localNetwork = if (android.os.Build.VERSION.SDK_INT < 37 ||
@@ -402,6 +405,10 @@ class MainActivity : android.app.Activity() {
             textSize = 14f
             setTextColor(Color.rgb(70, 77, 94))
         }
+        awakeStatus = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(70, 77, 94))
+        }
         transferStatus = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -625,6 +632,14 @@ class MainActivity : android.app.Activity() {
             "Activity", "Current phone-side Handover activity.",
             panel(sectionTitle("Notifications"), notificationStatus),
             panel(sectionTitle("Media"), mediaStatus),
+            panel(sectionTitle("Stay awake"), awakeStatus, Switch(this).apply {
+                text = "Ask the desktop to stay awake"
+                isChecked = HandoverForegroundService.desktopAwakeRequested()
+                setOnCheckedChangeListener { _, enabled ->
+                    HandoverForegroundService.requestDesktopAwake(enabled)
+                    refreshStatus()
+                }
+            }),
             panel(sectionTitle("Recent transfers"), transferStatus,
                 secondary(Button(this).apply {
                     text = "Clear all"

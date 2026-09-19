@@ -90,6 +90,7 @@ class NativeTransport(private val context: Context) {
     @Volatile private var remoteClipboardHash: String? = null
     @Volatile private var connectionStatus = "offline"
     private var clipboardListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     /** Reconnects to the stored manual endpoint after a restart when already paired. */
     fun connectToSavedEndpoint() {
@@ -131,6 +132,7 @@ class NativeTransport(private val context: Context) {
     fun refreshCalls() = callObserver.refresh()
 
     fun stop() {
+        releaseWakeLock()
         clipboardListener?.let {
             context.getSystemService(android.content.ClipboardManager::class.java)
                 .removePrimaryClipChangedListener(it)
@@ -158,6 +160,47 @@ class NativeTransport(private val context: Context) {
     fun clipboardSyncEnabled(): Boolean = preferences.getBoolean(CLIPBOARD_SYNC_KEY, false)
 
     fun connectionState(): String = connectionStatus
+
+    /** Hold or release the phone screen at the desktop's request. True
+     * means the wake lock changed as asked, never a battery guarantee. The
+     * lock is best-effort, dim-level, and times out after ten minutes; the
+     * desktop re-requests for longer sessions. */
+    @Suppress("DEPRECATION")
+    fun setPhoneAwake(inhibit: Boolean): Boolean = runCatching {
+        if (inhibit) {
+            if (wakeLock?.isHeld != true) {
+                wakeLock = context.getSystemService(android.os.PowerManager::class.java)
+                    .newWakeLock(android.os.PowerManager.SCREEN_DIM_WAKE_LOCK, "Handover:keep-awake")
+                    .apply {
+                        setReferenceCounted(false)
+                        acquire(10 * 60 * 1000L)
+                    }
+            }
+        } else {
+            releaseWakeLock()
+        }
+        true
+    }.getOrDefault(false)
+
+    fun phoneAwakeHeld(): Boolean = wakeLock?.isHeld == true
+
+    private fun releaseWakeLock() {
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        wakeLock = null
+    }
+
+    /** Ask the paired desktop to hold (or release) its idle inhibitor. The
+     * daemon reports the outcome to desktop clients; the phone switch only
+     * records the requested state. */
+    fun requestDesktopAwake(inhibit: Boolean) {
+        preferences.edit().putBoolean(DESKTOP_AWAKE_KEY, inhibit).apply()
+        if (serverFingerprint == null) return
+        send(JSONObject().put("type", "screensaver_control").put("protocol", 1)
+            .put("request_id", java.util.UUID.randomUUID().toString().replace("-", ""))
+            .put("inhibit", inhibit))
+    }
+
+    fun desktopAwakeRequested(): Boolean = preferences.getBoolean(DESKTOP_AWAKE_KEY, false)
 
     private fun configureClipboardSync(enabled: Boolean) {
         val manager = context.getSystemService(android.content.ClipboardManager::class.java)
@@ -680,16 +723,31 @@ class NativeTransport(private val context: Context) {
                 callObserver.refresh()
                 // Same recovery for media sessions.
                 MediaObserver.activePushSync()
+                // The daemon drops keep-awake requests on disconnect, so a
+                // still-enabled request is re-asserted on every session.
+                if (desktopAwakeRequested()) requestDesktopAwake(true)
             }
             "revoke" -> {
                 preferences.edit().remove(PIN_KEY).apply()
                 serverFingerprint = null
+                releaseWakeLock()
                 broadcast(ACTION_REVOKED, JSONObject())
                 socket?.close()
             }
             "battery_request" -> sendBattery()
             "ring" -> handleAudibleCommand(message, "ring")
             "user_ping" -> handleAudibleCommand(message, "ping")
+            "keep_awake" -> {
+                if (serverFingerprint == null) return
+                val requestId = message.optString("request_id")
+                if (!isTransferId(requestId)) return
+                val inhibit = message.optBoolean("inhibit", false)
+                if (setPhoneAwake(inhibit)) {
+                    sendDeviceCommandResult(requestId, "keep_awake", true, null)
+                } else {
+                    sendDeviceCommandResult(requestId, "keep_awake", false, "unavailable")
+                }
+            }
             "lock_device" -> {
                 if (serverFingerprint == null) return
                 val requestId = message.optString("request_id")
@@ -1272,6 +1330,7 @@ class NativeTransport(private val context: Context) {
         private const val MANUAL_ENDPOINT_KEY = "manual_endpoint"
         private const val MAX_FRAME = 64 * 1024
         private const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"
+        private const val DESKTOP_AWAKE_KEY = "desktop_awake_requested"
         private const val MAX_FILE_BYTES = 100L * 1024 * 1024
         private const val MAX_CLIPBOARD_FILE_BYTES = 10L * 1024 * 1024
         private const val MAX_URL_BYTES = 8 * 1024

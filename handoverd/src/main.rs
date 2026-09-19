@@ -1,5 +1,6 @@
 mod call_audio;
 mod clipboard;
+mod custom_commands;
 mod ipc_server;
 mod messaging;
 mod messaging_backend;
@@ -31,9 +32,19 @@ use tracing::{info, warn};
 
 static NATIVE: OnceLock<NativeBackend> = OnceLock::new();
 static ACTIVE_CALLS: Mutex<BTreeSet<DeviceId>> = Mutex::new(BTreeSet::new());
+/// Explicit desktop inhibitor override from local IPC. `None` follows the
+/// automatic policy (any connected native phone or any phone keep-awake
+/// request); `Some` forces the inhibitor on or off.
+static MANUAL_SCREENSAVER: Mutex<Option<bool>> = Mutex::new(None);
 
 pub(crate) fn native_backend() -> Option<&'static NativeBackend> {
     NATIVE.get()
+}
+
+pub(crate) fn set_manual_screensaver(inhibit: Option<bool>) {
+    *MANUAL_SCREENSAVER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = inhibit;
 }
 
 #[tokio::main]
@@ -229,6 +240,15 @@ fn apply_backend_event(
             warn!(%error, "could not persist messaging cache");
         }
     }
+    refresh_screensaver(state);
+    if call_started {
+        pause_desktop_media();
+    }
+}
+
+/// Recompute the desktop idle inhibitor from connection state, phone
+/// keep-awake requests, and the explicit local override.
+pub(crate) fn refresh_screensaver(state: &Arc<RwLock<StateStore>>) {
     let native_connected = state
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -236,10 +256,12 @@ fn apply_backend_event(
         .devices
         .iter()
         .any(|device| is_native_device(&device.id) && device.connected && device.paired);
-    screensaver::update(native_connected);
-    if call_started {
-        pause_desktop_media();
-    }
+    let phone_requests =
+        native_backend().is_some_and(|native| !native.phone_screensaver_requests().is_empty());
+    let manual = *MANUAL_SCREENSAVER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    screensaver::update(manual.unwrap_or(native_connected || phone_requests));
 }
 
 fn pause_desktop_media() {

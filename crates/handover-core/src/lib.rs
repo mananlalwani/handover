@@ -310,6 +310,34 @@ pub struct CallCommandResult {
     pub failure: Option<CallCommandFailure>,
 }
 
+/// One entry of the desktop custom-command allowlist. The program and its
+/// arguments are fixed by the local user; remote callers supply only the name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomCommandEntry {
+    pub name: String,
+    pub argv: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomCommandFailure {
+    UnknownCommand,
+    SpawnFailed,
+    TimedOut,
+}
+
+/// The outcome of running one allowlisted command. `accepted` means the
+/// listed program ran; `exit_code` is its wait status, never its output.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomCommandResult {
+    pub name: String,
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<CustomCommandFailure>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceCommandAction {
@@ -319,6 +347,8 @@ pub enum DeviceCommandAction {
     Clipboard,
     Notification,
     Media,
+    Screensaver,
+    KeepAwake,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -65,6 +65,18 @@ pub enum Method {
     NativeRing { id: String },
     #[serde(rename = "native.lock")]
     NativeLock { id: String },
+    #[serde(rename = "native.keep_awake")]
+    NativeKeepAwake { id: String, inhibit: bool },
+    #[serde(rename = "screensaver.inhibit")]
+    ScreensaverInhibit,
+    #[serde(rename = "screensaver.release")]
+    ScreensaverRelease,
+    #[serde(rename = "screensaver.follow")]
+    ScreensaverFollow,
+    #[serde(rename = "custom.commands")]
+    CustomCommands,
+    #[serde(rename = "custom.run")]
+    CustomRun { name: String },
     #[serde(rename = "remote_input.send")]
     RemoteInputSend {
         device_id: DeviceId,
@@ -459,6 +471,12 @@ pub enum ServerPayload {
     ShareCancelled {
         cancelled: bool,
     },
+    CustomCommands {
+        commands: Vec<handover_core::CustomCommandEntry>,
+    },
+    CustomResult {
+        result: handover_core::CustomCommandResult,
+    },
     MediaAccepted {
         id: MediaSessionId,
     },
@@ -748,6 +766,29 @@ impl Client {
         }
     }
 
+    pub async fn native_keep_awake(&mut self, id: String, inhibit: bool) -> Result<(), IpcError> {
+        self.send(Method::NativeKeepAwake { id, inhibit }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    /// Force the desktop idle inhibitor on (`true`), off (`false`), or back
+    /// to the automatic policy (`None`).
+    pub async fn set_screensaver(&mut self, inhibit: Option<bool>) -> Result<(), IpcError> {
+        self.send(match inhibit {
+            Some(true) => Method::ScreensaverInhibit,
+            Some(false) => Method::ScreensaverRelease,
+            None => Method::ScreensaverFollow,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     pub async fn call_control(
         &mut self,
         device_id: DeviceId,
@@ -996,6 +1037,27 @@ impl Client {
         .await?;
         match self.receive().await?.payload {
             ServerPayload::ShareCancelled { cancelled } => Ok(cancelled),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn custom_commands(
+        &mut self,
+    ) -> Result<Vec<handover_core::CustomCommandEntry>, IpcError> {
+        self.send(Method::CustomCommands).await?;
+        match self.receive().await?.payload {
+            ServerPayload::CustomCommands { commands } => Ok(commands),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn run_custom(
+        &mut self,
+        name: String,
+    ) -> Result<handover_core::CustomCommandResult, IpcError> {
+        self.send(Method::CustomRun { name }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::CustomResult { result } => Ok(result),
             payload => Err(unexpected(payload)),
         }
     }
@@ -1360,6 +1422,33 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Request>(&json).expect("request deserializes"),
             request
+        );
+    }
+
+    #[test]
+    fn screensaver_methods_use_versioned_names() {
+        for method in [
+            Method::ScreensaverInhibit,
+            Method::ScreensaverRelease,
+            Method::ScreensaverFollow,
+        ] {
+            let request = Request::new(method);
+            let json = serde_json::to_string(&request).expect("request serializes");
+            let decoded = serde_json::from_str::<Request>(&json).expect("request deserializes");
+            assert_eq!(decoded, request);
+        }
+        let keep_awake = Request::new(Method::NativeKeepAwake {
+            id: "peer-1".into(),
+            inhibit: true,
+        });
+        let json = serde_json::to_string(&keep_awake).expect("request serializes");
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"native.keep_awake","id":"peer-1","inhibit":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            keep_awake
         );
     }
 

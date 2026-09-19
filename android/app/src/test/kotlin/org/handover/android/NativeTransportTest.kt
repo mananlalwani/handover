@@ -26,6 +26,16 @@ class NativeTransportTest {
         assertFalse(result.containsKey("failure"))
     }
 
+    @Test fun keepAwakeResultReportsWakeLockState() {
+        val result = NativeTransport.deviceCommandResultFields(
+            "0123456789abcdef0123456789abcdef", "keep_awake", true, null,
+        )
+
+        assertEquals("keep_awake", result["action"])
+        assertEquals(true, result["accepted"])
+        assertFalse(result.containsKey("failure"))
+    }
+
     @Test fun pairingCodeMatchesCrossLanguageVectorAndIsOrderIndependent() {
         // Shared with handover-native's comparison_code unit test: the same
         // fingerprints and nonces must produce this code in both languages.

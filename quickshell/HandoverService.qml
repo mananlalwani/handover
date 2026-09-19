@@ -366,6 +366,35 @@ Singleton {
         return sendShare("share.cancel", device, { transfer_id: transferId });
     }
 
+    function setScreensaver(action) {
+        if (action !== "inhibit" && action !== "release" && action !== "follow") {
+            lastError = "screensaver action must be inhibit, release, or follow";
+            return false;
+        }
+        return sendRequest("screensaver." + action, {});
+    }
+
+    function setPhoneAwake(device, inhibit) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        const id = device.id.substring("native:".length);
+        return sendRequest("native.keep_awake", { id: id, inhibit: inhibit });
+    }
+
+    function listCustomCommands() {
+        return sendRequest("custom.commands", {});
+    }
+
+    function runCustomCommand(name) {
+        if (!name || name.length === 0 || name.length > 64) {
+            lastError = "custom command name must be between 1 and 64 characters";
+            return false;
+        }
+        return sendRequest("custom.run", { name: name });
+    }
+
     function nativeAction(device, action) {
         if (!device || !device.id || !device.id.startsWith("native:"))
             return false;

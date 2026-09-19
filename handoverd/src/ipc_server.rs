@@ -307,6 +307,25 @@ where
             native_backend().map(|native| native.lock_device(&id)),
             "native lock",
         ),
+        Method::NativeKeepAwake { id, inhibit } => native_command_response(
+            native_backend().map(|native| native.keep_awake(&id, inhibit)),
+            "native keep-awake",
+        ),
+        Method::ScreensaverInhibit => {
+            crate::set_manual_screensaver(Some(true));
+            crate::refresh_screensaver(state);
+            ServerPayload::NativeAccepted
+        }
+        Method::ScreensaverRelease => {
+            crate::set_manual_screensaver(Some(false));
+            crate::refresh_screensaver(state);
+            ServerPayload::NativeAccepted
+        }
+        Method::ScreensaverFollow => {
+            crate::set_manual_screensaver(None);
+            crate::refresh_screensaver(state);
+            ServerPayload::NativeAccepted
+        }
         Method::RemoteInputSend {
             device_id,
             action,
@@ -589,6 +608,13 @@ where
             transfer_id,
         } => {
             return handle_share_cancel(device_id, transfer_id, writer, state, events).await;
+        }
+        Method::CustomCommands => ServerPayload::CustomCommands {
+            commands: crate::custom_commands::entries(),
+        },
+        Method::CustomRun { name } => {
+            let result = crate::custom_commands::run(&name).await;
+            ServerPayload::CustomResult { result }
         }
         Method::MessagesAccounts => ServerPayload::Accounts {
             accounts: messaging_snapshot(state).accounts,
