@@ -86,6 +86,8 @@ Rules both sides follow:
   `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-adapter` (0700 directory,
   temp-file + atomic rename) and confirms with account/pairing events
   that echo no secret material.
+* Attachment paths reported by the helper are accepted only below an approved
+  staging root. The bundled helper uses `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/staging`; the production adapter uses `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-adapter/staged`. Operators may add a private absolute root with `HANDOVER_GMESSAGES_STAGING_DIR`. Files must be regular non-symlink files and are size-bounded.
 * Pairing verification (e.g. the emoji to confirm on the phone) arrives
   as an opaque `pairing` prompt: displayed to the user, never logged
   with content, never stored.

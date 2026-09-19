@@ -8,7 +8,7 @@
 //! notification, media, or share state.
 //!
 //! Logging rule: ids, counts, and delivery states only. Bodies, prompts,
-//! and helper error text are never logged with content (lengths at most).
+//! and helper error text are never logged with content.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -26,7 +26,9 @@ use handover_gmessages::normalize::{
     event_ids, normalize_account, normalize_conversation, normalize_message, parse_status,
     resolve_sender,
 };
-use handover_gmessages::staging::validate_staged_path;
+use handover_gmessages::staging::{
+    adapter_staging_directory, default_staging_directory, validate_staged_path,
+};
 use handover_gmessages::supervisor::{HelperProcess, backoff_delay, find_helper, redact_command};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tracing::{info, warn};
@@ -655,10 +657,9 @@ async fn ingest_event(
             .await;
         }
         HelperEvent::Error { message } => {
-            // Helper errors are operational text from local trusted code;
-            // log the length-bounded message without assuming its shape.
-            let clipped: String = message.chars().take(256).collect();
-            warn!(error = %clipped, "messaging helper error");
+            // Helper text may contain credentials or message content. Keep
+            // only stable metadata in the journal.
+            warn!(error_len = message.len(), "messaging helper error");
             hub.fail_fetches().await;
         }
     }
@@ -668,9 +669,13 @@ async fn ingest_event(
 /// state. Unverifiable paths are dropped; attachment metadata stays so the
 /// client still sees that an attachment exists.
 fn scrub_staged_paths(mut wire: WireMessage) -> WireMessage {
+    let roots = [default_staging_directory(), adapter_staging_directory()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     for attachment in &mut wire.attachments {
         if let Some(path) = attachment.staged_path.take() {
-            match validate_staged_path(&path) {
+            match validate_staged_path(&path, &roots) {
                 Ok(valid) => attachment.staged_path = valid.to_str().map(str::to_string),
                 Err(_) => warn!("dropping unverifiable staged attachment path"),
             }

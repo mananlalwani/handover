@@ -23,6 +23,7 @@ use handover_gmessages::contract::{
     WireTransport,
 };
 use handover_gmessages::secrets;
+use handover_gmessages::staging::{default_staging_directory, stage_upload};
 
 const HELPER_NAME: &str = "handover-gmessages-helper/loopback";
 const HISTORY_DEFAULT: usize = 20;
@@ -177,6 +178,7 @@ struct StoredAccount {
 struct LoopbackRelay {
     accounts: BTreeMap<String, StoredAccount>,
     media_sample: Option<PathBuf>,
+    _media_staging: Option<tempfile::TempDir>,
 }
 
 impl LoopbackRelay {
@@ -184,11 +186,22 @@ impl LoopbackRelay {
         let mut relay = Self {
             accounts: BTreeMap::new(),
             media_sample: None,
+            _media_staging: None,
         };
         // One real staged file so inbound attachment paths validate.
-        let path = std::env::temp_dir().join("handover-loopback-sample.bin");
-        if std::fs::write(&path, b"loopback sample attachment").is_ok() {
-            relay.media_sample = Some(path);
+        if let Ok(root) = default_staging_directory() {
+            if std::fs::create_dir_all(&root).is_ok() {
+                if let Ok(staging) = tempfile::Builder::new()
+                    .prefix("loopback-")
+                    .tempdir_in(root)
+                {
+                    let path = staging.path().join("sample.bin");
+                    if std::fs::write(&path, b"loopback sample attachment").is_ok() {
+                        relay.media_sample = Some(path);
+                        relay._media_staging = Some(staging);
+                    }
+                }
+            }
         }
         relay
     }
@@ -656,6 +669,16 @@ impl Relay for LoopbackRelay {
         if size == 0 {
             return vec![Self::result(request_id, false, Some("unreadable file"))];
         }
+        let staged_path = self._media_staging.as_ref().and_then(|directory| {
+            stage_upload(PathBuf::from(path).as_path(), directory.path()).ok()
+        });
+        let Some(staged_path) = staged_path else {
+            return vec![Self::result(
+                request_id,
+                false,
+                Some("unable to stage file"),
+            )];
+        };
         let Some(stored) = self.account_mut(account) else {
             return vec![Self::result(request_id, false, Some("unknown account"))];
         };
@@ -692,7 +715,7 @@ impl Relay for LoopbackRelay {
                 mime: Some("application/octet-stream".into()),
                 name: Some(name),
                 size_bytes: Some(size),
-                staged_path: Some(path.into()),
+                staged_path: Some(staged_path.to_string_lossy().into_owned()),
             }],
             reply_to: None,
             reactions: vec![],

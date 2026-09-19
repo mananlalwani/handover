@@ -4,8 +4,8 @@
 //! directory under a sanitized basename; nothing larger than
 //! [`MAX_STAGED_BYTES`] is accepted and partial files are removed on any
 //! error. Inbound staged paths reported by the helper are validated before
-//! they enter normalized state: regular file, under the staging root or the
-//! helper's own directory, within size bounds.
+//! they enter normalized state: regular file, under an explicitly approved
+//! staging root, within size bounds.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -24,6 +24,8 @@ pub enum StageError {
     TooLarge(u64),
     UnsafeName,
     NotAFile,
+    OutsideRoot,
+    Symlink,
 }
 
 impl std::fmt::Display for StageError {
@@ -33,6 +35,8 @@ impl std::fmt::Display for StageError {
             Self::TooLarge(size) => write!(formatter, "attachment too large ({size} bytes)"),
             Self::UnsafeName => write!(formatter, "unsafe attachment name"),
             Self::NotAFile => write!(formatter, "attachment is not a regular file"),
+            Self::OutsideRoot => write!(formatter, "attachment is outside the staging root"),
+            Self::Symlink => write!(formatter, "symlink attachments are not allowed"),
         }
     }
 }
@@ -115,20 +119,76 @@ fn copy_bounded(source: &Path, target: &Path) -> Result<(), StageError> {
     }
 }
 
-/// Validate a helper-reported staged path: must resolve to a regular file
-/// within size bounds. Symlinks are resolved and the target must still be
-/// a regular file; directory traversal outside the file itself is the
-/// helper's responsibility, documented in the sidecar contract.
-pub fn validate_staged_path(path: &str) -> Result<PathBuf, StageError> {
+/// Return the directory used for helper-owned staged files. Both the daemon
+/// and helper derive this from the same environment variable so an external
+/// adapter can opt into an explicit private directory. The default is below
+/// the normal Handover state directory.
+pub fn default_staging_directory() -> Result<PathBuf, StageError> {
+    if let Some(path) = std::env::var_os("HANDOVER_GMESSAGES_STAGING_DIR") {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(StageError::OutsideRoot);
+        }
+        return Ok(path);
+    }
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".local/state")
+        });
+    if !base.is_absolute() {
+        return Err(StageError::OutsideRoot);
+    }
+    Ok(base.join("handover/gmessages/staging"))
+}
+
+/// Staging directory used by the production sidecar adapter. Keep this
+/// compatibility root while the adapter remains a separate repository.
+pub fn adapter_staging_directory() -> Result<PathBuf, StageError> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".local/state")
+        });
+    if !base.is_absolute() {
+        return Err(StageError::OutsideRoot);
+    }
+    Ok(base.join("handover/gmessages-adapter/staged"))
+}
+
+/// Validate a helper-reported staged path against approved roots. The
+/// canonicalization and symlink checks close ordinary traversal and accidental
+/// disclosure cases. Callers should consume the path promptly; a path-based
+/// API cannot eliminate a malicious helper's post-validation TOCTOU race.
+pub fn validate_staged_path(path: &str, roots: &[PathBuf]) -> Result<PathBuf, StageError> {
     let candidate = PathBuf::from(path);
-    let metadata = std::fs::metadata(&candidate)?;
+    let link_metadata = std::fs::symlink_metadata(&candidate)?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(StageError::Symlink);
+    }
+    let canonical = std::fs::canonicalize(&candidate)?;
+    let allowed = roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .map(|root| canonical.starts_with(&root) && canonical != root)
+            .unwrap_or(false)
+    });
+    if !allowed {
+        return Err(StageError::OutsideRoot);
+    }
+    let metadata = std::fs::metadata(&canonical)?;
     if !metadata.is_file() {
         return Err(StageError::NotAFile);
     }
     if metadata.len() > MAX_STAGED_BYTES {
         return Err(StageError::TooLarge(metadata.len()));
     }
-    Ok(candidate)
+    Ok(canonical)
 }
 
 #[cfg(test)]
@@ -185,11 +245,32 @@ mod tests {
     fn validated_paths_must_be_sized_regular_files() {
         let directory = tempfile::tempdir().expect("tempdir");
         let file = write_file(directory.path(), "a.bin", b"hello");
-        assert!(validate_staged_path(file.to_str().unwrap()).is_ok());
+        assert!(validate_staged_path(file.to_str().unwrap(), &[directory.path().into()]).is_ok());
+        assert!(
+            validate_staged_path(
+                directory.path().to_str().unwrap(),
+                &[directory.path().into()]
+            )
+            .is_err()
+        );
+        assert!(validate_staged_path("/tmp/handover-definitely-missing-file", &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_paths_outside_root_and_symlinks() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let file = write_file(outside.path(), "secret", b"secret");
         assert!(matches!(
-            validate_staged_path(directory.path().to_str().unwrap()),
-            Err(StageError::NotAFile)
+            validate_staged_path(file.to_str().unwrap(), &[root.path().into()]),
+            Err(StageError::OutsideRoot)
         ));
-        assert!(validate_staged_path("/tmp/handover-definitely-missing-file").is_err());
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&file, &link).expect("symlink");
+        assert!(matches!(
+            validate_staged_path(link.to_str().unwrap(), &[root.path().into()]),
+            Err(StageError::Symlink)
+        ));
     }
 }

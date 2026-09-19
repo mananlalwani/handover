@@ -69,14 +69,17 @@ fn ensure_directory(directory: &Path) -> Result<(), SecretError> {
 pub fn store_bundle(directory: &Path, account: &str, bundle: &[u8]) -> Result<(), SecretError> {
     ensure_directory(directory)?;
     let target = account_file(directory, account)?;
-    let tmp = target.with_extension("credentials.json.tmp");
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        file.write_all(bundle)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, &target)?;
+    // Create an unpredictable, exclusive temporary file in the private
+    // directory. This avoids following a pre-existing symlink at a fixed
+    // `.tmp` path while preserving the atomic final rename.
+    let mut file = tempfile::Builder::new()
+        .prefix(".credentials-")
+        .tempfile_in(directory)?;
+    std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(bundle)?;
+    file.as_file().sync_all()?;
+    file.persist(&target)
+        .map_err(|error| SecretError::Io(error.error))?;
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
