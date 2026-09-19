@@ -3,6 +3,7 @@ package org.handover.android
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.net.Uri
@@ -51,6 +52,7 @@ class HandoverForegroundService : Service() {
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
         ACTION_SHARE_URL -> transport.shareUrl(intent.getStringExtra(EXTRA_URL).orEmpty()).let { START_STICKY }
         ACTION_SHARE_FILE -> intent.getParcelableExtra<Uri>(EXTRA_URI)?.let { transport.shareFile(it) }.let { START_STICKY }
+        ACTION_SEND_CLIPBOARD -> transport.sendClipboardToLinux().let { START_STICKY }
         else -> START_STICKY
     }
 
@@ -81,6 +83,16 @@ class HandoverForegroundService : Service() {
         .setContentText("Waiting for a trusted desktop connection")
         .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
         .setOngoing(true)
+        .addAction(Notification.Action.Builder(
+            null,
+            "Send clipboard",
+            PendingIntent.getService(
+                this,
+                2,
+                Intent(this, HandoverForegroundService::class.java).setAction(ACTION_SEND_CLIPBOARD),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ),
+        ).build())
         .build()
 
     companion object {
@@ -107,6 +119,7 @@ class HandoverForegroundService : Service() {
         const val EXTRA_ADDRESS = "address"
         const val ACTION_SHARE_URL = "org.handover.android.SHARE_URL"
         const val ACTION_SHARE_FILE = "org.handover.android.SHARE_FILE"
+        const val ACTION_SEND_CLIPBOARD = "org.handover.android.SEND_CLIPBOARD"
         const val EXTRA_URL = "url"
         const val EXTRA_URI = "uri"
         private const val CHANNEL_ID = "handover_connection"
