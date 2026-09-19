@@ -3393,7 +3393,7 @@ mod messaging_live_tests {
             .staged_path
             .as_deref()
             .expect("helper returned a confined staged path");
-        assert!(staged_path.contains("/handover/gmessages/staging/"));
+        assert!(staged_path.contains("/handover/gmessages/imported/"));
         assert_ne!(staged_path, attachment_path.to_str().unwrap());
 
         // Reactions add and remove.

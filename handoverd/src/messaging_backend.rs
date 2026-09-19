@@ -27,7 +27,8 @@ use handover_gmessages::normalize::{
     resolve_sender,
 };
 use handover_gmessages::staging::{
-    adapter_staging_directory, default_staging_directory, validate_staged_path,
+    adapter_staging_directory, default_staging_directory, import_staged_path,
+    imported_staging_directory,
 };
 use handover_gmessages::supervisor::{HelperProcess, backoff_delay, find_helper, redact_command};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
@@ -673,11 +674,15 @@ fn scrub_staged_paths(mut wire: WireMessage) -> WireMessage {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    let import_directory = imported_staging_directory().ok();
     for attachment in &mut wire.attachments {
         if let Some(path) = attachment.staged_path.take() {
-            match validate_staged_path(&path, &roots) {
-                Ok(valid) => attachment.staged_path = valid.to_str().map(str::to_string),
-                Err(_) => warn!("dropping unverifiable staged attachment path"),
+            let imported = import_directory
+                .as_deref()
+                .and_then(|directory| import_staged_path(&path, &roots, directory).ok());
+            match imported {
+                Some(valid) => attachment.staged_path = valid.to_str().map(str::to_string),
+                None => warn!("dropping unverifiable staged attachment path"),
             }
         }
     }

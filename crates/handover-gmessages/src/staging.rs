@@ -12,11 +12,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use handover_core::sanitize_file_name;
+use sha2::{Digest, Sha256};
 
 /// Maximum staged attachment: 50 MiB.
 pub const MAX_STAGED_BYTES: u64 = 50 * 1024 * 1024;
 
 const COPY_BUFFER: usize = 32 * 1024;
+const MAX_IMPORTED_FILES: usize = 1024;
+const MAX_IMPORTED_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum StageError {
@@ -26,6 +29,7 @@ pub enum StageError {
     NotAFile,
     OutsideRoot,
     Symlink,
+    ImportConflict,
 }
 
 impl std::fmt::Display for StageError {
@@ -37,6 +41,7 @@ impl std::fmt::Display for StageError {
             Self::NotAFile => write!(formatter, "attachment is not a regular file"),
             Self::OutsideRoot => write!(formatter, "attachment is outside the staging root"),
             Self::Symlink => write!(formatter, "symlink attachments are not allowed"),
+            Self::ImportConflict => write!(formatter, "conflicting imported attachment"),
         }
     }
 }
@@ -162,6 +167,22 @@ pub fn adapter_staging_directory() -> Result<PathBuf, StageError> {
     Ok(base.join("handover/gmessages-adapter/staged"))
 }
 
+/// Private daemon-owned destination for imported helper attachments.
+pub fn imported_staging_directory() -> Result<PathBuf, StageError> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".local/state")
+        });
+    if !base.is_absolute() {
+        return Err(StageError::OutsideRoot);
+    }
+    Ok(base.join("handover/gmessages/imported"))
+}
+
 /// Validate a helper-reported staged path against approved roots. The
 /// canonicalization and symlink checks close ordinary traversal and accidental
 /// disclosure cases. Callers should consume the path promptly; a path-based
@@ -189,6 +210,157 @@ pub fn validate_staged_path(path: &str, roots: &[PathBuf]) -> Result<PathBuf, St
         return Err(StageError::TooLarge(metadata.len()));
     }
     Ok(canonical)
+}
+
+/// Import a helper attachment into daemon-owned storage. The source is opened
+/// with `O_NOFOLLOW` and the destination is created exclusively by tempfile,
+/// so the returned path no longer depends on a helper-controlled pathname.
+pub fn import_staged_path(
+    path: &str,
+    roots: &[PathBuf],
+    import_directory: &Path,
+) -> Result<PathBuf, StageError> {
+    let candidate = PathBuf::from(path);
+    let link_metadata = std::fs::symlink_metadata(&candidate)?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(StageError::Symlink);
+    }
+    let canonical = std::fs::canonicalize(&candidate)?;
+    let allowed = roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .map(|root| canonical.starts_with(&root) && canonical != root)
+            .unwrap_or(false)
+    });
+    if !allowed {
+        return Err(StageError::OutsideRoot);
+    }
+    // Open the canonical location rather than the helper-provided spelling;
+    // this also avoids following a parent-directory symlink swapped after
+    // validation.
+    let mut input = open_nofollow(&canonical)?;
+    if !descriptor_within_roots(&input, roots)? {
+        return Err(StageError::OutsideRoot);
+    }
+    let metadata = input.metadata()?;
+    if !metadata.is_file() {
+        return Err(StageError::NotAFile);
+    }
+    if metadata.len() > MAX_STAGED_BYTES {
+        return Err(StageError::TooLarge(metadata.len()));
+    }
+    std::fs::create_dir_all(import_directory)?;
+    std::fs::set_permissions(import_directory, std::fs::Permissions::from_mode(0o700))?;
+    let mut output = tempfile::Builder::new()
+        .prefix("attachment-")
+        .tempfile_in(import_directory)?;
+    let mut buffer = vec![0u8; COPY_BUFFER];
+    let mut total = 0u64;
+    let mut digest = Sha256::new();
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > MAX_STAGED_BYTES {
+            return Err(StageError::TooLarge(total));
+        }
+        digest.update(&buffer[..read]);
+        output.write_all(&buffer[..read])?;
+    }
+    output.as_file().sync_all()?;
+    let digest = digest.finalize();
+    let target = import_directory.join(format!("attachment-{digest:x}"));
+    if let Ok(existing) = std::fs::symlink_metadata(&target) {
+        if existing.file_type().is_symlink() {
+            return Err(StageError::Symlink);
+        }
+        if existing.is_file() {
+            let existing_file = open_nofollow(&target)?;
+            if existing_file.metadata()?.len() == total
+                && digest_file(&existing_file)? == digest[..]
+            {
+                return Ok(target);
+            }
+            return Err(StageError::ImportConflict);
+        }
+    }
+    let (file_count, byte_count) = imported_usage(import_directory)?;
+    if file_count >= MAX_IMPORTED_FILES || byte_count.saturating_add(total) > MAX_IMPORTED_BYTES {
+        return Err(StageError::TooLarge(byte_count.saturating_add(total)));
+    }
+    output
+        .persist(&target)
+        .map_err(|error| StageError::Io(error.error))?;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
+    Ok(target)
+}
+
+fn digest_file(file: &std::fs::File) -> Result<[u8; 32], StageError> {
+    let mut input = file.try_clone()?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; COPY_BUFFER];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest.finalize().into())
+}
+
+fn imported_usage(directory: &Path) -> Result<(usize, u64), StageError> {
+    let mut count = 0;
+    let mut bytes: u64 = 0;
+    for entry in std::fs::read_dir(directory)? {
+        let metadata = entry?.metadata()?;
+        if metadata.is_file() {
+            count += 1;
+            bytes = bytes.saturating_add(metadata.len());
+        }
+    }
+    Ok((count, bytes))
+}
+
+fn open_nofollow(path: &Path) -> Result<std::fs::File, StageError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Linux O_NOFOLLOW. On other Unix targets the initial symlink check
+        // remains in force; the project currently targets Linux.
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(target_os = "linux")]
+        options.custom_flags(0o400000);
+        Ok(options.open(path)?)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(std::fs::File::open(path)?)
+    }
+}
+
+/// Resolve the object actually opened, rather than trusting the pathname
+/// used to reach it. On Linux this defeats a concurrent parent-directory
+/// replacement between canonicalization and open(2).
+fn descriptor_within_roots(file: &std::fs::File, roots: &[PathBuf]) -> Result<bool, StageError> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let target = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+        let target = std::fs::canonicalize(target)?;
+        Ok(roots.iter().any(|root| {
+            std::fs::canonicalize(root)
+                .map(|root| target.starts_with(&root) && target != root)
+                .unwrap_or(false)
+        }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, roots);
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +444,87 @@ mod tests {
             validate_staged_path(link.to_str().unwrap(), &[root.path().into()]),
             Err(StageError::Symlink)
         ));
+    }
+
+    #[test]
+    fn imports_into_private_directory_and_rejects_unapproved_sources() {
+        let root = tempfile::tempdir().expect("root");
+        let destination = tempfile::tempdir().expect("destination");
+        let source = write_file(root.path(), "message.bin", b"opaque bytes");
+        let imported = import_staged_path(
+            source.to_str().unwrap(),
+            &[root.path().into()],
+            destination.path(),
+        )
+        .expect("import");
+        assert_ne!(imported, source);
+        assert_eq!(std::fs::read(&imported).expect("read"), b"opaque bytes");
+        assert!(imported.starts_with(destination.path()));
+        let repeated = import_staged_path(
+            source.to_str().unwrap(),
+            &[root.path().into()],
+            destination.path(),
+        )
+        .expect("repeat import");
+        assert_eq!(repeated, imported);
+        assert_eq!(
+            std::fs::read_dir(destination.path())
+                .expect("entries")
+                .count(),
+            1
+        );
+        let digest = Sha256::digest(b"opaque bytes");
+        let poisoned = destination.path().join(format!("attachment-{digest:x}"));
+        std::fs::write(&poisoned, b"wrong content").expect("poison");
+        assert!(matches!(
+            import_staged_path(
+                source.to_str().unwrap(),
+                &[root.path().into()],
+                destination.path()
+            ),
+            Err(StageError::ImportConflict)
+        ));
+
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = write_file(outside.path(), "secret.bin", b"secret");
+        assert!(matches!(
+            import_staged_path(
+                secret.to_str().unwrap(),
+                &[root.path().into()],
+                destination.path()
+            ),
+            Err(StageError::OutsideRoot)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_never_follows_source_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = write_file(outside.path(), "secret.bin", b"secret");
+        let link = root.path().join("attachment.bin");
+        std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+        let destination = tempfile::tempdir().expect("destination");
+        assert!(matches!(
+            import_staged_path(
+                link.to_str().unwrap(),
+                &[root.path().into()],
+                destination.path()
+            ),
+            Err(StageError::Symlink)
+        ));
+    }
+
+    #[test]
+    fn descriptor_containment_uses_open_object() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let inside = write_file(root.path(), "inside.bin", b"inside");
+        let outside_file = write_file(outside.path(), "outside.bin", b"outside");
+        let inside_file = std::fs::File::open(&inside).expect("open inside");
+        let outside_file = std::fs::File::open(&outside_file).expect("open outside");
+        assert!(descriptor_within_roots(&inside_file, &[root.path().into()]).expect("check"));
+        assert!(!descriptor_within_roots(&outside_file, &[root.path().into()]).expect("check"));
     }
 }

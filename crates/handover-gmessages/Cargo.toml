@@ -13,6 +13,7 @@ path = "src/bin/helper.rs"
 handover-core = { path = "../handover-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tempfile = { workspace = true }
