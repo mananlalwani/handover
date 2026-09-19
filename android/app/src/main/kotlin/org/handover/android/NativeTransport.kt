@@ -613,7 +613,7 @@ class NativeTransport(private val context: Context) {
 
     /** Sends a URL to the one explicitly paired desktop. */
     fun shareUrl(url: String): Boolean {
-        if (serverFingerprint == null || socket?.isClosed != false || output == null || !validShareUrl(url)) return false
+        if (serverFingerprint == null || socket?.isClosed != false || output == null || !isValidShareUrl(url)) return false
         val transferId = registerTransfer("url", url, Uri.parse(url)) ?: return false
         return if (enqueue {
             announceAccepted(transferId)
@@ -695,7 +695,7 @@ class NativeTransport(private val context: Context) {
                 val raw = Socket().apply { connect(InetSocketAddress(target.first, target.second), 5_000) }
                 val ssl = sslContext().socketFactory.createSocket(raw, target.first.hostAddress, target.second, true) as SSLSocket
                 ssl.enabledProtocols = arrayOf("TLSv1.3")
-                ssl.soTimeout = 30_000
+                ssl.soTimeout = SOCKET_READ_TIMEOUT_MS.toInt()
                 ssl.startHandshake()
                 socket = ssl
                 broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "connected"))
@@ -1002,7 +1002,7 @@ class NativeTransport(private val context: Context) {
                 if (serverFingerprint == null) return
                 val transferId = message.optString("transfer_id")
                 val url = message.optString("url")
-                if (!isTransferId(transferId) || !validShareUrl(url)) {
+                if (!isTransferId(transferId) || !isValidShareUrl(url)) {
                     sendTransferResult(transferId, "failed", TRANSFER_INVALID_RESOURCE)
                     return
                 }
@@ -1082,11 +1082,14 @@ class NativeTransport(private val context: Context) {
         }
         val destination = uniqueDestination(root, name)
         val temporary = File(root, ".${name}.${java.util.UUID.randomUUID()}.part")
+        val deadline = inboundTransferDeadline()
         try {
             FileOutputStream(temporary).use { outputStream ->
                 val buffer = ByteArray(STREAM_BUFFER_BYTES)
                 var remaining = size
                 while (remaining > 0) {
+                    checkInboundTransferDeadline(deadline)
+                    configureInboundReadTimeout(deadline)
                     val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
                     if (count < 0) throw EOFException("interrupted file transfer")
                     if (count == 0) continue
@@ -1108,8 +1111,34 @@ class NativeTransport(private val context: Context) {
         } catch (error: Exception) {
             temporary.delete()
             Log.w(TAG, "native file receive failed: ${error.javaClass.simpleName}")
-            sendTransferFailureAndClose(transferId, if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE)
+            sendTransferFailureAndClose(transferId, inboundFailureReason(error, deadline))
+        } finally {
+            restoreInboundReadTimeout()
         }
+    }
+
+    private class InboundTransferTimeout : java.io.IOException("inbound transfer deadline exceeded")
+
+    private fun inboundTransferDeadline(): Long =
+        System.nanoTime() + INBOUND_TRANSFER_TIMEOUT_MS * 1_000_000L
+
+    private fun checkInboundTransferDeadline(deadlineNanos: Long) {
+        if (transferDeadlineExpired(deadlineNanos)) throw InboundTransferTimeout()
+    }
+
+    private fun configureInboundReadTimeout(deadlineNanos: Long) {
+        socket?.soTimeout = remainingTransferTimeoutMillis(deadlineNanos).toInt()
+    }
+
+    private fun restoreInboundReadTimeout() {
+        runCatching { socket?.soTimeout = SOCKET_READ_TIMEOUT_MS.toInt() }
+    }
+
+    private fun inboundFailureReason(error: Exception, deadlineNanos: Long): String = when {
+        error is InboundTransferTimeout -> TRANSFER_TIMED_OUT
+        error is SocketTimeoutException && transferDeadlineExpired(deadlineNanos) -> TRANSFER_TIMED_OUT
+        error is EOFException -> TRANSFER_INTERRUPTED
+        else -> TRANSFER_STORAGE
     }
 
     private fun receiveClipboardFile(
@@ -1134,11 +1163,14 @@ class NativeTransport(private val context: Context) {
             sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
             return
         }
+        val deadline = inboundTransferDeadline()
         try {
             context.contentResolver.openOutputStream(uri)?.use { output ->
                 val buffer = ByteArray(STREAM_BUFFER_BYTES)
                 var remaining = size
                 while (remaining > 0) {
+                    checkInboundTransferDeadline(deadline)
+                    configureInboundReadTimeout(deadline)
                     val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
                     if (count < 0) throw EOFException("interrupted clipboard transfer")
                     if (count == 0) continue
@@ -1158,8 +1190,10 @@ class NativeTransport(private val context: Context) {
             context.contentResolver.delete(uri, null, null)
             sendTransferFailureAndClose(
                 transferId,
-                if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE,
+                inboundFailureReason(error, deadline),
             )
+        } finally {
+            restoreInboundReadTimeout()
         }
     }
 
@@ -1178,11 +1212,14 @@ class NativeTransport(private val context: Context) {
             sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
             return
         }
+        val deadline = inboundTransferDeadline()
         try {
             resolver.openOutputStream(destination, "w")!!.use { output ->
                 val buffer = ByteArray(STREAM_BUFFER_BYTES)
                 var remaining = size
                 while (remaining > 0) {
+                    checkInboundTransferDeadline(deadline)
+                    configureInboundReadTimeout(deadline)
                     val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
                     if (count < 0) throw EOFException("interrupted file transfer")
                     if (count > 0) {
@@ -1203,8 +1240,10 @@ class NativeTransport(private val context: Context) {
             resolver.delete(destination, null, null)
             Log.w(TAG, "native public download failed: ${error.javaClass.simpleName}")
             sendTransferFailureAndClose(
-                transferId, if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE,
+                transferId, inboundFailureReason(error, deadline),
             )
+        } finally {
+            restoreInboundReadTimeout()
         }
     }
 
@@ -1449,6 +1488,8 @@ class NativeTransport(private val context: Context) {
         const val EXTRA_SHARE_TEXT = "text"
         private const val MAX_PENDING_TRANSFERS = 32
         private const val TRANSFER_TIMEOUT_MS = 120_000L
+        private const val INBOUND_TRANSFER_TIMEOUT_MS = 120_000L
+        private const val SOCKET_READ_TIMEOUT_MS = 30_000L
         private const val TRANSFER_SWEEP_MS = 5_000L
         private const val TRANSFER_INVALID_RESOURCE = "invalid_resource"
         private const val TRANSFER_SIZE_LIMIT = "size_limit"
@@ -1459,6 +1500,18 @@ class NativeTransport(private val context: Context) {
         private const val TRANSFER_REJECTED = "rejected"
         private val TRANSFER_REASONS = setOf("invalid_resource", "size_limit", "storage",
             "interrupted", "rejected", "timed_out", "disconnected", "transport")
+
+        internal fun transferDeadlineExpired(deadlineNanos: Long, nowNanos: Long = System.nanoTime()): Boolean =
+            nowNanos >= deadlineNanos
+
+        internal fun remainingTransferTimeoutMillis(
+            deadlineNanos: Long,
+            nowNanos: Long = System.nanoTime(),
+        ): Long {
+            val remainingNanos = (deadlineNanos - nowNanos).coerceAtLeast(1L)
+            val millis = (remainingNanos + 999_999L) / 1_000_000L
+            return millis.coerceIn(1L, SOCKET_READ_TIMEOUT_MS)
+        }
 
         fun trustedPeerFingerprint(context: Context): String? =
             context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PIN_KEY, null)
@@ -1489,12 +1542,11 @@ class NativeTransport(private val context: Context) {
             return String(bytes, 0, end, Charsets.UTF_8).ifEmpty { null }
         }
 
-        private fun validShareUrl(value: String): Boolean {
+        internal fun isValidShareUrl(value: String): Boolean {
             if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > MAX_URL_BYTES ||
                 value.trim() != value || value.any { it.isISOControl() || it.isWhitespace() }) return false
             val parsed = runCatching { java.net.URI(value) }.getOrNull() ?: return false
-            return !parsed.scheme.isNullOrBlank() &&
-                parsed.scheme.lowercase() !in setOf("file", "javascript", "data")
+            return parsed.scheme?.lowercase() in setOf("http", "https")
         }
 
         private fun isTransferId(value: String): Boolean =

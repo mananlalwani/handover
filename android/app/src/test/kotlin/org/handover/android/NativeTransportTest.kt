@@ -90,5 +90,27 @@ class NativeTransportTest {
         assertEquals(8, NativeTransport.pairingCode(fpOf("11"), nonce, fpOf("22"), nonce).length)
     }
 
+    @Test fun receivedUrlsOnlyAllowHttpAndHttps() {
+        assertEquals(true, TransferHistory.isOpenableUrlValue("https"))
+        assertEquals(true, TransferHistory.isOpenableUrlValue("HTTP"))
+        assertEquals(false, TransferHistory.isOpenableUrlValue("content"))
+        assertEquals(false, TransferHistory.isOpenableUrlValue("javascript"))
+    }
+
+    @Test fun shareUrlValidationRejectsNonWebSchemes() {
+        assertEquals(true, NativeTransport.isValidShareUrl("https://example.test"))
+        assertEquals(true, NativeTransport.isValidShareUrl("http://example.test/path"))
+        assertEquals(false, NativeTransport.isValidShareUrl("content://contacts/1"))
+        assertEquals(false, NativeTransport.isValidShareUrl("file:///etc/passwd"))
+    }
+
+    @Test fun inboundTransferDeadlineIsHardBoundary() {
+        assertEquals(false, NativeTransport.transferDeadlineExpired(100L, 99L))
+        assertEquals(true, NativeTransport.transferDeadlineExpired(100L, 100L))
+        assertEquals(30_000L, NativeTransport.remainingTransferTimeoutMillis(60_000_000_000L, 0L))
+        assertEquals(1L, NativeTransport.remainingTransferTimeoutMillis(100L, 100L))
+        assertEquals(2L, NativeTransport.remainingTransferTimeoutMillis(2_000_000L, 0L))
+    }
+
     private fun fpOf(prefix: String) = prefix.repeat(32)
 }

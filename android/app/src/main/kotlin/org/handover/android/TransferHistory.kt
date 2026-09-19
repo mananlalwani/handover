@@ -75,14 +75,26 @@ object TransferHistory {
 
     fun open(context: Context, record: TransferRecord): Boolean {
         val uri = record.uri ?: return false
+        if (record.kind == "url" && !isOpenableUrl(uri)) return false
+        val flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+            if (record.kind == "url") 0 else Intent.FLAG_GRANT_READ_URI_PERMISSION
         return runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,
-                if (record.kind == "url") "text/plain"
-                else context.contentResolver.getType(uri) ?: "application/octet-stream")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            val intent = if (record.kind == "url") {
+                Intent(Intent.ACTION_VIEW).setData(uri)
+            } else {
+                Intent(Intent.ACTION_VIEW).setDataAndType(uri,
+                    context.contentResolver.getType(uri) ?: "application/octet-stream")
+            }
+            context.startActivity(intent.addFlags(flags))
             true
         }.getOrDefault(false)
     }
+
+    internal fun isOpenableUrl(uri: Uri): Boolean =
+        isOpenableUrlValue(uri.scheme)
+
+    internal fun isOpenableUrlValue(scheme: String?): Boolean =
+        scheme?.lowercase() == "http" || scheme?.lowercase() == "https"
 
     private fun save(context: Context, records: List<TransferRecord>) {
         val json = JSONArray()
