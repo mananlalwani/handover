@@ -1,5 +1,6 @@
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -10,7 +11,10 @@ use serde::{Deserialize, Serialize};
 
 const HISTORY_VERSION: u32 = 1;
 const RECENT_LIMIT: usize = 25;
+const PINNED_LIMIT: usize = 25;
 const TEXT_LIMIT: usize = 32 * 1024;
+// Leave room below handover-ipc's 1 MiB line limit for the response envelope.
+const STORED_HISTORY_LIMIT: usize = 900 * 1024;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct StoredHistory {
@@ -26,10 +30,11 @@ pub(crate) struct ClipboardHistory {
 impl ClipboardHistory {
     pub(crate) fn load() -> Self {
         let state = history_path()
-            .and_then(fs::read)
+            .and_then(read_bounded)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<StoredHistory>(&bytes).ok())
             .filter(|stored| stored.version == HISTORY_VERSION)
+            .map(recover)
             .unwrap_or_else(|| StoredHistory {
                 version: HISTORY_VERSION,
                 next_id: 1,
@@ -91,6 +96,7 @@ impl ClipboardHistory {
             );
         }
         trim(&mut candidate.entries);
+        validate_limits(&candidate)?;
         persist(&candidate)?;
         *state = candidate;
         Ok(())
@@ -107,6 +113,7 @@ impl ClipboardHistory {
         };
         entry.pinned = pinned;
         trim(&mut candidate.entries);
+        validate_limits(&candidate)?;
         persist(&candidate)?;
         *state = candidate;
         Ok(true)
@@ -149,6 +156,68 @@ fn trim(entries: &mut Vec<ClipboardHistoryEntry>) {
             recent <= RECENT_LIMIT
         }
     });
+}
+
+fn recover(mut stored: StoredHistory) -> StoredHistory {
+    let mut ids = BTreeSet::new();
+    let mut texts = BTreeSet::new();
+    stored.entries.retain(|entry| {
+        !entry.text.is_empty()
+            && entry.text.len() <= TEXT_LIMIT
+            && ids.insert(entry.id)
+            && texts.insert(entry.text.clone())
+    });
+    trim(&mut stored.entries);
+    let mut pinned = 0;
+    stored.entries.retain(|entry| {
+        if !entry.pinned {
+            return true;
+        }
+        pinned += 1;
+        pinned <= PINNED_LIMIT
+    });
+    while validate_limits(&stored).is_err() && !stored.entries.is_empty() {
+        stored.entries.pop();
+    }
+    stored.next_id = stored
+        .entries
+        .iter()
+        .map(|entry| entry.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(1);
+    stored
+}
+
+fn read_bounded(path: PathBuf) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take((STORED_HISTORY_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > STORED_HISTORY_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "clipboard history file is too large",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn validate_limits(state: &StoredHistory) -> io::Result<()> {
+    if state.entries.iter().filter(|entry| entry.pinned).count() > PINNED_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "clipboard history has too many pinned entries",
+        ));
+    }
+    if serde_json::to_vec(state)?.len() > STORED_HISTORY_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "clipboard history is full",
+        ));
+    }
+    Ok(())
 }
 
 fn now_ms() -> u64 {
@@ -204,5 +273,83 @@ mod tests {
         trim(&mut entries);
         assert_eq!(entries.iter().filter(|entry| !entry.pinned).count(), 25);
         assert!(entries.iter().any(|entry| entry.id == 29));
+    }
+
+    #[test]
+    fn recovery_bounds_pinned_entries() {
+        let entries: Vec<_> = (0..30)
+            .map(|id| ClipboardHistoryEntry {
+                id,
+                text: id.to_string(),
+                pinned: true,
+                created_at_ms: id,
+            })
+            .collect();
+        let recovered = recover(StoredHistory {
+            version: HISTORY_VERSION,
+            next_id: 31,
+            entries,
+        });
+        assert_eq!(recovered.entries.len(), PINNED_LIMIT);
+        assert_eq!(recovered.entries.last().map(|entry| entry.id), Some(24));
+    }
+
+    #[test]
+    fn recovery_drops_invalid_duplicate_and_excess_entries() {
+        let mut entries: Vec<_> = (0..30)
+            .map(|id| ClipboardHistoryEntry {
+                id,
+                text: format!("entry-{id}"),
+                pinned: true,
+                created_at_ms: id,
+            })
+            .collect();
+        entries.push(ClipboardHistoryEntry {
+            id: 0,
+            text: "duplicate-id".into(),
+            pinned: false,
+            created_at_ms: 31,
+        });
+        entries.push(ClipboardHistoryEntry {
+            id: 99,
+            text: String::new(),
+            pinned: false,
+            created_at_ms: 32,
+        });
+        let recovered = recover(StoredHistory {
+            version: HISTORY_VERSION,
+            next_id: 1,
+            entries,
+        });
+        assert_eq!(recovered.entries.len(), PINNED_LIMIT);
+        assert_eq!(recovered.next_id, 25);
+    }
+
+    #[test]
+    fn bounded_reader_rejects_oversized_files() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("history.json");
+        fs::write(&path, vec![b'x'; STORED_HISTORY_LIMIT + 1]).expect("write history");
+        let error = read_bounded(path).expect_err("oversized history must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn limits_reject_too_many_pinned_entries() {
+        let entries = (0..=PINNED_LIMIT)
+            .map(|id| ClipboardHistoryEntry {
+                id: id as u64,
+                text: id.to_string(),
+                pinned: true,
+                created_at_ms: id as u64,
+            })
+            .collect();
+        let error = validate_limits(&StoredHistory {
+            version: HISTORY_VERSION,
+            next_id: PINNED_LIMIT as u64 + 1,
+            entries,
+        })
+        .expect_err("excess pinned entries must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }

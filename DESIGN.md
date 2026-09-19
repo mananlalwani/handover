@@ -125,7 +125,8 @@ without a timer. Its enabled per-device plugins receive local changes, so a
 Linux copy can reach multiple connected devices. Remote writes share one Linux
 clipboard; differing simultaneous updates are last-writer-wins. Handover does
 not select a default device. It persists up to 25 recent phone-to-Linux text
-entries plus user-pinned strings in a mode-0600 state file. The dedicated
+entries and 25 user-pinned strings in a mode-0600 state file. The serialized
+history is limited to 900 KiB so it fits within one local IPC response. The dedicated
 clipboard-history IPC methods expose that list to local clients.
 
 Android 10 and later restrict background clipboard reads. Handover provides a
