@@ -307,17 +307,17 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
         NativeCommand::Ping { device } => {
             let id = select_native_peer(&mut client, &device).await?;
             client.native_ping(id).await?;
-            println!("Ping accepted; phone response is not guaranteed");
+            println!("Ping queued; use monitor to observe the Android result");
         }
         NativeCommand::Ring { device } => {
             let id = select_native_peer(&mut client, &device).await?;
             client.native_ring(id).await?;
-            println!("Ring accepted; effect is not confirmed");
+            println!("Ring queued; use monitor to observe the Android result");
         }
         NativeCommand::Lock { device } => {
             let id = select_native_peer(&mut client, &device).await?;
             client.native_lock(id).await?;
-            println!("Lock accepted; effect is not confirmed");
+            println!("Lock queued; use monitor to observe the Android result");
         }
         NativeCommand::Call {
             device,
