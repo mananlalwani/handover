@@ -1,4 +1,4 @@
-use std::fs::Permissions;
+use std::fs::{self, Permissions};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -307,6 +307,35 @@ where
             native_backend().map(|native| native.lock_device(&id)),
             "native lock",
         ),
+        Method::RemoteInputSend {
+            device_id,
+            action,
+            delta_x,
+            delta_y,
+            button,
+            text,
+        } => {
+            let peer_id = device_id
+                .as_str()
+                .strip_prefix("native:")
+                .unwrap_or_default();
+            native_command_response(
+                native_backend().map(|native| {
+                    native.remote_input(
+                        peer_id,
+                        &handover_core::RemoteInputCommand {
+                            device_id: device_id.clone(),
+                            action,
+                            delta_x,
+                            delta_y,
+                            button,
+                            text,
+                        },
+                    )
+                }),
+                "remote input",
+            )
+        }
         Method::NativeCall {
             id,
             action,
@@ -400,7 +429,7 @@ where
             }
         }
         Method::ClipboardSendCurrent { device_id } => match read_wayland_clipboard().await {
-            Ok((text, html, uri)) => {
+            Ok(WaylandClipboard::Text { text, html, uri }) => {
                 let peer_id = device_id
                     .as_str()
                     .strip_prefix("native:")
@@ -411,6 +440,23 @@ where
                     Some(Err(_)) => ServerPayload::Error {
                         code: ErrorCode::BackendRejected,
                         message: "clipboard was not accepted".into(),
+                    },
+                    None => ServerPayload::Error {
+                        code: ErrorCode::BackendUnavailable,
+                        message: "native backend unavailable".into(),
+                    },
+                }
+            }
+            Ok(WaylandClipboard::File { path, mime }) => {
+                let peer_id = device_id
+                    .as_str()
+                    .strip_prefix("native:")
+                    .unwrap_or_default();
+                match native_backend().map(|native| native.clipboard_file(peer_id, path, mime)) {
+                    Some(Ok(_)) => ServerPayload::NativeAccepted,
+                    Some(Err(_)) => ServerPayload::Error {
+                        code: ErrorCode::BackendRejected,
+                        message: "clipboard file was not accepted".into(),
                     },
                     None => ServerPayload::Error {
                         code: ErrorCode::BackendUnavailable,
@@ -621,7 +667,19 @@ where
     Ok(true)
 }
 
-async fn read_wayland_clipboard() -> Result<(String, Option<String>, Option<String>), ()> {
+enum WaylandClipboard {
+    Text {
+        text: String,
+        html: Option<String>,
+        uri: Option<String>,
+    },
+    File {
+        path: PathBuf,
+        mime: String,
+    },
+}
+
+async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
     let types = tokio::process::Command::new("wl-paste")
         .arg("--list-types")
         .output()
@@ -633,8 +691,48 @@ async fn read_wayland_clipboard() -> Result<(String, Option<String>, Option<Stri
     let types = String::from_utf8(types.stdout).map_err(|_| ())?;
     let selected = types
         .lines()
+        .map(str::trim)
+        .find(|mime| mime.starts_with("image/"));
+    if let Some(mime) = selected {
+        let extension = mime
+            .strip_prefix("image/")
+            .unwrap_or("bin")
+            .replace('/', "_");
+        let path = std::env::temp_dir().join(format!(
+            "handover-clipboard-{}-{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ())?
+                .as_nanos(),
+            extension
+        ));
+        let output = tokio::process::Command::new("wl-paste")
+            .args(["--no-newline", "--type", mime])
+            .output()
+            .await
+            .map_err(|_| ())?;
+        if !output.status.success() || output.stdout.len() > 10 * 1024 * 1024 {
+            return Err(());
+        }
+        tokio::fs::write(&path, output.stdout)
+            .await
+            .map_err(|_| ())?;
+        return Ok(WaylandClipboard::File {
+            path,
+            mime: mime.to_owned(),
+        });
+    }
+    let selected = types
+        .lines()
+        .map(str::trim)
         .find(|mime| *mime == "text/html")
-        .or_else(|| types.lines().find(|mime| *mime == "text/uri-list"));
+        .or_else(|| {
+            types
+                .lines()
+                .map(str::trim)
+                .find(|mime| *mime == "text/uri-list")
+        });
     let output = tokio::process::Command::new("wl-paste")
         .args(["--no-newline"])
         .args(
@@ -649,10 +747,60 @@ async fn read_wayland_clipboard() -> Result<(String, Option<String>, Option<Stri
         return Err(());
     }
     let value = String::from_utf8(output.stdout).map_err(|_| ())?;
+    if selected == Some("text/uri-list") {
+        if let Some(path) = value.lines().map(str::trim).find_map(|line| {
+            Url::parse(line)
+                .ok()
+                .and_then(|url| url.to_file_path().ok())
+        }) {
+            let metadata = fs::metadata(&path).map_err(|_| ())?;
+            if metadata.is_file() && metadata.len() <= 10 * 1024 * 1024 {
+                let name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
+                let extension = Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .unwrap_or("octet-stream");
+                let mime = match extension.to_ascii_lowercase().as_str() {
+                    "png" => "image/png",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    "pdf" => "application/pdf",
+                    _ => "application/octet-stream",
+                };
+                let copy = std::env::temp_dir().join(format!(
+                    "handover-clipboard-{}-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|_| ())?
+                        .as_nanos(),
+                    name
+                ));
+                fs::copy(&path, &copy).map_err(|_| ())?;
+                return Ok(WaylandClipboard::File {
+                    path: copy,
+                    mime: mime.to_owned(),
+                });
+            }
+        }
+    }
     match selected {
-        Some("text/html") => Ok((strip_html_text(&value), Some(value), None)),
-        Some("text/uri-list") => Ok((value.clone(), None, Some(value))),
-        _ => Ok((value, None, None)),
+        Some("text/html") => Ok(WaylandClipboard::Text {
+            text: strip_html_text(&value),
+            html: Some(value),
+            uri: None,
+        }),
+        Some("text/uri-list") => Ok(WaylandClipboard::Text {
+            text: value.clone(),
+            html: None,
+            uri: Some(value),
+        }),
+        _ => Ok(WaylandClipboard::Text {
+            text: value,
+            html: None,
+            uri: None,
+        }),
     }
 }
 

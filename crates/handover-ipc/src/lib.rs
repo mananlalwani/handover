@@ -64,6 +64,19 @@ pub enum Method {
     NativeRing { id: String },
     #[serde(rename = "native.lock")]
     NativeLock { id: String },
+    #[serde(rename = "remote_input.send")]
+    RemoteInputSend {
+        device_id: DeviceId,
+        action: handover_core::RemoteInputAction,
+        #[serde(default)]
+        delta_x: i32,
+        #[serde(default)]
+        delta_y: i32,
+        #[serde(default)]
+        button: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     #[serde(rename = "calls.control")]
     CallsControl {
         device_id: DeviceId,

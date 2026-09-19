@@ -562,6 +562,10 @@ enum Message {
         transfer_id: String,
         name: String,
         size: u64,
+        #[serde(default, skip_serializing_if = "is_false")]
+        clipboard: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
         #[serde(skip)]
         path: PathBuf,
     },
@@ -581,6 +585,10 @@ enum Message {
     Pong {
         protocol: u32,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Message {
@@ -1130,6 +1138,44 @@ impl NativeBackend {
                 transfer_id: transfer_id.clone(),
                 name,
                 size,
+                clipboard: false,
+                mime: None,
+                path,
+            },
+            transfer_id,
+        )
+    }
+
+    pub fn clipboard_file(
+        &self,
+        peer_id: &str,
+        path: PathBuf,
+        mime: String,
+    ) -> Result<String, NativeCommandError> {
+        if mime.is_empty() || mime.len() > 128 {
+            return Err(NativeCommandError::QueueFull);
+        }
+        let file = File::open(&path).map_err(|_| NativeCommandError::QueueFull)?;
+        let metadata = file.metadata().map_err(|_| NativeCommandError::QueueFull)?;
+        if !metadata.is_file() || metadata.len() > 10 * 1024 * 1024 {
+            return Err(NativeCommandError::QueueFull);
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| safe_share_name(name) && name.len() <= 255)
+            .ok_or(NativeCommandError::QueueFull)?
+            .to_owned();
+        let transfer_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
+        self.queue_share(
+            peer_id,
+            Message::ShareFile {
+                protocol: WIRE_VERSION,
+                transfer_id: transfer_id.clone(),
+                name,
+                size: metadata.len(),
+                clipboard: true,
+                mime: Some(mime),
                 path,
             },
             transfer_id,
@@ -1655,6 +1701,7 @@ impl NativeBackend {
                     path,
                     size,
                     transfer_id,
+                    clipboard,
                     ..
                 } = &message
                 {
@@ -1685,6 +1732,9 @@ impl NativeBackend {
                         return Err(NativeError::Io(error));
                     }
                     tls.flush()?;
+                    if *clipboard {
+                        let _ = fs::remove_file(path);
+                    }
                 }
             }
             match read_frame(&mut tls) {

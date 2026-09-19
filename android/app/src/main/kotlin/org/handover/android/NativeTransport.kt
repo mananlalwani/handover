@@ -832,7 +832,15 @@ class NativeTransport(private val context: Context) {
                     sendTransferFailureAndClose(transferId, TRANSFER_SIZE_LIMIT); return
                 }
                 if (!isTransferId(transferId)) { socket?.close(); return }
-                receiveFile(input, transferId, name, size)
+                if (message.optBoolean("clipboard", false)) {
+                    val mime = message.optString("mime").takeIf { it.isNotEmpty() }
+                    if (mime == null || size > MAX_CLIPBOARD_FILE_BYTES) {
+                        sendTransferFailureAndClose(transferId, TRANSFER_INVALID_RESOURCE); return
+                    }
+                    receiveClipboardFile(input, transferId, name, size, mime)
+                } else {
+                    receiveFile(input, transferId, name, size)
+                }
             }
         }
     }
@@ -890,6 +898,57 @@ class NativeTransport(private val context: Context) {
             temporary.delete()
             Log.w(TAG, "native file receive failed: ${error.javaClass.simpleName}")
             sendTransferFailureAndClose(transferId, if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE)
+        }
+    }
+
+    private fun receiveClipboardFile(
+        input: BufferedInputStream,
+        transferId: String,
+        name: String,
+        size: Long,
+        mime: String,
+    ) {
+        if (Build.VERSION.SDK_INT < 29) {
+            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
+            return
+        }
+        val values = android.content.ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/Handover clipboard")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        if (uri == null) {
+            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
+            return
+        }
+        try {
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                val buffer = ByteArray(STREAM_BUFFER_BYTES)
+                var remaining = size
+                while (remaining > 0) {
+                    val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                    if (count < 0) throw EOFException("interrupted clipboard transfer")
+                    if (count == 0) continue
+                    output.write(buffer, 0, count)
+                    remaining -= count
+                }
+                output.flush()
+            } ?: throw java.io.IOException("clipboard output unavailable")
+            context.contentResolver.update(uri, ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }, null, null)
+            context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(
+                android.content.ClipData.newUri(context.contentResolver, name, uri),
+            )
+            sendTransferResult(transferId, "completed", null)
+        } catch (error: Exception) {
+            context.contentResolver.delete(uri, null, null)
+            sendTransferFailureAndClose(
+                transferId,
+                if (error is EOFException) TRANSFER_INTERRUPTED else TRANSFER_STORAGE,
+            )
         }
     }
 
@@ -1136,6 +1195,7 @@ class NativeTransport(private val context: Context) {
         private const val MAX_FRAME = 64 * 1024
         private const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"
         private const val MAX_FILE_BYTES = 100L * 1024 * 1024
+        private const val MAX_CLIPBOARD_FILE_BYTES = 10L * 1024 * 1024
         private const val MAX_URL_BYTES = 8 * 1024
         private const val MAX_NAME_BYTES = 255
         private const val STREAM_BUFFER_BYTES = 32 * 1024

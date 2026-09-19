@@ -399,6 +399,21 @@ Singleton {
         return sendRequest("clipboard.send_current", { device_id: device.id });
     }
 
+    function remoteInput(device, action, deltaX, deltaY, button, text) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        return sendRequest("remote_input.send", {
+            device_id: device.id,
+            action: action,
+            delta_x: Number(deltaX || 0),
+            delta_y: Number(deltaY || 0),
+            button: Number(button || 0),
+            text: text || undefined
+        });
+    }
+
     function mediaCommand(session, action, value) {
         if (!session || !session.id || !action)
             return false;
