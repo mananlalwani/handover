@@ -38,6 +38,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
     private lateinit var awakeStatus: TextView
+    private lateinit var awakeSwitch: Switch
     private lateinit var transferStatus: LinearLayout
     private lateinit var capabilitiesStatus: TextView
     private lateinit var updateStatus: TextView
@@ -160,6 +161,17 @@ class MainActivity : android.app.Activity() {
         mediaStatus.text = if (TestMediaSession.isActive()) "Test media: playing" else "Test media: stopped"
         awakeStatus.text = "Desktop requested: ${HandoverForegroundService.desktopAwakeRequested()}\n" +
             "Phone held awake: ${HandoverForegroundService.phoneAwakeHeld()}"
+        if (::awakeSwitch.isInitialized) {
+            val requested = HandoverForegroundService.desktopAwakeRequested()
+            if (awakeSwitch.isChecked != requested) {
+                awakeSwitch.setOnCheckedChangeListener(null)
+                awakeSwitch.isChecked = requested
+                awakeSwitch.setOnCheckedChangeListener { _, enabled ->
+                    HandoverForegroundService.requestDesktopAwake(enabled)
+                    refreshStatus()
+                }
+            }
+        }
         refreshTransferHistory()
         val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         val localNetwork = if (android.os.Build.VERSION.SDK_INT < 37 ||
@@ -639,7 +651,7 @@ class MainActivity : android.app.Activity() {
                     HandoverForegroundService.requestDesktopAwake(enabled)
                     refreshStatus()
                 }
-            }),
+            }.also { awakeSwitch = it }),
             panel(sectionTitle("Recent transfers"), transferStatus,
                 secondary(Button(this).apply {
                     text = "Clear all"
