@@ -12,8 +12,8 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use handover_core::{
-    CallAction, CallEvent, CallPhase, DeviceEvent, MediaEvent, NotificationEvent, ShareFailure,
-    ShareStatus, StateEvent,
+    CallAction, CallEvent, CallPhase, DeviceCommandAction, DeviceEvent, MediaEvent,
+    NotificationEvent, ShareFailure, ShareStatus, StateEvent,
 };
 use handover_native::NativeBackend;
 use openssl::asn1::Asn1Time;
@@ -860,6 +860,94 @@ fn native_call_result_accepts_platform_unsupported_verdict() {
         result.failure,
         Some(handover_core::CallCommandFailure::Unsupported)
     );
+}
+
+#[test]
+fn phone_screensaver_request_is_tracked_and_released() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    let request_id = "0123456789abcdef0123456789abcdef";
+    send(
+        &mut peer,
+        serde_json::json!({"type":"screensaver_control","protocol":1,
+        "request_id":request_id,"inhibit":true}),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let result = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::DeviceCommandResult(result) =
+            harness.events.recv_timeout(remaining).unwrap()
+        {
+            break result;
+        }
+    };
+    assert_eq!(result.request_id, request_id);
+    assert_eq!(result.action, DeviceCommandAction::Screensaver);
+    assert!(result.accepted);
+    assert_eq!(
+        harness.backend.phone_screensaver_requests(),
+        [client.fingerprint]
+    );
+    // A keep-awake frame from the phone is a wrong-direction command: the
+    // session ends instead of changing wake state.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"keep_awake","protocol":1,
+        "request_id":request_id,"inhibit":true}),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::Device(_) = harness.events.recv_timeout(remaining).unwrap() {
+            break;
+        }
+    }
+}
+
+#[test]
+fn session_teardown_with_reentrant_callback_completes() {
+    // The daemon's event callback calls back into the backend (its
+    // screensaver refresh reads the phone request set). Teardown must emit
+    // without holding the runtime lock, or the session thread deadlocks
+    // itself and wedges every later backend and IPC operation.
+    let dir = tempfile::tempdir().unwrap();
+    let backend = NativeBackend::open(dir.path().to_path_buf()).unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    let server = backend.clone();
+    let reader = backend.clone();
+    std::thread::spawn(move || {
+        let event = Arc::new(move |ev: StateEvent| {
+            let _ = reader.phone_screensaver_requests();
+            let _ = tx.send(ev);
+        });
+        let _ = server.serve(listener, event);
+    });
+    std::mem::forget(dir);
+    let harness = Harness {
+        backend,
+        port,
+        events: rx,
+    };
+    let client = test_identity();
+    let peer = connect(harness.port, &client);
+    let mut peer = peer;
+    pair_client(&harness, &client, &mut peer);
+    drop(peer);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::Device(DeviceEvent::Updated(device)) =
+            harness.events.recv_timeout(remaining).unwrap()
+            && device.id.as_str() == format!("native:{}", client.fingerprint)
+        {
+            assert!(!device.connected);
+            break;
+        }
+    }
 }
 
 #[test]

@@ -136,6 +136,9 @@ struct Runtime {
     // started or ended since the user acted, so the command is dropped.
     call_generations: BTreeMap<String, u64>,
     pending_call_results: BTreeMap<String, BTreeMap<String, CallAction>>,
+    // Peers that asked the desktop to stay awake. Cleared on disconnect so a
+    // dead phone cannot hold the inhibitor past its session.
+    screensaver_requests: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -158,10 +161,17 @@ struct Session<'a> {
 
 impl Drop for Session<'_> {
     fn drop(&mut self) {
-        let mut inner = self.backend.inner.lock().unwrap();
-        inner.connecting.remove(&self.peer.id);
-        inner.pending.remove(&self.peer.id);
-        if self.published {
+        // Events are collected under the lock and emitted after it drops:
+        // callbacks may call back into the backend (screensaver refresh does),
+        // and emitting under the lock would deadlock the session thread.
+        let pending_events = {
+            let mut inner = self.backend.inner.lock().unwrap();
+            inner.connecting.remove(&self.peer.id);
+            inner.pending.remove(&self.peer.id);
+            if !self.published {
+                return;
+            }
+            let mut pending_events = Vec::new();
             inner.active.remove(&self.peer.id);
             inner.outbox.remove(&self.peer.id);
             let pending = inner
@@ -169,7 +179,7 @@ impl Drop for Session<'_> {
                 .remove(&self.peer.id)
                 .unwrap_or_default();
             for transfer_id in pending.into_keys() {
-                (self.event)(StateEvent::ShareResult(ShareResult {
+                pending_events.push(StateEvent::ShareResult(ShareResult {
                     device_id: DeviceId::new(format!("native:{}", self.peer.id)),
                     transfer_id,
                     status: ShareStatus::Failed,
@@ -185,6 +195,7 @@ impl Drop for Session<'_> {
             inner.media_enabled.remove(&self.peer.id);
             inner.connectivity.remove(&self.peer.id);
             inner.pending_call_results.remove(&self.peer.id);
+            inner.screensaver_requests.remove(&self.peer.id);
             let device_id = device(&self.peer, false, None, false, false).id;
             let mut removals: Vec<NotificationId> = removed_keys
                 .into_iter()
@@ -212,17 +223,21 @@ impl Drop for Session<'_> {
             // the phone's current list. KDE-derived entries are untouched:
             // their device IDs never carry the `native:` prefix.
             for id in removals {
-                (self.event)(StateEvent::Notification(NotificationEvent::Removed(id)));
+                pending_events.push(StateEvent::Notification(NotificationEvent::Removed(id)));
             }
             // Same ownership rule for media sessions: the disconnect drops the
             // peer's native players so a reconnect resyncs from current phone
             // state. `handoverd` also strips sessions of disconnected devices,
             // and the store dedupes, so a double removal is harmless.
             for id in media_removals {
-                (self.event)(StateEvent::Media(MediaEvent::Removed(id)));
+                pending_events.push(StateEvent::Media(MediaEvent::Removed(id)));
             }
-            (self.event)(StateEvent::Call(CallEvent::Removed(device_id)));
-            (self.event)(StateEvent::Device(event));
+            pending_events.push(StateEvent::Call(CallEvent::Removed(device_id)));
+            pending_events.push(StateEvent::Device(event));
+            pending_events
+        };
+        for event in pending_events {
+            (self.event)(event);
         }
     }
 }
@@ -558,6 +573,19 @@ enum Message {
         protocol: u32,
         request_id: String,
     },
+    /// Desktop-to-phone request to hold or release a wake lock. Acceptance
+    /// means Android changed the wake-lock state, not a battery guarantee.
+    KeepAwake {
+        protocol: u32,
+        request_id: String,
+        inhibit: bool,
+    },
+    /// Phone-to-desktop request to hold or release the desktop idle inhibitor.
+    ScreensaverControl {
+        protocol: u32,
+        request_id: String,
+        inhibit: bool,
+    },
     DeviceCommandResult {
         protocol: u32,
         request_id: String,
@@ -643,6 +671,8 @@ impl Message {
             | Self::Ring { protocol, .. }
             | Self::UserPing { protocol, .. }
             | Self::LockDevice { protocol, .. }
+            | Self::KeepAwake { protocol, .. }
+            | Self::ScreensaverControl { protocol, .. }
             | Self::DeviceCommandResult { protocol, .. }
             | Self::ShareUrl { protocol, .. }
             | Self::ShareFile { protocol, .. }
@@ -695,6 +725,7 @@ impl NativeBackend {
                 pending_shares: BTreeMap::new(),
                 call_generations: BTreeMap::new(),
                 pending_call_results: BTreeMap::new(),
+                screensaver_requests: BTreeSet::new(),
             })),
             directory,
             certificate,
@@ -1106,6 +1137,31 @@ impl NativeBackend {
                 request_id,
             },
         )
+    }
+
+    /// Queue a request for the phone to hold (`inhibit: true`) or release its
+    /// wake lock. Android reports the applied state as a device command result.
+    pub fn keep_awake(&self, peer_id: &str, inhibit: bool) -> Result<(), NativeCommandError> {
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
+        self.queue_simple(
+            peer_id,
+            Message::KeepAwake {
+                protocol: WIRE_VERSION,
+                request_id,
+                inhibit,
+            },
+        )
+    }
+
+    /// Peer IDs currently asking the desktop to stay awake.
+    pub fn phone_screensaver_requests(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .screensaver_requests
+            .iter()
+            .cloned()
+            .collect()
     }
 
     fn queue_simple(&self, peer_id: &str, message: Message) -> Result<(), NativeCommandError> {
@@ -1574,23 +1630,24 @@ impl NativeBackend {
                 protocol: WIRE_VERSION,
             },
         )?;
-        {
+        let added = {
             let mut inner = self.inner.lock().unwrap();
             if !inner.peers.peers.contains_key(&id) {
                 return Err(NativeError::InvalidFrame);
             }
             inner.active.insert(id.clone(), tls.get_ref().try_clone()?);
             session.published = true;
-            let notifications_supported = inner.notif_enabled.get(&id).copied().unwrap_or(false);
-            let media_supported = inner.media_enabled.get(&id).copied().unwrap_or(false);
-            event(StateEvent::Device(DeviceEvent::Added(device(
+            device(
                 &peer,
                 true,
                 inner.batteries.get(&id).cloned(),
-                notifications_supported,
-                media_supported,
-            ))));
-        }
+                inner.notif_enabled.get(&id).copied().unwrap_or(false),
+                inner.media_enabled.get(&id).copied().unwrap_or(false),
+            )
+        };
+        // The device event emits without the lock held: callbacks may call
+        // back into the backend.
+        event(StateEvent::Device(DeviceEvent::Added(added)));
         // Ask a freshly paired phone for its current notification list. The
         // phone also syncs proactively after `paired`; the request covers a
         // daemon restart where the phone never saw the pairing transition.
@@ -1959,6 +2016,33 @@ impl NativeBackend {
                         failure,
                     }));
                 }
+                Ok(Message::ScreensaverControl {
+                    protocol: WIRE_VERSION,
+                    request_id,
+                    inhibit,
+                }) => {
+                    last_received = Instant::now();
+                    if !valid_transfer_id(&request_id) {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    // The phone only requests; the daemon owns the inhibitor.
+                    // A release from a peer that never requested is still
+                    // accepted so both sides converge on awake policy.
+                    let mut inner = self.inner.lock().unwrap();
+                    if inhibit {
+                        inner.screensaver_requests.insert(id.clone());
+                    } else {
+                        inner.screensaver_requests.remove(&id);
+                    }
+                    drop(inner);
+                    event(StateEvent::DeviceCommandResult(DeviceCommandResult {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        request_id,
+                        action: DeviceCommandAction::Screensaver,
+                        accepted: true,
+                        failure: None,
+                    }));
+                }
                 Ok(Message::Battery {
                     protocol: WIRE_VERSION,
                     percentage,
@@ -1967,25 +2051,31 @@ impl NativeBackend {
                     last_received = Instant::now();
                     let battery = BatteryState::new(percentage, charging)
                         .map_err(|_| NativeError::InvalidFrame)?;
-                    let mut inner = self.inner.lock().unwrap();
-                    if !inner.peers.peers.contains_key(&id) {
-                        break;
-                    }
-                    inner.batteries.insert(id.clone(), battery);
-                    let notifications_supported =
-                        inner.notif_enabled.get(&id).copied().unwrap_or(false);
-                    let media_supported = inner.media_enabled.get(&id).copied().unwrap_or(false);
-                    let mut updated = device(
-                        &peer,
-                        true,
-                        Some(battery),
-                        notifications_supported,
-                        media_supported,
-                    );
-                    updated.connectivity = inner.connectivity.get(&id).copied();
-                    if updated.connectivity.is_some() {
-                        updated.capabilities.insert(Capability::Connectivity);
-                    }
+                    let updated = {
+                        let mut inner = self.inner.lock().unwrap();
+                        if !inner.peers.peers.contains_key(&id) {
+                            break;
+                        }
+                        inner.batteries.insert(id.clone(), battery);
+                        let notifications_supported =
+                            inner.notif_enabled.get(&id).copied().unwrap_or(false);
+                        let media_supported =
+                            inner.media_enabled.get(&id).copied().unwrap_or(false);
+                        let mut updated = device(
+                            &peer,
+                            true,
+                            Some(battery),
+                            notifications_supported,
+                            media_supported,
+                        );
+                        updated.connectivity = inner.connectivity.get(&id).copied();
+                        if updated.connectivity.is_some() {
+                            updated.capabilities.insert(Capability::Connectivity);
+                        }
+                        updated
+                    };
+                    // Emit without the lock held: callbacks may call back
+                    // into the backend.
                     event(StateEvent::Device(DeviceEvent::Updated(updated)));
                 }
                 Ok(Message::Connectivity {
@@ -2000,20 +2090,25 @@ impl NativeBackend {
                         validated,
                         metered,
                     };
-                    let mut inner = self.inner.lock().unwrap();
-                    if !inner.peers.peers.contains_key(&id) {
-                        break;
-                    }
-                    inner.connectivity.insert(id.clone(), connectivity);
-                    let mut updated = device(
-                        &peer,
-                        true,
-                        inner.batteries.get(&id).cloned(),
-                        inner.notif_enabled.get(&id).copied().unwrap_or(false),
-                        inner.media_enabled.get(&id).copied().unwrap_or(false),
-                    );
-                    updated.connectivity = Some(connectivity);
-                    updated.capabilities.insert(Capability::Connectivity);
+                    let updated = {
+                        let mut inner = self.inner.lock().unwrap();
+                        if !inner.peers.peers.contains_key(&id) {
+                            break;
+                        }
+                        inner.connectivity.insert(id.clone(), connectivity);
+                        let mut updated = device(
+                            &peer,
+                            true,
+                            inner.batteries.get(&id).cloned(),
+                            inner.notif_enabled.get(&id).copied().unwrap_or(false),
+                            inner.media_enabled.get(&id).copied().unwrap_or(false),
+                        );
+                        updated.connectivity = Some(connectivity);
+                        updated.capabilities.insert(Capability::Connectivity);
+                        updated
+                    };
+                    // Emit without the lock held: callbacks may call back
+                    // into the backend.
                     event(StateEvent::Device(DeviceEvent::Updated(updated)));
                 }
                 Ok(Message::CallState {
@@ -3021,6 +3116,36 @@ mod tests {
 
         assert!(!backend.cancel_share("unknown-peer", "not-a-transfer-id"));
         assert!(!backend.cancel_share("unknown-peer", "0123456789abcdef0123456789abcdef"));
+    }
+
+    #[test]
+    fn keep_awake_and_screensaver_control_carry_result_correlation() {
+        let request_id = "0123456789abcdef0123456789abcdef";
+        let keep_awake = Message::KeepAwake {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+            inhibit: true,
+        };
+        let control = Message::ScreensaverControl {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+            inhibit: false,
+        };
+
+        assert_eq!(
+            serde_json::to_value(keep_awake).expect("command serializes"),
+            serde_json::json!({
+                "type": "keep_awake", "protocol": 1, "request_id": request_id,
+                "inhibit": true
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(control).expect("command serializes"),
+            serde_json::json!({
+                "type": "screensaver_control", "protocol": 1, "request_id": request_id,
+                "inhibit": false
+            })
+        );
     }
 
     #[test]
