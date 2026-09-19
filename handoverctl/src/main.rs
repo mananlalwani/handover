@@ -493,7 +493,7 @@ async fn send_notification(
     client
         .send_notification(device_id, app, title, body)
         .await?;
-    println!("Notification accepted; phone presentation is not confirmed");
+    println!("Notification queued; use monitor to observe the Android result");
     Ok(())
 }
 
