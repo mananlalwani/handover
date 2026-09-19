@@ -90,6 +90,7 @@ class NativeTransport(private val context: Context) {
     @Volatile private var remoteClipboardHash: String? = null
     @Volatile private var connectionStatus = "offline"
     private var clipboardListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
+    @Volatile private var clipboardLogProcess: Process? = null
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     /** Reconnects to the stored manual endpoint after a restart when already paired. */
@@ -133,6 +134,8 @@ class NativeTransport(private val context: Context) {
 
     fun stop() {
         releaseWakeLock()
+        clipboardLogProcess?.destroy()
+        clipboardLogProcess = null
         clipboardListener?.let {
             context.getSystemService(android.content.ClipboardManager::class.java)
                 .removePrimaryClipChangedListener(it)
@@ -163,6 +166,7 @@ class NativeTransport(private val context: Context) {
 
     fun setOverlayAssist(enabled: Boolean) {
         preferences.edit().putBoolean(OVERLAY_ASSIST_KEY, enabled).apply()
+        configureClipboardLogMonitor()
     }
 
     fun overlayAssistEnabled(): Boolean = preferences.getBoolean(OVERLAY_ASSIST_KEY, false)
@@ -223,27 +227,15 @@ class NativeTransport(private val context: Context) {
     fun desktopAwakeRequested(): Boolean = preferences.getBoolean(DESKTOP_AWAKE_KEY, false)
 
     private fun configureClipboardSync(enabled: Boolean) {
-        Log.i(TAG, "clipboard sync configure enabled=$enabled")
+        configureClipboardLogMonitor()
         val manager = context.getSystemService(android.content.ClipboardManager::class.java)
         clipboardListener?.let(manager::removePrimaryClipChangedListener)
         clipboardListener = null
         if (!enabled) return
         val listener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
-            Log.i(TAG, "clipboard changed, paired=${serverFingerprint != null}")
             if (serverFingerprint == null) return@OnPrimaryClipChangedListener
             val clip = manager.primaryClip
-            Log.i(TAG, "clipboard changed, direct read null=${clip == null}")
             if (clip == null) {
-                // Android 10+ denies background clipboard reads. With a
-                // separate explicit opt-in and the system overlay grant, a
-                // transient 1px overlay briefly foregrounds us so this one
-                // read is legal; the view is removed in the same block.
-                val assist = shouldAssistBackgroundRead(true)
-                Log.i(TAG, "clipboard assist gate=$assist")
-                if (assist) {
-                    val sent = tryOverlayAssistedRead()
-                    Log.i(TAG, "clipboard assist sent=$sent")
-                }
                 return@OnPrimaryClipChangedListener
             }
             val item = clip.getItemAt(0) ?: return@OnPrimaryClipChangedListener
@@ -260,46 +252,41 @@ class NativeTransport(private val context: Context) {
         manager.addPrimaryClipChangedListener(listener)
     }
 
+    private fun configureClipboardLogMonitor() {
+        clipboardLogProcess?.destroy()
+        clipboardLogProcess = null
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        if (!shouldAssistBackgroundRead(true)) return
+        if (context.checkSelfPermission(android.Manifest.permission.READ_LOGS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return
+
+        Thread({
+            try {
+                val filter = if (Build.VERSION.SDK_INT > 35) {
+                    "E ClipboardService"
+                } else {
+                    "ClipboardService:E"
+                }
+                val process = Runtime.getRuntime().exec(arrayOf("logcat", "-T", "1", filter, "*:S"))
+                clipboardLogProcess = process
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.filter { it.contains(context.packageName) }.forEach {
+                        context.startActivity(Intent(context, ClipboardReadActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                        })
+                    }
+                }
+            } catch (_: Exception) {
+                // The assist remains unavailable if log access is revoked or
+                // Android rejects the background activity launch.
+            }
+        }, "handover-clipboard-monitor").apply { isDaemon = true }.start()
+    }
+
     private fun clipboardHash(text: String): String = MessageDigest.getInstance("SHA-256")
         .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-
-    private fun tryOverlayAssistedRead(): Boolean {
-        var sent = false
-        val read = {
-            var view: android.view.View? = null
-            val windowManager = context.getSystemService(android.view.WindowManager::class.java)
-            try {
-                view = android.view.View(context)
-                windowManager.addView(view, android.view.WindowManager.LayoutParams(
-                    1, 1,
-                    android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-                    android.graphics.PixelFormat.TRANSLUCENT,
-                ))
-                val clip = context.getSystemService(android.content.ClipboardManager::class.java)
-                    .primaryClip
-                sent = clip != null && sendClipboardPayload(clip)
-            } catch (_: Exception) {
-                sent = false
-            } finally {
-                runCatching { view?.let(windowManager::removeView) }
-            }
-        }
-        // Clipboard callbacks usually arrive on the main thread; posting and
-        // waiting there would deadlock, so run inline in that case.
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            read()
-        } else {
-            val done = java.util.concurrent.CountDownLatch(1)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                read()
-                done.countDown()
-            }
-            done.await(5, java.util.concurrent.TimeUnit.SECONDS)
-        }
-        return sent
-    }
 
     fun connectTo(rawAddress: String): Boolean {
         Log.i(TAG, "Manual LAN endpoint requested")

@@ -639,7 +639,7 @@ class MainActivity : android.app.Activity() {
                     HandoverForegroundService.setClipboardSync(enabled)
                 }
             }, Switch(this).apply {
-                text = "Background reads via transient overlay (needs display permission)"
+                text = "Background reads via transient activity (needs display permission and ADB READ_LOGS grant)"
                 isChecked = HandoverForegroundService.overlayAssistEnabled()
                 setOnCheckedChangeListener { _, enabled ->
                     if (enabled && !HandoverForegroundService.overlayPermissionGranted()) {
