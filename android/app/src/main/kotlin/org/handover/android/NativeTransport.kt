@@ -223,11 +223,13 @@ class NativeTransport(private val context: Context) {
     fun desktopAwakeRequested(): Boolean = preferences.getBoolean(DESKTOP_AWAKE_KEY, false)
 
     private fun configureClipboardSync(enabled: Boolean) {
+        Log.i(TAG, "clipboard sync configure enabled=$enabled")
         val manager = context.getSystemService(android.content.ClipboardManager::class.java)
         clipboardListener?.let(manager::removePrimaryClipChangedListener)
         clipboardListener = null
         if (!enabled) return
         val listener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
+            Log.i(TAG, "clipboard changed, paired=${serverFingerprint != null}")
             if (serverFingerprint == null) return@OnPrimaryClipChangedListener
             val clip = manager.primaryClip
             Log.i(TAG, "clipboard changed, direct read null=${clip == null}")
