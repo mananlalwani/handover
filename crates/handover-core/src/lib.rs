@@ -317,6 +317,7 @@ pub enum DeviceCommandAction {
     Lock,
     Clipboard,
     Notification,
+    Media,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

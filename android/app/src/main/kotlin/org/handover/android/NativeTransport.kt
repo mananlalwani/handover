@@ -808,9 +808,17 @@ class NativeTransport(private val context: Context) {
             }
             "media_control" -> {
                 if (serverFingerprint == null) return
+                val requestId = message.optString("request_id")
+                if (!isTransferId(requestId)) return
                 val position = message.takeIf { it.has("position_ms") }?.optLong("position_ms")
-                MediaObserver.executeControl(
+                val applied = MediaObserver.executeControl(
                     message.optString("player"), message.optString("action"), position,
+                )
+                sendDeviceCommandResult(
+                    requestId,
+                    "media",
+                    applied,
+                    if (applied) null else "rejected",
                 )
             }
             "share_result" -> {

@@ -540,6 +540,7 @@ enum Message {
     },
     MediaControl {
         protocol: u32,
+        request_id: String,
         player: String,
         action: WireCommand,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1042,8 +1043,10 @@ impl NativeBackend {
         if queue.len() >= MAX_OUTBOX_PER_PEER {
             return Err(NativeCommandError::QueueFull);
         }
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         queue.push(Message::MediaControl {
             protocol: WIRE_VERSION,
+            request_id,
             player,
             action,
             position_ms,
@@ -2957,6 +2960,26 @@ mod tests {
             serde_json::json!({
                 "type": "clipboard_set", "protocol": 1, "request_id": request_id,
                 "text": "Example", "html": "<b>Example</b>"
+            })
+        );
+    }
+
+    #[test]
+    fn media_command_carries_result_correlation_id() {
+        let request_id = "0123456789abcdef0123456789abcdef";
+        let command = Message::MediaControl {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+            player: "player".into(),
+            action: WireCommand::Play,
+            position_ms: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(command).expect("command serializes"),
+            serde_json::json!({
+                "type": "media_control", "protocol": 1, "request_id": request_id,
+                "player": "player", "action": "play"
             })
         );
     }
