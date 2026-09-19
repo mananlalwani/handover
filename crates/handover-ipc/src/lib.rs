@@ -122,6 +122,10 @@ pub enum Method {
     },
     #[serde(rename = "clipboard.send_current")]
     ClipboardSendCurrent { device_id: DeviceId },
+    #[serde(rename = "clipboard.mirror")]
+    ClipboardMirror { enable: bool },
+    #[serde(rename = "clipboard.mirror_status")]
+    ClipboardMirrorStatus,
     #[serde(rename = "contacts.list")]
     ContactsList,
     #[serde(rename = "contacts.sync")]
@@ -471,6 +475,9 @@ pub enum ServerPayload {
     ShareCancelled {
         cancelled: bool,
     },
+    ClipboardMirror {
+        enabled: bool,
+    },
     CustomCommands {
         commands: Vec<handover_core::CustomCommandEntry>,
     },
@@ -785,6 +792,22 @@ impl Client {
         .await?;
         match self.receive().await?.payload {
             ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn set_clipboard_mirror(&mut self, enable: bool) -> Result<(), IpcError> {
+        self.send(Method::ClipboardMirror { enable }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn clipboard_mirror_status(&mut self) -> Result<bool, IpcError> {
+        self.send(Method::ClipboardMirrorStatus).await?;
+        match self.receive().await?.payload {
+            ServerPayload::ClipboardMirror { enabled } => Ok(enabled),
             payload => Err(unexpected(payload)),
         }
     }
@@ -1449,6 +1472,27 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Request>(&json).expect("request deserializes"),
             keep_awake
+        );
+    }
+
+    #[test]
+    fn clipboard_mirror_methods_use_versioned_names() {
+        let set = Request::new(Method::ClipboardMirror { enable: true });
+        let json = serde_json::to_string(&set).expect("request serializes");
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"clipboard.mirror","enable":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            set
+        );
+        let status = Request::new(Method::ClipboardMirrorStatus);
+        let json = serde_json::to_string(&status).expect("request serializes");
+        assert_eq!(json, r#"{"protocol":1,"method":"clipboard.mirror_status"}"#);
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            status
         );
     }
 

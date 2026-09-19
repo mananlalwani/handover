@@ -395,6 +395,14 @@ Singleton {
         return sendRequest("custom.run", { name: name });
     }
 
+    function setClipboardMirror(enable) {
+        return sendRequest("clipboard.mirror", { enable: enable });
+    }
+
+    function clipboardMirrorStatus() {
+        return sendRequest("clipboard.mirror_status", {});
+    }
+
     function nativeAction(device, action) {
         if (!device || !device.id || !device.id.startsWith("native:"))
             return false;

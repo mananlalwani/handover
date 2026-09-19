@@ -45,3 +45,36 @@ pub(crate) fn apply_file(path: &str, mime: &str) {
     }
     let _ = child.wait();
 }
+
+/// MIME types currently offered by the Wayland clipboard, or `None` when the
+/// clipboard is unreadable.
+pub(crate) async fn offered_types() -> Option<Vec<String>> {
+    let output = tokio::process::Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim().to_owned())
+            .filter(|line| !line.is_empty())
+            .collect(),
+    )
+}
+
+/// Read at most 32 KiB of text for one offered MIME type.
+pub(crate) async fn read_text_mime(mime: &str) -> Option<String> {
+    let output = tokio::process::Command::new("wl-paste")
+        .args(["--no-newline", "--type", mime])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() || output.stdout.len() > 32 * 1024 {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}

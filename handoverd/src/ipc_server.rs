@@ -447,6 +447,19 @@ where
                 },
             }
         }
+        Method::ClipboardMirror { enable } => match crate::mirror() {
+            Some(mirror) => {
+                mirror.set_enabled(enable);
+                ServerPayload::NativeAccepted
+            }
+            None => ServerPayload::Error {
+                code: ErrorCode::BackendUnavailable,
+                message: "clipboard mirroring is unavailable".into(),
+            },
+        },
+        Method::ClipboardMirrorStatus => ServerPayload::ClipboardMirror {
+            enabled: crate::mirror().is_some_and(|mirror| mirror.enabled()),
+        },
         Method::ClipboardSendCurrent { device_id } => match read_wayland_clipboard().await {
             Ok(WaylandClipboard::Text { text, html, uri }) => {
                 let peer_id = device_id
@@ -712,19 +725,8 @@ enum WaylandClipboard {
 }
 
 async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
-    let types = tokio::process::Command::new("wl-paste")
-        .arg("--list-types")
-        .output()
-        .await
-        .map_err(|_| ())?;
-    if !types.status.success() {
-        return Err(());
-    }
-    let types = String::from_utf8(types.stdout).map_err(|_| ())?;
-    let selected = types
-        .lines()
-        .map(str::trim)
-        .find(|mime| mime.starts_with("image/"));
+    let offered = crate::clipboard::offered_types().await.ok_or(())?;
+    let selected = offered.iter().find(|mime| mime.starts_with("image/"));
     if let Some(mime) = selected {
         let extension = mime
             .strip_prefix("image/")
@@ -755,14 +757,22 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
             mime: mime.to_owned(),
         });
     }
-    let offered = types.lines().map(str::trim).collect::<Vec<_>>();
+    let offered = offered.iter().map(String::as_str).collect::<Vec<_>>();
     let html = if offered.contains(&"text/html") {
-        Some(read_wayland_clipboard_text("text/html").await?)
+        Some(
+            crate::clipboard::read_text_mime("text/html")
+                .await
+                .ok_or(())?,
+        )
     } else {
         None
     };
     let uri = if offered.contains(&"text/uri-list") {
-        Some(read_wayland_clipboard_text("text/uri-list").await?)
+        Some(
+            crate::clipboard::read_text_mime("text/uri-list")
+                .await
+                .ok_or(())?,
+        )
     } else {
         None
     };
@@ -810,7 +820,7 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
         .find(|mime| *mime == "text/plain;charset=utf-8")
         .or_else(|| offered.iter().copied().find(|mime| *mime == "text/plain"));
     let text = if let Some(mime) = plain_mime {
-        read_wayland_clipboard_text(mime).await?
+        crate::clipboard::read_text_mime(mime).await.ok_or(())?
     } else if let Some(html) = &html {
         strip_html_text(html)
     } else if let Some(uri) = &uri {
@@ -824,18 +834,6 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
         return Err(());
     }
     Ok(WaylandClipboard::Text { text, html, uri })
-}
-
-async fn read_wayland_clipboard_text(mime: &str) -> Result<String, ()> {
-    let output = tokio::process::Command::new("wl-paste")
-        .args(["--no-newline", "--type", mime])
-        .output()
-        .await
-        .map_err(|_| ())?;
-    if !output.status.success() || output.stdout.len() > 32 * 1024 {
-        return Err(());
-    }
-    String::from_utf8(output.stdout).map_err(|_| ())
 }
 
 fn strip_html_text(html: &str) -> String {

@@ -60,6 +60,8 @@ enum Command {
     SendFile { device: String, path: PathBuf },
     /// Control the desktop idle inhibitor: inhibit, release, or follow
     Screensaver { action: String },
+    /// Get or set Linux-to-phone background clipboard mirroring (off by default)
+    ClipboardMirror { action: String },
     /// Cancel a queued native share that has not started streaming
     CancelShare { device: String, transfer_id: String },
     /// List or run allowlisted desktop commands
@@ -242,6 +244,7 @@ async fn main() -> ExitCode {
         Some(Command::Clipboard { device, text }) => send_clipboard(&device, text).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
         Some(Command::Screensaver { action }) => screensaver(&action).await,
+        Some(Command::ClipboardMirror { action }) => clipboard_mirror(&action).await,
         Some(Command::CancelShare {
             device,
             transfer_id,
@@ -578,6 +581,33 @@ async fn custom(command: CustomCommand) -> Result<(), CliError> {
                 "custom command {}: accepted={} exit={:?} failure={:?}",
                 result.name, result.accepted, result.exit_code, result.failure
             );
+        }
+    }
+    Ok(())
+}
+
+async fn clipboard_mirror(action: &str) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    match action {
+        "on" => {
+            client.set_clipboard_mirror(true).await?;
+            println!("Background clipboard mirroring: on (text only)");
+        }
+        "off" => {
+            client.set_clipboard_mirror(false).await?;
+            println!("Background clipboard mirroring: off");
+        }
+        "status" => {
+            let enabled = client.clipboard_mirror_status().await?;
+            println!(
+                "Background clipboard mirroring: {}",
+                if enabled { "on" } else { "off" }
+            );
+        }
+        _ => {
+            return Err(CliError::DeviceSelection(
+                "clipboard mirror action must be on, off, or status".into(),
+            ));
         }
     }
     Ok(())
@@ -1161,6 +1191,12 @@ fn print_message(payload: ServerPayload) {
             println!(
                 "custom command {}: accepted={} exit={:?} failure={:?}",
                 result.name, result.accepted, result.exit_code, result.failure
+            );
+        }
+        ServerPayload::ClipboardMirror { enabled } => {
+            println!(
+                "background clipboard mirroring: {}",
+                if enabled { "on" } else { "off" }
             );
         }
         ServerPayload::Snapshot {

@@ -1,5 +1,6 @@
 mod call_audio;
 mod clipboard;
+mod clipboard_mirror;
 mod custom_commands;
 mod ipc_server;
 mod messaging;
@@ -32,6 +33,11 @@ use tracing::{info, warn};
 
 static NATIVE: OnceLock<NativeBackend> = OnceLock::new();
 static ACTIVE_CALLS: Mutex<BTreeSet<DeviceId>> = Mutex::new(BTreeSet::new());
+static MIRROR: OnceLock<Arc<clipboard_mirror::Mirror>> = OnceLock::new();
+
+pub(crate) fn mirror() -> Option<Arc<clipboard_mirror::Mirror>> {
+    MIRROR.get().cloned()
+}
 /// Explicit desktop inhibitor override from local IPC. `None` follows the
 /// automatic policy (any connected native phone or any phone keep-awake
 /// request); `Some` forces the inhibitor on or off.
@@ -58,6 +64,16 @@ async fn main() {
     }
     let state = Arc::new(RwLock::new(initial_state));
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
+    let mirror = Arc::new(clipboard_mirror::Mirror::new(
+        clipboard_mirror::enabled_from_env(
+            std::env::var_os("HANDOVER_CLIPBOARD_MIRROR").as_deref(),
+        ),
+    ));
+    let _ = MIRROR.set(Arc::clone(&mirror));
+    tokio::spawn(clipboard_mirror::run(
+        Arc::clone(&mirror),
+        Arc::clone(&state),
+    ));
     match NativeBackend::default_directory().and_then(NativeBackend::open) {
         Ok(native) => {
             for device in native.remembered_devices() {
@@ -166,6 +182,9 @@ fn apply_backend_event(
     }
     if let StateEvent::Clipboard(text) = &event {
         clipboard::apply(text);
+        if let Some(mirror) = mirror() {
+            mirror.note_remote(&text.text, &text.html, &text.uri);
+        }
     }
     if let StateEvent::ClipboardFile(file) = &event {
         clipboard::apply_file(&file.path, &file.mime);
