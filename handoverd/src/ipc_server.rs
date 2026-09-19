@@ -584,6 +584,12 @@ where
         } => {
             return handle_share_command(device_id, file_url, true, writer, state).await;
         }
+        Method::ShareCancel {
+            device_id,
+            transfer_id,
+        } => {
+            return handle_share_cancel(device_id, transfer_id, writer, state, events).await;
+        }
         Method::MessagesAccounts => ServerPayload::Accounts {
             accounts: messaging_snapshot(state).accounts,
         },
@@ -1075,6 +1081,66 @@ where
             write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
         }
     }
+    Ok(true)
+}
+
+fn valid_cancel_transfer_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+async fn handle_share_cancel<W>(
+    device_id: DeviceId,
+    transfer_id: String,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    events: &broadcast::Sender<StateEvent>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(peer_id) = device_id.as_str().strip_prefix("native:") else {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::UnknownDevice,
+                "only native shares can be cancelled",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    };
+    if !valid_cancel_transfer_id(&transfer_id) {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(ErrorCode::MalformedRequest, "unknown transfer"),
+        )
+        .await?;
+        return Ok(true);
+    }
+    let cancelled =
+        native_backend().is_some_and(|native| native.cancel_share(peer_id, &transfer_id));
+    if cancelled {
+        // The daemon reports the user cancellation; the receiver never sees
+        // the transfer, so no receiver acknowledgement follows.
+        apply_backend_event(
+            state,
+            events,
+            StateEvent::ShareResult(handover_core::ShareResult {
+                device_id,
+                transfer_id,
+                status: handover_core::ShareStatus::Failed,
+                reason: Some(handover_core::ShareFailure::Rejected),
+            }),
+        );
+    }
+    write_json_line(
+        writer,
+        &ServerMessage::new(ServerPayload::ShareCancelled { cancelled }),
+    )
+    .await?;
     Ok(true)
 }
 

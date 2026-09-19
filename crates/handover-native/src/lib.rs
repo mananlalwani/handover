@@ -1207,6 +1207,35 @@ impl NativeBackend {
         )
     }
 
+    /// Cancel a queued share that has not started streaming. Returns true
+    /// when a queued command or pending result entry was removed. A transfer
+    /// already being written to the session stream cannot be recalled; its
+    /// receiver result stands.
+    pub fn cancel_share(&self, peer_id: &str, transfer_id: &str) -> bool {
+        if !valid_transfer_id(transfer_id) {
+            return false;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let mut removed = false;
+        if let Some(queue) = inner.outbox.get_mut(peer_id) {
+            let before = queue.len();
+            queue.retain(|message| match message {
+                Message::ShareUrl {
+                    transfer_id: id, ..
+                }
+                | Message::ShareFile {
+                    transfer_id: id, ..
+                } => id != transfer_id,
+                _ => true,
+            });
+            removed = queue.len() != before;
+        }
+        if let Some(pending) = inner.pending_shares.get_mut(peer_id) {
+            removed |= pending.remove(transfer_id).is_some();
+        }
+        removed
+    }
+
     fn queue_share(
         &self,
         peer_id: &str,
@@ -2983,6 +3012,15 @@ mod tests {
                 "text": "Example", "html": "<b>Example</b>"
             })
         );
+    }
+
+    #[test]
+    fn cancel_share_rejects_unknown_transfers() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().join("native")).unwrap();
+
+        assert!(!backend.cancel_share("unknown-peer", "not-a-transfer-id"));
+        assert!(!backend.cancel_share("unknown-peer", "0123456789abcdef0123456789abcdef"));
     }
 
     #[test]

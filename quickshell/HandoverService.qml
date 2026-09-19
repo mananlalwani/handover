@@ -362,6 +362,10 @@ Singleton {
         return sendShare("share.file", device, { file_url: fileUrl });
     }
 
+    function cancelShare(device, transferId) {
+        return sendShare("share.cancel", device, { transfer_id: transferId });
+    }
+
     function nativeAction(device, action) {
         if (!device || !device.id || !device.id.startsWith("native:"))
             return false;

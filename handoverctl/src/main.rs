@@ -58,6 +58,8 @@ enum Command {
     },
     /// Send one local file to a paired device
     SendFile { device: String, path: PathBuf },
+    /// Cancel a queued native share that has not started streaming
+    CancelShare { device: String, transfer_id: String },
     /// Print current normalized call state for one device
     Calls { device: String },
     /// Inspect and use messaging accounts and conversations
@@ -217,6 +219,10 @@ async fn main() -> ExitCode {
         }) => send_notification(&device, app, title, body).await,
         Some(Command::Clipboard { device, text }) => send_clipboard(&device, text).await,
         Some(Command::SendFile { device, path }) => send_file(&device, path).await,
+        Some(Command::CancelShare {
+            device,
+            transfer_id,
+        }) => cancel_share(&device, transfer_id).await,
         Some(Command::Messages { command }) => messages(command).await,
         Some(Command::Calls { device }) => calls(device).await,
         None => {
@@ -508,6 +514,17 @@ async fn send_file(selector: &str, path: PathBuf) -> Result<(), CliError> {
     match transfer_id {
         Some(id) => println!("File share accepted: transfer {id}; awaiting receiver result"),
         None => println!("File share accepted; delivery is not confirmed"),
+    }
+    Ok(())
+}
+
+async fn cancel_share(selector: &str, transfer_id: String) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let device_id = select_device(&client.devices().await?, selector)?;
+    if client.cancel_share(device_id, transfer_id).await? {
+        println!("Share cancelled before streaming started");
+    } else {
+        println!("Share was already sent or is unknown; receiver result stands");
     }
     Ok(())
 }
@@ -1057,6 +1074,16 @@ fn print_message(payload: ServerPayload) {
                 result
                     .reason
                     .map_or_else(String::new, |reason| format!(" ({reason:?})"))
+            );
+        }
+        ServerPayload::ShareCancelled { cancelled } => {
+            println!(
+                "share {}",
+                if cancelled {
+                    "cancelled before streaming started"
+                } else {
+                    "was already sent or is unknown"
+                }
             );
         }
         ServerPayload::Snapshot {

@@ -148,6 +148,11 @@ pub enum Method {
         device_id: DeviceId,
         file_url: String,
     },
+    #[serde(rename = "share.cancel")]
+    ShareCancel {
+        device_id: DeviceId,
+        transfer_id: String,
+    },
     #[serde(rename = "media.control")]
     MediaControl {
         #[serde(flatten)]
@@ -450,6 +455,9 @@ pub enum ServerPayload {
         device_id: DeviceId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transfer_id: Option<String>,
+    },
+    ShareCancelled {
+        cancelled: bool,
     },
     MediaAccepted {
         id: MediaSessionId,
@@ -974,6 +982,24 @@ impl Client {
         }
     }
 
+    /// Cancel a queued native share. Returns true when the daemon removed a
+    /// queued command; the daemon then broadcasts a rejected share result.
+    pub async fn cancel_share(
+        &mut self,
+        device_id: DeviceId,
+        transfer_id: String,
+    ) -> Result<bool, IpcError> {
+        self.send(Method::ShareCancel {
+            device_id,
+            transfer_id,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::ShareCancelled { cancelled } => Ok(cancelled),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     async fn expect_command_completed(
         &mut self,
         notification_id: NotificationId,
@@ -1316,6 +1342,24 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ServerMessage>(&json).expect("response deserializes"),
             message
+        );
+    }
+
+    #[test]
+    fn share_cancel_uses_versioned_method_name() {
+        let request = Request::new(Method::ShareCancel {
+            device_id: DeviceId::new("native:phone-123"),
+            transfer_id: "0123456789abcdef0123456789abcdef".into(),
+        });
+        let json = serde_json::to_string(&request).expect("request serializes");
+
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"share.cancel","device_id":"native:phone-123","transfer_id":"0123456789abcdef0123456789abcdef"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            request
         );
     }
 
