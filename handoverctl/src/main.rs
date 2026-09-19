@@ -238,56 +238,15 @@ async fn main() -> ExitCode {
 }
 
 async fn send_clipboard(selector: &str, text: Option<String>) -> Result<(), CliError> {
-    let (text, html, uri) = match text {
-        Some(text) => (text, None, None),
-        None => {
-            let types = std::process::Command::new("wl-paste")
-                .arg("--list-types")
-                .output()?;
-            let types = String::from_utf8_lossy(&types.stdout);
-            let selected = types
-                .lines()
-                .find(|mime| *mime == "text/html")
-                .or_else(|| types.lines().find(|mime| *mime == "text/uri-list"));
-            let mut command = std::process::Command::new("wl-paste");
-            command.args(["--no-newline"]);
-            if let Some(mime) = selected {
-                command.args(["--type", mime]);
-            }
-            let output = command.output()?;
-            if !output.status.success() {
-                return Err(CliError::DeviceSelection(
-                    "could not read the Wayland clipboard".into(),
-                ));
-            }
-            let value = String::from_utf8(output.stdout)
-                .map_err(|_| CliError::DeviceSelection("Wayland clipboard was not UTF-8".into()))?;
-            match selected {
-                Some("text/html") => (strip_html_text(&value), Some(value), None),
-                Some("text/uri-list") => (value.clone(), None, Some(value)),
-                _ => (value, None, None),
-            }
-        }
-    };
     let mut client = connected_client().await?;
     let device = select_device(&client.devices().await?, selector)?;
-    client.send_clipboard_rich(device, text, html, uri).await?;
+    if let Some(text) = text {
+        client.send_clipboard(device, text).await?;
+    } else {
+        client.send_current_clipboard(device).await?;
+    }
     println!("Clipboard accepted by phone");
     Ok(())
-}
-
-fn strip_html_text(html: &str) -> String {
-    let mut text = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for character in html.chars() {
-        match character {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => text.push(character),
-            _ => {}
-        }
-    }
-    text
 }
 
 async fn contacts(command: ContactsCommand) -> Result<(), CliError> {
