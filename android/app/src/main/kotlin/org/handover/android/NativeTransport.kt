@@ -758,12 +758,21 @@ class NativeTransport(private val context: Context) {
             }
             "remote_notification" -> {
                 if (serverFingerprint == null) return
-                HandoverNotificationService.postRemote(
-                    message.optString("request_id"),
-                    message.optString("app"),
-                    message.optString("title"),
-                    message.optString("body"),
-                )
+                val requestId = message.optString("request_id")
+                if (!isTransferId(requestId)) return
+                val posted = runCatching {
+                    HandoverNotificationService.postRemote(
+                        requestId,
+                        message.optString("app"),
+                        message.optString("title"),
+                        message.optString("body"),
+                    )
+                }.getOrDefault(false)
+                if (posted) {
+                    sendDeviceCommandResult(requestId, "notification", true, null)
+                } else {
+                    sendDeviceCommandResult(requestId, "notification", false, "rejected")
+                }
             }
             "call_request" -> {
                 if (serverFingerprint == null) return

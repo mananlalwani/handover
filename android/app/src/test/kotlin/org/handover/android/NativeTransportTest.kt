@@ -16,6 +16,16 @@ class NativeTransportTest {
         assertEquals("permission_denied", result["failure"])
     }
 
+    @Test fun notificationResultReportsAndroidApplication() {
+        val result = NativeTransport.deviceCommandResultFields(
+            "0123456789abcdef0123456789abcdef", "notification", true, null,
+        )
+
+        assertEquals("notification", result["action"])
+        assertEquals(true, result["accepted"])
+        assertFalse(result.containsKey("failure"))
+    }
+
     @Test fun pairingCodeMatchesCrossLanguageVectorAndIsOrderIndependent() {
         // Shared with handover-native's comparison_code unit test: the same
         // fingerprints and nonces must produce this code in both languages.
