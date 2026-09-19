@@ -638,7 +638,25 @@ class MainActivity : android.app.Activity() {
                 setOnCheckedChangeListener { _, enabled ->
                     HandoverForegroundService.setClipboardSync(enabled)
                 }
-            }),
+            }, Switch(this).apply {
+                text = "Background reads via transient overlay (needs display permission)"
+                isChecked = HandoverForegroundService.overlayAssistEnabled()
+                setOnCheckedChangeListener { _, enabled ->
+                    if (enabled && !HandoverForegroundService.overlayPermissionGranted()) {
+                        android.widget.Toast.makeText(this@MainActivity,
+                            "Allow display over other apps first", android.widget.Toast.LENGTH_LONG).show()
+                        isChecked = false
+                        return@setOnCheckedChangeListener
+                    }
+                    HandoverForegroundService.setOverlayAssist(enabled)
+                }
+            }, secondary(Button(this).apply {
+                text = "Allow display over other apps"
+                setOnClickListener {
+                    startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")))
+                }
+            })),
         )
         val activityPage = page(
             "Activity", "Current phone-side Handover activity.",

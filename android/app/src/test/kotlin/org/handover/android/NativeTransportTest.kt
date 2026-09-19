@@ -46,6 +46,29 @@ class NativeTransportTest {
         assertFalse(result.containsKey("failure"))
     }
 
+    @Test fun overlayAssistRequiresDoubleOptInPlusGrantPlusDeniedRead() {
+        assertEquals(
+            true,
+            NativeTransport.shouldAssistBackgroundRead(true, true, true, true),
+        )
+        assertEquals(
+            false,
+            NativeTransport.shouldAssistBackgroundRead(false, true, true, true),
+        )
+        assertEquals(
+            false,
+            NativeTransport.shouldAssistBackgroundRead(true, false, true, true),
+        )
+        assertEquals(
+            false,
+            NativeTransport.shouldAssistBackgroundRead(true, true, false, true),
+        )
+        assertEquals(
+            false,
+            NativeTransport.shouldAssistBackgroundRead(true, true, true, false),
+        )
+    }
+
     @Test fun pairingCodeMatchesCrossLanguageVectorAndIsOrderIndependent() {
         // Shared with handover-native's comparison_code unit test: the same
         // fingerprints and nonces must produce this code in both languages.

@@ -110,6 +110,10 @@ class HandoverForegroundService : Service() {
         fun sendClipboard() { activeTransport?.sendClipboardToLinux() }
         fun setClipboardSync(enabled: Boolean) { activeTransport?.setClipboardSync(enabled) }
         fun clipboardSyncEnabled(): Boolean = activeTransport?.clipboardSyncEnabled() == true
+        fun setOverlayAssist(enabled: Boolean) { activeTransport?.setOverlayAssist(enabled) }
+        fun overlayAssistEnabled(): Boolean = activeTransport?.overlayAssistEnabled() == true
+        fun overlayPermissionGranted(): Boolean =
+            activeTransport?.overlayPermissionGranted() == true
         fun requestDesktopAwake(inhibit: Boolean) { activeTransport?.requestDesktopAwake(inhibit) }
         fun desktopAwakeRequested(): Boolean = activeTransport?.desktopAwakeRequested() == true
         fun phoneAwakeHeld(): Boolean = activeTransport?.phoneAwakeHeld() == true
