@@ -9,9 +9,10 @@ use handover_ipc::{
     read_json_line, runtime_directory, socket_path, write_json_line,
 };
 use thiserror::Error;
-use tokio::io::{AsyncWrite, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
+use tokio::time::{Duration, timeout};
 use tracing::{debug, warn};
 use url::Url;
 
@@ -23,6 +24,8 @@ use handover_core::DeviceEvent;
 use handover_core::{ConversationId, MessageId, MessagingAccountId, MessagingCommand};
 
 pub(crate) const EVENT_CAPACITY: usize = 64;
+const MAX_CLIENTS: usize = 64;
+const PRE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
 struct SubscriptionFlags {
@@ -37,6 +40,7 @@ pub(crate) struct IpcServer {
     state: Arc<RwLock<StateStore>>,
     events: broadcast::Sender<StateEvent>,
     messaging: Option<MessagingHub>,
+    client_slots: Arc<Semaphore>,
 }
 
 impl IpcServer {
@@ -70,6 +74,7 @@ impl IpcServer {
             state,
             events,
             messaging,
+            client_slots: Arc::new(Semaphore::new(MAX_CLIENTS)),
         })
     }
 
@@ -79,7 +84,13 @@ impl IpcServer {
             let state = Arc::clone(&self.state);
             let events = self.events.clone();
             let messaging = self.messaging.clone();
+            let client_slots = Arc::clone(&self.client_slots);
+            let Ok(client_slot) = client_slots.try_acquire_owned() else {
+                debug!("IPC client limit reached; rejecting connection");
+                continue;
+            };
             tokio::spawn(async move {
+                let _client_slot = client_slot;
                 if let Err(error) = handle_client(stream, state, events, messaging).await {
                     debug!(%error, "IPC client disconnected");
                 }
@@ -163,7 +174,11 @@ async fn handle_client(
                 }
             }
         } else {
-            let request = read_json_line::<_, Request>(&mut reader).await;
+            let Some(request) =
+                read_pre_subscription_request(&mut reader, PRE_SUBSCRIPTION_TIMEOUT).await
+            else {
+                return Ok(());
+            };
             if !handle_request_result(
                 request,
                 &mut writer,
@@ -179,6 +194,18 @@ async fn handle_client(
             }
         }
     }
+}
+
+async fn read_pre_subscription_request<R>(
+    reader: &mut R,
+    wait: Duration,
+) -> Option<Result<Option<Request>, IpcError>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    timeout(wait, read_json_line::<_, Request>(reader))
+        .await
+        .ok()
 }
 
 async fn handle_request_result<W>(
@@ -2319,6 +2346,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre_subscription_reads_have_a_bounded_idle_timeout() {
+        let (_client, server) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(server);
+        assert!(
+            read_pre_subscription_request(&mut reader, Duration::from_millis(1))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn calls_snapshot_and_rejections_use_isolated_ipc() {
         use handover_core::{CallAction, CallEvent, CallPhase, CallState};
         let (_directory, path, state, _events, task) = server_with_device().await;
@@ -3351,10 +3389,12 @@ mod messaging_live_tests {
                     .any(|attachment| attachment.name.as_deref() == Some("live ✓.bin"))
             })
             .expect("attachment stored");
-        assert_eq!(
-            staged.attachments[0].staged_path.as_deref(),
-            attachment_path.to_str()
-        );
+        let staged_path = staged.attachments[0]
+            .staged_path
+            .as_deref()
+            .expect("helper returned a confined staged path");
+        assert!(staged_path.contains("/handover/gmessages/staging/"));
+        assert_ne!(staged_path, attachment_path.to_str().unwrap());
 
         // Reactions add and remove.
         client

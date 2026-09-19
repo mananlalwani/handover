@@ -24,7 +24,7 @@ use openssl::bn::{BigNum, MsbOption};
 use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
-use openssl::pkey::{PKey, Private};
+use openssl::pkey::{Id, PKey, Private};
 use openssl::ssl::{SslAcceptor, SslMethod, SslVerifyMode, SslVersion};
 use openssl::x509::{X509, X509NameBuilder};
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,7 @@ const MAX_SHARE_SIZE: u64 = 100 * 1024 * 1024;
 const SHARE_BUFFER: usize = 32 * 1024;
 const MAX_PENDING_SHARES_PER_PEER: usize = 32;
 const SHARE_RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+const INBOUND_TRANSFER_DEADLINE: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Error)]
 pub enum NativeCommandError {
@@ -1367,11 +1368,12 @@ impl NativeBackend {
             .create_new(true)
             .open(&partial)?;
         output.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let deadline = Instant::now() + INBOUND_TRANSFER_DEADLINE;
         let mut remaining = size;
         let mut buffer = [0u8; SHARE_BUFFER];
         while remaining > 0 {
             let amount = usize::try_from(remaining.min(SHARE_BUFFER as u64)).unwrap();
-            input.read_exact(&mut buffer[..amount])?;
+            read_exact_until(input, &mut buffer[..amount], deadline)?;
             output.write_all(&buffer[..amount])?;
             remaining -= amount as u64;
         }
@@ -1452,6 +1454,7 @@ impl NativeBackend {
             .ssl()
             .peer_certificate()
             .ok_or(NativeError::InvalidFrame)?;
+        validate_peer_certificate(&cert)?;
         let peer_fp = fingerprint(&cert)?;
         let hello = read_frame(&mut tls)?;
         let Message::Hello {
@@ -2534,6 +2537,32 @@ fn stream_file_until<R: Read, W: Write>(
     output.flush()
 }
 
+fn read_exact_until<R: Read>(
+    input: &mut R,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "inbound transfer deadline",
+            ));
+        }
+        match input.read(&mut buffer[offset..])? {
+            0 => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "inbound transfer ended early",
+                ));
+            }
+            amount => offset += amount,
+        }
+    }
+    Ok(())
+}
+
 fn valid_share_url(url: &str) -> bool {
     if url.is_empty()
         || url.len() > 8192
@@ -3029,6 +3058,23 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), NativeError> {
 fn fingerprint(cert: &X509) -> Result<String, NativeError> {
     Ok(hex::encode(Sha256::digest(cert.to_der()?)))
 }
+
+fn validate_peer_certificate(cert: &X509) -> Result<(), NativeError> {
+    let now = Asn1Time::days_from_now(0)?;
+    if cert.not_before() > now.as_ref() || cert.not_after() < now.as_ref() {
+        return Err(NativeError::InvalidFrame);
+    }
+    // Native identities are deliberately self-signed and authenticated by the
+    // pairing ceremony/fingerprint pin. Still reject malformed or non-leaf
+    // certificates before accepting them as an identity.
+    let key = cert.public_key()?;
+    let valid_curve =
+        key.id() == Id::EC && key.ec_key()?.group().curve_name() == Some(Nid::X9_62_PRIME256V1);
+    if !valid_curve || !cert.verify(&key)? {
+        return Err(NativeError::InvalidFrame);
+    }
+    Ok(())
+}
 fn comparison_code(own_fp: &str, own_nonce: &str, peer_fp: &str, peer_nonce: &str) -> String {
     // Each nonce stays bound to its fingerprint owner, so both sides derive
     // the same code without roles while a middlebox cannot swap openings.
@@ -3245,6 +3291,41 @@ mod tests {
         .unwrap();
         assert_eq!(output, [1, 1, 1, 1]);
         assert_eq!(progress, [0, 4]);
+    }
+
+    #[test]
+    fn inbound_read_checks_deadline_between_partial_reads() {
+        struct SlowReader {
+            reads: usize,
+        }
+
+        impl Read for SlowReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.reads > 0 {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                self.reads += 1;
+                output[0] = 1;
+                Ok(1)
+            }
+        }
+
+        let mut reader = SlowReader { reads: 0 };
+        let mut output = [0u8; 3];
+        let error = read_exact_until(
+            &mut reader,
+            &mut output,
+            Instant::now() + Duration::from_millis(10),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(&output[..2], &[1, 1]);
+    }
+
+    #[test]
+    fn peer_certificate_validator_accepts_generated_identity() {
+        let (_key, certificate) = generate_identity().unwrap();
+        validate_peer_certificate(&certificate).unwrap();
     }
 
     #[test]
