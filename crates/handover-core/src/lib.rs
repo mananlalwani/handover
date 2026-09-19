@@ -309,6 +309,33 @@ pub struct CallCommandResult {
     pub failure: Option<CallCommandFailure>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceCommandAction {
+    Ping,
+    Ring,
+    Lock,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceCommandFailure {
+    PermissionDenied,
+    Unavailable,
+    Rejected,
+}
+
+/// Android's verdict after handling a queued fixed device command. Success
+/// means the platform API was invoked, not that the user observed its effect.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeviceCommandResult {
+    pub device_id: DeviceId,
+    pub request_id: String,
+    pub action: DeviceCommandAction,
+    pub accepted: bool,
+    pub failure: Option<DeviceCommandFailure>,
+}
+
 /// A change to the set of devices or to a device's normalized state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DeviceEvent {
@@ -405,6 +432,7 @@ pub enum StateEvent {
     Media(MediaEvent),
     Call(CallEvent),
     CallCommandResult(CallCommandResult),
+    DeviceCommandResult(DeviceCommandResult),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
     Messaging(MessagingEvent),

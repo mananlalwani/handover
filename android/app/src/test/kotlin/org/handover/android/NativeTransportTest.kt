@@ -1,9 +1,21 @@
 package org.handover.android
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class NativeTransportTest {
+    @Test fun deviceCommandResultReportsPermissionDenial() {
+        val result = NativeTransport.deviceCommandResultFields(
+            "0123456789abcdef0123456789abcdef", "lock", false, "permission_denied",
+        )
+
+        assertEquals("device_command_result", result["type"])
+        assertEquals("lock", result["action"])
+        assertFalse(result["accepted"] as Boolean)
+        assertEquals("permission_denied", result["failure"])
+    }
+
     @Test fun pairingCodeMatchesCrossLanguageVectorAndIsOrderIndependent() {
         // Shared with handover-native's comparison_code unit test: the same
         // fingerprints and nonces must produce this code in both languages.

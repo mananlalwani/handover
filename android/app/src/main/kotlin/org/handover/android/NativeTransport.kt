@@ -688,14 +688,21 @@ class NativeTransport(private val context: Context) {
                 socket?.close()
             }
             "battery_request" -> sendBattery()
-            "ring" -> ringPhone()
-            "user_ping" -> ringPhone()
+            "ring" -> handleAudibleCommand(message, "ring")
+            "user_ping" -> handleAudibleCommand(message, "ping")
             "lock_device" -> {
                 if (serverFingerprint == null) return
+                val requestId = message.optString("request_id")
+                if (!isTransferId(requestId)) return
                 val admin = ComponentName(context, HandoverDeviceAdminReceiver::class.java)
                 val manager = context.getSystemService(android.app.admin.DevicePolicyManager::class.java)
-                if (manager.isAdminActive(admin)) manager.lockNow()
-                else broadcast(ACTION_TRANSFER_RESULT, JSONObject().put("kind", "lock").put("status", "permission_denied"))
+                if (!manager.isAdminActive(admin)) {
+                    sendDeviceCommandResult(requestId, "lock", false, "permission_denied")
+                } else {
+                    runCatching { manager.lockNow() }
+                        .onSuccess { sendDeviceCommandResult(requestId, "lock", true, null) }
+                        .onFailure { sendDeviceCommandResult(requestId, "lock", false, "rejected") }
+                }
             }
             "notifications_request" -> {
                 if (serverFingerprint == null) return
@@ -858,6 +865,24 @@ class NativeTransport(private val context: Context) {
             val effect = VibrationEffect.createOneShot(1200, VibrationEffect.DEFAULT_AMPLITUDE)
             vibrator.vibrate(effect)
         }
+    }
+
+    private fun handleAudibleCommand(message: JSONObject, action: String) {
+        if (serverFingerprint == null) return
+        val requestId = message.optString("request_id")
+        if (!isTransferId(requestId)) return
+        runCatching { ringPhone() }
+            .onSuccess { sendDeviceCommandResult(requestId, action, true, null) }
+            .onFailure { sendDeviceCommandResult(requestId, action, false, "unavailable") }
+    }
+
+    private fun sendDeviceCommandResult(
+        requestId: String,
+        action: String,
+        accepted: Boolean,
+        failure: String?,
+    ) {
+        send(deviceCommandResultJson(requestId, action, accepted, failure))
     }
 
     private fun receiveFile(input: BufferedInputStream, transferId: String, name: String, size: Long) {
@@ -1182,6 +1207,27 @@ class NativeTransport(private val context: Context) {
     }
 
     companion object {
+        internal fun deviceCommandResultJson(
+            requestId: String,
+            action: String,
+            accepted: Boolean,
+            failure: String?,
+        ): JSONObject = JSONObject(deviceCommandResultFields(requestId, action, accepted, failure))
+
+        internal fun deviceCommandResultFields(
+            requestId: String,
+            action: String,
+            accepted: Boolean,
+            failure: String?,
+        ): Map<String, Any> = buildMap {
+            put("type", "device_command_result")
+            put("protocol", 1)
+            put("request_id", requestId)
+            put("action", action)
+            put("accepted", accepted)
+            failure?.let { put("failure", it) }
+        }
+
         const val ACTION_PAIR_REQUEST = "org.handover.android.PAIR_REQUEST"
         const val ACTION_PAIRED = "org.handover.android.PAIRED"
         const val ACTION_REVOKED = "org.handover.android.REVOKED"

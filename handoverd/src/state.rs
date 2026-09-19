@@ -29,6 +29,10 @@ impl StateStore {
                 changed: true,
                 changes: vec![StateChange::CallCommandResult(result)],
             },
+            StateEvent::DeviceCommandResult(result) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::DeviceCommandResult(result)],
+            },
             StateEvent::ShareReceived(share) => ApplyOutcome {
                 changed: true,
                 changes: vec![StateChange::ShareReceived(share)],
@@ -391,6 +395,7 @@ pub(crate) enum StateChange {
     Call(CallState),
     CallRemoved(DeviceId),
     CallCommandResult(handover_core::CallCommandResult),
+    DeviceCommandResult(handover_core::DeviceCommandResult),
     ShareReceived(ReceivedShare),
     ShareResult(ShareResult),
     Messaging(MessagingChange),

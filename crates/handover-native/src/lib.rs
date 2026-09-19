@@ -11,11 +11,12 @@ use std::time::{Duration, Instant};
 use handover_core::{
     BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
     CallState, Capability, ClipboardFile, ClipboardText, ConnectivityState, ConnectivityTransport,
-    Contact, ContactsEvent, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent,
-    MediaSession, MediaSessionId, Notification, NotificationAction, NotificationCommand,
-    NotificationEvent, NotificationId, PlaybackState, PresentationAction, PresentationCommand,
-    ReceivedShare, RemoteInputAction, RemoteInputCommand, ShareFailure, ShareResult, ShareStatus,
-    SharedResource, StateEvent, VolumeAction, VolumeCommand,
+    Contact, ContactsEvent, Device, DeviceCommandAction, DeviceCommandFailure, DeviceCommandResult,
+    DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId,
+    Notification, NotificationAction, NotificationCommand, NotificationEvent, NotificationId,
+    PlaybackState, PresentationAction, PresentationCommand, ReceivedShare, RemoteInputAction,
+    RemoteInputCommand, ShareFailure, ShareResult, ShareStatus, SharedResource, StateEvent,
+    VolumeAction, VolumeCommand,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use openssl::asn1::Asn1Time;
@@ -545,12 +546,23 @@ enum Message {
     },
     Ring {
         protocol: u32,
+        request_id: String,
     },
     UserPing {
         protocol: u32,
+        request_id: String,
     },
     LockDevice {
         protocol: u32,
+        request_id: String,
+    },
+    DeviceCommandResult {
+        protocol: u32,
+        request_id: String,
+        action: DeviceCommandAction,
+        accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<DeviceCommandFailure>,
     },
     ShareUrl {
         protocol: u32,
@@ -626,9 +638,10 @@ impl Message {
             | Self::MediaSync { protocol, .. }
             | Self::MediaRequest { protocol }
             | Self::MediaControl { protocol, .. }
-            | Self::Ring { protocol }
-            | Self::UserPing { protocol }
-            | Self::LockDevice { protocol }
+            | Self::Ring { protocol, .. }
+            | Self::UserPing { protocol, .. }
+            | Self::LockDevice { protocol, .. }
+            | Self::DeviceCommandResult { protocol, .. }
             | Self::ShareUrl { protocol, .. }
             | Self::ShareFile { protocol, .. }
             | Self::ShareResult { protocol, .. }
@@ -1054,20 +1067,24 @@ impl NativeBackend {
 
     /// Queue a user-visible liveness ping for a live native session.
     pub fn ping(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         self.queue_simple(
             peer_id,
             Message::UserPing {
                 protocol: WIRE_VERSION,
+                request_id,
             },
         )
     }
 
     /// Queue a request for the phone to ring and vibrate.
     pub fn ring(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         self.queue_simple(
             peer_id,
             Message::Ring {
                 protocol: WIRE_VERSION,
+                request_id,
             },
         )
     }
@@ -1075,10 +1092,12 @@ impl NativeBackend {
     /// Queue a request for the phone to lock itself. Android applies its
     /// device-admin permission check before executing the request.
     pub fn lock_device(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         self.queue_simple(
             peer_id,
             Message::LockDevice {
                 protocol: WIRE_VERSION,
+                request_id,
             },
         )
     }
@@ -1869,6 +1888,28 @@ impl NativeBackend {
                             reason,
                         }));
                     }
+                }
+                Ok(Message::DeviceCommandResult {
+                    protocol: WIRE_VERSION,
+                    request_id,
+                    action,
+                    accepted,
+                    failure,
+                }) => {
+                    last_received = Instant::now();
+                    if !valid_transfer_id(&request_id)
+                        || (accepted && failure.is_some())
+                        || (!accepted && failure.is_none())
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    event(StateEvent::DeviceCommandResult(DeviceCommandResult {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        request_id,
+                        action,
+                        accepted,
+                        failure,
+                    }));
                 }
                 Ok(Message::Battery {
                     protocol: WIRE_VERSION,
@@ -2865,6 +2906,37 @@ fn write_frame<W: Write>(writer: &mut W, message: &Message) -> Result<(), Native
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_command_and_permission_result_use_correlated_wire_ids() {
+        let request_id = "0123456789abcdef0123456789abcdef";
+        let command = Message::LockDevice {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+        };
+        let result = Message::DeviceCommandResult {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+            action: DeviceCommandAction::Lock,
+            accepted: false,
+            failure: Some(DeviceCommandFailure::PermissionDenied),
+        };
+
+        assert_eq!(
+            serde_json::to_value(command).expect("command serializes"),
+            serde_json::json!({
+                "type": "lock_device", "protocol": 1, "request_id": request_id
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(result).expect("result serializes"),
+            serde_json::json!({
+                "type": "device_command_result", "protocol": 1,
+                "request_id": request_id, "action": "lock", "accepted": false,
+                "failure": "permission_denied"
+            })
+        );
+    }
 
     #[test]
     fn pending_results_expire_once_at_deadline() {

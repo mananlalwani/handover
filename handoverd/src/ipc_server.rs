@@ -1777,6 +1777,9 @@ fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::CallCommandResult(result) => {
             ServerMessage::new(ServerPayload::CallCommandResult { result })
         }
+        StateEvent::DeviceCommandResult(result) => {
+            ServerMessage::new(ServerPayload::DeviceCommandResult { result })
+        }
         StateEvent::Messaging(event) => ServerMessage::from_messaging_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })

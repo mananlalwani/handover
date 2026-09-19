@@ -317,6 +317,14 @@ fn log_change(change: StateChange) {
             failure = ?result.failure,
             "phone call command result"
         ),
+        StateChange::DeviceCommandResult(result) => info!(
+            device_id = %result.device_id,
+            request_id = %result.request_id,
+            action = ?result.action,
+            accepted = result.accepted,
+            failure = ?result.failure,
+            "device command result"
+        ),
         StateChange::ShareReceived(share) => {
             let kind = match share.resource {
                 SharedResource::File { .. } => "file",

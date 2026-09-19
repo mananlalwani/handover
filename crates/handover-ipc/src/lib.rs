@@ -433,6 +433,9 @@ pub enum ServerPayload {
     CallCommandResult {
         result: handover_core::CallCommandResult,
     },
+    DeviceCommandResult {
+        result: handover_core::DeviceCommandResult,
+    },
     ShareReceived {
         share: ReceivedShare,
     },
@@ -1261,7 +1264,9 @@ fn unexpected(payload: ServerPayload) -> IpcError {
 mod tests {
     use std::collections::BTreeSet;
 
-    use handover_core::{BatteryState, Capability};
+    use handover_core::{
+        BatteryState, Capability, DeviceCommandAction, DeviceCommandFailure, DeviceCommandResult,
+    };
 
     use super::*;
 
@@ -1286,6 +1291,27 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Request>(&json).expect("request deserializes"),
             request
+        );
+    }
+
+    #[test]
+    fn device_command_permission_denial_round_trips() {
+        let message = ServerMessage::new(ServerPayload::DeviceCommandResult {
+            result: DeviceCommandResult {
+                device_id: DeviceId::new("native:phone-123"),
+                request_id: "0123456789abcdef0123456789abcdef".into(),
+                action: DeviceCommandAction::Lock,
+                accepted: false,
+                failure: Some(DeviceCommandFailure::PermissionDenied),
+            },
+        });
+        let json = serde_json::to_string(&message).expect("response serializes");
+
+        assert!(json.contains(r#""type":"device_command_result""#));
+        assert!(json.contains(r#""failure":"permission_denied""#));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&json).expect("response deserializes"),
+            message
         );
     }
 

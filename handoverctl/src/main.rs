@@ -995,6 +995,10 @@ fn print_message(payload: ServerPayload) {
             "call command result: {} {:?} accepted={} failure={:?}",
             result.device_id, result.action, result.accepted, result.failure
         ),
+        ServerPayload::DeviceCommandResult { result } => println!(
+            "device command result: {} {:?} accepted={} failure={:?}",
+            result.device_id, result.action, result.accepted, result.failure
+        ),
         ServerPayload::CallQueued { request_id } => println!("call command queued: {request_id}"),
         ServerPayload::Calls { .. } | ServerPayload::CallAudio { .. } => {}
         ServerPayload::DeviceAdded { device } => {
