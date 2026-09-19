@@ -295,6 +295,7 @@ pub enum CallCommandFailure {
     EmergencyNumber,
     InvalidAddress,
     WrongPhase,
+    Unsupported,
     Rejected,
 }
 

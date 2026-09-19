@@ -828,6 +828,41 @@ fn native_call_result_is_correlated_without_claiming_effect() {
 }
 
 #[test]
+fn native_call_result_accepts_platform_unsupported_verdict() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"call_state","protocol":1,
+        "phase":"off_hook","controls":["hangup"],"generation":3}),
+    );
+    let _ = wait_call(&harness);
+
+    let request_id = harness
+        .backend
+        .call_control(&client.fingerprint, "hangup", None, Some(3))
+        .unwrap();
+    let _ = recv(&mut peer);
+    // Older Android releases report this instead of attempting the platform
+    // call; the session must surface it, not drop the frame as invalid.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"call_result","protocol":1,
+        "request_id":request_id,"action":"hangup","accepted":false,
+        "failure":"unsupported"}),
+    );
+    let result = wait_call_result(&harness);
+    assert_eq!(result.request_id, request_id);
+    assert!(!result.accepted);
+    assert_eq!(
+        result.failure,
+        Some(handover_core::CallCommandFailure::Unsupported)
+    );
+}
+
+#[test]
 fn native_call_state_updates_and_disconnect_removes_state() {
     let harness = harness();
     let client = test_identity();
