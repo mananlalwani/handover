@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::io::Write;
 use std::io::copy;
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 use handover_core::ClipboardText;
@@ -13,37 +13,31 @@ pub(crate) fn apply(text: &ClipboardText) {
     } else {
         (text.text.as_str(), "text/plain")
     };
-    let mut child = match Command::new("wl-copy")
+    let _ = write_clipboard(value, mime);
+}
+
+pub(crate) fn apply_plain(text: &str) -> io::Result<()> {
+    write_clipboard(text, "text/plain")
+}
+
+fn write_clipboard(value: &str, mime: &str) -> io::Result<()> {
+    let mut child = Command::new("wl-copy")
         .args(["--type", mime])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return,
-    };
-    if let Some(stdin) = child.stdin.as_mut() {
-        let _ = stdin.write_all(value.as_bytes());
+        .spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "wl-copy stdin unavailable"))?
+        .write_all(value.as_bytes())?;
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("wl-copy failed"))
     }
-    let _ = child.wait();
-}
-
-pub(crate) fn apply_plain(text: &str) {
-    let mut child = match Command::new("wl-copy")
-        .args(["--type", "text/plain"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return,
-    };
-    if let Some(stdin) = child.stdin.as_mut() {
-        let _ = stdin.write_all(text.as_bytes());
-    }
-    let _ = child.wait();
 }
 
 pub(crate) fn apply_file(path: &str, mime: &str) {

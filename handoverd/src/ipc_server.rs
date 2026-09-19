@@ -494,10 +494,13 @@ where
             }
         }
         Method::ClipboardHistoryCopy { id } => match crate::clipboard_history().text(id) {
-            Some(text) => {
-                crate::clipboard::apply_plain(&text);
-                ServerPayload::NativeAccepted
-            }
+            Some(text) => match crate::clipboard::apply_plain(&text) {
+                Ok(()) => ServerPayload::NativeAccepted,
+                Err(_) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: "clipboard history entry could not be copied".into(),
+                },
+            },
             None => ServerPayload::Error {
                 code: ErrorCode::ResourceNotFound,
                 message: "clipboard history entry was not found".into(),

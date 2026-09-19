@@ -8,7 +8,11 @@ class ClipboardTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         qsTile?.apply {
-            state = Tile.STATE_ACTIVE
+            state = if (HandoverForegroundService.connectionState() == "connected") {
+                Tile.STATE_ACTIVE
+            } else {
+                Tile.STATE_UNAVAILABLE
+            }
             updateTile()
         }
     }

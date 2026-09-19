@@ -1586,6 +1586,31 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_history_methods_use_versioned_names() {
+        let list = Request::new(Method::ClipboardHistoryList);
+        let json = serde_json::to_string(&list).expect("request serializes");
+        assert_eq!(json, r#"{"protocol":1,"method":"clipboard.history_list"}"#);
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            list
+        );
+
+        let pin = Request::new(Method::ClipboardHistoryPin {
+            id: 7,
+            pinned: true,
+        });
+        let json = serde_json::to_string(&pin).expect("request serializes");
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"clipboard.history_pin","id":7,"pinned":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            pin
+        );
+    }
+
+    #[test]
     fn snapshot_round_trips_with_domain_device() {
         let message = ServerMessage::new(ServerPayload::Devices {
             devices: vec![device()],

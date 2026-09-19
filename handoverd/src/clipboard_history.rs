@@ -12,7 +12,7 @@ const HISTORY_VERSION: u32 = 1;
 const RECENT_LIMIT: usize = 25;
 const TEXT_LIMIT: usize = 32 * 1024;
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct StoredHistory {
     version: u32,
     next_id: u64,
@@ -67,15 +67,20 @@ impl ClipboardHistory {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(index) = state.entries.iter().position(|entry| entry.text == text) {
-            let mut entry = state.entries.remove(index);
+        let mut candidate = state.clone();
+        if let Some(index) = candidate
+            .entries
+            .iter()
+            .position(|entry| entry.text == text)
+        {
+            let mut entry = candidate.entries.remove(index);
             entry.pinned |= pinned;
             entry.created_at_ms = now_ms();
-            state.entries.insert(0, entry);
+            candidate.entries.insert(0, entry);
         } else {
-            let id = state.next_id;
-            state.next_id = state.next_id.saturating_add(1);
-            state.entries.insert(
+            let id = candidate.next_id;
+            candidate.next_id = candidate.next_id.saturating_add(1);
+            candidate.entries.insert(
                 0,
                 ClipboardHistoryEntry {
                     id,
@@ -85,8 +90,10 @@ impl ClipboardHistory {
                 },
             );
         }
-        trim(&mut state.entries);
-        persist(&state)
+        trim(&mut candidate.entries);
+        persist(&candidate)?;
+        *state = candidate;
+        Ok(())
     }
 
     pub(crate) fn set_pinned(&self, id: u64, pinned: bool) -> io::Result<bool> {
@@ -94,12 +101,14 @@ impl ClipboardHistory {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == id) else {
+        let mut candidate = state.clone();
+        let Some(entry) = candidate.entries.iter_mut().find(|entry| entry.id == id) else {
             return Ok(false);
         };
         entry.pinned = pinned;
-        trim(&mut state.entries);
-        persist(&state)?;
+        trim(&mut candidate.entries);
+        persist(&candidate)?;
+        *state = candidate;
         Ok(true)
     }
 
@@ -118,12 +127,15 @@ impl ClipboardHistory {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut candidate = state.clone();
         if include_pinned {
-            state.entries.clear();
+            candidate.entries.clear();
         } else {
-            state.entries.retain(|entry| entry.pinned);
+            candidate.entries.retain(|entry| entry.pinned);
         }
-        persist(&state)
+        persist(&candidate)?;
+        *state = candidate;
+        Ok(())
     }
 }
 
@@ -169,6 +181,7 @@ fn persist(state: &StoredHistory) -> io::Result<()> {
         .write(true)
         .mode(0o600)
         .open(&temporary)?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
     file.write_all(&encoded)?;
     file.sync_all()?;
     fs::rename(temporary, path)
