@@ -586,6 +586,14 @@ enum Message {
         request_id: String,
         inhibit: bool,
     },
+    /// Desktop-to-phone request to open the tethering settings screen.
+    /// Third-party apps cannot toggle tethering directly (that requires
+    /// privileged system permissions), so acceptance means the settings
+    /// screen opened for the user to act, never that sharing started.
+    TetheringSettings {
+        protocol: u32,
+        request_id: String,
+    },
     DeviceCommandResult {
         protocol: u32,
         request_id: String,
@@ -673,6 +681,7 @@ impl Message {
             | Self::LockDevice { protocol, .. }
             | Self::KeepAwake { protocol, .. }
             | Self::ScreensaverControl { protocol, .. }
+            | Self::TetheringSettings { protocol, .. }
             | Self::DeviceCommandResult { protocol, .. }
             | Self::ShareUrl { protocol, .. }
             | Self::ShareFile { protocol, .. }
@@ -1162,6 +1171,20 @@ impl NativeBackend {
             .iter()
             .cloned()
             .collect()
+    }
+
+    /// Queue a request for the phone to open its tethering settings screen.
+    /// Acceptance means the screen opened, never that sharing started: the
+    /// platform reserves actual tethering control for system apps.
+    pub fn tethering_settings(&self, peer_id: &str) -> Result<(), NativeCommandError> {
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
+        self.queue_simple(
+            peer_id,
+            Message::TetheringSettings {
+                protocol: WIRE_VERSION,
+                request_id,
+            },
+        )
     }
 
     fn queue_simple(&self, peer_id: &str, message: Message) -> Result<(), NativeCommandError> {
@@ -3144,6 +3167,22 @@ mod tests {
             serde_json::json!({
                 "type": "screensaver_control", "protocol": 1, "request_id": request_id,
                 "inhibit": false
+            })
+        );
+    }
+
+    #[test]
+    fn tethering_settings_opens_user_screen_without_claiming_sharing() {
+        let request_id = "0123456789abcdef0123456789abcdef";
+        let command = Message::TetheringSettings {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(command).expect("command serializes"),
+            serde_json::json!({
+                "type": "tethering_settings", "protocol": 1, "request_id": request_id
             })
         );
     }

@@ -383,6 +383,15 @@ Singleton {
         return sendRequest("native.keep_awake", { id: id, inhibit: inhibit });
     }
 
+    function openPhoneTethering(device) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        const id = device.id.substring("native:".length);
+        return sendRequest("native.tethering", { id: id });
+    }
+
     function listCustomCommands() {
         return sendRequest("custom.commands", {});
     }

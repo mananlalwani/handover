@@ -67,6 +67,8 @@ pub enum Method {
     NativeLock { id: String },
     #[serde(rename = "native.keep_awake")]
     NativeKeepAwake { id: String, inhibit: bool },
+    #[serde(rename = "native.tethering")]
+    NativeTethering { id: String },
     #[serde(rename = "screensaver.inhibit")]
     ScreensaverInhibit,
     #[serde(rename = "screensaver.release")]
@@ -781,6 +783,14 @@ impl Client {
         }
     }
 
+    pub async fn native_tethering(&mut self, id: String) -> Result<(), IpcError> {
+        self.send(Method::NativeTethering { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     /// Force the desktop idle inhibitor on (`true`), off (`false`), or back
     /// to the automatic policy (`None`).
     pub async fn set_screensaver(&mut self, inhibit: Option<bool>) -> Result<(), IpcError> {
@@ -1472,6 +1482,18 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Request>(&json).expect("request deserializes"),
             keep_awake
+        );
+        let tethering = Request::new(Method::NativeTethering {
+            id: "peer-1".into(),
+        });
+        let json = serde_json::to_string(&tethering).expect("request serializes");
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"native.tethering","id":"peer-1"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Request>(&json).expect("request deserializes"),
+            tethering
         );
     }
 

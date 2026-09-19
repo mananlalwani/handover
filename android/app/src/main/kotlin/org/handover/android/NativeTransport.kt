@@ -748,6 +748,27 @@ class NativeTransport(private val context: Context) {
                     sendDeviceCommandResult(requestId, "keep_awake", false, "unavailable")
                 }
             }
+            "tethering_settings" -> {
+                if (serverFingerprint == null) return
+                val requestId = message.optString("request_id")
+                if (!isTransferId(requestId)) return
+                // Third-party apps cannot toggle tethering directly; opening
+                // the system screen for the user is the full extent of it.
+                // There is no SDK constant for this action, so the documented
+                // action string is used and failure is reported honestly.
+                val opened = runCatching {
+                    context.startActivity(android.content.Intent(
+                        "android.settings.TETHER_SETTINGS",
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    true
+                }.getOrDefault(false)
+                sendDeviceCommandResult(
+                    requestId,
+                    "tethering",
+                    opened,
+                    if (opened) null else "unavailable",
+                )
+            }
             "lock_device" -> {
                 if (serverFingerprint == null) return
                 val requestId = message.optString("request_id")

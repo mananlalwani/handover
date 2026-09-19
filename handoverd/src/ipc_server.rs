@@ -311,6 +311,10 @@ where
             native_backend().map(|native| native.keep_awake(&id, inhibit)),
             "native keep-awake",
         ),
+        Method::NativeTethering { id } => native_command_response(
+            native_backend().map(|native| native.tethering_settings(&id)),
+            "native tethering",
+        ),
         Method::ScreensaverInhibit => {
             crate::set_manual_screensaver(Some(true));
             crate::refresh_screensaver(state);

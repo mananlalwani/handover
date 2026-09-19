@@ -349,6 +349,7 @@ pub enum DeviceCommandAction {
     Media,
     Screensaver,
     KeepAwake,
+    Tethering,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

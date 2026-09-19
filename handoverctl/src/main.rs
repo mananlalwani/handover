@@ -124,6 +124,10 @@ enum NativeCommand {
         #[arg(long)]
         release: bool,
     },
+    /// Ask a native phone to open its tethering settings screen
+    Tethering {
+        device: String,
+    },
     Call {
         device: String,
         action: String,
@@ -356,6 +360,11 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
             let id = select_native_peer(&mut client, &device).await?;
             client.native_keep_awake(id, !release).await?;
             println!("Keep-awake queued; use monitor to observe the Android result");
+        }
+        NativeCommand::Tethering { device } => {
+            let id = select_native_peer(&mut client, &device).await?;
+            client.native_tethering(id).await?;
+            println!("Tethering settings queued; use monitor to observe the Android result");
         }
         NativeCommand::Call {
             device,
