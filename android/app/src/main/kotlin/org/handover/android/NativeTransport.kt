@@ -713,11 +713,18 @@ class NativeTransport(private val context: Context) {
             "contacts_request" -> requestContactsSync()
             "clipboard_set" -> {
                 if (serverFingerprint != null) {
+                    val requestId = message.optString("request_id")
+                    if (!isTransferId(requestId)) return
                     val text = message.optString("text")
                     val html = message.optString("html").takeIf { it.isNotEmpty() }
                     val uri = message.optString("uri").takeIf { it.isNotEmpty() }
-                    if (text.toByteArray(Charsets.UTF_8).size <= 32 * 1024) {
-                        remoteClipboardHash = clipboardHash(text)
+                    if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) {
+                        sendDeviceCommandResult(requestId, "clipboard", false, "rejected")
+                        return
+                    }
+                    val previousRemoteHash = remoteClipboardHash
+                    remoteClipboardHash = clipboardHash(text)
+                    runCatching {
                         val clip = when {
                             uri != null -> android.content.ClipData.newUri(
                                 context.contentResolver, "Handover", Uri.parse(uri),
@@ -727,6 +734,11 @@ class NativeTransport(private val context: Context) {
                         }
                         context.getSystemService(android.content.ClipboardManager::class.java)
                             .setPrimaryClip(clip)
+                    }.onSuccess {
+                        sendDeviceCommandResult(requestId, "clipboard", true, null)
+                    }.onFailure {
+                        remoteClipboardHash = previousRemoteHash
+                        sendDeviceCommandResult(requestId, "clipboard", false, "rejected")
                     }
                 }
             }

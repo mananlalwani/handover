@@ -315,6 +315,7 @@ pub enum DeviceCommandAction {
     Ping,
     Ring,
     Lock,
+    Clipboard,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

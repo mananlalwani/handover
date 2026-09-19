@@ -402,6 +402,7 @@ enum Message {
     },
     ClipboardSet {
         protocol: u32,
+        request_id: String,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         html: Option<String>,
@@ -935,10 +936,12 @@ impl NativeBackend {
         if text.len() > 32 * 1024 {
             return Err(NativeCommandError::QueueFull);
         }
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
         self.queue_simple(
             peer_id,
             Message::ClipboardSet {
                 protocol: WIRE_VERSION,
+                request_id,
                 text: text.to_owned(),
                 html,
                 uri,
@@ -2934,6 +2937,26 @@ mod tests {
                 "type": "device_command_result", "protocol": 1,
                 "request_id": request_id, "action": "lock", "accepted": false,
                 "failure": "permission_denied"
+            })
+        );
+    }
+
+    #[test]
+    fn rich_clipboard_command_carries_result_correlation_id() {
+        let request_id = "0123456789abcdef0123456789abcdef";
+        let command = Message::ClipboardSet {
+            protocol: WIRE_VERSION,
+            request_id: request_id.into(),
+            text: "Example".into(),
+            html: Some("<b>Example</b>".into()),
+            uri: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(command).expect("command serializes"),
+            serde_json::json!({
+                "type": "clipboard_set", "protocol": 1, "request_id": request_id,
+                "text": "Example", "html": "<b>Example</b>"
             })
         );
     }
