@@ -4,8 +4,7 @@
 //! JSON, TLS 1.3 with mutual certificates) against [`NativeBackend::serve`]
 //! on an ephemeral port, using an OpenSSL client that mirrors the Android
 //! transport's ceremony: hello, code comparison, pair confirmation, battery.
-//! DNS-SD advertisement is intentionally out of scope here; it has code-level
-//! coverage in the crate's unit tests but no live-network verification.
+//! DNS-SD has a separate ignored live-network test in the crate unit tests.
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, mpsc};
@@ -110,6 +109,33 @@ fn recv(peer: &mut TlsPeer) -> serde_json::Value {
 fn recv_err(peer: &mut TlsPeer) {
     let mut len = [0u8; 4];
     assert!(peer.tls.read_exact(&mut len).is_err());
+}
+
+#[test]
+#[ignore = "requires a live TCP listener and waits for the pre-auth timeout"]
+fn hostile_pre_auth_connections_are_bounded() {
+    let harness = harness();
+    let mut sockets = Vec::new();
+    for _ in 0..9 {
+        let socket = TcpStream::connect(("127.0.0.1", harness.port)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        sockets.push(socket);
+    }
+
+    // Eight sockets are admitted and remain in the TLS pre-auth phase. The
+    // ninth is rejected by the per-source active-session limit.
+    let mut byte = [0u8; 1];
+    assert_eq!(sockets[8].read(&mut byte).unwrap(), 0);
+    drop(sockets);
+
+    // A socket that is admitted but sends no TLS bytes is closed by the
+    // explicit pre-auth read timeout rather than held indefinitely.
+    let mut idle = TcpStream::connect(("127.0.0.1", harness.port)).unwrap();
+    idle.set_read_timeout(Some(Duration::from_secs(7))).unwrap();
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(idle.read(&mut byte).unwrap(), 0);
 }
 
 struct Harness {

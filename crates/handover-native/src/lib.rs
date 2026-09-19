@@ -1,8 +1,8 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -35,6 +35,11 @@ use tracing::warn;
 pub const WIRE_VERSION: u32 = 1;
 pub const MAX_FRAME: usize = 64 * 1024;
 const MAX_SESSIONS: usize = 16;
+const MAX_SESSIONS_PER_SOURCE: usize = 8;
+const MAX_ATTEMPTS_PER_SOURCE: usize = 16;
+const ATTEMPT_WINDOW: Duration = Duration::from_secs(10);
+const MAX_TRACKED_SOURCES: usize = 256;
+const PREAUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LISTEN_PORT: u16 = 24837;
 // Bounds for native notification fields. They keep one phone from filling the
 // frame budget with a single oversized field and mirror the Android sender's
@@ -117,6 +122,7 @@ struct Runtime {
     pending: BTreeMap<String, Candidate>,
     active: BTreeMap<String, TcpStream>,
     sessions: usize,
+    source_admissions: BTreeMap<IpAddr, SourceAdmission>,
     connecting: BTreeSet<String>,
     batteries: BTreeMap<String, BatteryState>,
     connectivity: BTreeMap<String, ConnectivityState>,
@@ -140,6 +146,43 @@ struct Runtime {
     // Peers that asked the desktop to stay awake. Cleared on disconnect so a
     // dead phone cannot hold the inhibitor past its session.
     screensaver_requests: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct SourceAdmission {
+    active: usize,
+    attempts: VecDeque<Instant>,
+}
+
+fn admit_source(inner: &mut Runtime, source: IpAddr, now: Instant) -> bool {
+    for admission in inner.source_admissions.values_mut() {
+        admission
+            .attempts
+            .retain(|started| now.saturating_duration_since(*started) < ATTEMPT_WINDOW);
+    }
+    inner
+        .source_admissions
+        .retain(|_, admission| admission.active > 0 || !admission.attempts.is_empty());
+    if !inner.source_admissions.contains_key(&source)
+        && inner.source_admissions.len() >= MAX_TRACKED_SOURCES
+    {
+        return false;
+    }
+    let admission = inner.source_admissions.entry(source).or_default();
+    if admission.active >= MAX_SESSIONS_PER_SOURCE
+        || admission.attempts.len() >= MAX_ATTEMPTS_PER_SOURCE
+    {
+        return false;
+    }
+    admission.active += 1;
+    admission.attempts.push_back(now);
+    true
+}
+
+fn release_source(inner: &mut Runtime, source: IpAddr) {
+    if let Some(admission) = inner.source_admissions.get_mut(&source) {
+        admission.active = admission.active.saturating_sub(1);
+    }
 }
 
 #[derive(Clone)]
@@ -724,6 +767,7 @@ impl NativeBackend {
                 pending: BTreeMap::new(),
                 active: BTreeMap::new(),
                 sessions: 0,
+                source_admissions: BTreeMap::new(),
                 connecting: BTreeSet::new(),
                 batteries: BTreeMap::new(),
                 connectivity: BTreeMap::new(),
@@ -1409,8 +1453,11 @@ impl NativeBackend {
     ) -> Result<(), NativeError> {
         for incoming in listener.incoming() {
             let stream = incoming?;
+            let Ok(source) = stream.peer_addr().map(|address| address.ip()) else {
+                continue;
+            };
             let mut inner = self.inner.lock().unwrap();
-            if inner.sessions >= MAX_SESSIONS {
+            if inner.sessions >= MAX_SESSIONS || !admit_source(&mut inner, source, Instant::now()) {
                 continue;
             }
             inner.sessions += 1;
@@ -1421,7 +1468,9 @@ impl NativeBackend {
                 if let Err(error) = backend.handle(stream, &event) {
                     tracing::debug!(%error, "native connection ended");
                 }
-                backend.inner.lock().unwrap().sessions -= 1;
+                let mut inner = backend.inner.lock().unwrap();
+                inner.sessions -= 1;
+                release_source(&mut inner, source);
             });
         }
         Ok(())
@@ -1432,7 +1481,9 @@ impl NativeBackend {
         stream: TcpStream,
         event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
     ) -> Result<(), NativeError> {
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        // TLS and the first hello are unauthenticated. Keep each socket read
+        // bounded while the admission controls cap concurrent attempts.
+        stream.set_read_timeout(Some(PREAUTH_READ_TIMEOUT))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         let mut builder = SslAcceptor::mozilla_modern_v5(SslMethod::tls())?;
         builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
@@ -1450,6 +1501,8 @@ impl NativeBackend {
                 return Err(NativeError::InvalidFrame);
             }
         };
+        tls.get_ref()
+            .set_read_timeout(Some(Duration::from_secs(2)))?;
         let cert = tls
             .ssl()
             .peer_certificate()
@@ -3329,6 +3382,41 @@ mod tests {
     }
 
     #[test]
+    fn source_admission_bounds_active_and_recent_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let source = "192.0.2.1".parse().unwrap();
+        let now = Instant::now();
+        let mut inner = backend.inner.lock().unwrap();
+        for _ in 0..MAX_SESSIONS_PER_SOURCE {
+            assert!(admit_source(&mut inner, source, now));
+        }
+        assert!(!admit_source(&mut inner, source, now));
+        release_source(&mut inner, source);
+        assert!(admit_source(&mut inner, source, now));
+        for _ in 0..(MAX_ATTEMPTS_PER_SOURCE - MAX_SESSIONS_PER_SOURCE - 1) {
+            release_source(&mut inner, source);
+            assert!(admit_source(&mut inner, source, now));
+        }
+        release_source(&mut inner, source);
+        assert!(!admit_source(&mut inner, source, now));
+        assert!(admit_source(&mut inner, source, now + ATTEMPT_WINDOW));
+    }
+
+    #[test]
+    fn malformed_frame_corpus_never_panics() {
+        for length in 0..256usize {
+            let mut bytes = vec![0u8; length];
+            let mut state = length as u32 ^ 0x9e37_79b9;
+            for byte in &mut bytes {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *byte = (state >> 24) as u8;
+            }
+            let _ = read_frame(&mut bytes.as_slice());
+        }
+    }
+
+    #[test]
     fn received_file_streams_and_cleans_interruption() {
         let dir = tempfile::tempdir().unwrap();
         let backend = NativeBackend::open(dir.path().join("native")).unwrap();
@@ -3364,8 +3452,7 @@ mod tests {
     }
     #[test]
     fn discovery_record_matches_advertised_service() {
-        // Code-level coverage for the DNS-SD advertisement. Multicast
-        // discovery has no live-network verification (see DESIGN.md).
+        // Deterministic coverage for the DNS-SD advertisement shape.
         let id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let service = discovery_service(24837, id).unwrap();
         assert_eq!(service.get_type(), "_handover._tcp.local.");
@@ -3378,6 +3465,35 @@ mod tests {
             service.get_properties().get_property_val_str("v"),
             Some("1")
         );
+    }
+
+    #[test]
+    #[ignore = "requires a multicast-capable network interface"]
+    fn live_mdns_advertise_and_browse() {
+        let id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let advertiser = advertise(41321, id).expect("start mDNS advertiser");
+        let browser = ServiceDaemon::new().expect("start mDNS browser");
+        let receiver = browser
+            .browse("_handover._tcp.local.")
+            .expect("browse for Handover services");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut resolved = false;
+        while std::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(event) = receiver.recv_timeout(remaining) else {
+                break;
+            };
+            if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
+                if info.get_port() == 41321 && info.get_fullname().starts_with("Handover-") {
+                    resolved = true;
+                    break;
+                }
+            }
+        }
+        browser.stop_browse("_handover._tcp.local.").ok();
+        browser.shutdown().ok();
+        advertiser.shutdown().ok();
+        assert!(resolved, "advertised service was not resolved through mDNS");
     }
     #[test]
     fn framing_rejects_oversize() {
