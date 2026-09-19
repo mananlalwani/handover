@@ -723,32 +723,19 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
             mime: mime.to_owned(),
         });
     }
-    let selected = types
-        .lines()
-        .map(str::trim)
-        .find(|mime| *mime == "text/html")
-        .or_else(|| {
-            types
-                .lines()
-                .map(str::trim)
-                .find(|mime| *mime == "text/uri-list")
-        });
-    let output = tokio::process::Command::new("wl-paste")
-        .args(["--no-newline"])
-        .args(
-            selected
-                .map(|mime| ["--type", mime])
-                .unwrap_or(["--type", "text/plain"]),
-        )
-        .output()
-        .await
-        .map_err(|_| ())?;
-    if !output.status.success() {
-        return Err(());
-    }
-    let value = String::from_utf8(output.stdout).map_err(|_| ())?;
-    if selected == Some("text/uri-list") {
-        if let Some(path) = value.lines().map(str::trim).find_map(|line| {
+    let offered = types.lines().map(str::trim).collect::<Vec<_>>();
+    let html = if offered.contains(&"text/html") {
+        Some(read_wayland_clipboard_text("text/html").await?)
+    } else {
+        None
+    };
+    let uri = if offered.contains(&"text/uri-list") {
+        Some(read_wayland_clipboard_text("text/uri-list").await?)
+    } else {
+        None
+    };
+    if let Some(uri) = &uri {
+        if let Some(path) = uri.lines().map(str::trim).find_map(|line| {
             Url::parse(line)
                 .ok()
                 .and_then(|url| url.to_file_path().ok())
@@ -785,23 +772,38 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
             }
         }
     }
-    match selected {
-        Some("text/html") => Ok(WaylandClipboard::Text {
-            text: strip_html_text(&value),
-            html: Some(value),
-            uri: None,
-        }),
-        Some("text/uri-list") => Ok(WaylandClipboard::Text {
-            text: value.clone(),
-            html: None,
-            uri: Some(value),
-        }),
-        _ => Ok(WaylandClipboard::Text {
-            text: value,
-            html: None,
-            uri: None,
-        }),
+    let plain_mime = offered
+        .iter()
+        .copied()
+        .find(|mime| *mime == "text/plain;charset=utf-8")
+        .or_else(|| offered.iter().copied().find(|mime| *mime == "text/plain"));
+    let text = if let Some(mime) = plain_mime {
+        read_wayland_clipboard_text(mime).await?
+    } else if let Some(html) = &html {
+        strip_html_text(html)
+    } else if let Some(uri) = &uri {
+        uri.clone()
+    } else {
+        return Err(());
+    };
+    if text.len() + html.as_ref().map_or(0, String::len) + uri.as_ref().map_or(0, String::len)
+        > 60 * 1024
+    {
+        return Err(());
     }
+    Ok(WaylandClipboard::Text { text, html, uri })
+}
+
+async fn read_wayland_clipboard_text(mime: &str) -> Result<String, ()> {
+    let output = tokio::process::Command::new("wl-paste")
+        .args(["--no-newline", "--type", mime])
+        .output()
+        .await
+        .map_err(|_| ())?;
+    if !output.status.success() || output.stdout.len() > 32 * 1024 {
+        return Err(());
+    }
+    String::from_utf8(output.stdout).map_err(|_| ())
 }
 
 fn strip_html_text(html: &str) -> String {

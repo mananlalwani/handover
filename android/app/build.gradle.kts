@@ -10,8 +10,8 @@ android {
         applicationId = "org.handover.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 41
-        versionName = "0.2.39"
+        versionCode = 42
+        versionName = "0.2.40"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

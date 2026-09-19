@@ -726,11 +726,14 @@ class NativeTransport(private val context: Context) {
                     remoteClipboardHash = clipboardHash(text)
                     runCatching {
                         val clip = when {
-                            uri != null -> android.content.ClipData.newUri(
-                                context.contentResolver, "Handover", Uri.parse(uri),
-                            )
                             html != null -> android.content.ClipData.newHtmlText("Handover", text, html)
                             else -> android.content.ClipData.newPlainText("Handover", text)
+                        }
+                        if (uri != null) {
+                            clip.addItem(
+                                context.contentResolver,
+                                android.content.ClipData.Item(Uri.parse(uri)),
+                            )
                         }
                         context.getSystemService(android.content.ClipboardManager::class.java)
                             .setPrimaryClip(clip)
