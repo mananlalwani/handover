@@ -1167,6 +1167,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::ConversationAccepted { .. }
         | ServerPayload::AccountAccepted { .. }
         | ServerPayload::Subscribed { .. }
+        | ServerPayload::SubscribedChunk { .. }
         | ServerPayload::NativePeers { .. }
         | ServerPayload::NativePending { .. }
         | ServerPayload::ClipboardHistory { .. }

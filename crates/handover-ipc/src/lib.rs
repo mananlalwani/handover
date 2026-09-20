@@ -414,6 +414,24 @@ pub enum ServerPayload {
         #[serde(default)]
         read_states: Vec<ReadState>,
     },
+    SubscribedChunk {
+        devices: Vec<Device>,
+        #[serde(default)]
+        notifications: Vec<Notification>,
+        #[serde(default)]
+        media_sessions: Vec<MediaSession>,
+        #[serde(default)]
+        calls: Vec<CallState>,
+        #[serde(default)]
+        messaging_accounts: Vec<MessagingAccount>,
+        #[serde(default)]
+        conversations: Vec<Conversation>,
+        #[serde(default)]
+        typing_states: Vec<TypingState>,
+        #[serde(default)]
+        read_states: Vec<ReadState>,
+        done: bool,
+    },
     Snapshot {
         devices: Vec<Device>,
         #[serde(default)]
@@ -1230,6 +1248,43 @@ impl Client {
                 _writer: self.writer,
                 pending: None,
             }),
+            ServerPayload::SubscribedChunk {
+                mut devices,
+                mut notifications,
+                mut media_sessions,
+                mut calls,
+                mut done,
+                ..
+            } => {
+                while !done {
+                    match self.receive().await?.payload {
+                        ServerPayload::SubscribedChunk {
+                            devices: more_devices,
+                            notifications: more_notifications,
+                            media_sessions: more_media_sessions,
+                            calls: more_calls,
+                            done: chunk_done,
+                            ..
+                        } => {
+                            devices.extend(more_devices);
+                            notifications.extend(more_notifications);
+                            media_sessions.extend(more_media_sessions);
+                            calls.extend(more_calls);
+                            done = chunk_done;
+                        }
+                        payload => return Err(unexpected(payload)),
+                    }
+                }
+                Ok(Subscription {
+                    devices,
+                    notifications,
+                    media_sessions,
+                    calls,
+                    reader: self.reader,
+                    _writer: self.writer,
+                    pending: None,
+                })
+            }
             payload => Err(unexpected(payload)),
         }
     }
@@ -1502,30 +1557,50 @@ impl Subscription {
                     read_states,
                     done,
                 } => {
+                    let mut all_devices = devices;
+                    let mut all_notifications = notifications;
+                    let mut all_media_sessions = media_sessions;
+                    let mut all_calls = calls;
+                    let mut all_accounts = messaging_accounts;
                     let mut all_conversations = conversations;
+                    let mut all_typing_states = typing_states;
+                    let mut all_read_states = read_states;
                     let mut done = done;
                     while !done {
                         match receive_message(&mut self.reader).await?.payload {
                             ServerPayload::SnapshotChunk {
+                                devices,
+                                notifications,
+                                media_sessions,
+                                calls,
+                                messaging_accounts,
                                 conversations,
+                                typing_states,
+                                read_states,
                                 done: chunk_done,
-                                ..
                             } => {
+                                all_devices.extend(devices);
+                                all_notifications.extend(notifications);
+                                all_media_sessions.extend(media_sessions);
+                                all_calls.extend(calls);
+                                all_accounts.extend(messaging_accounts);
                                 all_conversations.extend(conversations);
+                                all_typing_states.extend(typing_states);
+                                all_read_states.extend(read_states);
                                 done = chunk_done;
                             }
                             payload => return Err(unexpected(payload)),
                         }
                     }
                     return Ok(ServerMessage::new(ServerPayload::Snapshot {
-                        devices,
-                        notifications,
-                        media_sessions,
-                        calls,
-                        messaging_accounts,
+                        devices: all_devices,
+                        notifications: all_notifications,
+                        media_sessions: all_media_sessions,
+                        calls: all_calls,
+                        messaging_accounts: all_accounts,
                         conversations: all_conversations,
-                        typing_states,
-                        read_states,
+                        typing_states: all_typing_states,
+                        read_states: all_read_states,
                     }));
                 }
                 payload => return Ok(ServerMessage::new(payload)),

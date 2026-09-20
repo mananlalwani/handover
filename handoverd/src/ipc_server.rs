@@ -865,21 +865,19 @@ where
         if serde_json::to_vec(&full).map_or(true, |encoded| {
             encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
         }) {
-            write_json_line(
+            write_state_chunks(
                 writer,
-                &ServerMessage::new(ServerPayload::Subscribed {
-                    devices,
-                    notifications,
-                    media_sessions,
-                    calls,
-                    messaging_accounts,
-                    conversations: Vec::new(),
-                    typing_states,
-                    read_states,
-                }),
+                SnapshotChunkKind::Subscribed,
+                devices,
+                notifications,
+                media_sessions,
+                calls,
+                messaging_accounts,
+                conversations,
+                typing_states,
+                read_states,
             )
             .await?;
-            write_conversation_chunks(writer, conversations).await?;
         } else {
             write_json_line(writer, &full).await?;
         }
@@ -979,6 +977,13 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+enum SnapshotChunkKind {
+    Snapshot,
+    Subscribed,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn write_snapshot_chunks<W>(
     writer: &mut W,
     devices: Vec<handover_core::Device>,
@@ -993,60 +998,224 @@ async fn write_snapshot_chunks<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let mut chunk = Vec::new();
-    for conversation in conversations {
-        chunk.push(conversation);
-        let candidate = ServerMessage::new(ServerPayload::SnapshotChunk {
-            devices: devices.clone(),
-            notifications: notifications.clone(),
-            media_sessions: media_sessions.clone(),
-            calls: calls.clone(),
-            messaging_accounts: messaging_accounts.clone(),
-            conversations: chunk.clone(),
-            typing_states: typing_states.clone(),
-            read_states: read_states.clone(),
-            done: false,
-        });
-        if serde_json::to_vec(&candidate)
-            .is_ok_and(|encoded| encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES)
-        {
-            let last = chunk.pop().expect("chunk contains the candidate");
-            if chunk.is_empty() {
-                return Err(IpcError::LineTooLong);
-            }
-            write_json_line(
-                writer,
-                &ServerMessage::new(ServerPayload::SnapshotChunk {
-                    devices: devices.clone(),
-                    notifications: notifications.clone(),
-                    media_sessions: media_sessions.clone(),
-                    calls: calls.clone(),
-                    messaging_accounts: messaging_accounts.clone(),
-                    conversations: chunk,
-                    typing_states: typing_states.clone(),
-                    read_states: read_states.clone(),
-                    done: false,
-                }),
-            )
-            .await?;
-            chunk = vec![last];
-        }
-    }
-    write_json_line(
+    write_state_chunks(
         writer,
-        &ServerMessage::new(ServerPayload::SnapshotChunk {
-            devices,
-            notifications,
-            media_sessions,
-            calls,
-            messaging_accounts,
-            conversations: chunk,
-            typing_states,
-            read_states,
-            done: true,
-        }),
+        SnapshotChunkKind::Snapshot,
+        devices,
+        notifications,
+        media_sessions,
+        calls,
+        messaging_accounts,
+        conversations,
+        typing_states,
+        read_states,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_state_chunks<W>(
+    writer: &mut W,
+    kind: SnapshotChunkKind,
+    devices: Vec<handover_core::Device>,
+    notifications: Vec<handover_core::Notification>,
+    media_sessions: Vec<handover_core::MediaSession>,
+    calls: Vec<handover_core::CallState>,
+    messaging_accounts: Vec<handover_core::MessagingAccount>,
+    conversations: Vec<handover_core::Conversation>,
+    typing_states: Vec<handover_core::TypingState>,
+    read_states: Vec<handover_core::ReadState>,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut chunk = SnapshotChunkData {
+        kind,
+        ..Default::default()
+    };
+    for item in devices {
+        if !chunk.push_device(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_device(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in notifications {
+        if !chunk.push_notification(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_notification(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in media_sessions {
+        if !chunk.push_media_session(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_media_session(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in calls {
+        if !chunk.push_call(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_call(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in messaging_accounts {
+        if !chunk.push_account(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_account(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in conversations {
+        if !chunk.push_conversation(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_conversation(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in typing_states {
+        if !chunk.push_typing(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_typing(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    for item in read_states {
+        if !chunk.push_read(item.clone()) {
+            flush_snapshot_chunk(writer, &mut chunk).await?;
+            if !chunk.push_read(item) {
+                return Err(IpcError::LineTooLong);
+            }
+        }
+    }
+    write_json_line(writer, &chunk.message(true)).await
+}
+
+struct SnapshotChunkData {
+    kind: SnapshotChunkKind,
+    devices: Vec<handover_core::Device>,
+    notifications: Vec<handover_core::Notification>,
+    media_sessions: Vec<handover_core::MediaSession>,
+    calls: Vec<handover_core::CallState>,
+    messaging_accounts: Vec<handover_core::MessagingAccount>,
+    conversations: Vec<handover_core::Conversation>,
+    typing_states: Vec<handover_core::TypingState>,
+    read_states: Vec<handover_core::ReadState>,
+}
+
+impl Default for SnapshotChunkData {
+    fn default() -> Self {
+        Self {
+            kind: SnapshotChunkKind::Snapshot,
+            devices: Vec::new(),
+            notifications: Vec::new(),
+            media_sessions: Vec::new(),
+            calls: Vec::new(),
+            messaging_accounts: Vec::new(),
+            conversations: Vec::new(),
+            typing_states: Vec::new(),
+            read_states: Vec::new(),
+        }
+    }
+}
+
+impl SnapshotChunkData {
+    fn message(&self, done: bool) -> ServerMessage {
+        let payload = match self.kind {
+            SnapshotChunkKind::Snapshot => ServerPayload::SnapshotChunk {
+                devices: self.devices.clone(),
+                notifications: self.notifications.clone(),
+                media_sessions: self.media_sessions.clone(),
+                calls: self.calls.clone(),
+                messaging_accounts: self.messaging_accounts.clone(),
+                conversations: self.conversations.clone(),
+                typing_states: self.typing_states.clone(),
+                read_states: self.read_states.clone(),
+                done,
+            },
+            SnapshotChunkKind::Subscribed => ServerPayload::SubscribedChunk {
+                devices: self.devices.clone(),
+                notifications: self.notifications.clone(),
+                media_sessions: self.media_sessions.clone(),
+                calls: self.calls.clone(),
+                messaging_accounts: self.messaging_accounts.clone(),
+                conversations: self.conversations.clone(),
+                typing_states: self.typing_states.clone(),
+                read_states: self.read_states.clone(),
+                done,
+            },
+        };
+        ServerMessage::new(payload)
+    }
+    fn fits(&self) -> bool {
+        serde_json::to_vec(&self.message(false))
+            .is_ok_and(|v| v.len() < handover_ipc::MAX_LINE_BYTES)
+    }
+}
+
+macro_rules! snapshot_push {
+    ($name:ident, $field:ident, $ty:ty) => {
+        fn $name(&mut self, item: $ty) -> bool {
+            self.$field.push(item);
+            if self.fits() {
+                true
+            } else {
+                self.$field.pop();
+                false
+            }
+        }
+    };
+}
+impl SnapshotChunkData {
+    snapshot_push!(push_device, devices, handover_core::Device);
+    snapshot_push!(
+        push_notification,
+        notifications,
+        handover_core::Notification
+    );
+    snapshot_push!(
+        push_media_session,
+        media_sessions,
+        handover_core::MediaSession
+    );
+    snapshot_push!(push_call, calls, handover_core::CallState);
+    snapshot_push!(
+        push_account,
+        messaging_accounts,
+        handover_core::MessagingAccount
+    );
+    snapshot_push!(
+        push_conversation,
+        conversations,
+        handover_core::Conversation
+    );
+    snapshot_push!(push_typing, typing_states, handover_core::TypingState);
+    snapshot_push!(push_read, read_states, handover_core::ReadState);
+}
+
+async fn flush_snapshot_chunk<W>(
+    writer: &mut W,
+    chunk: &mut SnapshotChunkData,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_json_line(writer, &chunk.message(false)).await?;
+    let kind = chunk.kind;
+    *chunk = SnapshotChunkData {
+        kind,
+        ..Default::default()
+    };
+    Ok(())
 }
 
 enum WaylandClipboard {
@@ -2661,7 +2830,7 @@ mod tests {
     };
     use handover_ipc::{Client, ServerPayload};
     use tempfile::TempDir;
-    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
     use super::*;
 
@@ -2706,6 +2875,52 @@ mod tests {
             kept.first().map(|message| message.id.local_id.as_str())
         );
         assert_eq!(kept.last().map(|m| m.id.local_id.as_str()), Some("m099"));
+    }
+
+    #[tokio::test]
+    async fn oversized_snapshot_chunks_every_collection() {
+        let notifications = (0..2)
+            .map(|index| Notification {
+                id: NotificationId::new(DeviceId::new("phone"), index.to_string()),
+                app_name: "Messages".into(),
+                title: "Large".into(),
+                body: "x".repeat(700 * 1024),
+                icon_path: None,
+                clearable: true,
+                actions: vec![],
+                reply_supported: false,
+            })
+            .collect();
+        let (mut reader, mut writer) = tokio::io::duplex(4 * 1024 * 1024);
+        write_snapshot_chunks(
+            &mut writer,
+            vec![],
+            notifications,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .await
+        .expect("snapshot chunks fit");
+        drop(writer);
+
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.expect("read chunks");
+        let lines = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty());
+        let mut total_notifications = 0;
+        for line in lines {
+            assert!(line.len() < handover_ipc::MAX_LINE_BYTES);
+            let message: ServerMessage = serde_json::from_slice(line).expect("valid chunk");
+            if let ServerPayload::SnapshotChunk { notifications, .. } = message.payload {
+                total_notifications += notifications.len();
+            }
+        }
+        assert_eq!(total_notifications, 2);
     }
 
     fn device(name: &str, percentage: u8) -> Device {
