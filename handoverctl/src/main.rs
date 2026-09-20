@@ -1096,6 +1096,7 @@ fn print_message(payload: ServerPayload) {
                 media_sessions.len()
             );
         }
+        ServerPayload::SnapshotChunk { .. } => {}
         ServerPayload::AccountAdded { account } => {
             println!("messaging account added: {}", account.id);
         }
@@ -1155,6 +1156,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::Media { .. }
         | ServerPayload::Accounts { .. }
         | ServerPayload::Conversations { .. }
+        | ServerPayload::ConversationsChunk { .. }
         | ServerPayload::History { .. }
         | ServerPayload::TypingStates { .. }
         | ServerPayload::ReadStates { .. }

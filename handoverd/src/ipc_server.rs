@@ -110,8 +110,20 @@ impl IpcServer {
     }
 
     pub(crate) async fn run(&self) -> Result<(), ServerError> {
+        let mut retry_delay = Duration::from_millis(50);
         loop {
-            let (stream, _address) = self.listener.accept().await?;
+            let (stream, _address) = match self.listener.accept().await {
+                Ok(connection) => {
+                    retry_delay = Duration::from_millis(50);
+                    connection
+                }
+                Err(error) => {
+                    warn!(%error, "IPC accept failed; retrying");
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(1));
+                    continue;
+                }
+            };
             let state = Arc::clone(&self.state);
             let events = self.events.clone();
             let messaging = self.messaging.clone();
@@ -195,10 +207,11 @@ async fn handle_client(
                         Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             debug!(skipped, "IPC client lagged; sending current snapshot");
-                            write_json_line(
+                            write_snapshot_response(
                                 &mut writer,
-                                &ServerMessage::new(snapshot_payload(&state, flags.media, flags.messages)),
-                            ).await?;
+                                snapshot_payload(&state, flags.media, flags.messages),
+                            )
+                            .await?;
                         }
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     }
@@ -828,8 +841,212 @@ where
             return handle_sync(account_id, writer, state, messaging).await;
         }
     };
-    write_json_line(writer, &ServerMessage::new(response)).await?;
+    if let ServerPayload::Subscribed {
+        devices,
+        notifications,
+        media_sessions,
+        calls,
+        messaging_accounts,
+        conversations,
+        typing_states,
+        read_states,
+    } = response
+    {
+        let full = ServerMessage::new(ServerPayload::Subscribed {
+            devices: devices.clone(),
+            notifications: notifications.clone(),
+            media_sessions: media_sessions.clone(),
+            calls: calls.clone(),
+            messaging_accounts: messaging_accounts.clone(),
+            conversations: conversations.clone(),
+            typing_states: typing_states.clone(),
+            read_states: read_states.clone(),
+        });
+        if serde_json::to_vec(&full).map_or(true, |encoded| {
+            encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
+        }) {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::Subscribed {
+                    devices,
+                    notifications,
+                    media_sessions,
+                    calls,
+                    messaging_accounts,
+                    conversations: Vec::new(),
+                    typing_states,
+                    read_states,
+                }),
+            )
+            .await?;
+            write_conversation_chunks(writer, conversations).await?;
+        } else {
+            write_json_line(writer, &full).await?;
+        }
+    } else {
+        write_json_line(writer, &ServerMessage::new(response)).await?;
+    }
     Ok(true)
+}
+
+async fn write_conversation_chunks<W>(
+    writer: &mut W,
+    conversations: Vec<handover_core::Conversation>,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut chunk = Vec::new();
+    for conversation in conversations {
+        chunk.push(conversation);
+        let candidate = ServerMessage::new(ServerPayload::ConversationsChunk {
+            conversations: chunk.clone(),
+            done: false,
+        });
+        if serde_json::to_vec(&candidate)
+            .is_ok_and(|encoded| encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES)
+        {
+            let last = chunk.pop().expect("chunk contains the candidate");
+            if chunk.is_empty() {
+                return Err(IpcError::LineTooLong);
+            }
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::ConversationsChunk {
+                    conversations: chunk,
+                    done: false,
+                }),
+            )
+            .await?;
+            chunk = vec![last];
+        }
+    }
+    write_json_line(
+        writer,
+        &ServerMessage::new(ServerPayload::ConversationsChunk {
+            conversations: chunk,
+            done: true,
+        }),
+    )
+    .await
+}
+
+async fn write_snapshot_response<W>(writer: &mut W, payload: ServerPayload) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let ServerPayload::Snapshot {
+        devices,
+        notifications,
+        media_sessions,
+        calls,
+        messaging_accounts,
+        conversations,
+        typing_states,
+        read_states,
+    } = payload
+    else {
+        return Err(IpcError::UnexpectedResponse("not a snapshot".into()));
+    };
+    let full = ServerMessage::new(ServerPayload::Snapshot {
+        devices: devices.clone(),
+        notifications: notifications.clone(),
+        media_sessions: media_sessions.clone(),
+        calls: calls.clone(),
+        messaging_accounts: messaging_accounts.clone(),
+        conversations: conversations.clone(),
+        typing_states: typing_states.clone(),
+        read_states: read_states.clone(),
+    });
+    if serde_json::to_vec(&full).map_or(true, |encoded| {
+        encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
+    }) {
+        write_snapshot_chunks(
+            writer,
+            devices,
+            notifications,
+            media_sessions,
+            calls,
+            messaging_accounts,
+            conversations,
+            typing_states,
+            read_states,
+        )
+        .await
+    } else {
+        write_json_line(writer, &full).await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_snapshot_chunks<W>(
+    writer: &mut W,
+    devices: Vec<handover_core::Device>,
+    notifications: Vec<handover_core::Notification>,
+    media_sessions: Vec<handover_core::MediaSession>,
+    calls: Vec<handover_core::CallState>,
+    messaging_accounts: Vec<handover_core::MessagingAccount>,
+    conversations: Vec<handover_core::Conversation>,
+    typing_states: Vec<handover_core::TypingState>,
+    read_states: Vec<handover_core::ReadState>,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut chunk = Vec::new();
+    for conversation in conversations {
+        chunk.push(conversation);
+        let candidate = ServerMessage::new(ServerPayload::SnapshotChunk {
+            devices: devices.clone(),
+            notifications: notifications.clone(),
+            media_sessions: media_sessions.clone(),
+            calls: calls.clone(),
+            messaging_accounts: messaging_accounts.clone(),
+            conversations: chunk.clone(),
+            typing_states: typing_states.clone(),
+            read_states: read_states.clone(),
+            done: false,
+        });
+        if serde_json::to_vec(&candidate)
+            .is_ok_and(|encoded| encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES)
+        {
+            let last = chunk.pop().expect("chunk contains the candidate");
+            if chunk.is_empty() {
+                return Err(IpcError::LineTooLong);
+            }
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::SnapshotChunk {
+                    devices: devices.clone(),
+                    notifications: notifications.clone(),
+                    media_sessions: media_sessions.clone(),
+                    calls: calls.clone(),
+                    messaging_accounts: messaging_accounts.clone(),
+                    conversations: chunk,
+                    typing_states: typing_states.clone(),
+                    read_states: read_states.clone(),
+                    done: false,
+                }),
+            )
+            .await?;
+            chunk = vec![last];
+        }
+    }
+    write_json_line(
+        writer,
+        &ServerMessage::new(ServerPayload::SnapshotChunk {
+            devices,
+            notifications,
+            media_sessions,
+            calls,
+            messaging_accounts,
+            conversations: chunk,
+            typing_states,
+            read_states,
+            done: true,
+        }),
+    )
+    .await
 }
 
 enum WaylandClipboard {
@@ -2196,11 +2413,16 @@ where
         .await?;
         return Ok(true);
     }
-    write_json_line(
-        writer,
-        &ServerMessage::new(ServerPayload::Conversations { conversations }),
-    )
-    .await?;
+    let response = ServerMessage::new(ServerPayload::Conversations {
+        conversations: conversations.clone(),
+    });
+    if serde_json::to_vec(&response).map_or(true, |encoded| {
+        encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
+    }) {
+        write_conversation_chunks(writer, conversations).await?;
+    } else {
+        write_json_line(writer, &response).await?;
+    }
     Ok(true)
 }
 

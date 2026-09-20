@@ -431,6 +431,24 @@ pub enum ServerPayload {
         #[serde(default)]
         read_states: Vec<ReadState>,
     },
+    SnapshotChunk {
+        devices: Vec<Device>,
+        #[serde(default)]
+        notifications: Vec<Notification>,
+        #[serde(default)]
+        media_sessions: Vec<MediaSession>,
+        #[serde(default)]
+        calls: Vec<CallState>,
+        #[serde(default)]
+        messaging_accounts: Vec<MessagingAccount>,
+        #[serde(default)]
+        conversations: Vec<Conversation>,
+        #[serde(default)]
+        typing_states: Vec<TypingState>,
+        #[serde(default)]
+        read_states: Vec<ReadState>,
+        done: bool,
+    },
     DeviceAdded {
         device: Device,
     },
@@ -507,6 +525,10 @@ pub enum ServerPayload {
     },
     Conversations {
         conversations: Vec<Conversation>,
+    },
+    ConversationsChunk {
+        conversations: Vec<Conversation>,
+        done: bool,
     },
     History {
         conversation_id: ConversationId,
@@ -639,6 +661,8 @@ pub enum IpcError {
     Json(#[from] serde_json::Error),
     #[error("IPC message exceeded {MAX_LINE_BYTES} bytes")]
     LineTooLong,
+    #[error("IPC write timed out")]
+    WriteTimeout,
     #[error("daemon closed the connection")]
     ConnectionClosed,
     #[error("unexpected daemon response: {0}")]
@@ -697,11 +721,20 @@ where
     T: Serialize,
 {
     let encoded = serde_json::to_vec(value)?;
-    writer.write_all(&encoded).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
+    if encoded.len() + 1 > MAX_LINE_BYTES {
+        return Err(IpcError::LineTooLong);
+    }
+    tokio::time::timeout(WRITE_TIMEOUT, async {
+        writer.write_all(&encoded).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await
+    })
+    .await
+    .map_err(|_| IpcError::WriteTimeout)??;
     Ok(())
 }
+
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub struct Client {
     reader: BufReader<OwnedReadHalf>,
@@ -1195,6 +1228,7 @@ impl Client {
                 calls,
                 reader: self.reader,
                 _writer: self.writer,
+                pending: None,
             }),
             payload => Err(unexpected(payload)),
         }
@@ -1216,6 +1250,26 @@ impl Client {
             .await?;
         match self.receive().await?.payload {
             ServerPayload::Conversations { conversations } => Ok(conversations),
+            ServerPayload::ConversationsChunk {
+                conversations,
+                done,
+            } => {
+                let mut all = conversations;
+                let mut done = done;
+                while !done {
+                    match self.receive().await?.payload {
+                        ServerPayload::ConversationsChunk {
+                            conversations,
+                            done: chunk_done,
+                        } => {
+                            all.extend(conversations);
+                            done = chunk_done;
+                        }
+                        payload => return Err(unexpected(payload)),
+                    }
+                }
+                Ok(all)
+            }
             payload => Err(unexpected(payload)),
         }
     }
@@ -1424,11 +1478,59 @@ pub struct Subscription {
     pub calls: Vec<CallState>,
     reader: BufReader<OwnedReadHalf>,
     _writer: OwnedWriteHalf,
+    pending: Option<ServerMessage>,
 }
 
 impl Subscription {
     pub async fn next_message(&mut self) -> Result<ServerMessage, IpcError> {
-        receive_message(&mut self.reader).await
+        loop {
+            let message = if let Some(message) = self.pending.take() {
+                message
+            } else {
+                receive_message(&mut self.reader).await?
+            };
+            match message.payload {
+                ServerPayload::ConversationsChunk { .. } => continue,
+                ServerPayload::SnapshotChunk {
+                    devices,
+                    notifications,
+                    media_sessions,
+                    calls,
+                    messaging_accounts,
+                    conversations,
+                    typing_states,
+                    read_states,
+                    done,
+                } => {
+                    let mut all_conversations = conversations;
+                    let mut done = done;
+                    while !done {
+                        match receive_message(&mut self.reader).await?.payload {
+                            ServerPayload::SnapshotChunk {
+                                conversations,
+                                done: chunk_done,
+                                ..
+                            } => {
+                                all_conversations.extend(conversations);
+                                done = chunk_done;
+                            }
+                            payload => return Err(unexpected(payload)),
+                        }
+                    }
+                    return Ok(ServerMessage::new(ServerPayload::Snapshot {
+                        devices,
+                        notifications,
+                        media_sessions,
+                        calls,
+                        messaging_accounts,
+                        conversations: all_conversations,
+                        typing_states,
+                        read_states,
+                    }));
+                }
+                payload => return Ok(ServerMessage::new(payload)),
+            }
+        }
     }
 }
 
@@ -1968,5 +2070,14 @@ mod tests {
         let mut reader = BufReader::new(encoded.as_slice());
         let decoded: Option<ServerMessage> = read_json_line(&mut reader).await.expect("decodes");
         assert_eq!(decoded, Some(message));
+    }
+
+    #[tokio::test]
+    async fn writes_reject_lines_that_clients_cannot_read() {
+        let value = "x".repeat(MAX_LINE_BYTES);
+        let error = write_json_line(&mut tokio::io::sink(), &value)
+            .await
+            .expect_err("oversized output must be rejected");
+        assert!(matches!(error, IpcError::LineTooLong));
     }
 }
