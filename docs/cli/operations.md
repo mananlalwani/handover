@@ -124,6 +124,9 @@ Man page and shell completions are generated from the `clap`
 definitions, so `--help` output stays the source of truth:
 
 - Man page: `docs/man/handoverctl.1`.
+- Daemon page: `docs/man/handoverd.8`, rendered from the daemon
+  definition in `handoverctl/src/daemon.rs`. `handoverd` accepts no
+  arguments and shuts down gracefully on SIGTERM or SIGINT.
 - Completions: `completions/` with Bash, Zsh, Fish, PowerShell, and
   Elvish files.
 - Regenerate with `cargo run -p handoverctl --bin handoverctl-gen -- <out-dir>`

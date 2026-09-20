@@ -100,6 +100,22 @@ fn generated_man_page_matches_checked_in_artifact() {
 }
 
 #[test]
+fn generated_daemon_man_page_matches_checked_in_artifact() {
+    let man = clap_mangen::Man::new(handoverctl::daemon::command())
+        .title("HANDOVERD")
+        .section("8");
+    let mut buffer = Vec::new();
+    man.render(&mut buffer).expect("daemon man page renders");
+    let checked_in = std::fs::read(workspace_root().join("docs/man/handoverd.8"))
+        .expect("daemon man page is checked in");
+    assert_eq!(
+        buffer, checked_in,
+        "docs/man/handoverd.8 drifted from the daemon definition; regenerate with \
+         `cargo run -p handoverctl --bin handoverctl-gen -- <out-dir>`"
+    );
+}
+
+#[test]
 fn generated_completions_match_checked_in_artifacts() {
     let cases = [
         (Shell::Bash, "handoverctl.bash"),

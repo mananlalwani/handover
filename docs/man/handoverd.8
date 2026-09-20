@@ -1,0 +1,16 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH HANDOVERD 8  "handoverd " 
+.SH NAME
+handoverd \- Handover Android device integration daemon
+.SH SYNOPSIS
+\fBhandoverd\fR 
+.SH DESCRIPTION
+Handover Android device integration daemon.
+.PP
+handoverd owns authoritative runtime state for paired Android devices: presence, notifications, media sessions, clipboard, calls, shares, and messaging. It listens on $XDG_RUNTIME_DIR/handover/handoverd.sock. handoverctl and the Quickshell client connect, read a snapshot, and rebuild their views.
+.PP
+handoverd accepts no arguments. It shuts down gracefully on SIGTERM or SIGINT, stopping the messaging helper and releasing the desktop idle inhibitor.
+.SH EXTRA
+Environment: HANDOVER_GMESSAGES_HELPER, HANDOVER_GMESSAGES_STAGING_DIR, HANDOVER_CLIPBOARD_MIRROR. Debug builds also honor HANDOVER_NATIVE_SMOKE_PORT.
+See handoverctl(1) and docs/cli/operations.md for sockets, state paths, and troubleshooting.

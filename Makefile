@@ -3,6 +3,7 @@ USER_DATA_HOME := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
 USER_UNIT_DIR := $(USER_DATA_HOME)/systemd/user
 QUICKSHELL_INSTALL_DIR := $(USER_DATA_HOME)/handover/quickshell
 MAN_DIR := $(PREFIX)/share/man/man1
+MAN8_DIR := $(PREFIX)/share/man/man8
 BASH_COMPLETION_DIR := $(USER_DATA_HOME)/bash-completion/completions
 ZSH_COMPLETION_DIR := $(USER_DATA_HOME)/zsh/site-functions
 FISH_COMPLETION_DIR := $(USER_DATA_HOME)/fish/vendor_completions.d
@@ -17,6 +18,7 @@ install-user:
 	install -Dm755 target/release/handoverd $(PREFIX)/bin/handoverd
 	install -Dm755 target/release/handoverctl $(PREFIX)/bin/handoverctl
 	install -Dm644 docs/man/handoverctl.1 $(MAN_DIR)/handoverctl.1
+	install -Dm644 docs/man/handoverd.8 $(MAN8_DIR)/handoverd.8
 	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
 	install -Dm644 completions/_handoverctl $(ZSH_COMPLETION_DIR)/_handoverctl
 	install -Dm644 completions/handoverctl.fish $(FISH_COMPLETION_DIR)/handoverctl.fish
@@ -39,6 +41,7 @@ uninstall-user:
 	rm -f $(USER_UNIT_DIR)/handoverd.service
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
 	rm -f $(MAN_DIR)/handoverctl.1
+	rm -f $(MAN8_DIR)/handoverd.8
 	rm -f $(BASH_COMPLETION_DIR)/handoverctl
 	rm -f $(ZSH_COMPLETION_DIR)/_handoverctl
 	rm -f $(FISH_COMPLETION_DIR)/handoverctl.fish

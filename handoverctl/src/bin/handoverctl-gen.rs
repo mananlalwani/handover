@@ -21,6 +21,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     man.render(&mut buffer)?;
     fs::write(man_dir.join("handoverctl.1"), buffer)?;
 
+    let daemon_man = Man::new(handoverctl::daemon::command())
+        .title("HANDOVERD")
+        .section("8");
+    let mut daemon_buffer = Vec::new();
+    daemon_man.render(&mut daemon_buffer)?;
+    fs::write(man_dir.join("handoverd.8"), daemon_buffer)?;
+
     for shell in Shell::value_variants() {
         generate_to(*shell, &mut command.clone(), "handoverctl", &completion_dir)?;
     }
