@@ -5,3 +5,15 @@
 *.swo
 .DS_Store
 AGENTS.md
+LOCAL-REPLACEMENT-PLAN.md
+# Android release artifacts and signing material
+*.apk
+*.aab
+*.jks
+*.keystore
+google-services.json
+local.properties
+.idea/
+# Local environment and secrets
+*.env
+.env

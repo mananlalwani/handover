@@ -1,12 +1,14 @@
 PREFIX := $(HOME)/.local
+DESTDIR :=
 USER_DATA_HOME := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
-USER_UNIT_DIR := $(USER_DATA_HOME)/systemd/user
-QUICKSHELL_INSTALL_DIR := $(USER_DATA_HOME)/handover/quickshell
-MAN_DIR := $(PREFIX)/share/man/man1
-MAN8_DIR := $(PREFIX)/share/man/man8
-BASH_COMPLETION_DIR := $(USER_DATA_HOME)/bash-completion/completions
-ZSH_COMPLETION_DIR := $(USER_DATA_HOME)/zsh/site-functions
-FISH_COMPLETION_DIR := $(USER_DATA_HOME)/fish/vendor_completions.d
+USER_UNIT_DIR := $(DESTDIR)$(USER_DATA_HOME)/systemd/user
+QUICKSHELL_INSTALL_DIR := $(DESTDIR)$(USER_DATA_HOME)/handover/quickshell
+MAN_DIR := $(DESTDIR)$(PREFIX)/share/man/man1
+MAN8_DIR := $(DESTDIR)$(PREFIX)/share/man/man8
+BASH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/bash-completion/completions
+ZSH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/zsh/site-functions
+FISH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/fish/vendor_completions.d
+BIN_DIR := $(DESTDIR)$(PREFIX)/bin
 
 .PHONY: install-user uninstall-user systemd-smoke
 
@@ -15,8 +17,8 @@ systemd-smoke: target/debug/handoverd target/debug/handoverctl
 
 install-user:
 	cargo build --release --locked -p handoverd -p handoverctl
-	install -Dm755 target/release/handoverd $(PREFIX)/bin/handoverd
-	install -Dm755 target/release/handoverctl $(PREFIX)/bin/handoverctl
+	install -Dm755 target/release/handoverd $(BIN_DIR)/handoverd
+	install -Dm755 target/release/handoverctl $(BIN_DIR)/handoverctl
 	install -Dm644 docs/man/handoverctl.1 $(MAN_DIR)/handoverctl.1
 	install -Dm644 docs/man/handoverd.8 $(MAN8_DIR)/handoverd.8
 	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
