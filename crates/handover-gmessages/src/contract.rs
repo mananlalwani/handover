@@ -48,6 +48,12 @@ pub enum HelperCommand {
         limit: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
+        /// Matches this request to its response pages. Helpers that
+        /// understand it echo it on every `Messages` event of the
+        /// page; background windows carry none and therefore never
+        /// complete an explicit waiter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fetch_id: Option<u64>,
     },
     SendText {
         request_id: String,
@@ -164,6 +170,11 @@ pub enum HelperEvent {
         /// single-chunk and live events.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generation: Option<u64>,
+        /// Echo of the requesting `FetchHistory` fetch id, when the
+        /// helper supports it. Lets the daemon tell a requested page
+        /// from background window traffic on the same conversation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fetch_id: Option<u64>,
     },
     MessageRemoved {
         account: String,

@@ -523,6 +523,7 @@ impl Relay for LoopbackRelay {
                 page_complete: false,
                 full: true,
                 generation: None,
+                fetch_id: None,
             });
             events.push(HelperEvent::Read {
                 account: account.into(),
@@ -587,6 +588,7 @@ impl Relay for LoopbackRelay {
             page_complete: true,
             full: false,
             generation: None,
+            fetch_id: None,
         }]
     }
 
@@ -656,6 +658,7 @@ impl Relay for LoopbackRelay {
                 page_complete: false,
                 full: false,
                 generation: None,
+                fetch_id: None,
             },
         ]
     }
@@ -748,6 +751,7 @@ impl Relay for LoopbackRelay {
                 page_complete: false,
                 full: false,
                 generation: None,
+                fetch_id: None,
             },
         ]
     }
@@ -813,6 +817,7 @@ impl Relay for LoopbackRelay {
                 page_complete: false,
                 full: false,
                 generation: None,
+                fetch_id: None,
             },
         ]
     }
@@ -932,6 +937,7 @@ impl Relay for LoopbackRelay {
                         page_complete: false,
                         full: false,
                         generation: None,
+                        fetch_id: None,
                     },
                 ];
             }
@@ -1111,9 +1117,34 @@ impl LoopbackHelper {
                 conversation,
                 limit,
                 cursor,
+                fetch_id,
             } => self
                 .relay
-                .fetch_history(&account, &conversation, limit, cursor.as_deref()),
+                .fetch_history(&account, &conversation, limit, cursor.as_deref())
+                .into_iter()
+                .map(|event| match event {
+                    HelperEvent::Messages {
+                        account,
+                        conversation,
+                        messages,
+                        cursor_next,
+                        page_complete,
+                        full,
+                        generation,
+                        ..
+                    } => HelperEvent::Messages {
+                        account,
+                        conversation,
+                        messages,
+                        cursor_next,
+                        page_complete,
+                        full,
+                        generation,
+                        fetch_id,
+                    },
+                    other => other,
+                })
+                .collect(),
             HelperCommand::SendText {
                 request_id,
                 account,

@@ -52,14 +52,17 @@ fn getrandom_fallback(buffer: &mut [u8]) -> io::Result<()> {
 /// Copy an accepted file into private staging, preserving its
 /// basename inside a unique subdirectory so the receiver still sees
 /// the original name. Fails when the source is not a bounded regular
-/// file.
+/// file. The source is opened once with O_NOFOLLOW and streamed from
+/// that descriptor: a path re-open after validation could resolve to
+/// a swapped file.
 pub(crate) fn stage_send_file(source: &Path) -> io::Result<PathBuf> {
     let name = source
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty() && *name != "." && *name != ".." && !name.contains('/'))
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unsafe file name"))?;
-    let metadata = std::fs::metadata(source)?;
+    let mut input = open_nofollow_read(source)?;
+    let metadata = input.metadata()?;
     if !metadata.is_file() || metadata.len() > MAX_STAGED_SEND_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -75,22 +78,46 @@ pub(crate) fn stage_send_file(source: &Path) -> io::Result<PathBuf> {
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
     }
     let staged = directory.join(name);
-    std::fs::copy(source, &staged)?;
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
-    }
-    // Re-check after the copy: the source could have changed mid-copy.
-    let copied = std::fs::metadata(&staged)?;
-    if !copied.is_file() || copied.len() != metadata.len() {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "file changed during staging",
-        ));
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            output.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        let copied = std::io::copy(&mut input, &mut output)?;
+        if copied != metadata.len() {
+            drop(output);
+            let _ = std::fs::remove_dir_all(&directory);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "file changed during staging",
+            ));
+        }
     }
     Ok(staged)
+}
+
+/// Open a source file for reading without following a trailing
+/// symlink. Follows the same Linux O_NOFOLLOW precedent as the
+/// staging crate.
+fn open_nofollow_read(path: &Path) -> io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(target_os = "linux")]
+        options.custom_flags(0o400000);
+        options.open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::File::open(path)
+    }
 }
 
 fn staged_dirs() -> &'static Mutex<HashMap<String, PathBuf>> {

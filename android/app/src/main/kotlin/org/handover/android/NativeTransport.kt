@@ -453,6 +453,7 @@ class NativeTransport(private val context: Context) {
         // throwing inside the writer and killing the sync.
         val contacts = org.json.JSONArray()
         var truncated = false
+        var usedBytes = 0
         val projection = arrayOf(
             ContactsContract.Contacts._ID,
             ContactsContract.Contacts.DISPLAY_NAME,
@@ -472,10 +473,10 @@ class NativeTransport(private val context: Context) {
             val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
             val lookupIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY)
             while (cursor.moveToNext()) {
-                if (contacts.toString().length >= CONTACTS_BUDGET_BYTES) {
-                    truncated = true
-                    break
-                }
+                // Budget in UTF-8 bytes: the wire frame is byte-limited
+                // while String.length counts UTF-16 units, so CJK/emoji
+                // heavy data could pass a char check and still burst
+                // the frame and close the connection.
                 val id = cursor.getString(idIndex)
                 val item = JSONObject().put("local_id", id)
                     .put("display_name", (cursor.getString(nameIndex) ?: "").take(MAX_CONTACT_FIELD_CHARS))
@@ -512,10 +513,16 @@ class NativeTransport(private val context: Context) {
                         photoFileId,
                         lookupKey,
                     )
-                    if (!photo.isNullOrEmpty() && contacts.toString().length + photo.length < 48 * 1024)
+                    if (!photo.isNullOrEmpty() && usedBytes + photo.toByteArray(Charsets.UTF_8).size < 48 * 1024)
                         item.put("photo", photo)
                 }
+                val itemBytes = item.toString().toByteArray(Charsets.UTF_8).size + 1
+                if (usedBytes + itemBytes > CONTACTS_BUDGET_BYTES) {
+                    truncated = true
+                    break
+                }
                 contacts.put(item)
+                usedBytes += itemBytes
             }
         }
         if (truncated) android.util.Log.i("Handover", "contacts snapshot truncated to frame budget")

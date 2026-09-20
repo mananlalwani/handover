@@ -932,7 +932,7 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
                     "pdf" => "application/pdf",
                     _ => "application/octet-stream",
                 };
-                let copy = std::env::temp_dir().join(format!(
+                let copy = runtime_directory().map_err(|_| ())?.join(format!(
                     "handover-clipboard-{}-{}-{}",
                     std::process::id(),
                     std::time::SystemTime::now()
@@ -941,7 +941,17 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
                         .as_nanos(),
                     name
                 ));
-                fs::copy(&path, &copy).map_err(|_| ())?;
+                // Private runtime temp, created exclusively as 0600:
+                // clipboard-selected files must never pass through
+                // the shared temp directory.
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    let mut staged = std::fs::OpenOptions::new();
+                    staged.write(true).create_new(true).mode(0o600);
+                    let mut staged = staged.open(&copy).map_err(|_| ())?;
+                    let mut source = std::fs::File::open(&path).map_err(|_| ())?;
+                    std::io::copy(&mut source, &mut staged).map_err(|_| ())?;
+                }
                 return Ok(WaylandClipboard::File {
                     path: copy,
                     mime: mime.to_owned(),
@@ -3544,6 +3554,7 @@ mod messaging_live_tests {
             .react_to_message(own.clone(), "👍".into())
             .await
             .expect("react accepted");
+        wait_for_reaction(&mut subscription, &own, "👍", true).await;
         let (reacted, _) = client
             .messaging_history(rcs.id.clone(), Some(10), None)
             .await
@@ -3562,6 +3573,7 @@ mod messaging_live_tests {
             .unreact_to_message(own.clone(), "👍".into())
             .await
             .expect("unreact accepted");
+        wait_for_reaction(&mut subscription, &own, "👍", false).await;
         let (unreacted, _) = client
             .messaging_history(rcs.id.clone(), Some(10), None)
             .await
@@ -3708,6 +3720,39 @@ mod messaging_live_tests {
                 if rendered.contains(status) {
                     return update.message_id.to_string();
                 }
+            }
+        }
+    }
+
+    async fn wait_for_reaction(
+        subscription: &mut handover_ipc::Subscription,
+        message_id: &MessageId,
+        emoji: &str,
+        present: bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if Instant::now() > deadline {
+                panic!("timed out waiting for reaction state");
+            }
+            let message = tokio::time::timeout(Duration::from_secs(5), subscription.next_message())
+                .await
+                .expect("event in time")
+                .expect("event decodes");
+            let matches = match message.payload {
+                ServerPayload::MessageAdded { message }
+                | ServerPayload::MessageUpdated { message }
+                    if message.id == *message_id =>
+                {
+                    message
+                        .reactions
+                        .iter()
+                        .any(|reaction| reaction.emoji == emoji)
+                }
+                _ => continue,
+            };
+            if matches == present {
+                return;
             }
         }
     }

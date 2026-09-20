@@ -38,6 +38,10 @@ jobs:
               - '.github/workflows/ci.yml'
 
   contract-fixture:
+    # The sibling repository is private in the current setup. Enable
+    # this job with the HANDOVER_GMESSAGES_PUBLIC repository variable
+    # once unauthenticated Actions checkout can reach it.
+    if: vars.HANDOVER_GMESSAGES_PUBLIC == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

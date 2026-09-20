@@ -154,6 +154,11 @@ struct Runtime {
     // Peers that asked the desktop to stay awake. Cleared on disconnect so a
     // dead phone cannot hold the inhibitor past its session.
     screensaver_requests: BTreeSet<String>,
+    /// In-flight received-share reservations (bytes, files). Disk scans
+    /// cannot see concurrent transfers, so each transfer reserves
+    /// before streaming and releases on failure; completed files stay
+    /// counted by later scans.
+    quota_reserved: (u64, usize),
 }
 
 #[derive(Default)]
@@ -771,6 +776,35 @@ fn delete_clipboard_temp(message: &Message) {
     }
 }
 
+/// Reservation against the received-share quota. Dropping an
+/// uncommitted reservation releases it; a completed transfer commits
+/// it, leaving the on-disk file to future scans.
+struct QuotaReservation {
+    backend: NativeBackend,
+    bytes: u64,
+    committed: bool,
+}
+
+impl QuotaReservation {
+    fn commit(mut self) {
+        let mut inner = self.backend.inner.lock().unwrap();
+        inner.quota_reserved.0 = inner.quota_reserved.0.saturating_sub(self.bytes);
+        inner.quota_reserved.1 = inner.quota_reserved.1.saturating_sub(1);
+        self.committed = true;
+    }
+}
+
+impl Drop for QuotaReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut inner = self.backend.inner.lock().unwrap();
+        inner.quota_reserved.0 = inner.quota_reserved.0.saturating_sub(self.bytes);
+        inner.quota_reserved.1 = inner.quota_reserved.1.saturating_sub(1);
+    }
+}
+
 impl NativeBackend {
     pub fn open(directory: PathBuf) -> Result<Self, NativeError> {
         fs::create_dir_all(&directory)?;
@@ -814,6 +848,7 @@ impl NativeBackend {
                 call_generations: BTreeMap::new(),
                 pending_call_results: BTreeMap::new(),
                 screensaver_requests: BTreeSet::new(),
+                quota_reserved: (0, 0),
             })),
             directory,
             certificate,
@@ -1455,12 +1490,19 @@ impl NativeBackend {
     /// Enforce the aggregate received-share quota before accepting one
     /// more file: sweep entries older than the TTL, then oldest-first
     /// until the incoming size fits. Refuses when even an empty
-    /// directory cannot fit the file.
-    fn enforce_received_quota(directory: &Path, incoming: u64) -> Result<(), NativeError> {
+    /// directory cannot fit the file. The check and the reservation
+    /// are atomic under the runtime lock: concurrent transfers cannot
+    /// all observe spare capacity and overshoot together.
+    fn reserve_received_quota(
+        &self,
+        directory: &Path,
+        incoming: u64,
+    ) -> Result<QuotaReservation, NativeError> {
         use std::time::SystemTime;
         if incoming > MAX_RECEIVED_BYTES {
             return Err(NativeError::InvalidFrame);
         }
+        let mut inner = self.inner.lock().unwrap();
         let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
         let mut subdirs: Vec<PathBuf> = Vec::new();
         let mut walk: Vec<PathBuf> = vec![directory.to_path_buf()];
@@ -1500,7 +1542,8 @@ impl NativeBackend {
         });
         files.sort_by_key(|entry| entry.0);
         let mut total: u64 = files.iter().map(|entry| entry.1).sum();
-        let mut count = files.len();
+        total = total.saturating_add(inner.quota_reserved.0);
+        let mut count = files.len() + inner.quota_reserved.1;
         for (_, len, path) in &files {
             if total.saturating_add(incoming) <= MAX_RECEIVED_BYTES && count < MAX_RECEIVED_FILES {
                 break;
@@ -1510,6 +1553,8 @@ impl NativeBackend {
                 count = count.saturating_sub(1);
             }
         }
+        // Active `.partial` files of concurrent transfers are counted
+        // above; the reservation below covers this transfer's own.
         if total.saturating_add(incoming) > MAX_RECEIVED_BYTES || count >= MAX_RECEIVED_FILES {
             return Err(NativeError::QuotaExceeded);
         }
@@ -1517,7 +1562,13 @@ impl NativeBackend {
             // Succeeds only when every child is gone.
             let _ = fs::remove_dir(subdir);
         }
-        Ok(())
+        inner.quota_reserved.0 = inner.quota_reserved.0.saturating_add(incoming);
+        inner.quota_reserved.1 += 1;
+        Ok(QuotaReservation {
+            backend: self.clone(),
+            bytes: incoming,
+            committed: false,
+        })
     }
 
     fn receive_share_file<R: Read>(
@@ -1547,7 +1598,7 @@ impl NativeBackend {
         let directory = self.directory.join("received");
         fs::create_dir_all(&directory)?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        Self::enforce_received_quota(&directory, size)?;
+        let reservation = self.reserve_received_quota(&directory, size)?;
         let mut random = [0u8; 8];
         openssl::rand::rand_bytes(&mut random)?;
         let suffix = random
@@ -1576,6 +1627,9 @@ impl NativeBackend {
         drop(output);
         fs::rename(&partial, &destination)?;
         guard.0 = PathBuf::new();
+        // The file is on disk and counted by future scans; release
+        // the in-flight reservation without double counting.
+        reservation.commit();
         Ok(destination)
     }
     fn save_peers(&self, peers: &PeerFile) -> Result<(), NativeError> {

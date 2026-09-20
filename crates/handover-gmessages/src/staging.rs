@@ -351,7 +351,11 @@ pub fn stage_send_copy(source: &str) -> Result<PathBuf, StageError> {
         .and_then(|name| name.to_str())
         .ok_or(StageError::UnsafeName)?;
     let clean = handover_core::sanitize_file_name(name).ok_or(StageError::UnsafeName)?;
-    let metadata = std::fs::metadata(source).map_err(StageError::Io)?;
+    // Open once and inspect the descriptor: a path re-open after
+    // validation can resolve to a swapped file, and a same-length
+    // swap passes length re-checks.
+    let mut input = open_nofollow(source)?;
+    let metadata = input.metadata().map_err(StageError::Io)?;
     if !metadata.is_file() || metadata.len() > MAX_STAGED_BYTES {
         return Err(StageError::NotAFile);
     }
@@ -362,17 +366,24 @@ pub fn stage_send_copy(source: &str) -> Result<PathBuf, StageError> {
     let directory = root.join(format!("send-{suffix}"));
     std::fs::create_dir_all(&directory).map_err(StageError::Io)?;
     let staged = directory.join(clean);
-    std::fs::copy(source, &staged).map_err(StageError::Io)?;
-    let copied = std::fs::metadata(&staged).map_err(StageError::Io)?;
-    if !copied.is_file() || copied.len() != metadata.len() {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(StageError::NotAFile);
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .map_err(StageError::Io)?;
+    {
+        let copied = std::io::copy(&mut input, &mut output).map_err(StageError::Io)?;
+        if copied != metadata.len() {
+            drop(output);
+            let _ = std::fs::remove_dir_all(&directory);
+            return Err(StageError::NotAFile);
+        }
     }
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
     Ok(staged)
 }
 
 fn read_random(buffer: &mut [u8]) -> Result<(), StageError> {
-    use std::io::Read;
     std::fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(buffer))
         .map_err(StageError::Io)

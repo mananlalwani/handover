@@ -99,6 +99,10 @@ struct HubInner {
     /// Waiters queued on fetch locks. Bounds total history waiters;
     /// `fetches` alone cannot, since one key holds one flight.
     fetch_waiters: std::sync::atomic::AtomicUsize,
+    /// Whether the current helper echoes fetch ids. Learned from
+    /// observed events; cleared whenever the helper disconnects so a
+    /// replacement helper starts in legacy mode.
+    fetch_id_supported: std::sync::atomic::AtomicBool,
     counter: AtomicU64,
     shutdown: AtomicBool,
     /// Account id -> (generation, announced conversation ids).
@@ -131,6 +135,7 @@ impl MessagingHub {
                 shutdown: AtomicBool::new(false),
                 fetch_locks: Mutex::new(HashMap::new()),
                 fetch_waiters: std::sync::atomic::AtomicUsize::new(0),
+                fetch_id_supported: std::sync::atomic::AtomicBool::new(false),
                 page_floors: Mutex::new(HashMap::new()),
                 conversation_syncs: Mutex::new(HashMap::new()),
                 window_syncs: Mutex::new(HashMap::new()),
@@ -267,6 +272,7 @@ impl MessagingHub {
                 conversation: conversation.into(),
                 limit,
                 cursor,
+                fetch_id: Some(fetch_id),
             })
             .await
         {
@@ -316,15 +322,31 @@ impl MessagingHub {
         }
     }
 
-    async fn complete_fetch(&self, account: &str, conversation: &str) {
-        let waiter = self
-            .inner
-            .fetches
-            .lock()
-            .await
-            .remove(&(account.to_string(), conversation.to_string()));
-        if let Some((_, waiter)) = waiter {
-            let _ = waiter.send(Ok(()));
+    async fn complete_fetch(&self, account: &str, conversation: &str, fetch_id: Option<u64>) {
+        if fetch_id.is_some() {
+            // Helpers that echo fetch ids make completion exact: only
+            // the matching waiter wakes, so background windows can
+            // never complete an explicit fetch early.
+            self.inner.fetch_id_supported.store(true, Ordering::Relaxed);
+        }
+        let key = (account.to_string(), conversation.to_string());
+        let mut fetches = self.inner.fetches.lock().await;
+        let matched = match fetches.get(&key) {
+            Some((expected, _)) => {
+                if self.inner.fetch_id_supported.load(Ordering::Relaxed) {
+                    fetch_id.is_some_and(|id| id == *expected)
+                } else {
+                    // Legacy helper: no echo to match on. Key-only
+                    // completion, with its known cross-talk limits.
+                    true
+                }
+            }
+            None => false,
+        };
+        if matched {
+            if let Some((_, waiter)) = fetches.remove(&key) {
+                let _ = waiter.send(Ok(()));
+            }
         }
     }
 
@@ -343,10 +365,14 @@ impl MessagingHub {
         }
         // A dead helper never closes its open generations. Drop them so
         // the next helper generation starts from clean buffers instead
-        // of reconciling against a stale partial set.
+        // of reconciling against a stale partial set. Fetch-id support
+        // is relearned from the replacement helper.
         self.inner.conversation_syncs.lock().await.clear();
         self.inner.window_syncs.lock().await.clear();
         self.inner.page_floors.lock().await.clear();
+        self.inner
+            .fetch_id_supported
+            .store(false, Ordering::Relaxed);
     }
 
     /// Accumulate one conversation chunk into its generation buffer.
@@ -523,16 +549,20 @@ impl MessagingHub {
             .map(|(_, id)| id)
     }
 
-    /// Whether a history fetch is outstanding for one conversation.
-    /// Page-floor accumulation is scoped to real pages (an
-    /// outstanding fetch, an open generation, or a page boundary),
-    /// never to ordinary live traffic.
-    async fn has_fetch(&self, account: &str, conversation: &str) -> bool {
+    /// The fetch id an outstanding history fetch expects, if any.
+    async fn expected_fetch(&self, account: &str, conversation: &str) -> Option<u64> {
         self.inner
             .fetches
             .lock()
             .await
-            .contains_key(&(account.to_string(), conversation.to_string()))
+            .get(&(account.to_string(), conversation.to_string()))
+            .map(|(id, _)| *id)
+    }
+
+    /// Whether any fetch id has ever been echoed back. Gates the
+    /// legacy key-only matching used with helpers that predate ids.
+    async fn fetch_id_known(&self) -> bool {
+        self.inner.fetch_id_supported.load(Ordering::Relaxed)
     }
 
     async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
@@ -804,6 +834,7 @@ async fn ingest_event(
             cursor_next,
             page_complete,
             generation,
+            fetch_id,
         } => {
             let conversation_id = ConversationId::new(
                 MessagingAccountId::new(account.clone()),
@@ -834,14 +865,24 @@ async fn ingest_event(
             // The public cursor comes from the complete accumulated page:
             // only the closing chunk carries `cursor_next`, but older
             // chunks hold older messages. Accumulation is scoped to
-            // real pages (open generation, outstanding fetch, or page
-            // boundary): ordinary live traffic must not move it.
+            // real pages: an open generation, a page boundary, or an
+            // outstanding fetch whose id matches this event. Ordinary
+            // live traffic must not move it, and neither may one
+            // fetch's pages contaminate another's.
+            let expected = hub.expected_fetch(&account, &conversation).await;
+            let fetch_matches = match (expected, fetch_id) {
+                (Some(expected), Some(actual)) => expected == actual,
+                // Legacy helpers never echo an id: fall back to key
+                // matching while none has ever been observed.
+                (Some(_), None) => !hub.fetch_id_known().await,
+                _ => false,
+            };
             let is_page = generation.is_some()
                 || cursor_next
                     .as_deref()
                     .is_some_and(|cursor| !cursor.is_empty())
                 || page_complete
-                || hub.has_fetch(&account, &conversation).await;
+                || fetch_matches;
             if is_page {
                 let floor_points: Vec<(Option<i64>, String)> = normalized
                     .iter()
@@ -868,14 +909,19 @@ async fn ingest_event(
                     .cloned()
             };
             if let Some(mut record) = conversation_record {
-                record.cursor = public_cursor;
-                apply_backend_event(
-                    state,
-                    events,
-                    StateEvent::Messaging(MessagingEvent::Conversation(
-                        ConversationEvent::Updated(record),
-                    )),
-                );
+                // Only page events move the history cursor. A live
+                // message carries no cursor_next and must not clear
+                // the older-history position readers depend on.
+                if is_page {
+                    record.cursor = public_cursor;
+                    apply_backend_event(
+                        state,
+                        events,
+                        StateEvent::Messaging(MessagingEvent::Conversation(
+                            ConversationEvent::Updated(record),
+                        )),
+                    );
+                }
             }
             // Windows reconcile removals only against a complete set, for
             // the same reason as conversation lists: reconciling an
@@ -966,7 +1012,7 @@ async fn ingest_event(
                 }
             }
             if page_complete {
-                hub.complete_fetch(&account, &conversation).await;
+                hub.complete_fetch(&account, &conversation, fetch_id).await;
             }
         }
         HelperEvent::MessageRemoved {
@@ -1423,6 +1469,7 @@ mod tests {
                 cursor_next: None,
                 page_complete: false,
                 full: true,
+                fetch_id: None,
                 generation: None,
             },
         )
@@ -1442,6 +1489,7 @@ mod tests {
                 cursor_next: None,
                 page_complete: false,
                 full: false,
+                fetch_id: None,
                 generation: Some(4),
             },
         )
@@ -1461,6 +1509,7 @@ mod tests {
                 cursor_next: None,
                 page_complete: true,
                 full: true,
+                fetch_id: None,
                 generation: Some(4),
             },
         )
@@ -1477,9 +1526,29 @@ mod tests {
         // A stale timeout must not consume a newer waiter's completion.
         hub.take_fetch(&key, 6).await;
         assert!(hub.inner.fetches.lock().await.contains_key(&key));
-        hub.complete_fetch("a", "c").await;
+        hub.complete_fetch("a", "c", Some(7)).await;
         assert!(rx.await.expect("waiter completes").is_ok());
         assert!(!hub.inner.fetches.lock().await.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn mismatched_fetch_id_never_completes_a_waiter() {
+        let hub = MessagingHub::new();
+        let key = ("a".to_string(), "c".to_string());
+        let (tx, rx) = oneshot::channel();
+        hub.inner
+            .fetch_id_supported
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        hub.inner.fetches.lock().await.insert(key.clone(), (7, tx));
+        // A background window (no id) must not complete the waiter
+        // once ids are in play.
+        hub.complete_fetch("a", "c", None).await;
+        assert!(hub.inner.fetches.lock().await.contains_key(&key));
+        // Neither may a different fetch's page.
+        hub.complete_fetch("a", "c", Some(8)).await;
+        assert!(hub.inner.fetches.lock().await.contains_key(&key));
+        hub.complete_fetch("a", "c", Some(7)).await;
+        assert!(rx.await.expect("waiter completes").is_ok());
     }
 
     #[tokio::test]
@@ -1523,6 +1592,7 @@ mod tests {
                 cursor_next: None,
                 page_complete: false,
                 full: false,
+                fetch_id: None,
                 generation: None,
             },
             HelperEvent::Messages {
@@ -1532,6 +1602,7 @@ mod tests {
                 cursor_next: Some("relay:9".into()),
                 page_complete: true,
                 full: false,
+                fetch_id: None,
                 generation: None,
             },
         ] {
@@ -1686,6 +1757,7 @@ mod tests {
                     cursor_next: Some("older:123".into()),
                     page_complete: true,
                     full: false,
+                    fetch_id: None,
                     generation: None,
                 },
             ),

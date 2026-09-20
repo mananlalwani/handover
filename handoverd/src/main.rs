@@ -195,7 +195,7 @@ async fn main() {
     // outlive the daemon. An unclean kill can still orphan the helper; the
     // next supervisor generation replaces it on restart.
     messaging_hub.shutdown().await;
-    if let Err(error) = messaging_cache::flush(&state) {
+    if let Err(error) = messaging_cache::flush(&state).await {
         warn!(%error, "could not flush messaging cache");
     }
     screensaver::update(false);
