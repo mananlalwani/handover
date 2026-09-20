@@ -3607,6 +3607,7 @@ mod messaging_live_tests {
             .delete_message(own.clone())
             .await
             .expect("delete accepted");
+        wait_for_message_removed(&mut subscription, &own).await;
         let (after_delete, _) = client
             .messaging_history(rcs.id.clone(), Some(20), None)
             .await
@@ -3779,6 +3780,30 @@ mod messaging_live_tests {
                     return;
                 }
                 _ => {}
+            }
+        }
+    }
+
+    async fn wait_for_message_removed(
+        subscription: &mut handover_ipc::Subscription,
+        message_id: &MessageId,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if Instant::now() > deadline {
+                panic!("timed out waiting for message removal");
+            }
+            let message = tokio::time::timeout(Duration::from_secs(5), subscription.next_message())
+                .await
+                .expect("event in time")
+                .expect("event decodes");
+            if let ServerPayload::MessageRemoved {
+                message_id: removed,
+            } = message.payload
+            {
+                if removed == *message_id {
+                    return;
+                }
             }
         }
     }
