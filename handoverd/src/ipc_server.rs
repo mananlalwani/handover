@@ -26,6 +26,37 @@ use handover_core::{ConversationId, MessageId, MessagingAccountId, MessagingComm
 pub(crate) const EVENT_CAPACITY: usize = 64;
 const MAX_CLIENTS: usize = 64;
 const PRE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(15);
+/// Upper bound for one history response line. Readers reject lines
+/// over 1 MiB, so a legal page (100 messages of up to 8,000
+/// four-byte characters) must be cut to fit before writing. The
+/// cursor always advances to the oldest kept message, so paging
+/// overlaps instead of gapping.
+const MAX_HISTORY_LINE_BYTES: usize = 768 * 1024;
+
+/// Cut a history page to the line budget, newest messages first. The
+/// returned cursor addresses the oldest kept message, so the next
+/// page overlaps the cut instead of skipping it.
+fn fit_history_page(
+    conversation_id: &ConversationId,
+    mut messages: Vec<handover_core::Message>,
+    mut cursor_next: Option<String>,
+) -> (Vec<handover_core::Message>, Option<String>) {
+    while messages.len() > 1 {
+        let probe = serde_json::to_vec(&ServerMessage::new(ServerPayload::History {
+            conversation_id: conversation_id.clone(),
+            messages: messages.clone(),
+            cursor_next: cursor_next.clone(),
+        }))
+        .map(|line| line.len())
+        .unwrap_or(usize::MAX);
+        if probe <= MAX_HISTORY_LINE_BYTES {
+            break;
+        }
+        messages.remove(0);
+        cursor_next = messages.first().map(|message| message.id.local_id.clone());
+    }
+    (messages, cursor_next)
+}
 
 #[derive(Default)]
 struct SubscriptionFlags {
@@ -566,15 +597,22 @@ where
                     .as_str()
                     .strip_prefix("native:")
                     .unwrap_or_default();
-                match native_backend().map(|native| native.clipboard_file(peer_id, path, mime)) {
-                    Some(Ok(_)) => ServerPayload::NativeAccepted,
-                    Some(Err(_)) => ServerPayload::Error {
-                        code: ErrorCode::BackendRejected,
-                        message: "clipboard file was not accepted".into(),
-                    },
-                    None => ServerPayload::Error {
-                        code: ErrorCode::BackendUnavailable,
-                        message: "native backend unavailable".into(),
+                // clipboard_file takes ownership of the temp on every
+                // outcome, but a missing backend never sees it.
+                match native_backend() {
+                    None => {
+                        let _ = std::fs::remove_file(&path);
+                        ServerPayload::Error {
+                            code: ErrorCode::BackendUnavailable,
+                            message: "native backend unavailable".into(),
+                        }
+                    }
+                    Some(native) => match native.clipboard_file(peer_id, path, mime) {
+                        Ok(_) => ServerPayload::NativeAccepted,
+                        Err(_) => ServerPayload::Error {
+                            code: ErrorCode::BackendRejected,
+                            message: "clipboard file was not accepted".into(),
+                        },
                     },
                 }
             }
@@ -814,7 +852,11 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
             .strip_prefix("image/")
             .unwrap_or("bin")
             .replace('/', "_");
-        let path = std::env::temp_dir().join(format!(
+        // Clipboard temps live in the runtime directory (0700), not the
+        // world-writable temp dir: another local user must not be able
+        // to swap the file between capture and streaming.
+        let directory = runtime_directory().map_err(|_| ())?;
+        let path = directory.join(format!(
             "handover-clipboard-{}-{}.{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -823,17 +865,28 @@ async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
                 .as_nanos(),
             extension
         ));
-        let output = tokio::process::Command::new("wl-paste")
-            .args(["--no-newline", "--type", mime])
-            .output()
-            .await
-            .map_err(|_| ())?;
-        if !output.status.success() || output.stdout.len() > 10 * 1024 * 1024 {
-            return Err(());
+        let mime_owned = mime.to_owned();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let mut command = std::process::Command::new("wl-paste");
+            command.args(["--no-newline", "--type", &mime_owned]);
+            let output =
+                crate::local_cmd::output_bounded(&mut command, 10 * 1024 * 1024).map_err(|_| ())?;
+            if !output.status.success() || output.stdout.len() > 10 * 1024 * 1024 {
+                return Err(());
+            }
+            Ok(output.stdout)
+        })
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+        tokio::fs::write(&path, bytes).await.map_err(|_| ())?;
+        // Restrict the temp before the backend streams it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| ())?;
         }
-        tokio::fs::write(&path, output.stdout)
-            .await
-            .map_err(|_| ())?;
         return Ok(WaylandClipboard::File {
             path,
             mime: mime.to_owned(),
@@ -1310,7 +1363,24 @@ where
                         .ok()
                         .and_then(|url| url.to_file_path().ok())
                         .ok_or(handover_native::NativeCommandError::QueueFull)?;
-                    native.share_file(peer_id, path)
+                    // Copy into private staging before queueing: the
+                    // backend opens the path later, and the source may
+                    // live in a directory writable by another local user.
+                    let staged = crate::send_staging::stage_send_file(&path)
+                        .map_err(|_| handover_native::NativeCommandError::QueueFull)?;
+                    match native.share_file(peer_id, staged.clone()) {
+                        Ok(transfer_id) => {
+                            crate::send_staging::note_accepted(&transfer_id, &staged);
+                            Ok(transfer_id)
+                        }
+                        Err(error) => {
+                            // Never queued: remove the staged copy now.
+                            if let Some(directory) = staged.parent() {
+                                let _ = std::fs::remove_dir_all(directory);
+                            }
+                            Err(error)
+                        }
+                    }
                 } else {
                     native.share_url(peer_id, url)
                 }
@@ -1449,6 +1519,33 @@ where
         .await?;
         return Ok(true);
     }
+    // Copy into daemon-owned staging before the helper opens it: the
+    // source may live in a directory writable by another local user.
+    // The adapter accepts this root and opens the private copy;
+    // retention sweeps it later (see operations docs).
+    let staged = match handover_gmessages::staging::stage_send_copy(&path) {
+        Ok(staged) => staged,
+        Err(_) => {
+            write_json_line(
+                writer,
+                &ServerMessage::protocol_error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "file is not usable",
+                ),
+            )
+            .await?;
+            return Ok(true);
+        }
+    };
+    let path = staged.to_str().map(str::to_string);
+    let Some(path) = path else {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(ErrorCode::InvalidMessagingCommand, "invalid file"),
+        )
+        .await?;
+        return Ok(true);
+    };
     let account = conversation_id.account_id.as_str().to_string();
     let conversation = conversation_id.local_id.clone();
     request_messaging(
@@ -2143,6 +2240,7 @@ where
                     }
                 }
             }
+            let (messages, cursor_next) = fit_history_page(&conversation_id, messages, cursor_next);
             write_json_line(
                 writer,
                 &ServerMessage::new(ServerPayload::History {
@@ -2196,6 +2294,8 @@ where
             }
             match read() {
                 Ok((messages, cursor_next)) => {
+                    let (messages, cursor_next) =
+                        fit_history_page(&conversation_id, messages, cursor_next);
                     write_json_line(
                         writer,
                         &ServerMessage::new(ServerPayload::History {
@@ -2324,14 +2424,57 @@ mod tests {
 
     use handover_core::{
         BatteryState, Capability, Device, DeviceEvent, DeviceId, MediaCommand, MediaControl,
-        MediaEvent, MediaSession, MediaSessionId, Notification, NotificationEvent, NotificationId,
-        PlaybackState,
+        MediaEvent, MediaSession, MediaSessionId, Message, MessageId, MessagingAccountId,
+        Notification, NotificationEvent, NotificationId, PlaybackState,
     };
     use handover_ipc::{Client, ServerPayload};
     use tempfile::TempDir;
     use tokio::io::{AsyncWriteExt, BufReader};
 
     use super::*;
+
+    #[test]
+    fn oversized_history_page_is_cut_newest_first() {
+        use handover_core::{ConversationId, Participant};
+        let conversation = ConversationId::new(MessagingAccountId::new("a"), "c");
+        // 100 legal messages at maximum text size would exceed the
+        // 1 MiB line limit several times over.
+        let messages: Vec<Message> = (0..100)
+            .map(|index| Message {
+                id: MessageId::new(conversation.clone(), format!("m{index:03}")),
+                sender: Participant {
+                    local_id: "peer".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: false,
+                },
+                transport: None,
+                sent_at: Some(index),
+                text: Some("x".repeat(8000)),
+                attachments: vec![],
+                reply_to: None,
+                reactions: vec![],
+                deleted: false,
+            })
+            .collect();
+        let (kept, cursor) = fit_history_page(&conversation, messages, None);
+        assert!(!kept.is_empty());
+        assert!(kept.len() < 100);
+        let encoded = serde_json::to_vec(&ServerMessage::new(ServerPayload::History {
+            conversation_id: conversation,
+            messages: kept.clone(),
+            cursor_next: cursor.clone(),
+        }))
+        .expect("serializes");
+        assert!(encoded.len() <= MAX_HISTORY_LINE_BYTES);
+        // The cursor addresses the oldest kept message, so the next
+        // page overlaps the cut instead of skipping it.
+        assert_eq!(
+            cursor.as_deref(),
+            kept.first().map(|message| message.id.local_id.as_str())
+        );
+        assert_eq!(kept.last().map(|m| m.id.local_id.as_str()), Some("m099"));
+    }
 
     fn device(name: &str, percentage: u8) -> Device {
         Device {

@@ -62,6 +62,12 @@ const MAX_MEDIA_SESSIONS_PER_SYNC: usize = 16;
 const MAX_MEDIA_POSITION_MS: u64 = i32::MAX as u64;
 const MAX_OUTBOX_PER_PEER: usize = 32;
 const MAX_SHARE_SIZE: u64 = 100 * 1024 * 1024;
+/// Aggregate cap for received shares: one 100 MiB file is legal, but
+/// a paired endpoint must not fill the disk by repeating valid sends.
+const MAX_RECEIVED_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_RECEIVED_FILES: usize = 1024;
+/// Received shares older than this are garbage collected.
+const RECEIVED_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const SHARE_BUFFER: usize = 32 * 1024;
 const MAX_PENDING_SHARES_PER_PEER: usize = 32;
 const SHARE_RESULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -85,6 +91,8 @@ pub enum NativeError {
     Json(#[from] serde_json::Error),
     #[error("invalid peer frame")]
     InvalidFrame,
+    #[error("received-share quota exceeded")]
+    QuotaExceeded,
     #[error("unknown pending peer or comparison code")]
     UnknownPending,
     #[error("discovery: {0}")]
@@ -217,7 +225,10 @@ impl Drop for Session<'_> {
             }
             let mut pending_events = Vec::new();
             inner.active.remove(&self.peer.id);
-            inner.outbox.remove(&self.peer.id);
+            let abandoned = inner.outbox.remove(&self.peer.id).unwrap_or_default();
+            for message in &abandoned {
+                delete_clipboard_temp(message);
+            }
             let pending = inner
                 .pending_shares
                 .remove(&self.peer.id)
@@ -737,6 +748,29 @@ impl Message {
     }
 }
 
+/// Temp path owned by a queued clipboard share, if any. Only
+/// `clipboard: true` entries name daemon-owned temp files; user files
+/// must never be deleted by queue cleanup.
+fn clipboard_temp_path(message: &Message) -> Option<&PathBuf> {
+    match message {
+        Message::ShareFile {
+            clipboard: true,
+            path,
+            ..
+        } => Some(path),
+        _ => None,
+    }
+}
+
+/// Delete a queued clipboard share's temp file. Every terminal path
+/// for a queued entry (streamed, cancelled, expired, timed out,
+/// disconnected, send-failed) must call this.
+fn delete_clipboard_temp(message: &Message) {
+    if let Some(path) = clipboard_temp_path(message) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 impl NativeBackend {
     pub fn open(directory: PathBuf) -> Result<Self, NativeError> {
         fs::create_dir_all(&directory)?;
@@ -869,7 +903,11 @@ impl NativeBackend {
         inner.notif_keys.remove(id);
         inner.media_enabled.remove(id);
         inner.media_players.remove(id);
-        inner.outbox.remove(id);
+        if let Some(abandoned) = inner.outbox.remove(id) {
+            for message in &abandoned {
+                delete_clipboard_temp(message);
+            }
+        }
         if let Some(stream) = inner.active.remove(id) {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
@@ -1261,6 +1299,7 @@ impl NativeBackend {
             },
             transfer_id,
         )
+        .map_err(|error| error.0)
     }
 
     pub fn share_file(&self, peer_id: &str, path: PathBuf) -> Result<String, NativeCommandError> {
@@ -1293,29 +1332,40 @@ impl NativeBackend {
             },
             transfer_id,
         )
+        .map_err(|error| error.0)
     }
 
+    /// Queue a Wayland clipboard image captured to a temp file. Takes
+    /// ownership of the temp path on every outcome: validation and
+    /// queue failures delete it, queued entries delete it on every
+    /// terminal path (streamed, cancelled, expired, disconnected).
     pub fn clipboard_file(
         &self,
         peer_id: &str,
         path: PathBuf,
         mime: String,
     ) -> Result<String, NativeCommandError> {
+        let rejected = |path: PathBuf| {
+            let _ = fs::remove_file(&path);
+            NativeCommandError::QueueFull
+        };
         if mime.is_empty() || mime.len() > 128 {
-            return Err(NativeCommandError::QueueFull);
+            return Err(rejected(path));
         }
-        let file = File::open(&path).map_err(|_| NativeCommandError::QueueFull)?;
-        let metadata = file.metadata().map_err(|_| NativeCommandError::QueueFull)?;
+        let file = File::open(&path).map_err(|_| rejected(path.clone()))?;
+        let metadata = file.metadata().map_err(|_| rejected(path.clone()))?;
         if !metadata.is_file() || metadata.len() > 10 * 1024 * 1024 {
-            return Err(NativeCommandError::QueueFull);
+            return Err(rejected(path));
         }
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| safe_share_name(name) && name.len() <= 255)
-            .ok_or(NativeCommandError::QueueFull)?
-            .to_owned();
-        let transfer_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
+            .map(str::to_owned);
+        let Some(name) = name else {
+            return Err(rejected(path));
+        };
+        let transfer_id = new_transfer_id().map_err(|_| rejected(path.clone()))?;
         self.queue_share(
             peer_id,
             Message::ShareFile {
@@ -1329,6 +1379,10 @@ impl NativeBackend {
             },
             transfer_id,
         )
+        .map_err(|error| {
+            delete_clipboard_temp(&error.1);
+            error.0
+        })
     }
 
     /// Cancel a queued share that has not started streaming. Returns true
@@ -1343,18 +1397,32 @@ impl NativeBackend {
         let mut removed = false;
         if let Some(queue) = inner.outbox.get_mut(peer_id) {
             let before = queue.len();
-            queue.retain(|message| match message {
-                Message::ShareUrl {
-                    transfer_id: id, ..
+            let mut temps = Vec::new();
+            queue.retain(|message| {
+                let drop_it = match message {
+                    Message::ShareUrl {
+                        transfer_id: id, ..
+                    }
+                    | Message::ShareFile {
+                        transfer_id: id, ..
+                    } => id == transfer_id,
+                    _ => false,
+                };
+                if drop_it {
+                    temps.extend(clipboard_temp_path(message).cloned());
                 }
-                | Message::ShareFile {
-                    transfer_id: id, ..
-                } => id != transfer_id,
-                _ => true,
+                !drop_it
             });
             removed = queue.len() != before;
-        }
-        if let Some(pending) = inner.pending_shares.get_mut(peer_id) {
+            drop(inner);
+            for temp in temps {
+                let _ = fs::remove_file(temp);
+            }
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(pending) = inner.pending_shares.get_mut(peer_id) {
+                removed |= pending.remove(transfer_id).is_some();
+            }
+        } else if let Some(pending) = inner.pending_shares.get_mut(peer_id) {
             removed |= pending.remove(transfer_id).is_some();
         }
         removed
@@ -1365,23 +1433,91 @@ impl NativeBackend {
         peer_id: &str,
         message: Message,
         transfer_id: String,
-    ) -> Result<String, NativeCommandError> {
+    ) -> Result<String, Box<(NativeCommandError, Message)>> {
         let mut inner = self.inner.lock().unwrap();
         if !inner.active.contains_key(peer_id) {
-            return Err(NativeCommandError::Offline);
+            return Err(Box::new((NativeCommandError::Offline, message)));
         }
         let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
         if queue.len() >= MAX_OUTBOX_PER_PEER {
-            return Err(NativeCommandError::QueueFull);
+            return Err(Box::new((NativeCommandError::QueueFull, message)));
         }
         let pending = inner.pending_shares.entry(peer_id.to_owned()).or_default();
         if pending.len() >= MAX_PENDING_SHARES_PER_PEER || pending.contains_key(&transfer_id) {
-            return Err(NativeCommandError::QueueFull);
+            return Err(Box::new((NativeCommandError::QueueFull, message)));
         }
         pending.insert(transfer_id.clone(), Instant::now());
         let queue = inner.outbox.entry(peer_id.to_owned()).or_default();
         queue.push(message);
         Ok(transfer_id)
+    }
+
+    /// Enforce the aggregate received-share quota before accepting one
+    /// more file: sweep entries older than the TTL, then oldest-first
+    /// until the incoming size fits. Refuses when even an empty
+    /// directory cannot fit the file.
+    fn enforce_received_quota(directory: &Path, incoming: u64) -> Result<(), NativeError> {
+        use std::time::SystemTime;
+        if incoming > MAX_RECEIVED_BYTES {
+            return Err(NativeError::InvalidFrame);
+        }
+        let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+        let mut subdirs: Vec<PathBuf> = Vec::new();
+        let mut walk: Vec<PathBuf> = vec![directory.to_path_buf()];
+        while let Some(directory) = walk.pop() {
+            let Ok(children) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for child in children.flatten() {
+                let Ok(kind) = child.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    subdirs.push(child.path());
+                    walk.push(child.path());
+                } else if kind.is_file() {
+                    let Ok(metadata) = child.metadata() else {
+                        continue;
+                    };
+                    files.push((
+                        metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                        metadata.len(),
+                        child.path(),
+                    ));
+                }
+            }
+        }
+        let now = SystemTime::now();
+        files.retain(|(modified, _, path)| {
+            if now
+                .duration_since(*modified)
+                .is_ok_and(|age| age > RECEIVED_TTL)
+            {
+                let _ = fs::remove_file(path);
+                return false;
+            }
+            true
+        });
+        files.sort_by_key(|entry| entry.0);
+        let mut total: u64 = files.iter().map(|entry| entry.1).sum();
+        let mut count = files.len();
+        for (_, len, path) in &files {
+            if total.saturating_add(incoming) <= MAX_RECEIVED_BYTES && count < MAX_RECEIVED_FILES {
+                break;
+            }
+            if fs::remove_file(path).is_ok() {
+                total = total.saturating_sub(*len);
+                count = count.saturating_sub(1);
+            }
+        }
+        if total.saturating_add(incoming) > MAX_RECEIVED_BYTES || count >= MAX_RECEIVED_FILES {
+            return Err(NativeError::QuotaExceeded);
+        }
+        for subdir in subdirs {
+            // Succeeds only when every child is gone.
+            let _ = fs::remove_dir(subdir);
+        }
+        Ok(())
     }
 
     fn receive_share_file<R: Read>(
@@ -1411,6 +1547,7 @@ impl NativeBackend {
         let directory = self.directory.join("received");
         fs::create_dir_all(&directory)?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        Self::enforce_received_quota(&directory, size)?;
         let mut random = [0u8; 8];
         openssl::rand::rand_bytes(&mut random)?;
         let suffix = random
@@ -1477,7 +1614,15 @@ impl NativeBackend {
         event: Arc<dyn Fn(StateEvent) + Send + Sync>,
     ) -> Result<(), NativeError> {
         for incoming in listener.incoming() {
-            let stream = incoming?;
+            let stream = match incoming {
+                Ok(stream) => stream,
+                // Transient accept failures (fd exhaustion, aborted
+                // handshakes) must not end the listener permanently.
+                Err(error) => {
+                    tracing::debug!(%error, "native accept failed; listening on");
+                    continue;
+                }
+            };
             let Ok(source) = stream.peer_addr().map(|address| address.ip()) else {
                 continue;
             };
@@ -1805,11 +1950,24 @@ impl NativeBackend {
                 let pending = inner.pending_shares.entry(id.clone()).or_default();
                 let expired = take_expired_shares(pending, Instant::now());
                 if let Some(queue) = inner.outbox.get_mut(&id) {
-                    queue.retain(|message| match message {
-                        Message::ShareUrl { transfer_id, .. }
-                        | Message::ShareFile { transfer_id, .. } => !expired.contains(transfer_id),
-                        _ => true,
+                    let mut temps = Vec::new();
+                    queue.retain(|message| {
+                        let drop_it = match message {
+                            Message::ShareUrl { transfer_id, .. }
+                            | Message::ShareFile { transfer_id, .. } => {
+                                expired.contains(transfer_id)
+                            }
+                            _ => false,
+                        };
+                        if drop_it {
+                            temps.extend(clipboard_temp_path(message).cloned());
+                        }
+                        !drop_it
                     });
+                    drop(inner);
+                    for temp in temps {
+                        let _ = fs::remove_file(temp);
+                    }
                 }
                 expired
             };
@@ -1853,8 +2011,8 @@ impl NativeBackend {
                     _ => true,
                 })
                 .collect();
-            for message in outbound {
-                let share_id = match &message {
+            for (index, message) in outbound.iter().enumerate() {
+                let share_id = match message {
                     Message::ShareUrl { transfer_id, .. }
                     | Message::ShareFile { transfer_id, .. } => Some(transfer_id),
                     _ => None,
@@ -1881,6 +2039,7 @@ impl NativeBackend {
                         .entry(id.clone())
                         .or_default()
                         .remove(transfer_id);
+                    delete_clipboard_temp(message);
                     event(StateEvent::ShareResult(ShareResult {
                         device_id: DeviceId::new(format!("native:{id}")),
                         transfer_id: transfer_id.clone(),
@@ -1889,13 +2048,18 @@ impl NativeBackend {
                     }));
                     continue;
                 }
-                if let Err(error) = write_frame(&mut tls, &message) {
+                if let Err(error) = write_frame(&mut tls, message) {
                     tracing::debug!(peer = %id, %error, "native notification command write failed");
+                    // The session is over; every unsent queued entry
+                    // ends here. Delete their clipboard temps.
+                    for remaining in outbound.iter().skip(index) {
+                        delete_clipboard_temp(remaining);
+                    }
                     return Err(error);
                 }
                 if let Message::CallControl {
                     request_id, action, ..
-                } = &message
+                } = message
                     && let Some(action) = match action.as_str() {
                         "place" => Some(CallAction::Place),
                         "answer" => Some(CallAction::Answer),
@@ -1918,14 +2082,26 @@ impl NativeBackend {
                     transfer_id,
                     clipboard,
                     ..
-                } = &message
+                } = message
                 {
-                    let file = File::open(path)?;
-                    let metadata = file.metadata()?;
+                    // A send that never completes must not leave its
+                    // clipboard temp behind. User files are never
+                    // touched; only clipboard-owned temps are cleaned.
+                    let temp = clipboard.then(|| path.clone());
+                    let cleanup = |temp: &Option<PathBuf>| {
+                        if let Some(path) = temp {
+                            let _ = fs::remove_file(path);
+                        }
+                    };
+                    let file = File::open(path).inspect_err(|_| cleanup(&temp))?;
+                    let metadata = file.metadata().inspect_err(|_| cleanup(&temp))?;
                     if !metadata.is_file() || metadata.len() != *size {
+                        cleanup(&temp);
                         return Err(NativeError::InvalidFrame);
                     }
-                    let started = started.ok_or(NativeError::InvalidFrame)?;
+                    let started = started.ok_or(NativeError::InvalidFrame).inspect_err(|_| {
+                        cleanup(&temp);
+                    })?;
                     let device_id = DeviceId::new(format!("native:{id}"));
                     let mut report_progress = |bytes_sent| {
                         event(StateEvent::ShareProgress(ShareProgress {
@@ -1957,9 +2133,13 @@ impl NativeBackend {
                                 reason: Some(ShareFailure::TimedOut),
                             }));
                         }
+                        cleanup(&temp);
                         return Err(NativeError::Io(error));
                     }
-                    tls.flush()?;
+                    if let Err(error) = tls.flush() {
+                        cleanup(&temp);
+                        return Err(NativeError::Io(error));
+                    }
                     if *clipboard {
                         let _ = fs::remove_file(path);
                     }
@@ -3485,6 +3665,69 @@ mod tests {
             }
             let _ = read_frame(&mut bytes.as_slice());
         }
+    }
+
+    #[test]
+    fn received_quota_refuses_oversize_and_sweeps_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let received = dir.path().join("native").join("received");
+        // A file larger than the whole quota is refused outright.
+        assert!(matches!(
+            backend.receive_share_file(
+                &mut [0u8; 8].as_slice(),
+                "huge.bin",
+                MAX_RECEIVED_BYTES + 1
+            ),
+            Err(NativeError::InvalidFrame)
+        ));
+        // Fill the quota with aged files, then verify the next
+        // receive evicts oldest-first instead of failing.
+        std::fs::create_dir_all(received.join("old")).unwrap();
+        let aged = std::time::SystemTime::now() - RECEIVED_TTL - std::time::Duration::from_secs(1);
+        for name in ["a.bin", "b.bin"] {
+            let path = received.join("old").join(name);
+            std::fs::write(&path, vec![7u8; 1024]).unwrap();
+            let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_modified(aged).unwrap();
+        }
+        let fresh = vec![9u8; 2048];
+        let path = backend
+            .receive_share_file(&mut fresh.as_slice(), "new.bin", fresh.len() as u64)
+            .expect("quota makes room oldest-first");
+        assert_eq!(fs::read(path).unwrap(), fresh);
+        // TTL sweep took the aged files even though the quota had room.
+        assert!(!received.join("old").join("a.bin").exists());
+        assert!(!received.join("old").join("b.bin").exists());
+    }
+
+    #[test]
+    fn cancelled_clipboard_share_deletes_its_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path().join("clip.png");
+        std::fs::write(&temp, b"pixels").unwrap();
+        let user = dir.path().join("keep.txt");
+        std::fs::write(&user, b"mine").unwrap();
+        delete_clipboard_temp(&Message::ShareFile {
+            protocol: WIRE_VERSION,
+            transfer_id: "t".into(),
+            name: "clip.png".into(),
+            size: 6,
+            clipboard: true,
+            mime: Some("image/png".into()),
+            path: temp.clone(),
+        });
+        assert!(!temp.exists());
+        delete_clipboard_temp(&Message::ShareFile {
+            protocol: WIRE_VERSION,
+            transfer_id: "u".into(),
+            name: "keep.txt".into(),
+            size: 4,
+            clipboard: false,
+            mime: None,
+            path: user.clone(),
+        });
+        assert!(user.exists());
     }
 
     #[test]

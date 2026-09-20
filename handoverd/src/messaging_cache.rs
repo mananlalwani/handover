@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::state::StateStore;
 
 const CACHE_VERSION: u32 = 1;
+/// Upper bound for the on-disk cache. Restores above this are
+/// rejected rather than buffered.
+const MAX_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Opt-out for the on-disk messaging cache. When the environment
 /// variable `HANDOVER_MESSAGING_CACHE` is set to `0`, the daemon
@@ -40,12 +43,23 @@ fn cache_path() -> io::Result<PathBuf> {
 }
 
 pub(crate) fn restore(state: &mut StateStore) -> Result<(), Box<dyn std::error::Error>> {
+    if disabled() {
+        return Ok(());
+    }
     let path = cache_path()?;
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    // Never buffer an unbounded file: a corrupt or hostile cache
+    // cannot balloon the daemon at startup.
+    if !metadata.is_file() || metadata.len() > MAX_CACHE_BYTES {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "messaging cache is not usable").into(),
+        );
+    }
+    let bytes = fs::read(path)?;
     let cache: MessagingCache = serde_json::from_slice(&bytes)?;
     if cache.version != CACHE_VERSION {
         return Ok(());
@@ -76,6 +90,41 @@ pub(crate) fn restore(state: &mut StateStore) -> Result<(), Box<dyn std::error::
 }
 
 pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std::error::Error>> {
+    if disabled() {
+        return Ok(());
+    }
+    // Coalesce bursts: a 100-message chunk would otherwise snapshot,
+    // serialize, fsync, and rename the whole cache ~100 times while
+    // helper ingestion waits. At most one persist per interval; the
+    // remainder flushes on shutdown.
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    static DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    {
+        let mut last = LAST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.is_some_and(|at| at.elapsed() < PERSIST_INTERVAL) {
+            DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+        *last = Some(std::time::Instant::now());
+        DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    persist_now(state)
+}
+
+/// Flush a coalesced persist, e.g. on shutdown. No-op when clean.
+pub(crate) fn flush(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std::error::Error>> {
+    if disabled() {
+        return Ok(());
+    }
+    persist_now(state)
+}
+
+/// Minimum spacing between cache persists.
+const PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn persist_now(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std::error::Error>> {
     if disabled() {
         return Ok(());
     }

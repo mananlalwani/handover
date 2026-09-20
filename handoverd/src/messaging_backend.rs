@@ -78,7 +78,12 @@ type ConversationGenerations = HashMap<String, (u64, HashSet<String>)>;
 type WindowGenerations = HashMap<(String, String), (u64, HashSet<String>)>;
 /// One in-flight history page per conversation, serialized because
 /// helper pages carry no request identity.
-type FetchSerializers = HashMap<(String, String), std::sync::Arc<tokio::sync::Mutex<()>>>;
+type FetchSerializers = HashMap<(String, String), FetchSerializer>;
+
+struct FetchSerializer {
+    lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    waiters: usize,
+}
 /// Oldest normalized message of the in-progress page, per conversation.
 type PageFloors = HashMap<(String, String), (Option<i64>, String)>;
 
@@ -237,16 +242,16 @@ impl MessagingHub {
         limit: u32,
         cursor: Option<String>,
     ) -> Result<(), HelperCallError> {
-        let lock = {
-            self.inner
-                .fetch_locks
-                .lock()
-                .await
-                .entry(key.clone())
-                .or_default()
-                .clone()
+        let serializer = {
+            let mut locks = self.inner.fetch_locks.lock().await;
+            let serializer = locks.entry(key.clone()).or_insert_with(|| FetchSerializer {
+                lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                waiters: 0,
+            });
+            serializer.waiters += 1;
+            serializer.lock.clone()
         };
-        let _guard = lock.lock().await;
+        let _guard = serializer.lock().await;
         let fetch_id = self.inner.counter.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -266,9 +271,10 @@ impl MessagingHub {
             .await
         {
             self.take_fetch(key, fetch_id).await;
+            self.release_serializer(key).await;
             return Err(error);
         }
-        match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
+        let outcome = match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(()))) | Ok(Err(_)) => Err(HelperCallError::Unavailable),
             Err(_) => {
@@ -277,6 +283,21 @@ impl MessagingHub {
                 // belongs to a later fetch.
                 self.take_fetch(key, fetch_id).await;
                 Err(HelperCallError::Timeout)
+            }
+        };
+        self.release_serializer(key).await;
+        outcome
+    }
+
+    /// Decrement one serializer's waiter count, removing the entry
+    /// when the last waiter leaves so the map cannot grow with the
+    /// number of conversations ever fetched.
+    async fn release_serializer(&self, key: &(String, String)) {
+        let mut locks = self.inner.fetch_locks.lock().await;
+        if let Some(serializer) = locks.get_mut(key) {
+            serializer.waiters = serializer.waiters.saturating_sub(1);
+            if serializer.waiters == 0 {
+                locks.remove(key);
             }
         }
     }
@@ -500,6 +521,18 @@ impl MessagingHub {
             .await
             .remove(&(account.to_string(), conversation.to_string()))
             .map(|(_, id)| id)
+    }
+
+    /// Whether a history fetch is outstanding for one conversation.
+    /// Page-floor accumulation is scoped to real pages (an
+    /// outstanding fetch, an open generation, or a page boundary),
+    /// never to ordinary live traffic.
+    async fn has_fetch(&self, account: &str, conversation: &str) -> bool {
+        self.inner
+            .fetches
+            .lock()
+            .await
+            .contains_key(&(account.to_string(), conversation.to_string()))
     }
 
     async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
@@ -800,13 +833,23 @@ async fn ingest_event(
             }
             // The public cursor comes from the complete accumulated page:
             // only the closing chunk carries `cursor_next`, but older
-            // chunks hold older messages.
-            let floor_points: Vec<(Option<i64>, String)> = normalized
-                .iter()
-                .map(|message| (message.sent_at, message.id.local_id.clone()))
-                .collect();
-            hub.accumulate_page_floor(&account, &conversation, &floor_points)
-                .await;
+            // chunks hold older messages. Accumulation is scoped to
+            // real pages (open generation, outstanding fetch, or page
+            // boundary): ordinary live traffic must not move it.
+            let is_page = generation.is_some()
+                || cursor_next
+                    .as_deref()
+                    .is_some_and(|cursor| !cursor.is_empty())
+                || page_complete
+                || hub.has_fetch(&account, &conversation).await;
+            if is_page {
+                let floor_points: Vec<(Option<i64>, String)> = normalized
+                    .iter()
+                    .map(|message| (message.sent_at, message.id.local_id.clone()))
+                    .collect();
+                hub.accumulate_page_floor(&account, &conversation, &floor_points)
+                    .await;
+            }
             let public_cursor = match cursor_next.filter(|cursor| !cursor.is_empty()) {
                 Some(_) => hub.take_page_floor(&account, &conversation).await,
                 None => {

@@ -11,6 +11,7 @@ mod messaging_cache;
 mod presentation;
 mod remote_input;
 mod screensaver;
+mod send_staging;
 mod state;
 mod volume;
 
@@ -72,15 +73,23 @@ async fn main() {
             warn!(%error, "could not restore messaging cache");
         }
     }
+    // Staged send directories left by crashed runs are orphaned;
+    // sweep them at startup. Terminal transfers clean their own.
+    let staged = crate::send_staging::sweep_startup();
+    if staged > 0 {
+        info!(staged, "swept orphaned send-staging directories");
+    }
     // Imported attachments are transient transfer data. Sweep debris
     // from crashed runs at startup so the directory stays bounded.
-    // Retention: 30 days or 1 GiB, oldest first.
+    // Retention matches the admission limits: 30 days, 512 MiB,
+    // 1,024 files, oldest first.
     match handover_gmessages::staging::imported_staging_directory() {
         Ok(directory) => {
             match handover_gmessages::staging::sweep_directory(
                 &directory,
                 std::time::Duration::from_secs(30 * 24 * 60 * 60),
-                1024 * 1024 * 1024,
+                512 * 1024 * 1024,
+                1024,
             ) {
                 Ok(0) => {}
                 Ok(removed) => info!(removed, "swept imported attachments"),
@@ -88,6 +97,23 @@ async fn main() {
             }
         }
         Err(error) => warn!(%error, "imported staging directory unavailable"),
+    }
+    // Same for the daemon-owned staging root (outbound send copies
+    // and loopback staging): 7 days, 256 MiB.
+    match handover_gmessages::staging::default_staging_directory() {
+        Ok(directory) => {
+            match handover_gmessages::staging::sweep_directory(
+                &directory,
+                std::time::Duration::from_secs(7 * 24 * 60 * 60),
+                256 * 1024 * 1024,
+                4096,
+            ) {
+                Ok(0) => {}
+                Ok(removed) => info!(removed, "swept staged attachments"),
+                Err(error) => warn!(%error, "sweeping staged attachments failed"),
+            }
+        }
+        Err(error) => warn!(%error, "staging directory unavailable"),
     }
     let state = Arc::new(RwLock::new(initial_state));
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
@@ -169,6 +195,9 @@ async fn main() {
     // outlive the daemon. An unclean kill can still orphan the helper; the
     // next supervisor generation replaces it on restart.
     messaging_hub.shutdown().await;
+    if let Err(error) = messaging_cache::flush(&state) {
+        warn!(%error, "could not flush messaging cache");
+    }
     screensaver::update(false);
     tokio::time::sleep(Duration::from_millis(300)).await;
     info!("handoverd stopped");
@@ -213,27 +242,30 @@ fn apply_backend_event(
     events: &broadcast::Sender<StateEvent>,
     event: StateEvent,
 ) {
+    if let StateEvent::ShareResult(result) = &event {
+        // Terminal share state: drop any staged send directory.
+        send_staging::release(&result.transfer_id);
+    }
     if let StateEvent::Presentation(command) = &event {
-        presentation::execute(command);
+        local_cmd::submit(local_cmd::Effect::Presentation(command.clone()));
     }
     if let StateEvent::Volume(command) = &event {
-        volume::execute(command);
+        local_cmd::submit(local_cmd::Effect::Volume(command.clone()));
     }
     if let StateEvent::Clipboard(text) = &event {
         if let Err(error) = clipboard_history().record_phone_text(&text.text) {
             warn!(%error, "could not persist clipboard history");
         }
-        clipboard::apply(text);
+        local_cmd::submit(local_cmd::Effect::ClipboardText(text.clone()));
         if let Some(mirror) = mirror() {
             mirror.note_remote(&text.text, &text.html, &text.uri);
         }
     }
     if let StateEvent::ClipboardFile(file) = &event {
-        clipboard::apply_file(&file.path, &file.mime);
-        let _ = std::fs::remove_file(&file.path);
+        local_cmd::submit(local_cmd::Effect::ClipboardFile(file.clone()));
     }
     if let StateEvent::RemoteInput(command) = &event {
-        remote_input::execute(command);
+        local_cmd::submit(local_cmd::Effect::RemoteInput(command.clone()));
     }
     let call_started = match &event {
         StateEvent::Call(CallEvent::Updated(call))

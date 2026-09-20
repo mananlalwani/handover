@@ -17,6 +17,9 @@ use std::time::Duration;
 /// Upper bound for the spawn hello exchange. A helper that starts but
 /// never answers must fail fast instead of stalling supervision.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Upper bound for one stdin write. A helper that stops reading must
+/// be restarted, not waited on forever.
+pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -136,37 +139,81 @@ impl HelperProcess {
                 crate::contract::ContractError::OversizedLine(encoded.len() + 1),
             ));
         }
-        self.stdin
-            .write_all(encoded.as_bytes())
-            .await
-            .map_err(SpawnError::Io)?;
-        self.stdin.write_all(b"\n").await.map_err(SpawnError::Io)?;
-        self.stdin.flush().await.map_err(SpawnError::Io)?;
-        Ok(())
+        // A helper that stops reading stdin would otherwise fill its
+        // pipe and wedge every outbound command. Time the write out
+        // and kill the child so supervision restarts it.
+        let result = tokio::time::timeout(SEND_TIMEOUT, async {
+            self.stdin.write_all(encoded.as_bytes()).await?;
+            self.stdin.write_all(b"\n").await?;
+            self.stdin.flush().await
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(SpawnError::Io(error)),
+            Err(_) => {
+                let _ = self.child.kill().await;
+                Err(SpawnError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "helper stopped reading stdin",
+                )))
+            }
+        }
     }
 
     /// Read the next helper event. `Ok(None)` means clean EOF.
+    /// An overlong line never resumes mid-record: the reader drains
+    /// to the next newline (bounded) and reports the oversize, so a
+    /// corrupt stream restarts the helper instead of desyncing it.
     pub async fn next_event(&mut self) -> Result<Option<HelperEvent>, SpawnError> {
+        const MAX_DISCARD_BYTES: usize = 10 * 1024 * 1024;
         let mut line = Vec::new();
+        let mut discarding = false;
+        let mut discarded = 0;
         loop {
             let available = self.stdout.fill_buf().await.map_err(SpawnError::Io)?;
             if available.is_empty() {
-                if line.is_empty() {
-                    return Ok(None);
+                if discarding || line.is_empty() {
+                    return if discarding {
+                        Err(SpawnError::Handshake(
+                            crate::contract::ContractError::OversizedLine(line.len() + discarded),
+                        ))
+                    } else {
+                        Ok(None)
+                    };
                 }
                 break;
             }
+
             let newline = available.iter().position(|byte| *byte == b'\n');
             let consumed = newline.map_or(available.len(), |position| position + 1);
             let content_length = newline.unwrap_or(available.len());
-            if line.len() + content_length > MAX_HELPER_LINE_BYTES {
-                return Err(SpawnError::Handshake(
-                    crate::contract::ContractError::OversizedLine(line.len() + content_length),
-                ));
+            if discarding {
+                discarded += content_length;
+                if discarded > MAX_DISCARD_BYTES {
+                    return Err(SpawnError::Handshake(
+                        crate::contract::ContractError::OversizedLine(discarded),
+                    ));
+                }
+            } else if line.len() + content_length > MAX_HELPER_LINE_BYTES {
+                discarding = true;
+                discarded = line.len() + content_length;
+                line.clear();
+                if discarded > MAX_DISCARD_BYTES {
+                    return Err(SpawnError::Handshake(
+                        crate::contract::ContractError::OversizedLine(discarded),
+                    ));
+                }
+            } else {
+                line.extend_from_slice(&available[..content_length]);
             }
-            line.extend_from_slice(&available[..content_length]);
             self.stdout.consume(consumed);
             if newline.is_some() {
+                if discarding {
+                    return Err(SpawnError::Handshake(
+                        crate::contract::ContractError::OversizedLine(discarded),
+                    ));
+                }
                 break;
             }
         }

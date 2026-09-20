@@ -20,6 +20,10 @@ pub const MAX_STAGED_BYTES: u64 = 50 * 1024 * 1024;
 const COPY_BUFFER: usize = 32 * 1024;
 const MAX_IMPORTED_FILES: usize = 1024;
 const MAX_IMPORTED_BYTES: u64 = 512 * 1024 * 1024;
+/// Imported attachment retention. Startup and pre-rejection sweeps
+/// enforce exactly these bounds, so the admission limits above can
+/// never wedge permanently.
+const IMPORTED_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(Debug)]
 pub enum StageError {
@@ -287,7 +291,20 @@ pub fn import_staged_path(
     }
     let (file_count, byte_count) = imported_usage(import_directory)?;
     if file_count >= MAX_IMPORTED_FILES || byte_count.saturating_add(total) > MAX_IMPORTED_BYTES {
-        return Err(StageError::TooLarge(byte_count.saturating_add(total)));
+        // Sweep to the admission limits before rejecting: retained
+        // files younger than the retention age must not permanently
+        // block new imports.
+        let _ = sweep_directory(
+            import_directory,
+            IMPORTED_MAX_AGE,
+            MAX_IMPORTED_BYTES,
+            MAX_IMPORTED_FILES,
+        );
+        let (file_count, byte_count) = imported_usage(import_directory)?;
+        if file_count >= MAX_IMPORTED_FILES || byte_count.saturating_add(total) > MAX_IMPORTED_BYTES
+        {
+            return Err(StageError::TooLarge(byte_count.saturating_add(total)));
+        }
     }
     output
         .persist(&target)
@@ -323,14 +340,54 @@ fn imported_usage(directory: &Path) -> Result<(usize, u64), StageError> {
     Ok((count, bytes))
 }
 
+/// Copy an accepted outbound file into daemon-owned staging and
+/// return the private copy. The helper opens the copy, never the
+/// caller-supplied path, closing validation-to-open replacement.
+/// Basenames are sanitized with the same rules as staged uploads.
+pub fn stage_send_copy(source: &str) -> Result<PathBuf, StageError> {
+    let source = Path::new(source);
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(StageError::UnsafeName)?;
+    let clean = handover_core::sanitize_file_name(name).ok_or(StageError::UnsafeName)?;
+    let metadata = std::fs::metadata(source).map_err(StageError::Io)?;
+    if !metadata.is_file() || metadata.len() > MAX_STAGED_BYTES {
+        return Err(StageError::NotAFile);
+    }
+    let root = default_staging_directory()?;
+    let mut random = [0u8; 8];
+    read_random(&mut random)?;
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let directory = root.join(format!("send-{suffix}"));
+    std::fs::create_dir_all(&directory).map_err(StageError::Io)?;
+    let staged = directory.join(clean);
+    std::fs::copy(source, &staged).map_err(StageError::Io)?;
+    let copied = std::fs::metadata(&staged).map_err(StageError::Io)?;
+    if !copied.is_file() || copied.len() != metadata.len() {
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err(StageError::NotAFile);
+    }
+    Ok(staged)
+}
+
+fn read_random(buffer: &mut [u8]) -> Result<(), StageError> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(buffer))
+        .map_err(StageError::Io)
+}
+
 /// Delete retained files older than `max_age`, then enforce `max_bytes`
-/// oldest-first. Only regular files directly inside `directory` are
-/// ever deleted. Returns the number of files removed. Missing
-/// directories sweep to zero without error.
+/// and `max_files` oldest-first. Only regular files at most one level
+/// deep are ever deleted; empty subdirectories are removed. Returns
+/// the number of files removed. Missing directories sweep to zero
+/// without error.
 pub fn sweep_directory(
     directory: &Path,
     max_age: std::time::Duration,
     max_bytes: u64,
+    max_files: usize,
 ) -> Result<usize, StageError> {
     let mut removed = 0;
     let entries = match std::fs::read_dir(directory) {
@@ -339,38 +396,58 @@ pub fn sweep_directory(
         Err(error) => return Err(StageError::Io(error)),
     };
     let now = std::time::SystemTime::now();
-    let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
-    let mut total: u64 = 0;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let mut subdirs: Vec<PathBuf> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(StageError::Io)?;
         let file_type = entry.file_type().map_err(StageError::Io)?;
-        if !file_type.is_file() {
-            continue;
+        if file_type.is_dir() {
+            // One level of per-send staging subdirectories.
+            subdirs.push(entry.path());
+        } else if file_type.is_file() {
+            candidates.push(entry.path());
         }
-        let modified = entry
-            .metadata()
-            .map_err(StageError::Io)?
-            .modified()
+    }
+    for subdir in &subdirs {
+        if let Ok(children) = std::fs::read_dir(subdir) {
+            for child in children.flatten() {
+                if child.file_type().is_ok_and(|kind| kind.is_file()) {
+                    candidates.push(child.path());
+                }
+            }
+        }
+    }
+    let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total: u64 = 0;
+    for path in candidates {
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
             .map_err(StageError::Io)?;
         if now.duration_since(modified).is_ok_and(|age| age > max_age) {
-            if std::fs::remove_file(entry.path()).is_ok() {
+            if std::fs::remove_file(&path).is_ok() {
                 removed += 1;
             }
             continue;
         }
-        let len = entry.metadata().map_err(StageError::Io)?.len();
+        let len = std::fs::metadata(&path).map_err(StageError::Io)?.len();
         total = total.saturating_add(len);
-        kept.push((modified, len, entry.path()));
+        kept.push((modified, len, path));
     }
     kept.sort_by_key(|entry| entry.0);
+    let mut count = kept.len();
     for (_, len, path) in kept {
-        if total <= max_bytes {
+        if total <= max_bytes && count <= max_files {
             break;
         }
         if std::fs::remove_file(&path).is_ok() {
             removed += 1;
             total = total.saturating_sub(len);
+            count = count.saturating_sub(1);
         }
+    }
+    for subdir in subdirs {
+        // Succeeds only when every child is gone.
+        let _ = std::fs::remove_dir(subdir);
     }
     Ok(removed)
 }
@@ -433,8 +510,13 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&fresh_path, root.path().join("link.bin")).expect("symlink");
 
-        let removed = sweep_directory(root.path(), std::time::Duration::from_secs(60), u64::MAX)
-            .expect("sweep");
+        let removed = sweep_directory(
+            root.path(),
+            std::time::Duration::from_secs(60),
+            u64::MAX,
+            usize::MAX,
+        )
+        .expect("sweep");
         assert_eq!(removed, 1);
         assert!(!old_path.exists());
         assert!(fresh_path.exists());
@@ -451,8 +533,13 @@ mod tests {
                 std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
             );
         }
-        let removed =
-            sweep_directory(root.path(), std::time::Duration::from_secs(3600), 20).expect("sweep");
+        let removed = sweep_directory(
+            root.path(),
+            std::time::Duration::from_secs(3600),
+            20,
+            usize::MAX,
+        )
+        .expect("sweep");
         assert_eq!(removed, 1);
         assert!(!root.path().join("a.bin").exists());
         assert!(root.path().join("b.bin").exists());
@@ -465,9 +552,32 @@ mod tests {
             Path::new("/tmp/handover-definitely-missing-sweep-dir"),
             std::time::Duration::from_secs(1),
             1,
+            1,
         )
         .expect("sweep");
         assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn sweep_enforces_file_count_oldest_first() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for (name, age_secs) in [("a.bin", 300), ("b.bin", 200), ("c.bin", 100)] {
+            let path = root.path().join(name);
+            std::fs::write(&path, b"x").expect("write");
+            filetime_set(
+                &path,
+                std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
+            );
+        }
+        let removed = sweep_directory(
+            root.path(),
+            std::time::Duration::from_secs(3600),
+            u64::MAX,
+            2,
+        )
+        .expect("sweep");
+        assert_eq!(removed, 1);
+        assert!(!root.path().join("a.bin").exists());
     }
 
     fn filetime_set(path: &Path, modified: std::time::SystemTime) {

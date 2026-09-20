@@ -7,13 +7,113 @@
 //! wait carries a timeout that kills the child, and every captured
 //! output carries a byte cap.
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use handover_core::{
+    ClipboardFile, ClipboardText, PresentationCommand, RemoteInputAction, RemoteInputCommand,
+    VolumeCommand,
+};
 
 /// Upper bound for one desktop tool invocation. These tools answer in
 /// milliseconds when healthy; anything slower is wedged.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A desktop side effect queued off the event path. Backend callbacks
+/// must never wait on subprocesses: even bounded waits stall event
+/// processing when a helper misbehaves, so effects run here instead.
+pub(crate) enum Effect {
+    Presentation(PresentationCommand),
+    Volume(VolumeCommand),
+    RemoteInput(RemoteInputCommand),
+    ClipboardText(ClipboardText),
+    ClipboardFile(ClipboardFile),
+}
+
+/// Maximum queued effects. Overflow drops the newest with a warning;
+/// pointer-move effects coalesce into the queued one instead.
+const MAX_EFFECTS: usize = 64;
+
+struct EffectQueue {
+    queue: Mutex<VecDeque<Effect>>,
+    ready: Condvar,
+}
+
+fn effects() -> &'static EffectQueue {
+    static QUEUE: OnceLock<EffectQueue> = OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let queue = EffectQueue {
+            queue: Mutex::new(VecDeque::new()),
+            ready: Condvar::new(),
+        };
+        std::thread::Builder::new()
+            .name("handover-effects".into())
+            .spawn(worker)
+            .expect("effect worker spawns");
+        queue
+    })
+}
+
+/// Queue a desktop effect without waiting. Never blocks the caller.
+pub(crate) fn submit(effect: Effect) {
+    let effects = effects();
+    let mut queue = effects
+        .queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Effect::RemoteInput(command) = &effect {
+        if command.action == RemoteInputAction::Move
+            && let Some(slot) = queue.iter_mut().find(|queued| {
+                matches!(queued, Effect::RemoteInput(previous) if previous.action == RemoteInputAction::Move)
+            })
+        {
+            // Coalesce motion: only the latest pointer position matters.
+            *slot = effect;
+            effects.ready.notify_one();
+            return;
+        }
+    }
+    if queue.len() >= MAX_EFFECTS {
+        tracing::warn!("desktop effect queue full; dropping newest");
+        return;
+    }
+    queue.push_back(effect);
+    effects.ready.notify_one();
+}
+
+fn worker() {
+    let effects = effects();
+    loop {
+        let effect = {
+            let mut queue = effects
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            loop {
+                if let Some(effect) = queue.pop_front() {
+                    break effect;
+                }
+                queue = effects
+                    .ready
+                    .wait(queue)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        };
+        match effect {
+            Effect::Presentation(command) => crate::presentation::execute(&command),
+            Effect::Volume(command) => crate::volume::execute(&command),
+            Effect::RemoteInput(command) => crate::remote_input::execute(&command),
+            Effect::ClipboardText(text) => crate::clipboard::apply(&text),
+            Effect::ClipboardFile(file) => {
+                crate::clipboard::apply_file(&file.path, &file.mime);
+                let _ = std::fs::remove_file(&file.path);
+            }
+        }
+    }
+}
 
 /// Spawned-command wait with a kill on expiry.
 pub(crate) fn wait_timeout(mut child: Child) -> io::Result<ExitStatus> {

@@ -129,7 +129,7 @@ fixture drifts; the Rust test fails when the copy does.
   sends `sync` per known account; unknown accounts announced by the
   helper get a catch-up `sync` on arrival.
 * At most 64 in-flight requests/fetches; command waits time out after
-  30s. Message windows hold 300 per conversation; history pages cap at
+  4 minutes. Message windows hold 300 per conversation; history pages cap at
   100; staged attachments cap at 50 MiB with 32 KiB streaming and
   sanitized basenames (same rules as native share names).
 * Helper death marks its accounts disconnected and fails pending

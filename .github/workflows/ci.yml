@@ -33,7 +33,21 @@ jobs:
           filters: |
             android:
               - 'android/**'
+              - 'crates/handover-native/**'
+              - 'handoverd/src/ipc_server.rs'
               - '.github/workflows/ci.yml'
+
+  contract-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: mananlalwani/handover-gmessages
+          path: sibling
+      # The vendored copy must match the adapter's checked-in
+      # fixture. (Works once both repositories are public.)
+      - run: diff crates/handover-gmessages/tests/fixtures/helper-events.jsonl sibling/adapter/testdata/helper-events.jsonl
 
   rust:
     runs-on: ubuntu-latest

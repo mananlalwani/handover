@@ -17,6 +17,58 @@ use tokio::process::Command;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NAME_LEN: usize = 64;
+/// Upper bound for captured stdout/stderr of one allowlisted command.
+const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+/// Run one allowlisted command with a wall-time timeout, a kill on
+/// expiry, and a cap on captured output. Output content never leaves
+/// this function (only the exit status is reported), so overlong
+/// streams are truncated, not failed.
+async fn run_capped(program: &str, args: &[String]) -> Result<std::process::Output, RunError> {
+    use tokio::io::AsyncReadExt;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| RunError::Spawn)?;
+    let stdout = child.stdout.take().ok_or(RunError::Spawn)?;
+    let stderr = child.stderr.take().ok_or(RunError::Spawn)?;
+    let (out, err, status) = tokio::time::timeout(RUN_TIMEOUT, async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut out_take = stdout.take(MAX_OUTPUT_BYTES + 1);
+        let mut err_take = stderr.take(MAX_OUTPUT_BYTES + 1);
+        let (out_read, err_read, status) = tokio::join!(
+            out_take.read_to_end(&mut out),
+            err_take.read_to_end(&mut err),
+            child.wait()
+        );
+        out_read.map_err(|_| RunError::Spawn)?;
+        err_read.map_err(|_| RunError::Spawn)?;
+        let status = status.map_err(|_| RunError::Spawn)?;
+        Ok::<_, RunError>((out, err, status))
+    })
+    .await
+    .map_err(|_| RunError::Timeout)??;
+    let mut out = out;
+    let mut err = err;
+    out.truncate(MAX_OUTPUT_BYTES as usize);
+    err.truncate(MAX_OUTPUT_BYTES as usize);
+    Ok(std::process::Output {
+        status,
+        stdout: out,
+        stderr: err,
+    })
+}
+
+#[derive(Debug)]
+enum RunError {
+    Spawn,
+    Timeout,
+}
 
 pub(crate) fn config_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -153,22 +205,23 @@ fn run_with(
             };
         };
         let (program, args) = argv.split_first().expect("validated non-empty");
-        let output =
-            tokio::time::timeout(RUN_TIMEOUT, Command::new(program).args(args).output()).await;
+        // Capped stdout: a chatty allowlisted program must not balloon
+        // the daemon. The timeout still bounds wall time.
+        let output = run_capped(program, args).await;
         match output {
-            Err(_) => CustomCommandResult {
+            Err(RunError::Timeout) => CustomCommandResult {
                 name: name.to_owned(),
                 accepted: false,
                 exit_code: None,
                 failure: Some(CustomCommandFailure::TimedOut),
             },
-            Ok(Err(_)) => CustomCommandResult {
+            Err(RunError::Spawn) => CustomCommandResult {
                 name: name.to_owned(),
                 accepted: false,
                 exit_code: None,
                 failure: Some(CustomCommandFailure::SpawnFailed),
             },
-            Ok(Ok(output)) => CustomCommandResult {
+            Ok(output) => CustomCommandResult {
                 name: name.to_owned(),
                 accepted: true,
                 exit_code: output.status.code(),

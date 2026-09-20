@@ -446,7 +446,13 @@ class NativeTransport(private val context: Context) {
     fun requestContactsSync(): Boolean {
         if (serverFingerprint == null || context.checkSelfPermission("android.permission.READ_CONTACTS") !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) return false
+        // Explicit bounded snapshot contract: the whole list must fit
+        // one 64 KiB frame. Names, numbers, and emails stop accumulating
+        // once the serialized list nears the budget (photos already
+        // stop at 48 KiB), so a large address book truncates instead of
+        // throwing inside the writer and killing the sync.
         val contacts = org.json.JSONArray()
+        var truncated = false
         val projection = arrayOf(
             ContactsContract.Contacts._ID,
             ContactsContract.Contacts.DISPLAY_NAME,
@@ -466,16 +472,22 @@ class NativeTransport(private val context: Context) {
             val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
             val lookupIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY)
             while (cursor.moveToNext()) {
+                if (contacts.toString().length >= CONTACTS_BUDGET_BYTES) {
+                    truncated = true
+                    break
+                }
                 val id = cursor.getString(idIndex)
                 val item = JSONObject().put("local_id", id)
-                    .put("display_name", cursor.getString(nameIndex) ?: "")
+                    .put("display_name", (cursor.getString(nameIndex) ?: "").take(MAX_CONTACT_FIELD_CHARS))
                 val phones = org.json.JSONArray()
                 context.contentResolver.query(
                     ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                     arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
                     "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID}=?", arrayOf(id), null,
                 )?.use { phoneCursor ->
-                    while (phoneCursor.moveToNext()) phones.put(phoneCursor.getString(0))
+                    while (phoneCursor.moveToNext() && phones.length() < MAX_CONTACT_VALUES) {
+                        phoneCursor.getString(0)?.let { phones.put(it.take(MAX_CONTACT_FIELD_CHARS)) }
+                    }
                 }
                 item.put("phones", phones).put("emails", org.json.JSONArray())
                 val emails = org.json.JSONArray()
@@ -484,8 +496,8 @@ class NativeTransport(private val context: Context) {
                     arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
                     "${ContactsContract.CommonDataKinds.Email.CONTACT_ID}=?", arrayOf(id), null,
                 )?.use { emailCursor ->
-                    while (emailCursor.moveToNext()) {
-                        emailCursor.getString(0)?.let { emails.put(it) }
+                    while (emailCursor.moveToNext() && emails.length() < MAX_CONTACT_VALUES) {
+                        emailCursor.getString(0)?.let { emails.put(it.take(MAX_CONTACT_FIELD_CHARS)) }
                     }
                 }
                 item.put("emails", emails)
@@ -506,6 +518,7 @@ class NativeTransport(private val context: Context) {
                 contacts.put(item)
             }
         }
+        if (truncated) android.util.Log.i("Handover", "contacts snapshot truncated to frame budget")
         send(JSONObject().put("type", "contacts_sync").put("protocol", 1).put("contacts", contacts))
         return true
     }
@@ -1471,6 +1484,12 @@ class NativeTransport(private val context: Context) {
         private const val PENDING_CODE_KEY = "pending_pair_code"
         private const val MANUAL_ENDPOINT_KEY = "manual_endpoint"
         private const val MAX_FRAME = 64 * 1024
+        // Bounded snapshot contract: the whole contacts list must fit
+        // one frame with envelope headroom. Per-field caps keep one
+        // pathological record from eating the budget.
+        private const val CONTACTS_BUDGET_BYTES = 56 * 1024
+        private const val MAX_CONTACT_VALUES = 16
+        private const val MAX_CONTACT_FIELD_CHARS = 256
         private const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"
         private const val OVERLAY_ASSIST_KEY = "clipboard_overlay_assist"
         private const val DESKTOP_AWAKE_KEY = "desktop_awake_requested"
