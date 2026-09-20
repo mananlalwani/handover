@@ -99,7 +99,7 @@ cat bundle.json | handoverctl messages login ACCOUNT
 Reads a credential bundle from PATH or stdin and passes it to the
 helper. Bundles never travel through argv, shell history, logs, or
 crash reports. There is no password, token, or bundle argument. The
-bundle is bounded at 256 KiB. Accepted means the helper took the
+bundle is bounded at 192 KiB raw (256 KiB encoded). Accepted means the helper took the
 bundle. Confirm pairing on the phone. See
 `docs/gmessages-sidecar.md` for the adapter runbook and storage rules.
 

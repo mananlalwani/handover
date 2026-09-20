@@ -46,12 +46,14 @@ fn run_pactl(action: VolumeAction) -> bool {
 }
 
 fn pactl_volume_percent() -> Option<u8> {
-    let output = std::process::Command::new("pactl")
-        .args(["get-sink-volume", "@DEFAULT_SINK@"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let output = crate::local_cmd::output_bounded(
+        std::process::Command::new("pactl")
+            .args(["get-sink-volume", "@DEFAULT_SINK@"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null()),
+        64 * 1024,
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -62,10 +64,11 @@ fn pactl_volume_percent() -> Option<u8> {
 }
 
 fn succeeded(process: &mut std::process::Command) -> bool {
-    process
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    crate::local_cmd::status_timeout(
+        process
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .is_ok_and(|status| status.success())
 }

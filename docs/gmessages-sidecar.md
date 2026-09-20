@@ -100,7 +100,8 @@ fixture drifts; the Rust test fails when the copy does.
   or `--from-file PATH` and base64-encodes it locally. Bundles never appear in
   argv, shell history, logs, or crash reports.
 * The bundle travels CLI → daemon → helper over local sockets/pipes only
-  (bounded: 64 KiB IPC line, 256 KiB helper cap). The daemon never
+  (bounded: 64 KiB IPC line, 256 KiB encoded helper cap; the CLI
+  accepts 192 KiB raw). The daemon never
   persists it. The external adapter stores one 0600 session file per account below
   `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages` (0700 directory,
   temp-file + atomic rename) and confirms with account/pairing events

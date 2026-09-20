@@ -67,7 +67,7 @@ pub(crate) struct MessagingHub {
     inner: Arc<HubInner>,
 }
 
-type FetchWaiters = HashMap<(String, String), Vec<oneshot::Sender<Result<(), ()>>>>;
+type FetchWaiters = HashMap<(String, String), (u64, oneshot::Sender<Result<(), ()>>)>;
 
 /// Open chunk generations: helper syncs split large lists and windows
 /// into size-bounded chunks. Chunks that share a generation accumulate
@@ -76,17 +76,37 @@ type FetchWaiters = HashMap<(String, String), Vec<oneshot::Sender<Result<(), ()>
 /// Ungrouped (single-chunk and live) events bypass these buffers.
 type ConversationGenerations = HashMap<String, (u64, HashSet<String>)>;
 type WindowGenerations = HashMap<(String, String), (u64, HashSet<String>)>;
+/// One in-flight history page per conversation, serialized because
+/// helper pages carry no request identity.
+type FetchSerializers = HashMap<(String, String), std::sync::Arc<tokio::sync::Mutex<()>>>;
+/// Oldest normalized message of the in-progress page, per conversation.
+type PageFloors = HashMap<(String, String), (Option<i64>, String)>;
 
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
     fetches: Mutex<FetchWaiters>,
+    /// Per-conversation fetch serialization: helper pages carry no
+    /// request identity, so concurrent fetches for one conversation
+    /// with different cursors cannot be told apart. Waiters queue
+    /// here instead of sharing one flight.
+    fetch_locks: Mutex<FetchSerializers>,
+    /// Waiters queued on fetch locks. Bounds total history waiters;
+    /// `fetches` alone cannot, since one key holds one flight.
+    fetch_waiters: std::sync::atomic::AtomicUsize,
     counter: AtomicU64,
     shutdown: AtomicBool,
     /// Account id -> (generation, announced conversation ids).
     conversation_syncs: Mutex<ConversationGenerations>,
     /// (Account id, conversation id) -> (generation, announced message ids).
     window_syncs: Mutex<WindowGenerations>,
+    /// Oldest normalized message seen since the last emitted page
+    /// cursor, per conversation. History pages arrive in chunks but
+    /// only the closing chunk carries `cursor_next`; the public
+    /// cursor must be derived from the complete page, not that chunk
+    /// alone. Interleaved live messages also fold in; the floor is a
+    /// minimum, so at worst a page overlaps, never gaps.
+    page_floors: Mutex<PageFloors>,
 }
 
 /// Upper bound for one generation's keep-set. A malicious or broken
@@ -104,6 +124,9 @@ impl MessagingHub {
                 fetches: Mutex::new(HashMap::new()),
                 counter: AtomicU64::new(1),
                 shutdown: AtomicBool::new(false),
+                fetch_locks: Mutex::new(HashMap::new()),
+                fetch_waiters: std::sync::atomic::AtomicUsize::new(0),
+                page_floors: Mutex::new(HashMap::new()),
                 conversation_syncs: Mutex::new(HashMap::new()),
                 window_syncs: Mutex::new(HashMap::new()),
             }),
@@ -184,6 +207,9 @@ impl MessagingHub {
     }
 
     /// Page history through the helper and wait for the matching window.
+    /// Fetches for one conversation run one at a time: helper pages
+    /// carry no request identity, so concurrent cursors would all be
+    /// completed by whichever page arrives first.
     pub(crate) async fn fetch_through_helper(
         &self,
         account: &str,
@@ -192,13 +218,43 @@ impl MessagingHub {
         cursor: Option<String>,
     ) -> Result<(), HelperCallError> {
         let key = (account.to_string(), conversation.to_string());
+        if self.inner.fetch_waiters.fetch_add(1, Ordering::Relaxed) >= MAX_IN_FLIGHT {
+            self.inner.fetch_waiters.fetch_sub(1, Ordering::Relaxed);
+            return Err(HelperCallError::Busy);
+        }
+        let result = self
+            .fetch_serialized(&key, account, conversation, limit, cursor)
+            .await;
+        self.inner.fetch_waiters.fetch_sub(1, Ordering::Relaxed);
+        result
+    }
+
+    async fn fetch_serialized(
+        &self,
+        key: &(String, String),
+        account: &str,
+        conversation: &str,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Result<(), HelperCallError> {
+        let lock = {
+            self.inner
+                .fetch_locks
+                .lock()
+                .await
+                .entry(key.clone())
+                .or_default()
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        let fetch_id = self.inner.counter.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
-            let mut fetches = self.inner.fetches.lock().await;
-            if fetches.len() >= MAX_IN_FLIGHT {
-                return Err(HelperCallError::Busy);
-            }
-            fetches.entry(key.clone()).or_default().push(tx);
+            self.inner
+                .fetches
+                .lock()
+                .await
+                .insert(key.clone(), (fetch_id, tx));
         }
         if let Err(error) = self
             .submit(HelperCommand::FetchHistory {
@@ -209,13 +265,27 @@ impl MessagingHub {
             })
             .await
         {
-            self.inner.fetches.lock().await.remove(&key);
+            self.take_fetch(key, fetch_id).await;
             return Err(error);
         }
         match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(()))) | Ok(Err(_)) => Err(HelperCallError::Unavailable),
-            Err(_) => Err(HelperCallError::Timeout),
+            Err(_) => {
+                // Drop only our own waiter. Without this, the next
+                // page_complete would consume a completion that
+                // belongs to a later fetch.
+                self.take_fetch(key, fetch_id).await;
+                Err(HelperCallError::Timeout)
+            }
+        }
+    }
+
+    /// Remove one fetch waiter, but only if it is still ours.
+    async fn take_fetch(&self, key: &(String, String), fetch_id: u64) {
+        let mut fetches = self.inner.fetches.lock().await;
+        if fetches.get(key).is_some_and(|(id, _)| *id == fetch_id) {
+            fetches.remove(key);
         }
     }
 
@@ -226,23 +296,20 @@ impl MessagingHub {
     }
 
     async fn complete_fetch(&self, account: &str, conversation: &str) {
-        let waiters = self
+        let waiter = self
             .inner
             .fetches
             .lock()
             .await
-            .remove(&(account.to_string(), conversation.to_string()))
-            .unwrap_or_default();
-        for waiter in waiters {
+            .remove(&(account.to_string(), conversation.to_string()));
+        if let Some((_, waiter)) = waiter {
             let _ = waiter.send(Ok(()));
         }
     }
 
     async fn fail_fetches(&self) {
-        for (_, waiters) in self.inner.fetches.lock().await.drain() {
-            for waiter in waiters {
-                let _ = waiter.send(Err(()));
-            }
+        for (_, (_, waiter)) in self.inner.fetches.lock().await.drain() {
+            let _ = waiter.send(Err(()));
         }
     }
 
@@ -250,16 +317,15 @@ impl MessagingHub {
         for (_, sender) in self.inner.pending.lock().await.drain() {
             let _ = sender.send(Err("helper disconnected".into()));
         }
-        for (_, waiters) in self.inner.fetches.lock().await.drain() {
-            for waiter in waiters {
-                let _ = waiter.send(Err(()));
-            }
+        for (_, (_, waiter)) in self.inner.fetches.lock().await.drain() {
+            let _ = waiter.send(Err(()));
         }
         // A dead helper never closes its open generations. Drop them so
         // the next helper generation starts from clean buffers instead
         // of reconciling against a stale partial set.
         self.inner.conversation_syncs.lock().await.clear();
         self.inner.window_syncs.lock().await.clear();
+        self.inner.page_floors.lock().await.clear();
     }
 
     /// Accumulate one conversation chunk into its generation buffer.
@@ -398,6 +464,42 @@ impl MessagingHub {
         if let Some((_, keep)) = syncs.get_mut(&key) {
             keep.insert(id.to_string());
         }
+    }
+
+    /// Track the oldest normalized message of the in-progress page.
+    async fn accumulate_page_floor(
+        &self,
+        account: &str,
+        conversation: &str,
+        messages: &[(Option<i64>, String)],
+    ) {
+        let key = (account.to_string(), conversation.to_string());
+        let mut floors = self.inner.page_floors.lock().await;
+        for (sent_at, id) in messages {
+            let candidate = (*sent_at, id.clone());
+            match floors.get_mut(&key) {
+                Some(floor) => {
+                    if candidate < *floor {
+                        *floor = candidate;
+                    }
+                }
+                None => {
+                    floors.insert(key.clone(), candidate);
+                }
+            }
+        }
+    }
+
+    /// Take the page's oldest message id and reset the floor. Called
+    /// when the closing chunk's cursor arrives, or when a page ends
+    /// without one.
+    async fn take_page_floor(&self, account: &str, conversation: &str) -> Option<String> {
+        self.inner
+            .page_floors
+            .lock()
+            .await
+            .remove(&(account.to_string(), conversation.to_string()))
+            .map(|(_, id)| id)
     }
 
     async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
@@ -677,32 +779,6 @@ async fn ingest_event(
             // Helper cursors contain backend-private relay details. Public
             // paging uses the oldest normalized message id; the helper can
             // recover its private timestamp from its own cache.
-            let public_cursor = cursor_next
-                .filter(|cursor| !cursor.is_empty())
-                .and_then(|_| {
-                    messages
-                        .iter()
-                        .min_by_key(|message| (message.sent_at, &message.local_id))
-                        .map(|message| message.local_id.clone())
-                });
-            let conversation_record = {
-                state
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .messaging()
-                    .conversation(&conversation_id)
-                    .cloned()
-            };
-            if let Some(mut record) = conversation_record {
-                record.cursor = public_cursor;
-                apply_backend_event(
-                    state,
-                    events,
-                    StateEvent::Messaging(MessagingEvent::Conversation(
-                        ConversationEvent::Updated(record),
-                    )),
-                );
-            }
             let mut normalized = Vec::with_capacity(messages.len());
             for wire in messages {
                 let wire = scrub_staged_paths(wire);
@@ -721,6 +797,42 @@ async fn ingest_event(
                     }
                     Err(error) => warn!(%error, "dropping invalid message record"),
                 }
+            }
+            // The public cursor comes from the complete accumulated page:
+            // only the closing chunk carries `cursor_next`, but older
+            // chunks hold older messages.
+            let floor_points: Vec<(Option<i64>, String)> = normalized
+                .iter()
+                .map(|message| (message.sent_at, message.id.local_id.clone()))
+                .collect();
+            hub.accumulate_page_floor(&account, &conversation, &floor_points)
+                .await;
+            let public_cursor = match cursor_next.filter(|cursor| !cursor.is_empty()) {
+                Some(_) => hub.take_page_floor(&account, &conversation).await,
+                None => {
+                    if page_complete {
+                        hub.take_page_floor(&account, &conversation).await;
+                    }
+                    None
+                }
+            };
+            let conversation_record = {
+                state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .conversation(&conversation_id)
+                    .cloned()
+            };
+            if let Some(mut record) = conversation_record {
+                record.cursor = public_cursor;
+                apply_backend_event(
+                    state,
+                    events,
+                    StateEvent::Messaging(MessagingEvent::Conversation(
+                        ConversationEvent::Updated(record),
+                    )),
+                );
             }
             // Windows reconcile removals only against a complete set, for
             // the same reason as conversation lists: reconciling an
@@ -1311,6 +1423,84 @@ mod tests {
         )
         .await;
         assert_eq!(window_ids(&state, &conversation), vec!["m3", "m4"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_completion_reaches_only_its_waiter() {
+        let hub = MessagingHub::new();
+        let key = ("a".to_string(), "c".to_string());
+        let (tx, rx) = oneshot::channel();
+        hub.inner.fetches.lock().await.insert(key.clone(), (7, tx));
+        // A stale timeout must not consume a newer waiter's completion.
+        hub.take_fetch(&key, 6).await;
+        assert!(hub.inner.fetches.lock().await.contains_key(&key));
+        hub.complete_fetch("a", "c").await;
+        assert!(rx.await.expect("waiter completes").is_ok());
+        assert!(!hub.inner.fetches.lock().await.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn page_cursor_comes_from_the_whole_page() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        let conversation =
+            ConversationId::new(MessagingAccountId::new("personal"), "thread".to_string());
+        let rate = |id: &str, sent_at: i64| WireMessage {
+            local_id: id.into(),
+            sender: "other".into(),
+            transport: Some(WireTransport::Rcs),
+            sent_at: Some(sent_at),
+            text: Some("message".into()),
+            attachments: Vec::new(),
+            reply_to: None,
+            reactions: Vec::new(),
+            deleted: false,
+        };
+        for event in [
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+            HelperEvent::Conversations {
+                account: "personal".into(),
+                conversations: vec![wire_conversation("thread")],
+                full: true,
+                generation: None,
+            },
+            // Newer chunk first: the cursor must still come from the
+            // older chunk that arrives last.
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![rate("m5", 5)],
+                cursor_next: None,
+                page_complete: false,
+                full: false,
+                generation: None,
+            },
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![rate("m3", 3)],
+                cursor_next: Some("relay:9".into()),
+                page_complete: true,
+                full: false,
+                generation: None,
+            },
+        ] {
+            ingest_event(&state, &events, &hub, &mut seen, event).await;
+        }
+        let cursor = state
+            .read()
+            .unwrap()
+            .messaging()
+            .conversation(&conversation)
+            .and_then(|conversation| conversation.cursor.clone());
+        assert_eq!(cursor.as_deref(), Some("m3"));
     }
 
     #[tokio::test]

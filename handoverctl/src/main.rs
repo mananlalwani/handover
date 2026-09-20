@@ -30,7 +30,7 @@ enum CliError {
     MessagingSelection(String),
     #[error("cannot convert local path to a file URL")]
     InvalidFilePath,
-    #[error("credential bundle is empty or too large (max 256 KiB)")]
+    #[error("credential bundle is empty or too large (max 192 KiB raw)")]
     InvalidBundle,
 }
 
@@ -606,7 +606,7 @@ async fn messages(command: MessagesCommand) -> Result<(), CliError> {
         }
         MessagesCommand::Login { account, from_file } => {
             let bundle = read_bundle(from_file).await?;
-            if bundle.is_empty() || bundle.len() > 256 * 1024 {
+            if bundle.is_empty() || bundle.len() as u64 > MAX_RAW_BUNDLE_BYTES {
                 return Err(CliError::InvalidBundle);
             }
             client
@@ -633,16 +633,34 @@ async fn messages(command: MessagesCommand) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Maximum raw bundle bytes the CLI reads. Bundles are base64-encoded
+/// before crossing IPC, and the daemon caps the encoded form at
+/// 256 KiB; 192 KiB raw encodes to exactly that cap. Reads stop one
+/// byte past the limit so oversize input is rejected, not buffered.
+const MAX_RAW_BUNDLE_BYTES: u64 = 192 * 1024;
+
 /// Read a credential bundle from a file or stdin. Bundles never travel
 /// through argv and are never printed.
 async fn read_bundle(from_file: Option<PathBuf>) -> Result<Vec<u8>, CliError> {
+    use tokio::io::AsyncReadExt;
     match from_file {
-        Some(path) => tokio::fs::read(path).await.map_err(CliError::Io),
+        Some(path) => {
+            let file = tokio::fs::File::open(path).await.map_err(CliError::Io)?;
+            let mut bundle = Vec::new();
+            file.take(MAX_RAW_BUNDLE_BYTES + 1)
+                .read_to_end(&mut bundle)
+                .await
+                .map_err(CliError::Io)?;
+            Ok(bundle)
+        }
         None => {
             let bundle = tokio::task::spawn_blocking(|| {
                 use std::io::Read;
                 let mut bundle = Vec::new();
-                std::io::stdin().read_to_end(&mut bundle).map(|_| bundle)
+                std::io::stdin()
+                    .take(MAX_RAW_BUNDLE_BYTES + 1)
+                    .read_to_end(&mut bundle)
+                    .map(|_| bundle)
             })
             .await
             .map_err(|_| CliError::InvalidBundle)?
@@ -1378,6 +1396,27 @@ mod tests {
 #[cfg(test)]
 mod messaging_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bundle_reads_stop_past_the_limit() {
+        let path = std::env::temp_dir().join("handover-cli-bundle-limit-test");
+        let oversized = vec![b'x'; MAX_RAW_BUNDLE_BYTES as usize + 100];
+        tokio::fs::write(&path, &oversized)
+            .await
+            .expect("fixture writes");
+        let bundle = read_bundle(Some(path.clone())).await.expect("reads");
+        let _ = tokio::fs::remove_file(&path).await;
+        // One byte past the cap proves oversize; the rest is never buffered.
+        assert_eq!(bundle.len(), MAX_RAW_BUNDLE_BYTES as usize + 1);
+        assert!(bundle.len() as u64 > MAX_RAW_BUNDLE_BYTES);
+    }
+
+    #[test]
+    fn raw_cap_encodes_within_daemon_cap() {
+        // 192 KiB raw is exactly 256 KiB encoded: what the CLI accepts,
+        // the daemon admits.
+        assert_eq!(MAX_RAW_BUNDLE_BYTES / 3 * 4, 256 * 1024);
+    }
 
     #[test]
     fn base64_encode_matches_known_vectors() {

@@ -7,10 +7,11 @@ pub(crate) fn execute(command: &RemoteInputCommand) {
         && std::env::var_os("WAYLAND_DISPLAY").is_some()
         && command_available("wtype")
     {
-        let _ = Command::new("wtype")
-            .arg("--")
-            .arg(command.text.as_deref().unwrap_or_default())
-            .status();
+        let _ = crate::local_cmd::status_timeout(
+            Command::new("wtype")
+                .arg("--")
+                .arg(command.text.as_deref().unwrap_or_default()),
+        );
         return;
     }
     let mut process = Command::new("xdotool");
@@ -41,17 +42,15 @@ pub(crate) fn execute(command: &RemoteInputCommand) {
             process.arg(command.text.as_deref().unwrap_or_default());
         }
     }
-    let _ = process.status();
+    let _ = crate::local_cmd::status_timeout(&mut process);
 }
 
 fn command_available(command: &str) -> bool {
-    Command::new("sh")
-        .args([
-            "-c",
-            "command -v -- \"$1\" >/dev/null 2>&1",
-            "handover",
-            command,
-        ])
-        .status()
-        .is_ok_and(|status| status.success())
+    crate::local_cmd::status_timeout(Command::new("sh").args([
+        "-c",
+        "command -v -- \"$1\" >/dev/null 2>&1",
+        "handover",
+        command,
+    ]))
+    .is_ok_and(|status| status.success())
 }

@@ -20,9 +20,10 @@ pub(crate) fn execute(command: &PresentationCommand) {
         ]),
         PresentationAction::PointerClick => process.args(["click", "1"]),
     };
-    let _ = process
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = crate::local_cmd::status_timeout(
+        process
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
 }

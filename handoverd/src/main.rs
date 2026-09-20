@@ -4,6 +4,7 @@ mod clipboard_history;
 mod clipboard_mirror;
 mod custom_commands;
 mod ipc_server;
+mod local_cmd;
 mod messaging;
 mod messaging_backend;
 mod messaging_cache;
