@@ -138,6 +138,20 @@ fn hostile_pre_auth_connections_are_bounded() {
     assert_eq!(idle.read(&mut byte).unwrap(), 0);
 }
 
+#[test]
+fn generated_malformed_frames_are_rejected_over_tls() {
+    let harness = harness();
+    let client = test_identity();
+    for length in 0..=8usize {
+        let mut peer = connect(harness.port, &client);
+        let mut frame = (length as u32).to_be_bytes().to_vec();
+        frame.extend(std::iter::repeat_n(0xff, length));
+        peer.tls.write_all(&frame).unwrap();
+        peer.tls.flush().unwrap();
+        recv_err(&mut peer);
+    }
+}
+
 struct Harness {
     backend: NativeBackend,
     port: u16,

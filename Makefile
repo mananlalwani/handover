@@ -3,7 +3,10 @@ USER_DATA_HOME := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
 USER_UNIT_DIR := $(USER_DATA_HOME)/systemd/user
 QUICKSHELL_INSTALL_DIR := $(USER_DATA_HOME)/handover/quickshell
 
-.PHONY: install-user uninstall-user
+.PHONY: install-user uninstall-user systemd-smoke
+
+systemd-smoke: target/debug/handoverd target/debug/handoverctl
+	./scripts/systemd-smoke.sh target/debug/handoverd target/debug/handoverctl
 
 install-user:
 	cargo build --release --locked -p handoverd -p handoverctl

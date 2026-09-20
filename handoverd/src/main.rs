@@ -93,11 +93,23 @@ async fn main() {
             let _ = NATIVE.set(native.clone());
             let native_state = Arc::clone(&state);
             let native_events = events.clone();
+            #[cfg(debug_assertions)]
+            let smoke_port = std::env::var("HANDOVER_NATIVE_SMOKE_PORT")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|port| *port != 0);
             std::thread::spawn(move || {
                 let callback = Arc::new(move |event| {
                     apply_backend_event(&native_state, &native_events, event)
                 });
-                if let Err(error) = native.run(callback) {
+                #[cfg(debug_assertions)]
+                let result = match smoke_port {
+                    Some(port) => native.run_on_port(port, callback),
+                    None => native.run(callback),
+                };
+                #[cfg(not(debug_assertions))]
+                let result = native.run(callback);
+                if let Err(error) = result {
                     warn!(%error, "native backend stopped");
                 }
             });

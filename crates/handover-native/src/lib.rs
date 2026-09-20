@@ -1390,6 +1390,21 @@ impl NativeBackend {
         name: &str,
         size: u64,
     ) -> Result<PathBuf, NativeError> {
+        self.receive_share_file_until(
+            input,
+            name,
+            size,
+            Instant::now() + INBOUND_TRANSFER_DEADLINE,
+        )
+    }
+
+    fn receive_share_file_until<R: Read>(
+        &self,
+        input: &mut R,
+        name: &str,
+        size: u64,
+        deadline: Instant,
+    ) -> Result<PathBuf, NativeError> {
         if !safe_share_name(name) || name.len() > 255 || size > MAX_SHARE_SIZE {
             return Err(NativeError::InvalidFrame);
         }
@@ -1412,7 +1427,6 @@ impl NativeBackend {
             .create_new(true)
             .open(&partial)?;
         output.set_permissions(fs::Permissions::from_mode(0o600))?;
-        let deadline = Instant::now() + INBOUND_TRANSFER_DEADLINE;
         let mut remaining = size;
         let mut buffer = [0u8; SHARE_BUFFER];
         while remaining > 0 {
@@ -1436,7 +1450,18 @@ impl NativeBackend {
     }
 
     pub fn run(self, event: Arc<dyn Fn(StateEvent) + Send + Sync>) -> Result<(), NativeError> {
-        let listener = TcpListener::bind(("0.0.0.0", LISTEN_PORT))?;
+        self.run_on_port(LISTEN_PORT, event)
+    }
+
+    /// Runs the advertised listener on an explicit port. Debug smoke tests use
+    /// this to exercise a second daemon without disturbing the live service.
+    #[doc(hidden)]
+    pub fn run_on_port(
+        self,
+        port: u16,
+        event: Arc<dyn Fn(StateEvent) + Send + Sync>,
+    ) -> Result<(), NativeError> {
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
         let port = listener.local_addr()?.port();
         // Keep the advertisement alive for the lifetime of the listener.
         let _discovery = advertise(port, &self.id)?;
@@ -2603,14 +2628,28 @@ fn read_exact_until<R: Read>(
                 "inbound transfer deadline",
             ));
         }
-        match input.read(&mut buffer[offset..])? {
-            0 => {
+        match input.read(&mut buffer[offset..]) {
+            Ok(0) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "inbound transfer ended early",
                 ));
             }
-            amount => offset += amount,
+            Ok(amount) => offset += amount,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "inbound transfer deadline",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(())
@@ -3373,6 +3412,38 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(&output[..2], &[1, 1]);
+    }
+
+    #[test]
+    fn real_socket_transfer_deadline_cleans_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback test listener");
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.write_all(&[1]).unwrap();
+            socket.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+        });
+        let mut socket = TcpStream::connect(address).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        let error = backend
+            .receive_share_file_until(
+                &mut socket,
+                "slow.bin",
+                2,
+                Instant::now() + Duration::from_millis(10),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, NativeError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        writer.join().unwrap();
+        let received = backend.directory.join("received");
+        assert!(fs::read_dir(received).unwrap().next().is_none());
     }
 
     #[test]
