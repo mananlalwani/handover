@@ -69,7 +69,13 @@ Rules both sides follow:
   membership changes, or disappearing messages.
 * `full: true` pages are authoritative windows: the daemon reconciles
   (upserts plus removals for records the window no longer contains).
-  `full: false` pages merge.
+  `full: false` pages merge. Large syncs split into size-bounded chunks
+  that share a `generation` id; only the closing chunk sets `full`,
+  and the daemon reconciles once the generation closes. Reconciling
+  an intermediate chunk would briefly remove records that arrive in
+  later chunks and destroy their cached messages, reads, and statuses.
+  Ungrouped events (no `generation`) keep the old behavior: a lone
+  `full: true` list or window reconciles immediately.
 * Acceptance (`command_result ok`, `MessageAccepted`) is never delivery;
   `Sent/Delivered/Displayed` arrive only as attested status events.
 

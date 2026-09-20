@@ -232,9 +232,11 @@ pub fn event_ids(event: &HelperEvent) -> String {
             account,
             conversations,
             full,
+            generation,
         } => format!(
-            "conversations {account} count={} full={full}",
-            conversations.len()
+            "conversations {account} count={} full={full} generation={}",
+            conversations.len(),
+            generation.unwrap_or(0),
         ),
         HelperEvent::ConversationRemoved {
             account,

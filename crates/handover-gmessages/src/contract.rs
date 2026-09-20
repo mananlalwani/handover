@@ -134,7 +134,14 @@ pub enum HelperEvent {
         account: String,
         conversations: Vec<WireConversation>,
         /// `true` means this list is authoritative: the daemon reconciles.
+        /// In a multi-chunk sync only the closing chunk sets this; see
+        /// `generation`.
         full: bool,
+        /// Groups the chunks of one multi-chunk sync. Absent for
+        /// single-chunk and live events. The daemon buffers chunks that
+        /// share a generation and reconciles once it closes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<u64>,
     },
     ConversationRemoved {
         account: String,
@@ -150,8 +157,13 @@ pub enum HelperEvent {
         #[serde(default)]
         page_complete: bool,
         /// `true` means this page is the authoritative window: the daemon
-        /// reconciles its stored window against it.
+        /// reconciles its stored window against it. In a multi-chunk
+        /// window only the closing chunk sets this; see `generation`.
         full: bool,
+        /// Groups the chunks of one multi-chunk window. Absent for
+        /// single-chunk and live events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<u64>,
     },
     MessageRemoved {
         account: String,

@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+/// Upper bound for the spawn hello exchange. A helper that starts but
+/// never answers must fail fast instead of stalling supervision.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
@@ -104,8 +108,20 @@ impl HelperProcess {
             stdout: BufReader::new(stdout),
             name: String::new(),
         };
-        process.send(&HelperCommand::Hello).await?;
-        let event = process.next_event().await?.ok_or(SpawnError::NoOutput)?;
+        // A started-but-hung helper must not stall the supervisor
+        // forever: bound the hello exchange. The child is killed on
+        // drop, so a timeout always cleans up.
+        let event = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            process.send(&HelperCommand::Hello).await?;
+            process.next_event().await?.ok_or(SpawnError::NoOutput)
+        })
+        .await
+        .map_err(|_| {
+            SpawnError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "helper handshake timed out",
+            ))
+        })??;
         process.name = check_hello(&event).map_err(SpawnError::Handshake)?;
         Ok(process)
     }

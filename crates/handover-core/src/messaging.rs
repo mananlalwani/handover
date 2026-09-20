@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 /// outside these bounds instead of truncating or guessing.
 pub const MAX_TEXT_CHARS: usize = 8_000;
 pub const MAX_ID_LEN: usize = 256;
+/// Maximum account id length in bytes. Matches the adapter's command
+/// and storage gates so both layers accept the same ids.
+pub const MAX_ACCOUNT_ID_LEN: usize = 128;
 pub const MAX_TITLE_CHARS: usize = 256;
 pub const MAX_PARTICIPANTS: usize = 256;
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 16;
@@ -429,15 +432,35 @@ impl MessagingCommand {
 
 /// Normalize and validate one account record from a helper payload.
 pub fn validate_account(account: &MessagingAccount) -> Result<(), ValidationError> {
-    check_id(account.id.as_str(), "account id")?;
+    check_account_id(account.id.as_str())?;
     check_label(&account.label, "account label")?;
+    Ok(())
+}
+
+/// Account ids cross two gates: the helper command gate and the
+/// adapter's session-file gate. Both reject names that cannot become
+/// session file names (separators, dots, NUL, controls, overlong),
+/// so an id accepted by one layer is never rejected by the other.
+pub fn check_account_id(value: &str) -> Result<(), ValidationError> {
+    if value.is_empty() || value.len() > MAX_ACCOUNT_ID_LEN {
+        return Err(ValidationError::InvalidId("account id".into()));
+    }
+    if value == "." || value == ".." {
+        return Err(ValidationError::InvalidId("account id".into()));
+    }
+    if value
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '.' || c.is_control())
+    {
+        return Err(ValidationError::InvalidId("account id".into()));
+    }
     Ok(())
 }
 
 /// Normalize and validate one conversation record from a helper payload.
 pub fn validate_conversation(conversation: &Conversation) -> Result<(), ValidationError> {
     check_id(&conversation.id.local_id, "conversation id")?;
-    check_id(conversation.id.account_id.as_str(), "account id")?;
+    check_account_id(conversation.id.account_id.as_str())?;
     if let Some(title) = &conversation.title {
         check_title(title)?;
     }
@@ -479,7 +502,7 @@ pub fn validate_conversation(conversation: &Conversation) -> Result<(), Validati
 pub fn validate_message(message: &Message) -> Result<(), ValidationError> {
     check_id(&message.id.local_id, "message id")?;
     check_id(&message.id.conversation_id.local_id, "conversation id")?;
-    check_id(message.id.conversation_id.account_id.as_str(), "account id")?;
+    check_account_id(message.id.conversation_id.account_id.as_str())?;
     check_id(&message.sender.local_id, "sender id")?;
     if let Some(text) = &message.text {
         if text.chars().count() > MAX_TEXT_CHARS {
@@ -631,7 +654,7 @@ pub fn validate_command(
                     return Err(ValidationError::InvalidAddress);
                 }
             }
-            check_id(account_id.as_str(), "account id")?;
+            check_account_id(account_id.as_str())?;
             Ok(())
         }
     }
@@ -780,3 +803,32 @@ impl fmt::Display for ValidationError {
 }
 
 impl std::error::Error for ValidationError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_ids_match_the_adapter_gate() {
+        // The adapter's command and storage gates reject separators,
+        // dots, NUL, controls, and overlong names. This layer must
+        // reject the same ids so no account is accepted here and
+        // rejected there.
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "a.b",
+            "a\x00b",
+            "a\nb",
+            &"x".repeat(129),
+        ] {
+            assert!(check_account_id(bad).is_err(), "{bad:?} must be rejected");
+        }
+        for good in ["gmessages:default", "loopback", "acc-1"] {
+            assert!(check_account_id(good).is_ok(), "{good:?} must be accepted");
+        }
+    }
+}

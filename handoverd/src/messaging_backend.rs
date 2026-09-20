@@ -66,13 +66,31 @@ pub(crate) struct MessagingHub {
 
 type FetchWaiters = HashMap<(String, String), Vec<oneshot::Sender<Result<(), ()>>>>;
 
+/// Open chunk generations: helper syncs split large lists and windows
+/// into size-bounded chunks. Chunks that share a generation accumulate
+/// here; the daemon reconciles only when the closing chunk arrives, so
+/// threads and messages in later chunks are never briefly removed.
+/// Ungrouped (single-chunk and live) events bypass these buffers.
+type ConversationGenerations = HashMap<String, (u64, HashSet<String>)>;
+type WindowGenerations = HashMap<(String, String), (u64, HashSet<String>)>;
+
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
     fetches: Mutex<FetchWaiters>,
     counter: AtomicU64,
     shutdown: AtomicBool,
+    /// Account id -> (generation, announced conversation ids).
+    conversation_syncs: Mutex<ConversationGenerations>,
+    /// (Account id, conversation id) -> (generation, announced message ids).
+    window_syncs: Mutex<WindowGenerations>,
 }
+
+/// Upper bound for one generation's keep-set. A malicious or broken
+/// helper cannot grow these buffers without limit; overflowing
+/// generations are dropped with a warning and fall back to
+/// per-chunk handling.
+const MAX_GENERATION_IDS: usize = 8192;
 
 impl MessagingHub {
     pub(crate) fn new() -> Self {
@@ -83,6 +101,8 @@ impl MessagingHub {
                 fetches: Mutex::new(HashMap::new()),
                 counter: AtomicU64::new(1),
                 shutdown: AtomicBool::new(false),
+                conversation_syncs: Mutex::new(HashMap::new()),
+                window_syncs: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -231,6 +251,149 @@ impl MessagingHub {
             for waiter in waiters {
                 let _ = waiter.send(Err(()));
             }
+        }
+        // A dead helper never closes its open generations. Drop them so
+        // the next helper generation starts from clean buffers instead
+        // of reconciling against a stale partial set.
+        self.inner.conversation_syncs.lock().await.clear();
+        self.inner.window_syncs.lock().await.clear();
+    }
+
+    /// Accumulate one conversation chunk into its generation buffer.
+    /// Returns `false` when the buffer overflowed and the caller must
+    /// fall back to immediate handling for this chunk.
+    async fn accumulate_conversations(
+        &self,
+        account: &str,
+        generation: u64,
+        ids: HashSet<String>,
+    ) -> bool {
+        let mut syncs = self.inner.conversation_syncs.lock().await;
+        match syncs.get_mut(account) {
+            Some((open, keep)) if *open == generation => {
+                keep.extend(ids);
+            }
+            _ => {
+                if syncs.contains_key(account) {
+                    warn!("conversation generation changed mid-sync; restarting buffer");
+                }
+                syncs.insert(account.to_string(), (generation, ids));
+            }
+        }
+        if syncs
+            .get(account)
+            .is_some_and(|(_, keep)| keep.len() > MAX_GENERATION_IDS)
+        {
+            warn!("conversation generation overflowed; falling back to per-chunk handling");
+            syncs.remove(account);
+            return false;
+        }
+        true
+    }
+
+    /// Close one conversation generation, returning the accumulated
+    /// keep-set for a single reconcile. `None` means the generation
+    /// was unknown or overflowed: reconcile against this chunk alone.
+    async fn close_conversations(
+        &self,
+        account: &str,
+        generation: u64,
+        ids: HashSet<String>,
+    ) -> Option<HashSet<String>> {
+        let mut syncs = self.inner.conversation_syncs.lock().await;
+        match syncs.remove(account) {
+            Some((open, mut keep)) if open == generation => {
+                keep.extend(ids);
+                Some(keep)
+            }
+            _ => {
+                warn!(
+                    "conversation generation closed without matching open; reconciling chunk alone"
+                );
+                None
+            }
+        }
+    }
+
+    /// Fold a live (ungrouped) conversation into any open generation so
+    /// the closing reconcile does not treat it as stale.
+    async fn note_live_conversation(&self, account: &str, id: &str) {
+        let mut syncs = self.inner.conversation_syncs.lock().await;
+        if let Some((_, keep)) = syncs.get_mut(account) {
+            keep.insert(id.to_string());
+        }
+    }
+
+    /// Fold a live conversation removal into any open generation.
+    async fn note_removed_conversation(&self, account: &str, id: &str) {
+        let mut syncs = self.inner.conversation_syncs.lock().await;
+        if let Some((_, keep)) = syncs.get_mut(account) {
+            keep.remove(id);
+        }
+    }
+
+    /// Accumulate one message-window chunk. Contract mirrors
+    /// [`Self::accumulate_conversations`].
+    async fn accumulate_window(
+        &self,
+        account: &str,
+        conversation: &str,
+        generation: u64,
+        ids: HashSet<String>,
+    ) -> bool {
+        let key = (account.to_string(), conversation.to_string());
+        let mut syncs = self.inner.window_syncs.lock().await;
+        match syncs.get_mut(&key) {
+            Some((open, keep)) if *open == generation => {
+                keep.extend(ids);
+            }
+            _ => {
+                if syncs.contains_key(&key) {
+                    warn!("window generation changed mid-sync; restarting buffer");
+                }
+                syncs.insert(key.clone(), (generation, ids));
+            }
+        }
+        if syncs
+            .get(&key)
+            .is_some_and(|(_, keep)| keep.len() > MAX_GENERATION_IDS)
+        {
+            warn!("window generation overflowed; falling back to per-chunk handling");
+            syncs.remove(&key);
+            return false;
+        }
+        true
+    }
+
+    /// Close one window generation. Contract mirrors
+    /// [`Self::close_conversations`].
+    async fn close_window(
+        &self,
+        account: &str,
+        conversation: &str,
+        generation: u64,
+        ids: HashSet<String>,
+    ) -> Option<HashSet<String>> {
+        let key = (account.to_string(), conversation.to_string());
+        let mut syncs = self.inner.window_syncs.lock().await;
+        match syncs.remove(&key) {
+            Some((open, mut keep)) if open == generation => {
+                keep.extend(ids);
+                Some(keep)
+            }
+            _ => {
+                warn!("window generation closed without matching open; reconciling chunk alone");
+                None
+            }
+        }
+    }
+
+    /// Fold a live (ungrouped) message into any open window generation.
+    async fn note_live_message(&self, account: &str, conversation: &str, id: &str) {
+        let key = (account.to_string(), conversation.to_string());
+        let mut syncs = self.inner.window_syncs.lock().await;
+        if let Some((_, keep)) = syncs.get_mut(&key) {
+            keep.insert(id.to_string());
         }
     }
 
@@ -413,15 +576,15 @@ async fn ingest_event(
             account,
             conversations,
             full,
+            generation,
         } => {
             let account_id = MessagingAccountId::new(account.clone());
-            if full {
-                reconcile_conversation_list(state, events, &account_id, &conversations);
-            }
+            let mut announced = HashSet::new();
             for wire in conversations {
                 match normalize_conversation(&account_id, wire) {
                     Ok(record) => {
                         let id = record.id.clone();
+                        announced.insert(id.local_id.clone());
                         let known = state
                             .read()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -433,6 +596,7 @@ async fn ingest_event(
                         } else {
                             ConversationEvent::Added(record)
                         };
+                        hub.note_live_conversation(&account, &id.local_id).await;
                         apply_backend_event(
                             state,
                             events,
@@ -442,11 +606,43 @@ async fn ingest_event(
                     Err(error) => warn!(%error, "dropping invalid conversation record"),
                 }
             }
+            // Reconcile removals only against a complete set. Intermediate
+            // generation chunks merge; reconciling them would briefly
+            // remove threads that arrive in later chunks and destroy
+            // their cached messages, reads, and statuses.
+            match (generation, full) {
+                (Some(generation), false) => {
+                    if !hub
+                        .accumulate_conversations(&account, generation, announced.clone())
+                        .await
+                    {
+                        reconcile_against(state, events, &account_id, &announced);
+                    }
+                }
+                (Some(generation), true) => {
+                    match hub
+                        .close_conversations(&account, generation, announced.clone())
+                        .await
+                    {
+                        Some(keep) => {
+                            reconcile_against(state, events, &account_id, &keep);
+                        }
+                        None => {
+                            reconcile_against(state, events, &account_id, &announced);
+                        }
+                    }
+                }
+                (None, true) => {
+                    reconcile_against(state, events, &account_id, &announced);
+                }
+                (None, false) => {}
+            }
         }
         HelperEvent::ConversationRemoved {
             account,
             conversation,
         } => {
+            hub.note_removed_conversation(&account, &conversation).await;
             apply_backend_event(
                 state,
                 events,
@@ -462,6 +658,7 @@ async fn ingest_event(
             full,
             cursor_next,
             page_complete,
+            generation,
         } => {
             let conversation_id = ConversationId::new(
                 MessagingAccountId::new(account.clone()),
@@ -496,74 +693,112 @@ async fn ingest_event(
                     )),
                 );
             }
-            if full {
-                let mut normalized = Vec::with_capacity(messages.len());
-                for wire in messages {
-                    let wire = scrub_staged_paths(wire);
-                    match normalize_message(&conversation_id, wire) {
-                        Ok(mut message) => {
-                            if let Some(conversation) = state
-                                .read()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .messaging()
-                                .conversation(&conversation_id)
-                                .cloned()
-                            {
-                                resolve_sender(&mut message, &conversation);
-                            }
-                            normalized.push(message);
+            let mut normalized = Vec::with_capacity(messages.len());
+            for wire in messages {
+                let wire = scrub_staged_paths(wire);
+                match normalize_message(&conversation_id, wire) {
+                    Ok(mut message) => {
+                        if let Some(conversation) = state
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .messaging()
+                            .conversation(&conversation_id)
+                            .cloned()
+                        {
+                            resolve_sender(&mut message, &conversation);
                         }
-                        Err(error) => warn!(%error, "dropping invalid message record"),
+                        normalized.push(message);
+                    }
+                    Err(error) => warn!(%error, "dropping invalid message record"),
+                }
+            }
+            // Windows reconcile removals only against a complete set, for
+            // the same reason as conversation lists: reconciling an
+            // intermediate chunk would drop messages that arrive later.
+            match (generation, full) {
+                (None, true) => {
+                    let outcome = state
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .messaging_mut()
+                        .reconcile_window(&conversation_id, normalized);
+                    publish_outcome(state, events, outcome);
+                    if let Err(error) = crate::messaging_cache::persist(state) {
+                        warn!(%error, "could not persist messaging cache");
                     }
                 }
-                let outcome = state
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .messaging_mut()
-                    .reconcile_window(&conversation_id, normalized);
-                publish_outcome(state, events, outcome);
-                if let Err(error) = crate::messaging_cache::persist(state) {
-                    warn!(%error, "could not persist messaging cache");
-                }
-            } else {
-                for wire in messages {
-                    let wire = scrub_staged_paths(wire);
-                    match normalize_message(&conversation_id, wire) {
-                        Ok(mut message) => {
-                            if let Some(conversation) = state
-                                .read()
+                (Some(generation), true) => {
+                    let announced: HashSet<String> = normalized
+                        .iter()
+                        .map(|message| message.id.local_id.clone())
+                        .collect();
+                    merge_messages(state, events, &conversation_id, normalized);
+                    for id in &announced {
+                        hub.note_live_message(&account, &conversation, id).await;
+                    }
+                    match hub
+                        .close_window(&account, &conversation, generation, announced.clone())
+                        .await
+                    {
+                        Some(keep) => {
+                            let keep: std::collections::BTreeSet<String> =
+                                keep.into_iter().collect();
+                            let outcome = state
+                                .write()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .messaging()
-                                .conversation(&conversation_id)
-                                .cloned()
-                            {
-                                resolve_sender(&mut message, &conversation);
+                                .messaging_mut()
+                                .prune_window(&conversation_id, &keep);
+                            publish_outcome(state, events, outcome);
+                            if let Err(error) = crate::messaging_cache::persist(state) {
+                                warn!(%error, "could not persist messaging cache");
                             }
-                            let known = state
-                                .read()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .messaging()
-                                .message(&message.id)
-                                .is_some();
-                            let change = if known {
-                                MessageEvent::Updated(message)
-                            } else {
-                                MessageEvent::Added(message)
-                            };
-                            apply_backend_event(
-                                state,
-                                events,
-                                StateEvent::Messaging(MessagingEvent::Message(change)),
-                            );
                         }
-                        Err(error) => warn!(%error, "dropping invalid message record"),
+                        None => {
+                            // No matching open generation: this chunk is
+                            // the only authoritative set available.
+                            let keep: std::collections::BTreeSet<String> =
+                                announced.into_iter().collect();
+                            let outcome = state
+                                .write()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .messaging_mut()
+                                .prune_window(&conversation_id, &keep);
+                            publish_outcome(state, events, outcome);
+                            if let Err(error) = crate::messaging_cache::persist(state) {
+                                warn!(%error, "could not persist messaging cache");
+                            }
+                        }
                     }
                 }
-                state
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .messaging_mut()
-                    .sort_window(&conversation_id);
+                (Some(generation), false) => {
+                    let announced: HashSet<String> = normalized
+                        .iter()
+                        .map(|message| message.id.local_id.clone())
+                        .collect();
+                    merge_messages(state, events, &conversation_id, normalized);
+                    if !hub
+                        .accumulate_window(&account, &conversation, generation, announced)
+                        .await
+                    {
+                        state
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .messaging_mut()
+                            .sort_window(&conversation_id);
+                    }
+                }
+                (None, false) => {
+                    for message in &normalized {
+                        hub.note_live_message(&account, &conversation, &message.id.local_id)
+                            .await;
+                    }
+                    merge_messages(state, events, &conversation_id, normalized);
+                    state
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .messaging_mut()
+                        .sort_window(&conversation_id);
+                }
             }
             if page_complete {
                 hub.complete_fetch(&account, &conversation).await;
@@ -689,19 +924,48 @@ fn scrub_staged_paths(mut wire: WireMessage) -> WireMessage {
     wire
 }
 
-fn reconcile_conversation_list(
+/// Merge normalized messages without reconciling removals: upsert
+/// each record as added or updated. Used for live events and for
+/// generation chunks whose removals wait for the closing chunk.
+fn merge_messages(
+    state: &Arc<std::sync::RwLock<StateStore>>,
+    events: &broadcast::Sender<StateEvent>,
+    conversation_id: &ConversationId,
+    messages: Vec<handover_core::Message>,
+) {
+    for message in messages {
+        let known = state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .messaging()
+            .message(&message.id)
+            .is_some();
+        let change = if known {
+            MessageEvent::Updated(message)
+        } else {
+            MessageEvent::Added(message)
+        };
+        apply_backend_event(
+            state,
+            events,
+            StateEvent::Messaging(MessagingEvent::Message(change)),
+        );
+    }
+    state
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .messaging_mut()
+        .sort_window(conversation_id);
+}
+
+/// Remove stored conversations for one account that are absent from a
+/// complete keep-set (one full list or one closed generation).
+fn reconcile_against(
     state: &Arc<std::sync::RwLock<StateStore>>,
     events: &broadcast::Sender<StateEvent>,
     account_id: &MessagingAccountId,
-    conversations: &[handover_gmessages::contract::WireConversation],
+    keep: &HashSet<String>,
 ) {
-    use std::collections::BTreeSet;
-    let mut announced = BTreeSet::new();
-    for wire in conversations {
-        if wire.local_id.len() <= handover_core::messaging::MAX_ID_LEN {
-            announced.insert(wire.local_id.clone());
-        }
-    }
     let stale: Vec<ConversationId> = state
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -709,7 +973,7 @@ fn reconcile_conversation_list(
         .snapshot_conversations()
         .into_iter()
         .map(|conversation| conversation.id)
-        .filter(|id| &id.account_id == account_id && !announced.contains(&id.local_id))
+        .filter(|id| &id.account_id == account_id && !keep.contains(&id.local_id))
         .collect();
     for id in stale {
         apply_backend_event(
@@ -798,6 +1062,313 @@ mod tests {
         WireConversation, WireConversationKind, WireMessage, WireParticipant, WireTransport,
     };
 
+    fn wire_conversation(id: &str) -> WireConversation {
+        WireConversation {
+            local_id: id.into(),
+            kind: WireConversationKind::Direct,
+            transport: WireTransport::Rcs,
+            title: None,
+            participants: vec![WireParticipant {
+                local_id: "other".into(),
+                display_name: None,
+                address: Some("+15550000000".into()),
+                is_self: false,
+            }],
+            latest_message: None,
+            last_activity_at: None,
+            unread_count: None,
+            cursor: None,
+            capabilities: vec!["text".into()],
+        }
+    }
+
+    fn wire_message(id: &str) -> WireMessage {
+        WireMessage {
+            local_id: id.into(),
+            sender: "other".into(),
+            transport: Some(WireTransport::Rcs),
+            sent_at: Some(1),
+            text: Some("message".into()),
+            attachments: Vec::new(),
+            reply_to: None,
+            reactions: Vec::new(),
+            deleted: false,
+        }
+    }
+
+    fn conversation_ids(state: &Arc<std::sync::RwLock<StateStore>>) -> Vec<String> {
+        let guard = state.read().unwrap();
+        let mut ids: Vec<String> = guard
+            .messaging()
+            .snapshot_conversations()
+            .into_iter()
+            .map(|conversation| conversation.id.local_id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn window_ids(
+        state: &Arc<std::sync::RwLock<StateStore>>,
+        conversation: &ConversationId,
+    ) -> Vec<String> {
+        let guard = state.read().unwrap();
+        let mut ids: Vec<String> = guard
+            .messaging()
+            .snapshot_messages()
+            .into_iter()
+            .filter(|message| message.id.conversation_id == *conversation)
+            .map(|message| message.id.local_id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test]
+    async fn conversation_generation_reconciles_once_on_close() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        let account = "personal".to_string();
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: account.clone(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+
+        // Seed one thread with a legacy full list.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: account.clone(),
+                conversations: vec![wire_conversation("seeded")],
+                full: true,
+                generation: None,
+            },
+        )
+        .await;
+        assert_eq!(conversation_ids(&state), vec!["seeded"]);
+
+        // Intermediate chunk merges: nothing is removed yet, even
+        // though "seeded" is absent from this chunk.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: account.clone(),
+                conversations: vec![wire_conversation("t1")],
+                full: false,
+                generation: Some(9),
+            },
+        )
+        .await;
+        assert_eq!(conversation_ids(&state), vec!["seeded", "t1"]);
+
+        // A live merge during the open generation joins the keep-set.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: account.clone(),
+                conversations: vec![wire_conversation("live")],
+                full: false,
+                generation: None,
+            },
+        )
+        .await;
+
+        // Closing chunk reconciles once against the whole generation:
+        // "seeded" drops (absent everywhere), the rest stay.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: account.clone(),
+                conversations: vec![wire_conversation("t2")],
+                full: true,
+                generation: Some(9),
+            },
+        )
+        .await;
+        assert_eq!(conversation_ids(&state), vec!["live", "t1", "t2"]);
+    }
+
+    #[tokio::test]
+    async fn window_generation_prunes_once_on_close() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        let conversation =
+            ConversationId::new(MessagingAccountId::new("personal"), "thread".to_string());
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: "personal".into(),
+                conversations: vec![wire_conversation("thread")],
+                full: true,
+                generation: None,
+            },
+        )
+        .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![wire_message("m1"), wire_message("m2")],
+                cursor_next: None,
+                page_complete: false,
+                full: true,
+                generation: None,
+            },
+        )
+        .await;
+        assert_eq!(window_ids(&state, &conversation), vec!["m1", "m2"]);
+
+        // Intermediate chunk merges without pruning the stored window.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![wire_message("m3")],
+                cursor_next: None,
+                page_complete: false,
+                full: false,
+                generation: Some(4),
+            },
+        )
+        .await;
+        assert_eq!(window_ids(&state, &conversation), vec!["m1", "m2", "m3"]);
+
+        // Closing chunk prunes once against the whole generation.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![wire_message("m4")],
+                cursor_next: None,
+                page_complete: true,
+                full: true,
+                generation: Some(4),
+            },
+        )
+        .await;
+        assert_eq!(window_ids(&state, &conversation), vec!["m3", "m4"]);
+    }
+
+    #[tokio::test]
+    async fn failed_send_for_accepted_transaction_surfaces() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, mut receiver) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+        // Drain the account announcement; only status broadcasts matter below.
+        while receiver.try_recv().is_ok() {}
+        let transaction = MessageId::new(
+            ConversationId::new(MessagingAccountId::new("personal"), "thread".to_string()),
+            "txn-1".to_string(),
+        );
+
+        // Acceptance for an unknown transaction opens correlation
+        // without broadcasting.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Status {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                message: "txn-1".into(),
+                status: "accepted".into(),
+            },
+        )
+        .await;
+        assert!(receiver.try_recv().is_err());
+
+        // The later transport failure is broadcast once instead of
+        // vanishing with the unknown message.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Status {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                message: "txn-1".into(),
+                status: "failed:transport".into(),
+            },
+        )
+        .await;
+        match receiver.try_recv() {
+            Ok(StateEvent::Messaging(MessagingEvent::Status(update))) => {
+                assert_eq!(update.message_id, transaction);
+            }
+            other => panic!("expected a status broadcast, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn message_page_cursor_update_does_not_hold_state_read_lock() {
         let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
@@ -843,6 +1414,7 @@ mod tests {
                     capabilities: vec!["text".into()],
                 }],
                 full: true,
+                generation: None,
             },
         )
         .await;
@@ -871,6 +1443,7 @@ mod tests {
                     cursor_next: Some("older:123".into()),
                     page_complete: true,
                     full: false,
+                    generation: None,
                 },
             ),
         )

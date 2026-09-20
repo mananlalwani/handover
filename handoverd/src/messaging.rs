@@ -20,6 +20,14 @@ use handover_core::{
 pub(crate) const MAX_STORED_PER_CONVERSATION: usize = 300;
 /// Maximum conversations tracked per account in memory.
 pub(crate) const MAX_CONVERSATIONS_PER_ACCOUNT: usize = 500;
+/// Maximum accepted-but-unresolved send transactions remembered.
+/// A send the relay accepted but never echoed stays correlated only
+/// this long; older entries are dropped and later failures for them
+/// are ignored like any other unknown-message status.
+pub(crate) const MAX_PENDING_ACCEPTS: usize = 512;
+/// How long an accepted send waits for its echo or failure.
+/// Covers the slowest relay round-trip with margin.
+const PENDING_ACCEPT_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[derive(Default)]
 pub(crate) struct MessagingStore {
@@ -29,6 +37,7 @@ pub(crate) struct MessagingStore {
     statuses: BTreeMap<MessageId, MessageStatus>,
     typing: BTreeMap<ConversationId, TypingState>,
     read: BTreeMap<ConversationId, ReadState>,
+    pending_accepts: BTreeMap<MessageId, std::time::Instant>,
 }
 
 impl MessagingStore {
@@ -91,6 +100,31 @@ impl MessagingStore {
 
     pub(crate) fn snapshot_accounts(&self) -> Vec<MessagingAccount> {
         self.accounts.values().cloned().collect()
+    }
+
+    /// Drop window messages absent from a closed generation's keep-set.
+    /// Unlike [`Self::reconcile_window`], this upserts nothing: every
+    /// record was already merged when its chunk arrived. Removals are
+    /// reported so clients stay truthful.
+    pub(crate) fn prune_window(
+        &mut self,
+        conversation_id: &ConversationId,
+        keep: &std::collections::BTreeSet<String>,
+    ) -> MessagingOutcome {
+        let mut changes = Vec::new();
+        let window = self.messages.entry(conversation_id.clone()).or_default();
+        let before: Vec<MessageId> = window.iter().map(|message| message.id.clone()).collect();
+        window.retain(|message| keep.contains(&message.id.local_id));
+        for id in before {
+            if !keep.contains(&id.local_id) {
+                self.statuses.remove(&id);
+                changes.push(MessagingChange::MessageRemoved(id));
+            }
+        }
+        MessagingOutcome {
+            changed: !changes.is_empty(),
+            changes,
+        }
     }
 
     pub(crate) fn snapshot_conversations(&self) -> Vec<Conversation> {
@@ -429,7 +463,26 @@ impl MessagingStore {
 
     fn apply_status(&mut self, update: MessageStatusUpdate) -> MessagingOutcome {
         if self.message(&update.message_id).is_none() {
-            return MessagingOutcome::unchanged();
+            // The relay accepted some sends it never echoes (notably
+            // transport failures for messages that never existed
+            // locally). An `accepted` status for an unknown message
+            // opens correlation; a later `failed` status for a
+            // correlated transaction is broadcast once so the failure
+            // is visible instead of vanishing. Anything else for an
+            // unknown message is still ignored.
+            match &update.status {
+                MessageStatus::Accepted => {
+                    self.note_accepted(update.message_id.clone());
+                    return MessagingOutcome::unchanged();
+                }
+                MessageStatus::Failed(_) => {
+                    if self.take_accepted(&update.message_id) {
+                        return MessagingOutcome::changed(MessagingChange::Status(update));
+                    }
+                    return MessagingOutcome::unchanged();
+                }
+                _ => return MessagingOutcome::unchanged(),
+            }
         }
         // Status is monotonic: Accepted < Sent < Delivered < Displayed, and
         // Failed is terminal. Backward moves and anything after Failed are
@@ -446,6 +499,25 @@ impl MessagingStore {
         self.statuses
             .insert(update.message_id.clone(), update.status.clone());
         MessagingOutcome::changed(MessagingChange::Status(update))
+    }
+
+    fn note_accepted(&mut self, id: MessageId) {
+        self.sweep_accepted();
+        if self.pending_accepts.len() >= MAX_PENDING_ACCEPTS {
+            self.pending_accepts.clear();
+        }
+        self.pending_accepts.insert(id, std::time::Instant::now());
+    }
+
+    fn take_accepted(&mut self, id: &MessageId) -> bool {
+        self.sweep_accepted();
+        self.pending_accepts.remove(id).is_some()
+    }
+
+    fn sweep_accepted(&mut self) {
+        let now = std::time::Instant::now();
+        self.pending_accepts
+            .retain(|_, at| now.duration_since(*at) < PENDING_ACCEPT_TTL);
     }
 
     fn apply_typing(&mut self, state: TypingState) -> MessagingOutcome {
@@ -793,12 +865,44 @@ mod tests {
                 }))
                 .changed
         );
-        // Unknown messages never gain status.
+        // Unknown messages never gain status, except for one path: an
+        // accepted send the relay never echoes. The acceptance opens
+        // correlation; the later failure is broadcast once so it does
+        // not vanish.
         assert!(
             !store
                 .apply(MessagingEvent::Status(MessageStatusUpdate {
                     message_id: MessageId::new(conversation_id(), "ghost"),
                     status: MessageStatus::Accepted,
+                }))
+                .changed
+        );
+        assert!(
+            !store
+                .apply(MessagingEvent::Status(MessageStatusUpdate {
+                    message_id: MessageId::new(conversation_id(), "stranger"),
+                    status: MessageStatus::Failed(SendFailure::Transport),
+                }))
+                .changed
+        );
+        let outcome = store.apply(MessagingEvent::Status(MessageStatusUpdate {
+            message_id: MessageId::new(conversation_id(), "ghost"),
+            status: MessageStatus::Failed(SendFailure::Transport),
+        }));
+        assert!(outcome.changed);
+        assert!(matches!(
+            outcome.changes.as_slice(),
+            [MessagingChange::Status(update)]
+                if update.message_id.local_id == "ghost"
+                    && update.status == MessageStatus::Failed(SendFailure::Transport)
+        ));
+        // Correlated once: a repeat failure for the same transaction is
+        // ignored like any other unknown-message status.
+        assert!(
+            !store
+                .apply(MessagingEvent::Status(MessageStatusUpdate {
+                    message_id: MessageId::new(conversation_id(), "ghost"),
+                    status: MessageStatus::Failed(SendFailure::Transport),
                 }))
                 .changed
         );

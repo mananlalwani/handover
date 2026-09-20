@@ -512,6 +512,7 @@ impl Relay for LoopbackRelay {
                 .map(|conversation| conversation.wire.clone())
                 .collect(),
             full: true,
+            generation: None,
         });
         for (local_id, conversation) in &stored.conversations {
             events.push(HelperEvent::Messages {
@@ -521,6 +522,7 @@ impl Relay for LoopbackRelay {
                 cursor_next: None,
                 page_complete: false,
                 full: true,
+                generation: None,
             });
             events.push(HelperEvent::Read {
                 account: account.into(),
@@ -584,6 +586,7 @@ impl Relay for LoopbackRelay {
             cursor_next: next,
             page_complete: true,
             full: false,
+            generation: None,
         }]
     }
 
@@ -652,6 +655,7 @@ impl Relay for LoopbackRelay {
                 cursor_next: None,
                 page_complete: false,
                 full: false,
+                generation: None,
             },
         ]
     }
@@ -743,6 +747,7 @@ impl Relay for LoopbackRelay {
                 cursor_next: None,
                 page_complete: false,
                 full: false,
+                generation: None,
             },
         ]
     }
@@ -807,6 +812,7 @@ impl Relay for LoopbackRelay {
                 cursor_next: None,
                 page_complete: false,
                 full: false,
+                generation: None,
             },
         ]
     }
@@ -925,6 +931,7 @@ impl Relay for LoopbackRelay {
                         cursor_next: None,
                         page_complete: false,
                         full: false,
+                        generation: None,
                     },
                 ];
             }
@@ -988,6 +995,7 @@ impl Relay for LoopbackRelay {
                 account: account.into(),
                 conversations: vec![wire],
                 full: false,
+                generation: None,
             },
         ]
     }
