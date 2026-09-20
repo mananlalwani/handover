@@ -1,0 +1,78 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH handoverctl 1  "handoverctl 0.1.0" 
+.SH NAME
+handoverctl \- Inspect and control Handover
+.SH SYNOPSIS
+\fBhandoverctl\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+Inspect and control Handover devices through the local handoverd daemon.
+.PP
+Commands that change remote state report acceptance, not completion. The daemon owns authoritative state; this CLI rebuilds its view from a fresh snapshot on each run. handoverd must be running and reachable over $XDG_RUNTIME_DIR/handover/handoverd.sock.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+handoverctl\-devices(1)
+List devices known to handoverd
+.TP
+handoverctl\-native(1)
+Inspect and manage native Android pairing and device commands
+.TP
+handoverctl\-notifications(1)
+List active remote notifications from the daemon snapshot
+.TP
+handoverctl\-contacts(1)
+List or request an on\-demand native contacts snapshot
+.TP
+handoverctl\-media(1)
+List media sessions, or send one playback command
+.TP
+handoverctl\-monitor(1)
+Print live normalized device and notification changes
+.TP
+handoverctl\-send\-url(1)
+Send a URL to one paired device
+.TP
+handoverctl\-notify(1)
+Send a notification to one native phone
+.TP
+handoverctl\-clipboard(1)
+Set the clipboard on one native phone
+.TP
+handoverctl\-send\-file(1)
+Send one local file to a paired device
+.TP
+handoverctl\-screensaver(1)
+Control the desktop idle inhibitor: inhibit, release, or follow
+.TP
+handoverctl\-clipboard\-mirror(1)
+Get or set Linux\-to\-phone background clipboard mirroring (off by default)
+.TP
+handoverctl\-clipboard\-history(1)
+List, pin, copy, and clear phone\-to\-Linux clipboard history
+.TP
+handoverctl\-cancel\-share(1)
+Cancel a queued native share that has not started streaming
+.TP
+handoverctl\-custom(1)
+List or run allowlisted desktop commands
+.TP
+handoverctl\-calls(1)
+Print current normalized call state for one device
+.TP
+handoverctl\-messages(1)
+Inspect and use messaging accounts and conversations
+.TP
+handoverctl\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+Exit status: 0 on success, 1 on any error (daemon unreachable, unknown device, rejected request).
+Run `handoverctl <command> \-\-help` for per\-command detail.
+.SH VERSION
+v0.1.0

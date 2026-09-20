@@ -69,6 +69,10 @@ documented below.
 
 ## Common commands
 
+The complete reference is `docs/cli/handoverctl.md`, with family pages
+for native commands, messaging, sharing and clipboard, and operations.
+The installed man page is `handoverctl(1)`.
+
 List devices:
 
 ```sh

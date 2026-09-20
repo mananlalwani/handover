@@ -1,0 +1,2153 @@
+#compdef handoverctl
+
+autoload -U is-at-least
+
+_handoverctl() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_handoverctl_commands" \
+"*::: :->handoverctl" \
+&& ret=0
+    case $state in
+    (handoverctl)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-command-$line[1]:"
+        case $line[1] in
+            (devices)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(native)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+":: :_handoverctl__subcmd__native_commands" \
+"*::: :->native" \
+&& ret=0
+
+    case $state in
+    (native)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-native-command-$line[1]:"
+        case $line[1] in
+            (peers)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(pending)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(pair)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':id -- Pending request id from `native pending`:_default' \
+':code -- Eight-digit pairing code shown on both sides:_default' \
+&& ret=0
+;;
+(unpair)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- Trusted peer id from `native peers`:_default' \
+&& ret=0
+;;
+(ping)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Native peer name (when unique) or peer ID:_default' \
+&& ret=0
+;;
+(ring)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Native peer name (when unique) or peer ID:_default' \
+&& ret=0
+;;
+(lock)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Native peer name (when unique) or peer ID:_default' \
+&& ret=0
+;;
+(keep-awake)
+_arguments "${_arguments_options[@]}" : \
+'--release[Release the phone wake lock instead of holding it]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Native peer name (when unique) or peer ID:_default' \
+&& ret=0
+;;
+(tethering)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Native peer name (when unique) or peer ID:_default' \
+&& ret=0
+;;
+(call)
+_arguments "${_arguments_options[@]}" : \
+'--confirm[Explicitly authorize placing a real phone call (required for place)]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Native peer name (when unique) or peer ID:_default' \
+':action -- Call action (for example\: place, answer, hangup, mute):_default' \
+'::address -- Phone number or address for actions that need one:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__native__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-native-help-command-$line[1]:"
+        case $line[1] in
+            (peers)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pending)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pair)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unpair)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ping)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ring)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(lock)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(keep-awake)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(tethering)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(call)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(notifications)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(contacts)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_handoverctl__subcmd__contacts_commands" \
+"*::: :->contacts" \
+&& ret=0
+
+    case $state in
+    (contacts)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-contacts-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(sync)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__contacts__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-contacts-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(sync)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(media)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+":: :_handoverctl__subcmd__media_commands" \
+"*::: :->media" \
+&& ret=0
+
+    case $state in
+    (media)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-media-command-$line[1]:"
+        case $line[1] in
+            (play)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+&& ret=0
+;;
+(pause)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+&& ret=0
+;;
+(play-pause)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+&& ret=0
+;;
+(next)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+&& ret=0
+;;
+(previous)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__media__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-media-help-command-$line[1]:"
+        case $line[1] in
+            (play)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pause)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(play-pause)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(next)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(previous)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(monitor)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(send-url)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+':url -- URL to send:_default' \
+&& ret=0
+;;
+(notify)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+':app -- Sending application label shown on the phone:_default' \
+':title -- Notification title:_default' \
+':body -- Notification body text:_default' \
+&& ret=0
+;;
+(clipboard)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+'::text -- Text to send. If omitted, read the current Wayland clipboard:_default' \
+&& ret=0
+;;
+(send-file)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+':path -- Local file to send:_files' \
+&& ret=0
+;;
+(screensaver)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':action -- One of\: inhibit, release, follow:_default' \
+&& ret=0
+;;
+(clipboard-mirror)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':action -- One of\: on, off, status:_default' \
+&& ret=0
+;;
+(clipboard-history)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_handoverctl__subcmd__clipboard-history_commands" \
+"*::: :->clipboard-history" \
+&& ret=0
+
+    case $state in
+    (clipboard-history)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-clipboard-history-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(save)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':text -- Text to pin:_default' \
+&& ret=0
+;;
+(pin)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- History entry id from `clipboard-history list`:_default' \
+&& ret=0
+;;
+(unpin)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- History entry id from `clipboard-history list`:_default' \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- History entry id from `clipboard-history list`:_default' \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+'--all[Also remove pinned entries]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__clipboard-history__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-clipboard-history-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unpin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(cancel-share)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+':transfer_id -- Transfer id printed by the accepting send command:_default' \
+&& ret=0
+;;
+(custom)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+":: :_handoverctl__subcmd__custom_commands" \
+"*::: :->custom" \
+&& ret=0
+
+    case $state in
+    (custom)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-custom-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':name -- Allowlisted command name, as shown by `custom list`:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__custom__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-custom-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(calls)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':device -- Device name (when unique) or device ID:_default' \
+&& ret=0
+;;
+(messages)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+":: :_handoverctl__subcmd__messages_commands" \
+"*::: :->messages" \
+&& ret=0
+
+    case $state in
+    (messages)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-messages-command-$line[1]:"
+        case $line[1] in
+            (accounts)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(conversations)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':account -- Messaging account id from `messages accounts`:_default' \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+'--limit=[Maximum messages to show]:N:_default' \
+'--cursor=[Cursor printed by a previous history page]:CURSOR:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':conversation -- Conversation selector\: ACCOUNT\:THREAD, or bare THREAD:_default' \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':conversation -- Conversation selector\: ACCOUNT\:THREAD, or bare THREAD:_default' \
+':text -- Message text:_default' \
+&& ret=0
+;;
+(send-file)
+_arguments "${_arguments_options[@]}" : \
+'--caption=[Optional caption sent with the attachment]:TEXT:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':conversation -- Conversation selector\: ACCOUNT\:THREAD, or bare THREAD:_default' \
+':path -- Local file to attach:_files' \
+&& ret=0
+;;
+(reply)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':message -- Message selector\: ACCOUNT\:THREAD\:MESSAGE, THREAD\:MESSAGE, or id:_default' \
+':text -- Reply text:_default' \
+&& ret=0
+;;
+(react)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':message -- Message selector\: ACCOUNT\:THREAD\:MESSAGE, THREAD\:MESSAGE, or id:_default' \
+':emoji -- Emoji reaction:_default' \
+&& ret=0
+;;
+(unreact)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':message -- Message selector\: ACCOUNT\:THREAD\:MESSAGE, THREAD\:MESSAGE, or id:_default' \
+':emoji -- Emoji reaction to remove:_default' \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+'--message=[Message selector marking the read point]:MESSAGE:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':conversation -- Conversation selector\: ACCOUNT\:THREAD, or bare THREAD:_default' \
+&& ret=0
+;;
+(typing)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':conversation -- Conversation selector\: ACCOUNT\:THREAD, or bare THREAD:_default' \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':message -- Message selector\: ACCOUNT\:THREAD\:MESSAGE, THREAD\:MESSAGE, or id:_default' \
+&& ret=0
+;;
+(open)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':account -- Messaging account id from `messages accounts`:_default' \
+'*::addresses -- Participant addresses (phone numbers or emails):_default' \
+&& ret=0
+;;
+(login)
+_arguments "${_arguments_options[@]}" : \
+'--from-file=[Read the credential bundle from PATH instead of stdin]:PATH:_files' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':account -- Messaging account id to log in:_default' \
+&& ret=0
+;;
+(logout)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':account -- Messaging account id to log out:_default' \
+&& ret=0
+;;
+(sync)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':account -- Messaging account id to resync:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__messages__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-messages-help-command-$line[1]:"
+        case $line[1] in
+            (accounts)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(conversations)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send-file)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(reply)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(react)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unreact)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(typing)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(open)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(login)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(logout)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(sync)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-command-$line[1]:"
+        case $line[1] in
+            (devices)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(native)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help__subcmd__native_commands" \
+"*::: :->native" \
+&& ret=0
+
+    case $state in
+    (native)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-native-command-$line[1]:"
+        case $line[1] in
+            (peers)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pending)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pair)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unpair)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ping)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ring)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(lock)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(keep-awake)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(tethering)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(call)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(notifications)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(contacts)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help__subcmd__contacts_commands" \
+"*::: :->contacts" \
+&& ret=0
+
+    case $state in
+    (contacts)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-contacts-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(sync)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(media)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help__subcmd__media_commands" \
+"*::: :->media" \
+&& ret=0
+
+    case $state in
+    (media)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-media-command-$line[1]:"
+        case $line[1] in
+            (play)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pause)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(play-pause)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(next)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(previous)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(monitor)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send-url)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(notify)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clipboard)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send-file)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(screensaver)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clipboard-mirror)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clipboard-history)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help__subcmd__clipboard-history_commands" \
+"*::: :->clipboard-history" \
+&& ret=0
+
+    case $state in
+    (clipboard-history)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-clipboard-history-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(pin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unpin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(cancel-share)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(custom)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help__subcmd__custom_commands" \
+"*::: :->custom" \
+&& ret=0
+
+    case $state in
+    (custom)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-custom-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(calls)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(messages)
+_arguments "${_arguments_options[@]}" : \
+":: :_handoverctl__subcmd__help__subcmd__messages_commands" \
+"*::: :->messages" \
+&& ret=0
+
+    case $state in
+    (messages)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:handoverctl-help-messages-command-$line[1]:"
+        case $line[1] in
+            (accounts)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(conversations)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send-file)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(reply)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(react)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unreact)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(typing)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(open)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(login)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(logout)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(sync)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_handoverctl_commands] )) ||
+_handoverctl_commands() {
+    local commands; commands=(
+'devices:List devices known to handoverd' \
+'native:Inspect and manage native Android pairing and device commands' \
+'notifications:List active remote notifications from the daemon snapshot' \
+'contacts:List or request an on-demand native contacts snapshot' \
+'media:List media sessions, or send one playback command' \
+'monitor:Print live normalized device and notification changes' \
+'send-url:Send a URL to one paired device' \
+'notify:Send a notification to one native phone' \
+'clipboard:Set the clipboard on one native phone' \
+'send-file:Send one local file to a paired device' \
+'screensaver:Control the desktop idle inhibitor\: inhibit, release, or follow' \
+'clipboard-mirror:Get or set Linux-to-phone background clipboard mirroring (off by default)' \
+'clipboard-history:List, pin, copy, and clear phone-to-Linux clipboard history' \
+'cancel-share:Cancel a queued native share that has not started streaming' \
+'custom:List or run allowlisted desktop commands' \
+'calls:Print current normalized call state for one device' \
+'messages:Inspect and use messaging accounts and conversations' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__calls_commands] )) ||
+_handoverctl__subcmd__calls_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl calls commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__cancel-share_commands] )) ||
+_handoverctl__subcmd__cancel-share_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl cancel-share commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard_commands] )) ||
+_handoverctl__subcmd__clipboard_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history_commands] )) ||
+_handoverctl__subcmd__clipboard-history_commands() {
+    local commands; commands=(
+'list:List recent and pinned entries (text previews only)' \
+'save:Save a new pinned string' \
+'pin:Pin an existing entry by id' \
+'unpin:Unpin an existing entry by id' \
+'copy:Copy an entry into the Linux clipboard' \
+'clear:Remove recent entries, retaining pins unless --all is passed' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl clipboard-history commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__clear_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history clear commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__copy_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history copy commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help_commands() {
+    local commands; commands=(
+'list:List recent and pinned entries (text previews only)' \
+'save:Save a new pinned string' \
+'pin:Pin an existing entry by id' \
+'unpin:Unpin an existing entry by id' \
+'copy:Copy an entry into the Linux clipboard' \
+'clear:Remove recent entries, retaining pins unless --all is passed' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl clipboard-history help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__clear_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help clear commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__copy_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help copy commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__list_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__pin_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__pin_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help pin commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__save_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__save_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help save commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__unpin_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__help__subcmd__unpin_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history help unpin commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__list_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__pin_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__pin_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history pin commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__save_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__save_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history save commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-history__subcmd__unpin_commands] )) ||
+_handoverctl__subcmd__clipboard-history__subcmd__unpin_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-history unpin commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__clipboard-mirror_commands] )) ||
+_handoverctl__subcmd__clipboard-mirror_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl clipboard-mirror commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts_commands] )) ||
+_handoverctl__subcmd__contacts_commands() {
+    local commands; commands=(
+'list:List the latest contacts snapshot held by handoverd' \
+'sync:Ask one native phone to send a fresh contacts snapshot' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl contacts commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts__subcmd__help_commands] )) ||
+_handoverctl__subcmd__contacts__subcmd__help_commands() {
+    local commands; commands=(
+'list:List the latest contacts snapshot held by handoverd' \
+'sync:Ask one native phone to send a fresh contacts snapshot' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl contacts help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__contacts__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl contacts help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts__subcmd__help__subcmd__list_commands] )) ||
+_handoverctl__subcmd__contacts__subcmd__help__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl contacts help list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts__subcmd__help__subcmd__sync_commands] )) ||
+_handoverctl__subcmd__contacts__subcmd__help__subcmd__sync_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl contacts help sync commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts__subcmd__list_commands] )) ||
+_handoverctl__subcmd__contacts__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl contacts list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__contacts__subcmd__sync_commands] )) ||
+_handoverctl__subcmd__contacts__subcmd__sync_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl contacts sync commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom_commands] )) ||
+_handoverctl__subcmd__custom_commands() {
+    local commands; commands=(
+'list:List allowlisted desktop commands with their fixed argv' \
+'run:Run one allowlisted desktop command by name' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl custom commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom__subcmd__help_commands] )) ||
+_handoverctl__subcmd__custom__subcmd__help_commands() {
+    local commands; commands=(
+'list:List allowlisted desktop commands with their fixed argv' \
+'run:Run one allowlisted desktop command by name' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl custom help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__custom__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl custom help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom__subcmd__help__subcmd__list_commands] )) ||
+_handoverctl__subcmd__custom__subcmd__help__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl custom help list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom__subcmd__help__subcmd__run_commands] )) ||
+_handoverctl__subcmd__custom__subcmd__help__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl custom help run commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom__subcmd__list_commands] )) ||
+_handoverctl__subcmd__custom__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl custom list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__custom__subcmd__run_commands] )) ||
+_handoverctl__subcmd__custom__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl custom run commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__devices_commands] )) ||
+_handoverctl__subcmd__devices_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl devices commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help_commands] )) ||
+_handoverctl__subcmd__help_commands() {
+    local commands; commands=(
+'devices:List devices known to handoverd' \
+'native:Inspect and manage native Android pairing and device commands' \
+'notifications:List active remote notifications from the daemon snapshot' \
+'contacts:List or request an on-demand native contacts snapshot' \
+'media:List media sessions, or send one playback command' \
+'monitor:Print live normalized device and notification changes' \
+'send-url:Send a URL to one paired device' \
+'notify:Send a notification to one native phone' \
+'clipboard:Set the clipboard on one native phone' \
+'send-file:Send one local file to a paired device' \
+'screensaver:Control the desktop idle inhibitor\: inhibit, release, or follow' \
+'clipboard-mirror:Get or set Linux-to-phone background clipboard mirroring (off by default)' \
+'clipboard-history:List, pin, copy, and clear phone-to-Linux clipboard history' \
+'cancel-share:Cancel a queued native share that has not started streaming' \
+'custom:List or run allowlisted desktop commands' \
+'calls:Print current normalized call state for one device' \
+'messages:Inspect and use messaging accounts and conversations' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__calls_commands] )) ||
+_handoverctl__subcmd__help__subcmd__calls_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help calls commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__cancel-share_commands] )) ||
+_handoverctl__subcmd__help__subcmd__cancel-share_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help cancel-share commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history_commands() {
+    local commands; commands=(
+'list:List recent and pinned entries (text previews only)' \
+'save:Save a new pinned string' \
+'pin:Pin an existing entry by id' \
+'unpin:Unpin an existing entry by id' \
+'copy:Copy an entry into the Linux clipboard' \
+'clear:Remove recent entries, retaining pins unless --all is passed' \
+    )
+    _describe -t commands 'handoverctl help clipboard-history commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__clear_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-history clear commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__copy_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-history copy commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__list_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-history list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__pin_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__pin_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-history pin commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__save_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__save_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-history save commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__unpin_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-history__subcmd__unpin_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-history unpin commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__clipboard-mirror_commands] )) ||
+_handoverctl__subcmd__help__subcmd__clipboard-mirror_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help clipboard-mirror commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__contacts_commands] )) ||
+_handoverctl__subcmd__help__subcmd__contacts_commands() {
+    local commands; commands=(
+'list:List the latest contacts snapshot held by handoverd' \
+'sync:Ask one native phone to send a fresh contacts snapshot' \
+    )
+    _describe -t commands 'handoverctl help contacts commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__contacts__subcmd__list_commands] )) ||
+_handoverctl__subcmd__help__subcmd__contacts__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help contacts list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__contacts__subcmd__sync_commands] )) ||
+_handoverctl__subcmd__help__subcmd__contacts__subcmd__sync_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help contacts sync commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__custom_commands] )) ||
+_handoverctl__subcmd__help__subcmd__custom_commands() {
+    local commands; commands=(
+'list:List allowlisted desktop commands with their fixed argv' \
+'run:Run one allowlisted desktop command by name' \
+    )
+    _describe -t commands 'handoverctl help custom commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__custom__subcmd__list_commands] )) ||
+_handoverctl__subcmd__help__subcmd__custom__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help custom list commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__custom__subcmd__run_commands] )) ||
+_handoverctl__subcmd__help__subcmd__custom__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help custom run commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__devices_commands] )) ||
+_handoverctl__subcmd__help__subcmd__devices_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help devices commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__media_commands] )) ||
+_handoverctl__subcmd__help__subcmd__media_commands() {
+    local commands; commands=(
+'play:Start playback on one session' \
+'pause:Pause playback on one session' \
+'play-pause:Toggle playback on one session' \
+'next:Skip to the next item on one session' \
+'previous:Return to the previous item on one session' \
+    )
+    _describe -t commands 'handoverctl help media commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__media__subcmd__next_commands] )) ||
+_handoverctl__subcmd__help__subcmd__media__subcmd__next_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help media next commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__media__subcmd__pause_commands] )) ||
+_handoverctl__subcmd__help__subcmd__media__subcmd__pause_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help media pause commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__media__subcmd__play_commands] )) ||
+_handoverctl__subcmd__help__subcmd__media__subcmd__play_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help media play commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__media__subcmd__play-pause_commands] )) ||
+_handoverctl__subcmd__help__subcmd__media__subcmd__play-pause_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help media play-pause commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__media__subcmd__previous_commands] )) ||
+_handoverctl__subcmd__help__subcmd__media__subcmd__previous_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help media previous commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages_commands() {
+    local commands; commands=(
+'accounts:List messaging accounts with connection state' \
+'conversations:List conversations for one account' \
+'history:Show message history for one conversation (ACCOUNT\:THREAD or THREAD)' \
+'send:Send a text message (accepted, not delivered)' \
+'send-file:Send a file attachment with an optional caption' \
+'reply:Reply to a message (ACCOUNT\:THREAD\:MESSAGE or THREAD\:MESSAGE ...)' \
+'react:Add a reaction to a message' \
+'unreact:Remove a reaction from a message' \
+'read:Mark a conversation read (optionally up to one message)' \
+'typing:Send a typing-start ping (no typing-stop exists upstream)' \
+'delete:Delete one own message' \
+'open:Open or create a conversation with addresses (phone numbers/emails)' \
+'login:Log in\: read a credential bundle from a file or stdin, never argv' \
+'logout:Log out and revoke helper access' \
+'sync:Ask the helper to re-emit authoritative state for one account' \
+    )
+    _describe -t commands 'handoverctl help messages commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__accounts_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__accounts_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages accounts commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__conversations_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__conversations_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages conversations commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__delete_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages delete commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__history_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages history commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__login_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__login_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages login commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__logout_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__logout_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages logout commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__open_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages open commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__react_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__react_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages react commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__read_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages read commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__reply_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__reply_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages reply commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__send_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages send commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__send-file_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__send-file_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages send-file commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__sync_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__sync_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages sync commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__typing_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__typing_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages typing commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__unreact_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__unreact_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages unreact commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__monitor_commands] )) ||
+_handoverctl__subcmd__help__subcmd__monitor_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help monitor commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native_commands() {
+    local commands; commands=(
+'peers:List trusted native peers (id, name, certificate fingerprint)' \
+'pending:List pending pairing requests (id, name, eight-digit code)' \
+'pair:Approve a pending pairing request after comparing codes' \
+'unpair:Revoke a trusted native peer' \
+'ping:Send a user-visible liveness ping to a native device name or ID' \
+'ring:Ring and vibrate a native device selected by name or ID' \
+'lock:Lock a native phone when device-admin access is enabled' \
+'keep-awake:Ask a native phone to hold its wake lock (or release it with --release)' \
+'tethering:Ask a native phone to open its tethering settings screen' \
+'call:Send a call control action to a native phone' \
+    )
+    _describe -t commands 'handoverctl help native commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__call_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__call_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native call commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__keep-awake_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__keep-awake_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native keep-awake commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__lock_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__lock_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native lock commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__pair_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__pair_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native pair commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__peers_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__peers_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native peers commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__pending_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__pending_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native pending commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__ping_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native ping commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__ring_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__ring_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native ring commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__tethering_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__tethering_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native tethering commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__unpair_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__unpair_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native unpair commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__notifications_commands] )) ||
+_handoverctl__subcmd__help__subcmd__notifications_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help notifications commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__notify_commands] )) ||
+_handoverctl__subcmd__help__subcmd__notify_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help notify commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__screensaver_commands] )) ||
+_handoverctl__subcmd__help__subcmd__screensaver_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help screensaver commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__send-file_commands] )) ||
+_handoverctl__subcmd__help__subcmd__send-file_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help send-file commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__send-url_commands] )) ||
+_handoverctl__subcmd__help__subcmd__send-url_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help send-url commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media_commands] )) ||
+_handoverctl__subcmd__media_commands() {
+    local commands; commands=(
+'play:Start playback on one session' \
+'pause:Pause playback on one session' \
+'play-pause:Toggle playback on one session' \
+'next:Skip to the next item on one session' \
+'previous:Return to the previous item on one session' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl media commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help_commands() {
+    local commands; commands=(
+'play:Start playback on one session' \
+'pause:Pause playback on one session' \
+'play-pause:Toggle playback on one session' \
+'next:Skip to the next item on one session' \
+'previous:Return to the previous item on one session' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl media help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help__subcmd__next_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help__subcmd__next_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media help next commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help__subcmd__pause_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help__subcmd__pause_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media help pause commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help__subcmd__play_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help__subcmd__play_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media help play commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help__subcmd__play-pause_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help__subcmd__play-pause_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media help play-pause commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__help__subcmd__previous_commands] )) ||
+_handoverctl__subcmd__media__subcmd__help__subcmd__previous_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media help previous commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__next_commands] )) ||
+_handoverctl__subcmd__media__subcmd__next_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media next commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__pause_commands] )) ||
+_handoverctl__subcmd__media__subcmd__pause_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media pause commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__play_commands] )) ||
+_handoverctl__subcmd__media__subcmd__play_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media play commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__play-pause_commands] )) ||
+_handoverctl__subcmd__media__subcmd__play-pause_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media play-pause commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__media__subcmd__previous_commands] )) ||
+_handoverctl__subcmd__media__subcmd__previous_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl media previous commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages_commands] )) ||
+_handoverctl__subcmd__messages_commands() {
+    local commands; commands=(
+'accounts:List messaging accounts with connection state' \
+'conversations:List conversations for one account' \
+'history:Show message history for one conversation (ACCOUNT\:THREAD or THREAD)' \
+'send:Send a text message (accepted, not delivered)' \
+'send-file:Send a file attachment with an optional caption' \
+'reply:Reply to a message (ACCOUNT\:THREAD\:MESSAGE or THREAD\:MESSAGE ...)' \
+'react:Add a reaction to a message' \
+'unreact:Remove a reaction from a message' \
+'read:Mark a conversation read (optionally up to one message)' \
+'typing:Send a typing-start ping (no typing-stop exists upstream)' \
+'delete:Delete one own message' \
+'open:Open or create a conversation with addresses (phone numbers/emails)' \
+'login:Log in\: read a credential bundle from a file or stdin, never argv' \
+'logout:Log out and revoke helper access' \
+'sync:Ask the helper to re-emit authoritative state for one account' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl messages commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__accounts_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__accounts_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages accounts commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__conversations_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__conversations_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages conversations commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__delete_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages delete commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help_commands() {
+    local commands; commands=(
+'accounts:List messaging accounts with connection state' \
+'conversations:List conversations for one account' \
+'history:Show message history for one conversation (ACCOUNT\:THREAD or THREAD)' \
+'send:Send a text message (accepted, not delivered)' \
+'send-file:Send a file attachment with an optional caption' \
+'reply:Reply to a message (ACCOUNT\:THREAD\:MESSAGE or THREAD\:MESSAGE ...)' \
+'react:Add a reaction to a message' \
+'unreact:Remove a reaction from a message' \
+'read:Mark a conversation read (optionally up to one message)' \
+'typing:Send a typing-start ping (no typing-stop exists upstream)' \
+'delete:Delete one own message' \
+'open:Open or create a conversation with addresses (phone numbers/emails)' \
+'login:Log in\: read a credential bundle from a file or stdin, never argv' \
+'logout:Log out and revoke helper access' \
+'sync:Ask the helper to re-emit authoritative state for one account' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl messages help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__accounts_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__accounts_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help accounts commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__conversations_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__conversations_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help conversations commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__delete_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help delete commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__history_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help history commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__login_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__login_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help login commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__logout_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__logout_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help logout commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__open_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help open commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__react_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__react_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help react commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__read_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help read commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__reply_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__reply_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help reply commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__send_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help send commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__send-file_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__send-file_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help send-file commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__sync_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__sync_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help sync commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__typing_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__typing_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help typing commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__unreact_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__unreact_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help unreact commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__history_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages history commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__login_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__login_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages login commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__logout_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__logout_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages logout commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__open_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages open commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__react_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__react_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages react commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__read_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages read commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__reply_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__reply_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages reply commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__send_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages send commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__send-file_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__send-file_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages send-file commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__sync_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__sync_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages sync commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__typing_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__typing_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages typing commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__unreact_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__unreact_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages unreact commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__monitor_commands] )) ||
+_handoverctl__subcmd__monitor_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl monitor commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native_commands] )) ||
+_handoverctl__subcmd__native_commands() {
+    local commands; commands=(
+'peers:List trusted native peers (id, name, certificate fingerprint)' \
+'pending:List pending pairing requests (id, name, eight-digit code)' \
+'pair:Approve a pending pairing request after comparing codes' \
+'unpair:Revoke a trusted native peer' \
+'ping:Send a user-visible liveness ping to a native device name or ID' \
+'ring:Ring and vibrate a native device selected by name or ID' \
+'lock:Lock a native phone when device-admin access is enabled' \
+'keep-awake:Ask a native phone to hold its wake lock (or release it with --release)' \
+'tethering:Ask a native phone to open its tethering settings screen' \
+'call:Send a call control action to a native phone' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl native commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__call_commands] )) ||
+_handoverctl__subcmd__native__subcmd__call_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native call commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help_commands() {
+    local commands; commands=(
+'peers:List trusted native peers (id, name, certificate fingerprint)' \
+'pending:List pending pairing requests (id, name, eight-digit code)' \
+'pair:Approve a pending pairing request after comparing codes' \
+'unpair:Revoke a trusted native peer' \
+'ping:Send a user-visible liveness ping to a native device name or ID' \
+'ring:Ring and vibrate a native device selected by name or ID' \
+'lock:Lock a native phone when device-admin access is enabled' \
+'keep-awake:Ask a native phone to hold its wake lock (or release it with --release)' \
+'tethering:Ask a native phone to open its tethering settings screen' \
+'call:Send a call control action to a native phone' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'handoverctl native help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__call_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__call_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help call commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__help_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help help commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__keep-awake_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__keep-awake_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help keep-awake commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__lock_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__lock_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help lock commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__pair_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__pair_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help pair commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__peers_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__peers_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help peers commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__pending_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__pending_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help pending commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__ping_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help ping commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__ring_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__ring_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help ring commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__tethering_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__tethering_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help tethering commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__unpair_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__unpair_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help unpair commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__keep-awake_commands] )) ||
+_handoverctl__subcmd__native__subcmd__keep-awake_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native keep-awake commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__lock_commands] )) ||
+_handoverctl__subcmd__native__subcmd__lock_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native lock commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__pair_commands] )) ||
+_handoverctl__subcmd__native__subcmd__pair_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native pair commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__peers_commands] )) ||
+_handoverctl__subcmd__native__subcmd__peers_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native peers commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__pending_commands] )) ||
+_handoverctl__subcmd__native__subcmd__pending_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native pending commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__ping_commands] )) ||
+_handoverctl__subcmd__native__subcmd__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native ping commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__ring_commands] )) ||
+_handoverctl__subcmd__native__subcmd__ring_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native ring commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__tethering_commands] )) ||
+_handoverctl__subcmd__native__subcmd__tethering_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native tethering commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__unpair_commands] )) ||
+_handoverctl__subcmd__native__subcmd__unpair_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native unpair commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__notifications_commands] )) ||
+_handoverctl__subcmd__notifications_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl notifications commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__notify_commands] )) ||
+_handoverctl__subcmd__notify_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl notify commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__screensaver_commands] )) ||
+_handoverctl__subcmd__screensaver_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl screensaver commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__send-file_commands] )) ||
+_handoverctl__subcmd__send-file_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl send-file commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__send-url_commands] )) ||
+_handoverctl__subcmd__send-url_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl send-url commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_handoverctl" ]; then
+    _handoverctl "$@"
+else
+    compdef _handoverctl handoverctl
+fi

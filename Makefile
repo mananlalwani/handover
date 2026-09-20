@@ -2,6 +2,10 @@ PREFIX := $(HOME)/.local
 USER_DATA_HOME := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
 USER_UNIT_DIR := $(USER_DATA_HOME)/systemd/user
 QUICKSHELL_INSTALL_DIR := $(USER_DATA_HOME)/handover/quickshell
+MAN_DIR := $(PREFIX)/share/man/man1
+BASH_COMPLETION_DIR := $(USER_DATA_HOME)/bash-completion/completions
+ZSH_COMPLETION_DIR := $(USER_DATA_HOME)/zsh/site-functions
+FISH_COMPLETION_DIR := $(USER_DATA_HOME)/fish/vendor_completions.d
 
 .PHONY: install-user uninstall-user systemd-smoke
 
@@ -12,6 +16,10 @@ install-user:
 	cargo build --release --locked -p handoverd -p handoverctl
 	install -Dm755 target/release/handoverd $(PREFIX)/bin/handoverd
 	install -Dm755 target/release/handoverctl $(PREFIX)/bin/handoverctl
+	install -Dm644 docs/man/handoverctl.1 $(MAN_DIR)/handoverctl.1
+	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
+	install -Dm644 completions/_handoverctl $(ZSH_COMPLETION_DIR)/_handoverctl
+	install -Dm644 completions/handoverctl.fish $(FISH_COMPLETION_DIR)/handoverctl.fish
 	install -Dm644 packaging/systemd/handoverd.service $(USER_UNIT_DIR)/handoverd.service
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
@@ -30,6 +38,10 @@ uninstall-user:
 	-systemctl --user disable --now handoverd.service
 	rm -f $(USER_UNIT_DIR)/handoverd.service
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
+	rm -f $(MAN_DIR)/handoverctl.1
+	rm -f $(BASH_COMPLETION_DIR)/handoverctl
+	rm -f $(ZSH_COMPLETION_DIR)/_handoverctl
+	rm -f $(FISH_COMPLETION_DIR)/handoverctl.fish
 	rm -f $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/README.md
