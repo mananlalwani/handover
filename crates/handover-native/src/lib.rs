@@ -786,11 +786,16 @@ struct QuotaReservation {
 }
 
 impl QuotaReservation {
-    fn commit(mut self) {
+    fn commit_rename(mut self, partial: &Path, destination: &Path) -> Result<(), NativeError> {
         let mut inner = self.backend.inner.lock().unwrap();
+        // Keep the rename and reservation release under the same runtime
+        // lock. Quota scans cannot observe the completed file while the
+        // reservation still counts it.
+        fs::rename(partial, destination)?;
         inner.quota_reserved.0 = inner.quota_reserved.0.saturating_sub(self.bytes);
         inner.quota_reserved.1 = inner.quota_reserved.1.saturating_sub(1);
         self.committed = true;
+        Ok(())
     }
 }
 
@@ -1630,11 +1635,8 @@ impl NativeBackend {
         }
         output.sync_all()?;
         drop(output);
-        fs::rename(&partial, &destination)?;
+        reservation.commit_rename(&partial, &destination)?;
         guard.0 = PathBuf::new();
-        // The file is on disk and counted by future scans; release
-        // the in-flight reservation without double counting.
-        reservation.commit();
         Ok(destination)
     }
     fn save_peers(&self, peers: &PeerFile) -> Result<(), NativeError> {
