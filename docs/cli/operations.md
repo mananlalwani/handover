@@ -94,6 +94,39 @@ Placing a real call needs explicit `--confirm` on each invocation.
   log message bodies, notification text, URLs, tokens, keys, or file
   contents.
 
+## Messaging cache persistence
+
+On startup `handoverd` restores messaging accounts, conversations,
+messages, and read states from
+`${XDG_STATE_HOME:-~/.local/state}/handover/messaging-cache.json`,
+and re-persists it as syncs and windows land. The file holds message
+bodies in plaintext with mode 0600 inside a 0700 directory. It speeds
+restarts; it is not a full-history database.
+
+- Opt out: set `HANDOVER_MESSAGING_CACHE=0`. The daemon then neither
+  restores nor writes the file and rebuilds all messaging state from
+  the helper on every start.
+- Clear: stop the daemon, delete the file, and start again. Deleting
+  it while the daemon runs does nothing lasting; the next persist
+  recreates it:
+  ```
+  systemctl --user stop handoverd
+  rm "${XDG_STATE_HOME:-~/.local/state}/handover/messaging-cache.json"
+  systemctl --user start handoverd
+  ```
+
+## Attachment retention
+
+Staged and imported attachments are transient transfer data with
+bounded retention, swept at daemon startup:
+
+- Daemon imports below
+  `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/imported`:
+  30 days or 1 GiB, oldest first.
+- The adapter sweeps its own staging directory on its own start:
+  7 days or 256 MiB, oldest first. It also clears crash-left session
+  temp files.
+
 ## Exit status
 
 `handoverctl` exits 0 on success and 1 on any error. Errors include a

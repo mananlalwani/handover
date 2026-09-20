@@ -76,6 +76,19 @@ Rules both sides follow:
   later chunks and destroy their cached messages, reads, and statuses.
   Ungrouped events (no `generation`) keep the old behavior: a lone
   `full: true` list or window reconciles immediately.
+
+## Contract compatibility fixture
+
+The adapter repository checks in Go-produced helper JSON at
+`adapter/testdata/helper-events.jsonl` (regenerated with
+`REGENERATE_FIXTURE=1 go test ./adapter/ -run
+TestContractFixtureIsCurrent`). This repository vendors a copy at
+`crates/handover-gmessages/tests/fixtures/helper-events.jsonl`,
+decoded by `tests/contract_fixture.rs` against the real Rust event
+types, generation grouping, status tokens, and unknown-key
+tolerance. After any contract change, refresh the Go fixture, copy
+it here, and re-run the Rust test. The Go test fails when its
+fixture drifts; the Rust test fails when the copy does.
 * Acceptance (`command_result ok`, `MessageAccepted`) is never delivery;
   `Sent/Delivered/Displayed` arrive only as attested status events.
 

@@ -66,8 +66,27 @@ async fn main() {
     let _ = clipboard_history();
 
     let mut initial_state = StateStore::default();
-    if let Err(error) = messaging_cache::restore(&mut initial_state) {
-        warn!(%error, "could not restore messaging cache");
+    if !messaging_cache::disabled() {
+        if let Err(error) = messaging_cache::restore(&mut initial_state) {
+            warn!(%error, "could not restore messaging cache");
+        }
+    }
+    // Imported attachments are transient transfer data. Sweep debris
+    // from crashed runs at startup so the directory stays bounded.
+    // Retention: 30 days or 1 GiB, oldest first.
+    match handover_gmessages::staging::imported_staging_directory() {
+        Ok(directory) => {
+            match handover_gmessages::staging::sweep_directory(
+                &directory,
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                1024 * 1024 * 1024,
+            ) {
+                Ok(0) => {}
+                Ok(removed) => info!(removed, "swept imported attachments"),
+                Err(error) => warn!(%error, "sweeping imported attachments failed"),
+            }
+        }
+        Err(error) => warn!(%error, "imported staging directory unavailable"),
     }
     let state = Arc::new(RwLock::new(initial_state));
     let (events, _) = broadcast::channel(EVENT_CAPACITY);

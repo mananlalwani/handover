@@ -323,6 +323,58 @@ fn imported_usage(directory: &Path) -> Result<(usize, u64), StageError> {
     Ok((count, bytes))
 }
 
+/// Delete retained files older than `max_age`, then enforce `max_bytes`
+/// oldest-first. Only regular files directly inside `directory` are
+/// ever deleted. Returns the number of files removed. Missing
+/// directories sweep to zero without error.
+pub fn sweep_directory(
+    directory: &Path,
+    max_age: std::time::Duration,
+    max_bytes: u64,
+) -> Result<usize, StageError> {
+    let mut removed = 0;
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(StageError::Io(error)),
+    };
+    let now = std::time::SystemTime::now();
+    let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries {
+        let entry = entry.map_err(StageError::Io)?;
+        let file_type = entry.file_type().map_err(StageError::Io)?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .map_err(StageError::Io)?
+            .modified()
+            .map_err(StageError::Io)?;
+        if now.duration_since(modified).is_ok_and(|age| age > max_age) {
+            if std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        let len = entry.metadata().map_err(StageError::Io)?.len();
+        total = total.saturating_add(len);
+        kept.push((modified, len, entry.path()));
+    }
+    kept.sort_by_key(|entry| entry.0);
+    for (_, len, path) in kept {
+        if total <= max_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+            total = total.saturating_sub(len);
+        }
+    }
+    Ok(removed)
+}
+
 fn open_nofollow(path: &Path) -> Result<std::fs::File, StageError> {
     #[cfg(unix)]
     {
@@ -368,6 +420,64 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn sweep_removes_expired_files_and_never_symlinks() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old_path = root.path().join("old.bin");
+        let fresh_path = root.path().join("fresh.bin");
+        std::fs::write(&old_path, b"old").expect("write");
+        std::fs::write(&fresh_path, b"fresh").expect("write");
+        let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        filetime_set(&old_path, aged);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&fresh_path, root.path().join("link.bin")).expect("symlink");
+
+        let removed = sweep_directory(root.path(), std::time::Duration::from_secs(60), u64::MAX)
+            .expect("sweep");
+        assert_eq!(removed, 1);
+        assert!(!old_path.exists());
+        assert!(fresh_path.exists());
+    }
+
+    #[test]
+    fn sweep_enforces_size_cap_oldest_first() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for (name, age_secs) in [("a.bin", 300), ("b.bin", 200), ("c.bin", 100)] {
+            let path = root.path().join(name);
+            std::fs::write(&path, vec![0u8; 10]).expect("write");
+            filetime_set(
+                &path,
+                std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
+            );
+        }
+        let removed =
+            sweep_directory(root.path(), std::time::Duration::from_secs(3600), 20).expect("sweep");
+        assert_eq!(removed, 1);
+        assert!(!root.path().join("a.bin").exists());
+        assert!(root.path().join("b.bin").exists());
+        assert!(root.path().join("c.bin").exists());
+    }
+
+    #[test]
+    fn sweep_missing_directory_is_zero() {
+        let removed = sweep_directory(
+            Path::new("/tmp/handover-definitely-missing-sweep-dir"),
+            std::time::Duration::from_secs(1),
+            1,
+        )
+        .expect("sweep");
+        assert_eq!(removed, 0);
+    }
+
+    fn filetime_set(path: &Path, modified: std::time::SystemTime) {
+        // std has no mtime setter; drive one through a reopened handle.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open");
+        file.set_modified(modified).expect("set mtime");
+    }
 
     fn write_file(directory: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let path = directory.join(name);

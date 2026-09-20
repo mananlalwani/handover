@@ -1,6 +1,6 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -13,6 +13,14 @@ use serde::{Deserialize, Serialize};
 use crate::state::StateStore;
 
 const CACHE_VERSION: u32 = 1;
+
+/// Opt-out for the on-disk messaging cache. When the environment
+/// variable `HANDOVER_MESSAGING_CACHE` is set to `0`, the daemon
+/// neither restores nor persists messaging state: restarts rebuild
+/// every conversation and window from the helper.
+pub(crate) fn disabled() -> bool {
+    std::env::var_os("HANDOVER_MESSAGING_CACHE").is_some_and(|value| value == "0")
+}
 
 #[derive(Deserialize, Serialize)]
 struct MessagingCache {
@@ -68,6 +76,9 @@ pub(crate) fn restore(state: &mut StateStore) -> Result<(), Box<dyn std::error::
 }
 
 pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std::error::Error>> {
+    if disabled() {
+        return Ok(());
+    }
     let cache = {
         let guard = state
             .read()
@@ -85,15 +96,12 @@ pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std
     let directory = path.parent().expect("cache path has parent");
     fs::create_dir_all(directory)?;
     fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    let temporary = path.with_extension("json.tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(&encoded)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
+    // Unique temp file in the target directory: concurrent persists
+    // must never share (and clobber) one temp path before the rename.
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.as_file_mut().write_all(&encoded)?;
+    temporary.as_file().sync_all()?;
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o600))?;
+    temporary.persist(&path)?;
     Ok(())
 }

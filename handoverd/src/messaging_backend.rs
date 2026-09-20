@@ -45,6 +45,9 @@ use handover_core::StateEvent;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 const MAX_IN_FLIGHT: usize = 64;
 const DORMANT_RETRY: Duration = Duration::from_secs(30);
+/// A helper session that survives this long counts as healthy and
+/// resets the restart backoff. Shorter sessions keep counting up.
+const STABLE_SESSION: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HelperCallError {
@@ -419,14 +422,21 @@ pub(crate) fn spawn_supervisor(
             };
             match HelperProcess::spawn(&path).await {
                 Ok(process) => {
-                    restarts = 0;
                     info!(helper = %process.name, "messaging helper connected");
+                    let started = std::time::Instant::now();
                     run_session(&state, &events, &hub, process).await;
                     hub.fail_all().await;
                     if hub.is_shutdown() {
                         break;
                     }
                     mark_helper_accounts_down(&state, &events);
+                    // Only a session that stayed up earns a reset. A
+                    // helper that handshakes and then crashes repeatedly
+                    // must back off progressively instead of respawning
+                    // every couple of seconds forever.
+                    if started.elapsed() >= STABLE_SESSION {
+                        restarts = 0;
+                    }
                 }
                 Err(error) => {
                     warn!(%error, "messaging helper unavailable; retrying");
