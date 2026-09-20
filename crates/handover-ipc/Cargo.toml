@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "Client/server IPC protocol for Handover"
 
 [dependencies]
-handover-core = { path = "../handover-core" }
+handover-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -7,11 +7,11 @@ rust-version.workspace = true
 description = "Handover daemon"
 
 [dependencies]
-handover-core = { path = "../crates/handover-core" }
-handover-gmessages = { path = "../crates/handover-gmessages" }
-handover-ipc = { path = "../crates/handover-ipc" }
-handover-kdeconnect = { path = "../crates/handover-kdeconnect" }
-handover-native = { path = "../crates/handover-native" }
+handover-core.workspace = true
+handover-gmessages.workspace = true
+handover-ipc.workspace = true
+handover-kdeconnect.workspace = true
+handover-native.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

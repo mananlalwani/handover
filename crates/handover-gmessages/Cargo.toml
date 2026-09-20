@@ -10,7 +10,7 @@ name = "handover-gmessages-helper"
 path = "src/bin/helper.rs"
 
 [dependencies]
-handover-core = { path = "../handover-core" }
+handover-core.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

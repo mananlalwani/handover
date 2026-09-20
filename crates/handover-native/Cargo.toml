@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-handover-core = { path = "../handover-core" }
+handover-core.workspace = true
 openssl = "0.10"
 serde.workspace = true
 serde_json.workspace = true

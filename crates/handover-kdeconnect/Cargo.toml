@@ -8,7 +8,7 @@ description = "KDE Connect backend for Handover"
 
 [dependencies]
 futures-util.workspace = true
-handover-core = { path = "../handover-core" }
+handover-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

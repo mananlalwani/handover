@@ -10,8 +10,8 @@ description = "Command-line client for Handover"
 clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
-handover-core = { path = "../crates/handover-core" }
-handover-ipc = { path = "../crates/handover-ipc" }
+handover-core.workspace = true
+handover-ipc.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 url.workspace = true
