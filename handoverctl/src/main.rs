@@ -1406,9 +1406,10 @@ mod messaging_tests {
             .expect("fixture writes");
         let bundle = read_bundle(Some(path.clone())).await.expect("reads");
         let _ = tokio::fs::remove_file(&path).await;
-        // One byte past the cap proves oversize; the rest is never buffered.
-        assert_eq!(bundle.len(), MAX_RAW_BUNDLE_BYTES as usize + 1);
+        // Oversize input is detected (read past the cap) without
+        // ever buffering the whole thing.
         assert!(bundle.len() as u64 > MAX_RAW_BUNDLE_BYTES);
+        assert!(bundle.len() <= MAX_RAW_BUNDLE_BYTES as usize + 1);
     }
 
     #[test]
