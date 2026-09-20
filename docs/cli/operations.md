@@ -56,7 +56,8 @@ Other state locations:
 
 - `HANDOVER_GMESSAGES_HELPER`: explicit path to the Google Messages
   helper binary. When unset, `handoverd` resolves
-  `handover-gmessages-helper` via `PATH`. When neither exists, the
+  `handover-gmessages-helper` (bundled loopback) or `handover-gmessages`
+  (production adapter) via `PATH`. When neither exists, the
   messaging subsystem stays dormant and other backends keep working.
 - `HANDOVER_GMESSAGES_STAGING_DIR`: private absolute root for helper
   attachment staging. Optional.

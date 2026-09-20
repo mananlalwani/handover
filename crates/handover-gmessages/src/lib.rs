@@ -17,4 +17,6 @@ pub use contract::{
     HELPER_PROTOCOL, HelperCommand, HelperEvent, MAX_BUNDLE_BYTES, MAX_HELPER_LINE_BYTES,
 };
 pub use normalize::{NormalizeError, event_ids, normalize_account, normalize_conversation};
-pub use supervisor::{HELPER_BINARY, HELPER_ENV, HelperProcess, SpawnError, find_helper};
+pub use supervisor::{
+    HELPER_BINARY, HELPER_BINARY_PRODUCTION, HELPER_ENV, HelperProcess, SpawnError, find_helper,
+};

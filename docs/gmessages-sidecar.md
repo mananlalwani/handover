@@ -83,11 +83,11 @@ Rules both sides follow:
 * The bundle travels CLI → daemon → helper over local sockets/pipes only
   (bounded: 64 KiB IPC line, 256 KiB helper cap). The daemon never
   persists it. The external adapter stores one 0600 session file per account below
-  `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-adapter` (0700 directory,
+  `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages` (0700 directory,
   temp-file + atomic rename) and confirms with account/pairing events
   that echo no secret material.
 * Attachment paths reported by the helper are accepted only below an approved
-  staging root. The bundled helper uses `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/staging`; the production adapter uses `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-adapter/staged`. Operators may select a private absolute root with `HANDOVER_GMESSAGES_STAGING_DIR`. Files must be regular non-symlink files and are size-bounded. Before entering normalized state, the daemon copies each attachment through a no-follow descriptor into its private `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/imported` directory, so clients never retain helper-controlled paths.
+  staging root. The bundled helper uses `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/staging`; the production adapter uses `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/staged`. Operators may select a private absolute root with `HANDOVER_GMESSAGES_STAGING_DIR`. Files must be regular non-symlink files and are size-bounded. Before entering normalized state, the daemon copies each attachment through a no-follow descriptor into its private `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/imported` directory, so clients never retain helper-controlled paths.
 * Pairing verification (e.g. the emoji to confirm on the phone) arrives
   as an opaque `pairing` prompt: displayed to the user, never logged
   with content, never stored.
@@ -101,7 +101,8 @@ Rules both sides follow:
 ## Supervision and isolation
 
 * The helper is optional. `HANDOVER_GMESSAGES_HELPER` names an explicit
-  binary, otherwise `handover-gmessages-helper` is resolved via `PATH`;
+  binary, otherwise `handover-gmessages-helper` (bundled loopback) or
+  `handover-gmessages` (production adapter) is resolved via `PATH`;
   when neither exists the subsystem stays dormant and every other
   backend keeps working.
 * Bounded exponential backoff (1s…60s). After every connect the daemon

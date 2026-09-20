@@ -164,7 +164,7 @@ pub fn adapter_staging_directory() -> Result<PathBuf, StageError> {
     if !base.is_absolute() {
         return Err(StageError::OutsideRoot);
     }
-    Ok(base.join("handover/gmessages-adapter/staged"))
+    Ok(base.join("handover/gmessages/staged"))
 }
 
 /// Private daemon-owned destination for imported helper attachments.

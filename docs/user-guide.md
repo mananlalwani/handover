@@ -112,7 +112,7 @@ Google Messages support is optional and uses the separate
 Build that adapter in its own repository, then point Handover at the binary:
 
 ```sh
-export HANDOVER_GMESSAGES_HELPER=/path/to/handover-gmessages-adapter
+export HANDOVER_GMESSAGES_HELPER=/path/to/handover-gmessages
 ```
 
 The adapter handles Google credentials and the phone relay. Handover receives

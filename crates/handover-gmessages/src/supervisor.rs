@@ -25,6 +25,9 @@ use crate::contract::{
 pub const HELPER_ENV: &str = "HANDOVER_GMESSAGES_HELPER";
 /// Default helper binary name resolved via `PATH`.
 pub const HELPER_BINARY: &str = "handover-gmessages-helper";
+/// Production adapter binary name, resolved via `PATH` when the bundled
+/// helper is not installed. Explicit `HANDOVER_GMESSAGES_HELPER` wins.
+pub const HELPER_BINARY_PRODUCTION: &str = "handover-gmessages";
 
 /// Locate the helper binary: explicit env path first, then `PATH` lookup.
 /// Returns `None` when messaging should stay dormant.
@@ -38,11 +41,13 @@ pub fn find_helper() -> Option<PathBuf> {
     }
     // PATH lookup without spawning anything: messaging stays dormant when
     // no helper binary is installed.
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|directory| directory.join(HELPER_BINARY))
-            .find(|candidate| candidate.is_file())
-    })
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|directory| directory.join(HELPER_BINARY))
+        .chain(
+            std::env::split_paths(&paths).map(|directory| directory.join(HELPER_BINARY_PRODUCTION)),
+        )
+        .find(|candidate| candidate.is_file())
 }
 
 pub fn backoff_delay(restarts: u32) -> Duration {
