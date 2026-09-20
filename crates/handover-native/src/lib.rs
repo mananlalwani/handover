@@ -1518,6 +1518,11 @@ impl NativeBackend {
                     subdirs.push(child.path());
                     walk.push(child.path());
                 } else if kind.is_file() {
+                    if child.file_name() == ".partial" {
+                        // Active transfers are accounted for by the
+                        // reservation table. Never evict their partial.
+                        continue;
+                    }
                     let Ok(metadata) = child.metadata() else {
                         continue;
                     };

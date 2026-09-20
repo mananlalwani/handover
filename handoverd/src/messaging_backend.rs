@@ -84,8 +84,10 @@ struct FetchSerializer {
     lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     waiters: usize,
 }
-/// Oldest normalized message of the in-progress page, per conversation.
-type PageFloors = HashMap<(String, String), (Option<i64>, String)>;
+/// Oldest normalized message of an in-progress page. Explicit fetches use
+/// their request id; background pages use None and cannot share that state.
+type PageFloorKey = (String, String, Option<u64>);
+type PageFloors = HashMap<PageFloorKey, (Option<i64>, String)>;
 
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
@@ -99,9 +101,9 @@ struct HubInner {
     /// Waiters queued on fetch locks. Bounds total history waiters;
     /// `fetches` alone cannot, since one key holds one flight.
     fetch_waiters: std::sync::atomic::AtomicUsize,
-    /// Whether the current helper echoes fetch ids. Learned from
-    /// observed events; cleared whenever the helper disconnects so a
-    /// replacement helper starts in legacy mode.
+    /// The active helper contract carries fetch ids. Set when a request is
+    /// submitted so an id-less background event cannot complete its waiter
+    /// before the first response arrives.
     fetch_id_supported: std::sync::atomic::AtomicBool,
     counter: AtomicU64,
     shutdown: AtomicBool,
@@ -266,6 +268,7 @@ impl MessagingHub {
                 .await
                 .insert(key.clone(), (fetch_id, tx));
         }
+        self.inner.fetch_id_supported.store(true, Ordering::Relaxed);
         if let Err(error) = self
             .submit(HelperCommand::FetchHistory {
                 account: account.into(),
@@ -323,12 +326,6 @@ impl MessagingHub {
     }
 
     async fn complete_fetch(&self, account: &str, conversation: &str, fetch_id: Option<u64>) {
-        if fetch_id.is_some() {
-            // Helpers that echo fetch ids make completion exact: only
-            // the matching waiter wakes, so background windows can
-            // never complete an explicit fetch early.
-            self.inner.fetch_id_supported.store(true, Ordering::Relaxed);
-        }
         let key = (account.to_string(), conversation.to_string());
         let mut fetches = self.inner.fetches.lock().await;
         let matched = match fetches.get(&key) {
@@ -518,9 +515,10 @@ impl MessagingHub {
         &self,
         account: &str,
         conversation: &str,
+        fetch_id: Option<u64>,
         messages: &[(Option<i64>, String)],
     ) {
-        let key = (account.to_string(), conversation.to_string());
+        let key = (account.to_string(), conversation.to_string(), fetch_id);
         let mut floors = self.inner.page_floors.lock().await;
         for (sent_at, id) in messages {
             let candidate = (*sent_at, id.clone());
@@ -540,12 +538,17 @@ impl MessagingHub {
     /// Take the page's oldest message id and reset the floor. Called
     /// when the closing chunk's cursor arrives, or when a page ends
     /// without one.
-    async fn take_page_floor(&self, account: &str, conversation: &str) -> Option<String> {
+    async fn take_page_floor(
+        &self,
+        account: &str,
+        conversation: &str,
+        fetch_id: Option<u64>,
+    ) -> Option<String> {
         self.inner
             .page_floors
             .lock()
             .await
-            .remove(&(account.to_string(), conversation.to_string()))
+            .remove(&(account.to_string(), conversation.to_string(), fetch_id))
             .map(|(_, id)| id)
     }
 
@@ -559,8 +562,8 @@ impl MessagingHub {
             .map(|(id, _)| *id)
     }
 
-    /// Whether any fetch id has ever been echoed back. Gates the
-    /// legacy key-only matching used with helpers that predate ids.
+    /// Whether explicit fetch identity is required for the current helper
+    /// connection.
     async fn fetch_id_known(&self) -> bool {
         self.inner.fetch_id_supported.load(Ordering::Relaxed)
     }
@@ -888,14 +891,21 @@ async fn ingest_event(
                     .iter()
                     .map(|message| (message.sent_at, message.id.local_id.clone()))
                     .collect();
-                hub.accumulate_page_floor(&account, &conversation, &floor_points)
+                let floor_key = if fetch_matches { fetch_id } else { None };
+                hub.accumulate_page_floor(&account, &conversation, floor_key, &floor_points)
                     .await;
             }
             let public_cursor = match cursor_next.filter(|cursor| !cursor.is_empty()) {
-                Some(_) => hub.take_page_floor(&account, &conversation).await,
+                Some(_) => {
+                    let floor_key = if fetch_matches { fetch_id } else { None };
+                    hub.take_page_floor(&account, &conversation, floor_key)
+                        .await
+                }
                 None => {
                     if page_complete {
-                        hub.take_page_floor(&account, &conversation).await;
+                        let floor_key = if fetch_matches { fetch_id } else { None };
+                        hub.take_page_floor(&account, &conversation, floor_key)
+                            .await;
                     }
                     None
                 }

@@ -362,10 +362,12 @@ fn pause_desktop_media() {
         handle.spawn(async {
             // playerctl talks to the local MPRIS session, unlike the Handover
             // media map, which describes remote phone players.
-            let _ = tokio::process::Command::new("playerctl")
-                .args(["--all-players", "pause"])
-                .output()
-                .await;
+            let _ = tokio::task::spawn_blocking(|| {
+                let mut command = std::process::Command::new("playerctl");
+                command.args(["--all-players", "pause"]);
+                local_cmd::status_timeout(&mut command)
+            })
+            .await;
         });
     }
 }

@@ -182,7 +182,7 @@ async fn persist_async(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn st
         .lock()
         .await;
     let generation = SNAPSHOT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut cache = {
+    let cache = {
         let guard = state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -194,12 +194,13 @@ async fn persist_async(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn st
             read_states: guard.messaging().snapshot_read(),
         }
     };
-    prune_cache(&mut cache);
     let path = cache_path()?;
     let directory = path.parent().expect("cache path has parent").to_path_buf();
     fs::create_dir_all(&directory)?;
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
     let encoded = tokio::task::spawn_blocking(move || {
+        let mut cache = cache;
+        prune_cache(&mut cache);
         serde_json::to_vec(&cache)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
     })
@@ -285,5 +286,14 @@ fn prune_cache(cache: &mut MessagingCache) {
         encoded_len = serde_json::to_vec(&cache)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
+    }
+    if encoded_len > MAX_CACHE_BYTES as usize {
+        cache.messages.clear();
+        cache.read_states.clear();
+        cache.conversations.clear();
+        cache.accounts.clear();
+        // These vectors contain user-controlled labels and can each be
+        // large enough to exceed the file bound on their own. An empty
+        // cache is preferable to writing a file restore must reject.
     }
 }
