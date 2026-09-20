@@ -3529,6 +3529,7 @@ mod messaging_live_tests {
             .send_message_file(rcs.id.clone(), file_url, Some("caption".into()))
             .await
             .expect("attachment accepted");
+        wait_for_attachment(&mut subscription, "live ✓.bin").await;
         let (with_file, _) = client
             .messaging_history(rcs.id.clone(), Some(10), None)
             .await
@@ -3753,6 +3754,31 @@ mod messaging_live_tests {
             };
             if matches == present {
                 return;
+            }
+        }
+    }
+
+    async fn wait_for_attachment(subscription: &mut handover_ipc::Subscription, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if Instant::now() > deadline {
+                panic!("timed out waiting for attachment state");
+            }
+            let message = tokio::time::timeout(Duration::from_secs(5), subscription.next_message())
+                .await
+                .expect("event in time")
+                .expect("event decodes");
+            match message.payload {
+                ServerPayload::MessageAdded { message }
+                | ServerPayload::MessageUpdated { message }
+                    if message
+                        .attachments
+                        .iter()
+                        .any(|attachment| attachment.name.as_deref() == Some(name)) =>
+                {
+                    return;
+                }
+                _ => {}
             }
         }
     }
