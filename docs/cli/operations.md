@@ -28,7 +28,7 @@ Remove the user service and binaries:
 make uninstall-user
 ```
 
-The unit file `packaging/systemd/handoverd.service` runs one user
+The unit file `packaging/systemd/handoverd.local.service` runs one user
 service, restarts on failure, and hardens the process with
 `NoNewPrivileges`, a private runtime directory with mode 0700, and a
 restricted address family set for Unix, IP, and netlink sockets.

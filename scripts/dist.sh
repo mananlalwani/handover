@@ -41,7 +41,7 @@ install -Dm644 completions/_handoverctl \
 	"$STAGE_DIR/share/zsh/site-functions/_handoverctl"
 install -Dm644 completions/handoverctl.fish \
 	"$STAGE_DIR/share/fish/vendor_completions.d/handoverctl.fish"
-install -Dm644 packaging/systemd/handoverd.service \
+install -Dm644 packaging/systemd/handoverd.local.service \
 	"$STAGE_DIR/share/systemd/user/handoverd.service"
 install -Dm644 quickshell/HandoverService.qml \
 	"$STAGE_DIR/share/handover/quickshell/HandoverService.qml"

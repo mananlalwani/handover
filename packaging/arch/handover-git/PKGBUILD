@@ -1,0 +1,48 @@
+# Maintainer: Handover contributors
+
+pkgname=handover-git
+pkgver=0.3.1.r0.g0000000
+pkgrel=1
+pkgdesc='Android and Linux continuity daemon and CLI'
+arch=('x86_64' 'aarch64')
+url='https://github.com/mananlalwani/handover'
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'openssl' 'dbus')
+makedepends=('git' 'rust' 'cargo')
+optdepends=(
+  'quickshell: example panel'
+  'playerctl: pause local MPRIS players during phone calls'
+  'kdeconnect: optional compatibility backend'
+  'handover-gmessages: Google Messages helper (AGPL)'
+)
+provides=('handover')
+conflicts=('handover')
+options=('!lto')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd handover
+  git describe --tags --long 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+    || printf '0.0.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd handover
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+  cd handover
+  cargo build --release --frozen --offline -p handoverd -p handoverctl
+}
+
+package() {
+  cd handover
+  make PREFIX=/usr DESTDIR="$pkgdir" \
+    USER_DATA_HOME=/usr/share \
+    USER_UNIT_DIR="$pkgdir/usr/lib/systemd/user" \
+    UNIT_SRC=packaging/systemd/handoverd.service \
+    install-files
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

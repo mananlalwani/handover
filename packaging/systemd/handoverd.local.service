@@ -4,7 +4,7 @@ After=dbus.socket
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/handoverd
+ExecStart=%h/.local/bin/handoverd
 Restart=on-failure
 RestartSec=3s
 RuntimeDirectory=handover
@@ -20,7 +20,6 @@ ProtectControlGroups=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-# libc getifaddrs uses route netlink on Linux; native mDNS discovery depends on it.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]

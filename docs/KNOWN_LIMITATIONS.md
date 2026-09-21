@@ -35,19 +35,6 @@ promise of completeness.
 - Keep helper-contract fixtures in sync with `handover-gmessages`.
 - Snapshot chunking should cover every collection, not only notifications.
 
-## Code size still worth splitting later
-
-These files are large because they own one domain or their tests, not because
-the public API is mixed:
-
-- `crates/handover-gmessages/src/messaging.rs` (much of it tests)
-- `crates/handover-native/src/lib.rs` (much of it tests)
-- `crates/handover-native/src/session/connection.rs` (one session loop)
-- `quickshell/HandoverService.qml`
-- `quickshell/pages/MessagesPage.qml`
-
-Track further splits as ordinary issues. Do not block public inspection on them.
-
 ## License boundary
 
 `crates/handover-gmessages` holds the helper contract, normalization, staging,

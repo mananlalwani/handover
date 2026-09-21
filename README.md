@@ -38,6 +38,17 @@ Ubuntu 24.04) and a debug APK. Unpack the tarball and run `./install.sh`. That
 copies binaries to `~/.local/bin`, the user systemd unit, completions, and the
 Quickshell example. Put `~/.local/bin` on `PATH`.
 
+On Arch, you can build a `/usr` package from this tree instead:
+
+```sh
+cd packaging/arch/handover-git
+makepkg -si
+systemctl --user enable --now handoverd.service
+```
+
+See [packaging/arch/README.md](packaging/arch/README.md). Disable a previous
+`make install-user` daemon first so only one `handoverd` runs.
+
 Install from source if you have Rust and want to build locally:
 
 ```sh
