@@ -1,26 +1,25 @@
 # Handover
 
-Handover connects your Android phone to your Linux desktop. Share files, links,
-and clipboard contents, read phone notifications, control media playback, and
-access calls and contacts from Linux. The Android app also provides presentation,
+Handover connects an Android phone to a Linux desktop. It shares files, links,
+and clipboard contents, shows phone notifications, controls media playback,
+and exposes calls and contacts. The Android app also provides presentation,
 pointer, keyboard, and Linux volume controls.
 
 `handoverd` runs in the background. Use `handoverctl` from the terminal or the
 included Quickshell reference client. The native Android connection works
 without KDE Connect, which remains an optional compatibility backend.
 
-Handover is pre-1.0. Capabilities depend on Android permissions and device
-support, and the IPC contract is still experimental. See the
-[known limitations](docs/KNOWN_LIMITATIONS.md) for gaps and live-testing coverage.
+Handover is pre-1.0. Some features need Android permissions or depend on the
+phone model. The IPC contract is still experimental. See the [known
+limitations](docs/KNOWN_LIMITATIONS.md) for current gaps and test coverage.
 
 ## Install
 
 ### Linux
 
-Download the Linux tarball from
-[Releases](https://github.com/mananlalwani/handover/releases), unpack it, and run
-`./install.sh` from the extracted directory. Release builds target x86_64 Linux
-with glibc and are built on Ubuntu 24.04.
+Download the Linux tarball from [Releases](https://github.com/mananlalwani/handover/releases),
+unpack it, and run `./install.sh` from the extracted directory. Release builds
+target x86_64 Linux with glibc and are built on Ubuntu 24.04.
 
 The installer copies the binaries to `~/.local/bin` and starts `handoverd` as a
 systemd user service. Add `~/.local/bin` to your shell's `PATH`, then check it:
@@ -51,10 +50,9 @@ If you previously used `make install-user`, follow the
 
 ### Android and pairing
 
-Install the Android debug APK from the same release, or follow the
-[build instructions](CONTRIBUTING.md) to build it yourself. Open Handover on the
-phone and enable the connection while the phone and computer can reach each
-other.
+Install the Android debug APK from the release, or follow the [build
+instructions](CONTRIBUTING.md) to build it yourself. Open Handover on the phone
+and enable the connection while the phone and computer can reach each other.
 
 On Linux, list pending pairing requests:
 
@@ -62,8 +60,8 @@ On Linux, list pending pairing requests:
 handoverctl native pending
 ```
 
-Compare the eight-digit code shown on Linux with the code on the phone. Only
-approve the request if they match, substituting the pending ID and code below:
+Compare the eight-digit code shown on Linux with the code on the phone. Approve
+the request only when they match:
 
 ```sh
 handoverctl native pair <pending-id> <eight-digit-code>
@@ -83,13 +81,12 @@ quickshell --path ~/.local/share/handover/quickshell/example.qml
 ```
 
 For an Arch package installation, use
-`/usr/share/handover/quickshell/example.qml`. See the
-[Quickshell guide](quickshell/README.md) for the available views and integration
-API.
+`/usr/share/handover/quickshell/example.qml`. The [Quickshell
+guide](quickshell/README.md) documents its views and QML API.
 
 ## Everyday use
 
-Replace `"Phone"` with the device name or ID from `handoverctl devices`.
+Replace `"Phone"` with a device name or ID from `handoverctl devices`.
 
 ```sh
 handoverctl devices
@@ -107,8 +104,8 @@ without a text argument. For the other direction, use "Send current clipboard
 to Linux" in the Android app. Background clipboard mirroring is an opt-in
 Android setting and is off by default.
 
-A successful command means the backend accepted the request. Completion and
-state updates appear in `handoverctl monitor` when the backend provides them.
+A successful command means the backend accepted the request. When available,
+completion and state updates appear in `handoverctl monitor`.
 
 The [user guide](docs/user-guide.md) covers setup, permissions, troubleshooting,
 and removal. The [CLI reference](docs/cli/handoverctl.md) is also available as
