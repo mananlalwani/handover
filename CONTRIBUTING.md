@@ -54,7 +54,7 @@ Run the Android checks from `android/`:
 Run the QML check from the repository root:
 
 ```sh
-qmllint quickshell/*.qml quickshell/pages/*.qml
+qmllint quickshell/*.qml
 ```
 
 Run all checks affected by a change. Report checks that are unavailable on the
