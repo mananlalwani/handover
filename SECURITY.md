@@ -3,8 +3,7 @@
 ## Reporting a vulnerability
 
 Do not report security issues in a public GitHub issue. Use GitHub's private
-vulnerability reporting for this repository. Enable it in the GitHub Security
-advisories settings before the repository is public. Include a short description, the
+vulnerability reporting for this repository. Include a short description, the
 affected revision, reproduction steps that do not contain secrets, and the
 impact. If private reporting is unavailable, contact the maintainers privately
 before sharing details.
@@ -21,6 +20,7 @@ about the optional Google Messages integration should include only sanitized
 details. Google authentication and relay credentials belong to the external
 `handover-gmessages` adapter and must not be pasted into this repository.
 
-Handover is intended to keep the MIT repository and the separate AGPL-3.0-only
-adapter at a process and contract boundary. This describes the engineering
-arrangement, not a legal conclusion about every distribution or deployment.
+The MIT daemon and the AGPL adapter run in separate processes and communicate
+through the [helper contract](docs/gmessages-sidecar.md). This describes the
+engineering boundary; licensing obligations depend on how the software is
+distributed and deployed.

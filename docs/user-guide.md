@@ -1,8 +1,7 @@
 # Handover user guide
 
-Handover gives Linux desktop applications a shared view of Android devices.
-The daemon keeps the current state. The CLI and Quickshell client reconnect and
-read a fresh snapshot when they start.
+Linux apps talk to `handoverd` for Android devices. The CLI and Quickshell
+reconnect and read a fresh snapshot when they start.
 
 ## Install
 
@@ -14,7 +13,7 @@ Or install from source:
 make install-user
 ```
 
-Make sure `~/.local/bin` is on `PATH`, then check the daemon:
+Put `~/.local/bin` on `PATH`, then check the daemon:
 
 ```sh
 systemctl --user status handoverd
@@ -70,8 +69,9 @@ its own background clipboard sync if you keep that backend.
 
 ## Common commands
 
-The complete reference is `docs/cli/handoverctl.md`, with family pages
-for native commands, messaging, sharing and clipboard, and operations.
+The [CLI reference](cli/handoverctl.md) links to the command pages for
+[native pairing](cli/native.md), [messaging](cli/messages.md), [sharing and
+clipboard](cli/sharing-clipboard.md), and [operations](cli/operations.md).
 The installed man page is `handoverctl(1)`.
 
 List devices:
@@ -110,20 +110,41 @@ handoverctl monitor
 
 Google Messages support is optional and uses the separate
 [Handover Google Messages adapter](https://github.com/mananlalwani/handover-gmessages).
-Build that adapter in its own repository, then point Handover at the binary:
+Build that adapter in its own repository, then point the daemon at the binary.
+For a systemd user service, add the variable with `systemctl --user edit
+handoverd`:
+
+```ini
+[Service]
+Environment=HANDOVER_GMESSAGES_HELPER=/path/to/handover-gmessages
+```
+
+Then restart the daemon:
 
 ```sh
-export HANDOVER_GMESSAGES_HELPER=/path/to/handover-gmessages
+systemctl --user restart handoverd
 ```
 
 The adapter handles Google credentials and the phone relay. Handover receives
 only normalized conversations, messages, statuses, capabilities, and opaque
-identifiers. Follow the adapter's pairing runbook for account setup.
+identifiers. Follow the adapter's [user guide](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/user-guide.md)
+and [pairing runbook](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/pairing-runbook.md)
+to obtain the login data and confirm the phone pairing. Pass the data through
+standard input or `--from-file`, for example:
+
+```sh
+handoverctl messages login gmessages:personal --from-file /path/to/bundle.json
+```
+
+The login bundle is sensitive. Do not put it in command arguments, shell
+history, logs, or a committed file. A saved session survives daemon restarts;
+run `handoverctl messages logout gmessages:personal` to revoke it and remove
+the local session.
 
 ## Notifications, media, calls, and clipboard
 
 Android notification access, media control, call control, and background access
-are optional permissions. Enable only the capabilities you want to use.
+are optional permissions. Enable only the capabilities in use.
 
 Native clipboard transfer is explicit rather than a background mirror. On the
 phone, use "Send current clipboard to Linux". From Linux, use:
@@ -134,8 +155,11 @@ handoverctl clipboard "Phone name" "text to put on the phone"
 handoverctl clipboard "Phone name"
 ```
 
-The native path limits clipboard text to 32 KiB and does not store it in daemon
-state. KDE Connect may still provide its own background clipboard behavior.
+The native path limits each clipboard text value to 32 KiB. Text received from
+the phone is kept in the daemon's bounded clipboard history, with up to 25
+recent and 25 pinned entries, and is stored at
+`${XDG_STATE_HOME:-$HOME/.local/state}/handover/clipboard-history.json`.
+KDE Connect may still provide its own background clipboard behavior.
 An opt-in Android setting can mirror text clipboard changes while the Handover
 foreground service is active. It uses content hashes to avoid echoing a change
 back to its origin.
@@ -175,10 +199,10 @@ Restart the daemon when its client socket or backend connection is stuck:
 systemctl --user restart handoverd
 ```
 
-The daemon will rebuild backend state. A native peer should reconnect without a
-new pairing ceremony as long as its trust record remains and the saved endpoint
-is reachable. If pairing was revoked or the Android app was reinstalled, pair
-the devices again.
+The daemon rebuilds backend state. A native peer reconnects without a new
+pairing ceremony while its trust record remains and the saved endpoint is
+reachable. If pairing was revoked or the Android app was reinstalled, pair
+again.
 
 ## Remove Handover
 
@@ -188,7 +212,10 @@ Remove the installed user service and binaries with:
 make uninstall-user
 ```
 
-That does not delete pairing state. To wipe native identity and peer records:
+Uninstalling leaves local state on disk. The following command deletes all
+Handover state at this location, including pairing records, clipboard history,
+cached messages, adapter sessions, and received files. Back up anything you
+want to keep first:
 
 ```sh
 rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/handover"
@@ -197,4 +224,4 @@ rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/handover"
 The Android app keeps its own identity in app storage and Keystore. Uninstall
 the Android package separately if you want that side gone too.
 
-See [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for current gaps.
+See [known limitations](KNOWN_LIMITATIONS.md) for current gaps.

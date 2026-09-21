@@ -1,6 +1,7 @@
 # Handover engineering principles
 
-Handover is infrastructure. A demo that works once is not a feature. Say what still holds when the socket dies, the phone reboots, or a client is slow.
+Handover must keep working when the socket disconnects, the phone reboots, or
+a client is slow. Document which guarantees hold through each failure.
 
 ## Guarantees
 
@@ -31,7 +32,9 @@ Keep these unless the change is an explicit protocol or behavior review.
 
 ## Modules
 
-Split a file when two things own it, not because it is long. `session/connection.rs` is one loop. Leave it. Tests next to the code they cover is fine.
+Split a file when it has separate responsibilities. Keep a connection loop
+together when splitting it would make its state harder to follow. Tests can
+live next to the code they cover.
 
 Native transport now looks like this:
 
@@ -49,9 +52,11 @@ crates/handover-native/src/
     services/          notifications, media
 ```
 
-IPC handlers live under `handoverd/src/ipc_server/` as connection, protocol, devices, notifications, media, calls, messaging, and transfers.
+IPC handlers live under `handoverd/src/ipc_server/` and cover connection,
+protocol, devices, notifications, media, calls, messaging, and transfers.
 
-Android `NativeTransport` is split by inbound frames, clipboard, contacts, and shares. Quickshell pages sit next to `example.qml`. Remaining bulk is listed in `docs/KNOWN_LIMITATIONS.md`.
+Android `NativeTransport` is split by inbound frames, clipboard, contacts, and
+shares. Quickshell views live in `quickshell/pages/`, which `example.qml` imports.
 
 ## Shared helpers
 
@@ -77,8 +82,13 @@ Use numbers when you claim a reliability or cost change helped: pairing and reco
 
 ## Security
 
-Authenticated TLS, explicit pairing, frame and file limits, safe paths, tight state-file permissions, atomic writes, redacted logs, provider isolation, transfer timeouts, bounded concurrency. Received files do not open or execute on their own.
+Use authenticated TLS and explicit pairing. Bound frames, files, transfer
+timeouts, and concurrency. Validate paths, restrict state-file permissions,
+write atomically, redact logs, and isolate providers. Native received files
+must not open or execute automatically.
 
 ## Git
 
-`main` should be readable. Prefer commits like `native: reconnect paired peers after suspend`. Squash branches that are only fixups. Keep multiple commits when each one is a real change.
+`main` should be readable. Subjects look like `native: reconnect paired peers
+after suspend`. Squash branches that are only fixups. Keep multiple commits
+when each one is a real change.

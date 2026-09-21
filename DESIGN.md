@@ -1,13 +1,13 @@
 # Design
 
-Handover is Linux desktop infrastructure. Its job is shared device state and
-actions, not a phone-management GUI.
+Handover provides shared Android device state and actions to Linux desktop
+clients. The daemon owns runtime state; clients rebuild their views from it.
 
 Frontends consume normalized Handover types. Backend names, object paths,
 plugin IDs, D-Bus interfaces, and Google protocol objects stay inside their
 adapters.
 
-Native Android is the primary backend. KDE Connect is optional compatibility.
+Native Android is the primary backend. KDE Connect provides optional compatibility.
 Both feed the same `StateStore`. Clients do not pick a backend.
 
 The KDE Connect path is:
@@ -31,67 +31,64 @@ re-enumerates after a restart.
 
 The native backend is the main provider of the same normalized device events.
 `handoverd` can start it alongside the KDE Connect adapter and merge both
-event streams into `StateStore`. Native device IDs are
-namespaced as `native:<certificate fingerprint>`, while KDE Connect IDs remain
-unchanged. Clients continue to consume `Device`, `BatteryState`, capabilities,
-and the existing snapshot/event IPC; no client selects or identifies a backend.
+event streams into `StateStore`. Native device IDs are namespaced as
+`native:<certificate fingerprint>`. KDE Connect IDs stay as they are. Clients
+still consume `Device`, `BatteryState`, capabilities, and the existing
+snapshot/event IPC.
 
 The Linux native adapter persists its self-signed identity certificate and key,
 plus a peer allowlist, below `${XDG_STATE_HOME:-~/.local/state}/handover/native`
 with restrictive permissions. The Android companion persists its installation
 identity in app-private storage and keeps the private key in Android Keystore.
-A peer is only trusted after the
-two users compare the displayed eight-digit code and explicitly approve it on
-their respective sides. The code is fresh for every ceremony: each hello
-carries a SHA-256 commitment to a random 16-byte nonce, both sides reveal
-their nonces in `pair_open`, and the code is derived from the two certificate
-fingerprints with each nonce bound to its fingerprint owner. A discovery
-result alone never creates a device or trust record.
+A peer is trusted only after both sides compare the eight-digit code and
+approve it. Each pairing attempt generates a new code. Each hello commits SHA-256 of a
+random 16-byte nonce. Both sides reveal the nonce in `pair_open`. The code
+comes from the two certificate fingerprints with each nonce bound to its
+owner. Discovery never creates a device or a trust record.
 
 The native listener advertises `_handover._tcp.local.` through DNS-SD and binds
-TCP port `24837`. The advertisement record has unit-test coverage, but no live
-multicast discovery verification has been performed; manual `address:port`
-entry is the verified path. The Android app also accepts an explicit `address:port` when
-multicast discovery is unavailable, including over a user-managed Tailscale
-connection. TLS 1.3 with peer certificates authenticates and
-encrypts the stream; the stored certificate fingerprint supplies the pairing
-decision. Discovery addresses and TXT values are treated as untrusted hints.
+TCP port `24837`. The advertisement record has unit tests. Most live discovery
+testing has used manual `address:port` entry, including Tailscale.
+TLS 1.3 with peer certificates authenticates the
+stream. The stored fingerprint is the pairing decision. Discovery addresses
+and TXT values are untrusted hints.
+
 The application protocol uses a four-byte big-endian length followed by a
-versioned JSON message, with a 64 KiB maximum frame. The native messages are
-`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `connectivity`, `notification_post`,
-`notification_removed`, `notifications_sync`, `notifications_request`,
-`notification_dismiss`, `notification_reply`, `notification_action`,
-`media_post`, `media_removed`, `media_sync`, `media_request`, `media_control`,
-`revoke`, `ring`, `user_ping`, `ping`, and `pong`.
+versioned JSON message. Frames cap at 64 KiB. Native messages include:
+`hello`, `pair_open`, `pair_confirm`, `paired`, `battery`, `connectivity`,
+`notification_post`, `notification_removed`, `notifications_sync`,
+`notifications_request`, `notification_dismiss`, `notification_reply`,
+`notification_action`, `media_post`, `media_removed`, `media_sync`,
+`media_request`, `media_control`, `revoke`, `ring`, `user_ping`, `ping`, and
+`pong`.
+
 An Android `hello` may include the previously trusted server ID. If Linux has
 revoked that phone, it replies with `revoke` so Android clears its stale pin
 before presenting a new pairing request.
-Unknown versions, oversized frames, malformed identities, unpaired
-fingerprints, commitment-less hellos from unknown peers, openings that do not
-match the committed nonce, and confirmations that do not repeat the displayed
-code are rejected; a failed ceremony drops the session so a retry starts a
-fresh, user-visible ceremony. Session count, read/write timeouts, and frame
-size are bounded. The daemon accepts battery, notification, and media updates
-only after `BatteryState` validation (battery), field/action bound checks
-(notifications), or player/metadata/control bound checks (media), then
-publishes the ordinary device/notification/media updates to all clients.
+
+The daemon rejects unknown versions, oversized frames, malformed identities,
+unpaired fingerprints, commitment-less hellos from unknown peers, openings
+that do not match the committed nonce, and confirmations that do not repeat
+the displayed code. A failed pairing attempt drops the session so a retry
+requires a fresh comparison. Session count, read/write timeouts, and frame
+size are bounded. Before publishing updates, the daemon validates
+`BatteryState` and checks bounds on notification fields and actions, media
+players, metadata, and controls.
 Notification content and track metadata are never sent before the peer is
 paired, and titles/bodies/artists are excluded from normal logs on both
 endpoints.
 
-Native peer administration is exposed through the existing daemon IPC as
-`native.peers`, `native.pending`, `native.pair`, and `native.unpair`. Unpairing
-removes the local allowlist entry, closes the active stream, and prevents a
-stale peer from reconnecting. Revocation is local to each endpoint and must be
-performed on both sides when both trust stores need to be cleared.
+Daemon IPC provides `native.peers`, `native.pending`, `native.pair`, and
+`native.unpair`. Unpairing removes the local allowlist entry, closes the
+active stream, and blocks that peer from reconnecting. Revocation is local to
+each endpoint. Remove the pairing on both sides to clear both trust records.
 
 The Android app uses an explicit user action to start its
 `connectedDevice` foreground service. The service owns the active transport,
 DNS-SD registration/discovery, reconnect attempts, and event-driven battery
 observation. Android lifecycle restarts and network changes recreate the
-connection from the persisted identity and allowlist; they do not bypass
-pairing. The API constraints and source links are recorded in
-[`docs/native-backend-apis.md`](docs/native-backend-apis.md).
+connection from the persisted identity and allowlist. They do not bypass
+pairing.
 
 KDE Connect remains optional and independent. Its disappearance removes only
 KDE-derived runtime entries; a native paired phone remains present and can
@@ -124,11 +121,13 @@ expose remote clipboard text or a signal for remote updates. Those stay inside
 KDE Connect suppresses clipboard write-back by comparing content and type,
 without a timer. Its enabled per-device plugins receive local changes, so a
 Linux copy can reach multiple connected devices. Remote writes share one Linux
-clipboard; differing simultaneous updates are last-writer-wins. Handover does
-not select a default device. It persists up to 25 recent phone-to-Linux text
+clipboard; the last write wins when simultaneous updates differ. Handover does
+not select a default device.
+
+Handover persists up to 25 recent native phone-to-Linux text
 entries and 25 user-pinned strings in a mode-0600 state file. The serialized
-history is limited to 900 KiB so it fits within one local IPC response. The dedicated
-clipboard-history IPC methods expose that list to local clients.
+history is limited to 900 KiB so it fits within one local IPC response.
+Dedicated clipboard-history IPC methods expose it to local clients.
 
 Android 10 and later restrict background clipboard reads. Handover provides a
 notification action and a Quick Settings tile for explicit sends. Its optional
@@ -141,6 +140,8 @@ For future work that needs daemon-owned Wayland clipboard access, the platform
 boundary belongs outside `handover-core`. The current Wayland options are the
 event-driven `ext-data-control-v1` protocol, with `wlr-data-control` as a
 compatibility path. No such Handover provider is implemented yet.
+
+## Runtime state
 
 `handoverd` owns the authoritative in-memory device and active notification
 maps. It applies normalized events synchronously, logs meaningful state
@@ -178,8 +179,8 @@ the current D-Bus interface.
 The socket's `share.url` and `share.file` requests use protocol 1. `share.file`
 contains a standard local `file://` URL, which preserves spaces and Unicode
 without shell parsing; the daemon checks that it identifies a readable regular
-file. `share_accepted` confirms only D-Bus acceptance. Incoming events use
-`share_received`. Subscribers request these new transient events with
+file. On the KDE Connect path, `share_accepted` confirms only D-Bus acceptance.
+Incoming events use `share_received`. Subscribers request these transient events with
 `"shares": true`; older protocol-1 subscribers omit the flag and continue to
 receive only device and notification events. Normal logs and
 `handoverctl monitor` report resource kind and source device, not file
@@ -224,6 +225,8 @@ the normalized source-device identity. KDE Connect remains accepted-only
 because its D-Bus API cannot confirm delivery; no native completion guarantee
 is claimed for KDE requests.
 
+## Notifications
+
 Notifications use an ID made from the source `DeviceId` and a device-local
 notification ID. This prevents collisions between phones. The normalized
 record carries app name, title, body, optional icon path, clearable state,
@@ -240,10 +243,9 @@ update it.
 
 The native path carries the same normalized records over the paired TLS
 session. The Android app reads the platform notification stream through its
-notification-listener service (permission-gated; a denied permission reports
-`enabled: false` so the daemon clears stale entries instead of showing
-ghosts) and sends `notification_post` upserts, `notification_removed`
-retractions, and full `notifications_sync` snapshots after pairing, on
+notification-listener service. A denied permission reports `enabled: false`
+so the daemon clears stale entries. The service sends `notification_post`
+upserts, `notification_removed` retractions, and full `notifications_sync` snapshots after pairing, on
 listener reconnect, and on daemon request. The phone's notification key
 becomes the Handover `local_id` inside the existing `native:<fingerprint>`
 device scope, so native and KDE Connect entries coexist without collisions
@@ -359,6 +361,11 @@ every helper record and outbound command. No Google protocol types and no
 AGPL material enter the MIT tree. A missing or dead helper only marks its
 accounts offline; native and KDE Connect state are untouched.
 
+The daemon caches normalized accounts, conversations, message windows, and read
+state in `handover/messaging-cache.json` under its state directory. Restored
+accounts start disconnected and unauthenticated until the helper reports their
+current state. `HANDOVER_MESSAGING_CACHE=0` disables cache loading and writes.
+
 Clients use additive protocol-1 `messages.*` methods (accounts,
 conversations, history with cursor paging, send/send-file, react/unreact,
 read, typing-start, delete, open, login/logout, sync) with an opt-in
@@ -381,13 +388,9 @@ umask and prevents the process from gaining new privileges. More invasive
 sandboxing is intentionally deferred because Handover is desktop
 infrastructure and needs session-bus and runtime-directory access.
 
-The developer install layout is:
-
-- `~/.local/bin/handoverd`
-- `~/.local/bin/handoverctl`
-- `${XDG_DATA_HOME:-~/.local/share}/systemd/user/handoverd.service`
-- `${XDG_DATA_HOME:-~/.local/share}/handover/quickshell/` for the optional
-  reference client
+The developer install layout is `~/.local` via `make install-user`. The Arch
+package puts binaries in `/usr/bin` and the user unit in
+`/usr/lib/systemd/user/handoverd.service`.
 
 ## Local IPC
 
@@ -396,15 +399,19 @@ The developer install layout is:
 `0700` and the socket with mode `0600`. The daemon removes a stale socket only
 when the existing path is a socket and no process accepts connections there.
 
-Protocol 1 uses newline-delimited JSON. Every request includes `protocol: 1`
-and one of these methods:
+Protocol 1 uses newline-delimited JSON with a 1 MiB line limit. Every request
+includes `protocol: 1` and a method. Basic methods include:
 
 - `hello`
 - `devices.list`
 - `subscribe`
 
+Other methods cover notifications, media, sharing, pairing, messaging, and
+device actions. The complete request types are defined in
+[`handover-ipc`](crates/handover-ipc/src/lib.rs).
+
 Server messages also carry `protocol: 1`. Snapshots serialize normalized
-`handover-core::Device` and `Notification` values directly. Battery
+devices and notifications, plus media and messaging state when requested. Battery
 deserialization still runs the core model's percentage validation. Device and
 notification events use add/update/remove forms; no KDE Connect object paths
 or reply tokens cross the socket.
@@ -416,7 +423,8 @@ client cannot stop the backend or other clients.
 
 The event channel retains 64 messages. A slow subscriber that falls behind
 does not block device updates. Once it reads again, the server replaces missed
-history with a current `snapshot` message containing both maps. Current state
+history with a current snapshot for the subscribed collections. Large snapshots
+are split into chunks to respect the line limit. Current state
 matters more than replaying every intermediate battery reading or notification
 update.
 

@@ -1,7 +1,7 @@
 # Handover roadmap
 
-Four milestones. Each one should be usable on its own. Later work does not
-block an earlier milestone unless skipping it would force a rewrite.
+Four milestones. Each one is usable on its own. Later work does not block an
+earlier milestone unless skipping it would force a rewrite.
 
 ## Milestone 1: replace KDE Connect (done)
 
@@ -15,12 +15,13 @@ continuity features, or 1.0 APIs.
 
 ## Milestone 2: make connectivity automatic
 
-The user should not manage the connection after pairing.
+The goal is to keep the connection working without user intervention after
+pairing.
 
-Work: reconnect latency, suspend/resume, Android process and service recovery,
-network transitions, stale-session rejection, capability renegotiation, stable
-identity, state restoration, idle CPU and memory, Android battery, installation
-and upgrades, desktop integration.
+Work includes reconnect latency, suspend and resume, Android process and
+service recovery, network transitions, stale-session rejection, capability
+renegotiation, stable identity, state restoration, idle CPU and memory, Android
+battery, installation and upgrades, and desktop integration.
 
 Done when common network and process failures recover without user action, one
 physical phone stays one identity, multi-day sessions stay usable, and install
@@ -83,5 +84,5 @@ Version for compatibility, not a calendar.
 
 ## Current priority
 
-Quiet public inspection of this MIT repo. Cold-clone install. Then Milestone 2:
-reconnect, packaging, and whatever daily use breaks first.
+Test the Arch package in daily use. Milestone 2 focuses on reconnects,
+packaging, and problems found during that testing.

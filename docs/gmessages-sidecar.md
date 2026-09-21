@@ -1,12 +1,10 @@
 # Google Messages sidecar
 
-Production Google Messages lives in
-[handover-gmessages](https://github.com/mananlalwani/handover-gmessages)
-(AGPL-3.0-only). This MIT repo talks to it as a separate process. The in-tree
-`handover-gmessages-helper` is a loopback for development and tests.
-
-This is the engineering boundary, not a legal opinion about every way the two
-trees might be combined.
+The production Google Messages adapter lives in
+[handover-gmessages](https://github.com/mananlalwani/handover-gmessages) and is
+licensed under AGPL-3.0-only. This MIT repository communicates with it as a
+separate process. The in-tree `handover-gmessages-helper` is a loopback helper
+for development and tests.
 
 ## Layout
 
@@ -20,10 +18,10 @@ adapter or loopback helper
   credentials, pairing, relay, media
 ```
 
-No shared address space, no FFI. The wire types are
-`crates/handover-gmessages/src/contract.rs` (`HELPER_PROTOCOL = 1`). Clients
-see `handover-core` messaging types. Google names (Bugle, Tachyon, UKEY2,
-protobuf enums) do not cross the pipe.
+The processes communicate over stdin/stdout and do not use FFI. The wire types
+are defined in [`contract.rs`](../crates/handover-gmessages/src/contract.rs),
+with `HELPER_PROTOCOL = 1`. Clients see `handover-core` messaging types.
+Google protocol objects and enums stay inside the adapter.
 
 `crates/handover-gmessages` is framing, normalization, staging, and
 supervision only. Do not vendor `libgm`, `gmproto`, emoji tables, key
@@ -45,8 +43,9 @@ are dropped without echoing content. Unknown status tokens and capability
 names are rejected, not coerced. There are no capabilities for edits,
 membership changes, or disappearing messages.
 
-`full: true` is an authoritative window. The daemon upserts and removes
-records missing from that window. `full: false` merges. Large syncs use
+`full: true` marks an authoritative window. The daemon inserts or updates the
+supplied records and removes records missing from that window. `full: false`
+merges records without removing missing entries. Large syncs use
 size-bounded chunks that share a `generation`. Only the last chunk sets
 `full`; the daemon reconciles when the generation closes. Reconciling a
 middle chunk would drop records that arrive later. Events with no
@@ -57,75 +56,93 @@ middle chunk would drop records that arrive later. Events with no
 
 ## Fixture
 
-The adapter checks in `adapter/testdata/helper-events.jsonl` (`REGENERATE_FIXTURE=1
-go test ./adapter/ -run TestContractFixtureIsCurrent`). This repo copies it to
-`crates/handover-gmessages/tests/fixtures/helper-events.jsonl`. After a contract
-change, refresh the Go fixture, copy it here, run the Rust contract test. CI
-diffs the two files when `HANDOVER_GMESSAGES_PUBLIC` is set.
+The adapter checks in `adapter/testdata/helper-events.jsonl`. Regenerate it
+from the adapter repository:
+
+```sh
+REGENERATE_FIXTURE=1 go test ./adapter/ -run TestContractFixtureIsCurrent
+```
+
+After a contract change, copy the updated fixture to
+`crates/handover-gmessages/tests/fixtures/helper-events.jsonl` in this repository
+and run the Rust contract tests. CI compares the two files when
+`HANDOVER_GMESSAGES_PUBLIC` is `true`.
 
 ## Secrets and files
 
 `handoverctl messages login <account>` reads stdin or `--from-file`. The CLI
-base64-encodes locally. The bundle never appears in argv, logs, or crash
-reports. Caps: 64 KiB IPC line, 192 KiB raw CLI, 256 KiB encoded helper
-login. The daemon does not persist the bundle.
+base64-encodes the bundle locally and sends it through the local socket and
+helper pipe. Keep bundles out of command arguments, logs, and crash reports.
+The limits are 1 MiB per IPC line, 192 KiB for the raw CLI bundle, and 256 KiB
+for the encoded helper login bundle. The daemon does not persist the bundle.
 
 The production adapter stores one mode-0600 session file per account under
-`${XDG_STATE_HOME:-~/.local/state}/handover/gmessages` (directory 0700, atomic
-rename). Pairing prompts are shown, not logged, not stored.
+`${XDG_STATE_HOME:-~/.local/state}/handover/gmessages`. The directory uses mode
+0700, and writes use atomic rename. Pairing prompts are displayed without
+logging or persistence.
 
 Helper attachment paths must sit under an approved root, be regular
 non-symlink files, and stay size-bounded. Loopback uses
 `.../handover/gmessages/staging`. The production adapter uses
 `.../handover/gmessages/staged`. Override with
-`HANDOVER_GMESSAGES_STAGING_DIR`. Before normalized state, the daemon copies
+`HANDOVER_GMESSAGES_STAGING_DIR`. Before adding attachments to normalized state,
+the daemon copies
 each file through a no-follow descriptor into
 `.../handover/gmessages/imported`. Clients never keep helper-controlled paths.
 
 `messages logout` revokes on the helper and deletes local secrets. The daemon
-drops the account on `account_removed`. Auth failures must become re-pair
-state, not silent retry. On connect, `hello` lists persisted sessions so a
-restarted daemon does not need a new ceremony.
+drops the account on `account_removed`. Authentication failures must report
+that pairing is required. On connect, `hello` lists persisted sessions so a
+restarted daemon can restore its account list.
 
 ## Running the helper
 
-Optional. `HANDOVER_GMESSAGES_HELPER` wins. Otherwise `PATH` is searched for
-`handover-gmessages-helper` (loopback) then `handover-gmessages` (production).
-If neither exists, messaging stays off. Other backends keep working.
+The helper is optional. `HANDOVER_GMESSAGES_HELPER` selects an explicit binary.
+Otherwise the daemon searches `PATH` for the loopback binary
+`handover-gmessages-helper`, then the production binary `handover-gmessages`.
+If neither exists, messaging stays disabled. Other backends keep working.
 
-Backoff is 1s to 60s. After connect, the daemon `sync`s known accounts and
-catch-up-syncs accounts the helper announces. At most 64 in-flight
-requests. Command wait is 4 minutes. Windows hold 300 messages per
-conversation. History pages cap at 100. Staged attachments cap at 50 MiB
-with 32 KiB streaming and the same basename rules as native shares.
+Reconnect backoff ranges from 1 to 60 seconds. After connecting, the daemon
+syncs known accounts and requests catch-up syncs for accounts the helper
+announces. It allows at most 64 in-flight requests and waits up to four minutes
+for a command. Message windows hold 300 messages per conversation, and history
+pages contain at most 100. Staged attachments are limited to 50 MiB, with
+32 KiB streaming buffers and the same basename rules as native shares.
 
-Helper death marks those accounts disconnected and fails pending messaging
-requests. Device, notification, media, and share state stay. Clean daemon
+If the helper exits, the daemon marks its accounts disconnected and fails
+pending messaging requests. Device, notification, media, and share state remain.
+Clean daemon
 shutdown stops the helper. An unclean kill can leave an orphan; the next
 generation replaces it.
 
-Logs use ids, counts, and delivery states. Bodies, names, addresses,
+Logs use IDs, counts, and delivery states. Bodies, names, addresses,
 prompts, bundles, tokens, keys, and media bytes stay out. `redact_command`
 strips bundles before a command can be logged.
 
-## Loopback vs production
+## Loopback and production
 
-Loopback: one RCS DM, one SMS thread, one RCS group. Login stores the bundle
-and finishes pairing on the next sync. Sends walk
-`accepted → sent → delivered → displayed` one step per sync. Enough to drive
-daemon, CLI, UI, and tests without Google.
+The loopback helper supplies one RCS direct conversation, one SMS thread, and
+one RCS group. Login stores the bundle and finishes pairing on the next sync.
+Sends advance through `accepted → sent → delivered → displayed`, one step per
+sync. These simulated results support daemon, CLI, UI, and contract tests.
 
-Production: same contract against the real relay. Point
-`HANDOVER_GMESSAGES_HELPER` at that binary. Pairing runbook lives in the
-adapter repo.
+The production adapter uses the same contract against the real relay. Point
+`HANDOVER_GMESSAGES_HELPER` at its binary and follow the adapter's
+[pairing runbook](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/pairing-runbook.md).
 
-Attested where the helper says so: listing, paged history, live updates,
+Capabilities are available only when the helper advertises them: listing, paged history, live updates,
 SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,
 typing-start, read receipts, status, own deletes, reconnect catch-up, logout.
 
-Not attested: message edits, group membership/rename, disappearing messages,
-per-participant group reads unless the relay actually sends them, a
-persistent full-history database.
+The contract does not advertise message edits, group membership changes or
+renaming, or disappearing messages. Per-participant group read state requires
+relay evidence. There is no persistent database of the complete message history.
+
+The daemon does keep a bounded cache of normalized accounts, conversations,
+message windows, and read state in `handover/messaging-cache.json` under the
+state directory. Set `HANDOVER_MESSAGING_CACHE=0` in the daemon environment to
+disable cache loading and writes. Cached accounts start disconnected and
+unauthenticated until the helper reports their current state.
 
 Workspace tests cover daemon ↔ loopback, helper-down, gaps, bundles,
 isolation, and malformed lines. One live RCS pass was done on a test

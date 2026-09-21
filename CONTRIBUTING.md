@@ -17,8 +17,8 @@ repository because it has a different license.
 - `android/` contains the Android companion.
 - `quickshell/` contains the reference client.
 
-Read `DESIGN.md` before changing a public model, IPC method, or backend
-boundary.
+Read [DESIGN.md](DESIGN.md) before changing a public model, IPC method, or
+backend boundary.
 
 Ordinary bugs go to GitHub Issues. Security reports go through
 [SECURITY.md](SECURITY.md), not a public issue.
@@ -76,8 +76,8 @@ cargo run -p handoverctl -- devices
 cargo run -p handoverctl -- monitor
 ```
 
-The daemon owns state. Clients should reconnect and request a fresh snapshot
-instead of keeping an independent authoritative copy.
+The daemon owns state. Clients reconnect and ask for a fresh snapshot. They do
+not keep their own authoritative copy.
 
 ## Android development
 
@@ -98,12 +98,12 @@ identifiers, credentials, pairing codes, message content, or live logs.
 
 ## Google Messages adapter
 
-The production adapter is maintained at
-<https://github.com/mananlalwani/handover-gmessages>. Changes to its Go code
-belong there. Its public boundary with Handover is the helper IPC contract
-described in `docs/gmessages-sidecar.md`.
+The production adapter is maintained in the [handover-gmessages
+repository](https://github.com/mananlalwani/handover-gmessages). Changes to its
+Go code belong there. Its public boundary with Handover is the helper IPC
+contract described in [docs/gmessages-sidecar.md](docs/gmessages-sidecar.md).
 
-Run the adapter checks in that repository:
+Run the adapter checks from that repository:
 
 ```sh
 go vet ./...
@@ -111,8 +111,9 @@ go test ./...
 ```
 
 Do not copy or vendor its AGPL implementation or upstream Google protocol code
-into this MIT repository. Keep cookies, tokens, keys, message bodies, and media
-bytes inside the adapter process.
+into this MIT repository. Keep Google protocol details, cookies, tokens, and
+keys inside the adapter process. Normalized messages and staged media may cross
+the helper contract under its validation and size limits.
 
 ## Code and review expectations
 
@@ -126,5 +127,5 @@ bytes inside the adapter process.
   delivery status.
 - Keep changes focused and explain any behavior that remains unverified.
 
-Use a short commit message that describes the change. Do not commit generated
-build output, credentials, local state, or private test data.
+Use `area: imperative` subjects, matching `git log` on `main`. Do not commit
+generated build output, credentials, local state, or private test data.
