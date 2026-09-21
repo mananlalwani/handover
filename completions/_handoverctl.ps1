@@ -25,7 +25,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
-            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List devices known to handoverd')
+            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List native devices known to handoverd')
             [CompletionResult]::new('native', 'native', [CompletionResultType]::ParameterValue, 'Inspect and manage native Android pairing and device commands')
             [CompletionResult]::new('notifications', 'notifications', [CompletionResultType]::ParameterValue, 'List active remote notifications from the daemon snapshot')
             [CompletionResult]::new('contacts', 'contacts', [CompletionResultType]::ParameterValue, 'List or request an on-demand native contacts snapshot')
@@ -46,6 +46,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;devices' {
+            [CompletionResult]::new('--include-compatibility', '--include-compatibility', [CompletionResultType]::ParameterName, 'Include devices supplied by the optional KDE Connect backend')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
@@ -62,6 +63,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('lock', 'lock', [CompletionResultType]::ParameterValue, 'Lock a native phone when device-admin access is enabled')
             [CompletionResult]::new('keep-awake', 'keep-awake', [CompletionResultType]::ParameterValue, 'Ask a native phone to hold its wake lock (or release it with --release)')
             [CompletionResult]::new('tethering', 'tethering', [CompletionResultType]::ParameterValue, 'Ask a native phone to open its tethering settings screen')
+            [CompletionResult]::new('filesystem-list', 'filesystem-list', [CompletionResultType]::ParameterValue, 'Ask the phone for a bounded directory listing. Results arrive through `monitor` because the native transfer is asynchronous')
             [CompletionResult]::new('call', 'call', [CompletionResultType]::ParameterValue, 'Send a call control action to a native phone')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
@@ -112,6 +114,11 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
         }
+        'handoverctl;native;filesystem-list' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
         'handoverctl;native;call' {
             [CompletionResult]::new('--confirm', '--confirm', [CompletionResultType]::ParameterName, 'Explicitly authorize placing a real phone call (required for place)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
@@ -128,6 +135,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('lock', 'lock', [CompletionResultType]::ParameterValue, 'Lock a native phone when device-admin access is enabled')
             [CompletionResult]::new('keep-awake', 'keep-awake', [CompletionResultType]::ParameterValue, 'Ask a native phone to hold its wake lock (or release it with --release)')
             [CompletionResult]::new('tethering', 'tethering', [CompletionResultType]::ParameterValue, 'Ask a native phone to open its tethering settings screen')
+            [CompletionResult]::new('filesystem-list', 'filesystem-list', [CompletionResultType]::ParameterValue, 'Ask the phone for a bounded directory listing. Results arrive through `monitor` because the native transfer is asynchronous')
             [CompletionResult]::new('call', 'call', [CompletionResultType]::ParameterValue, 'Send a call control action to a native phone')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
@@ -157,6 +165,9 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;native;help;tethering' {
+            break
+        }
+        'handoverctl;native;help;filesystem-list' {
             break
         }
         'handoverctl;native;help;call' {
@@ -587,7 +598,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help' {
-            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List devices known to handoverd')
+            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List native devices known to handoverd')
             [CompletionResult]::new('native', 'native', [CompletionResultType]::ParameterValue, 'Inspect and manage native Android pairing and device commands')
             [CompletionResult]::new('notifications', 'notifications', [CompletionResultType]::ParameterValue, 'List active remote notifications from the daemon snapshot')
             [CompletionResult]::new('contacts', 'contacts', [CompletionResultType]::ParameterValue, 'List or request an on-demand native contacts snapshot')
@@ -620,6 +631,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('lock', 'lock', [CompletionResultType]::ParameterValue, 'Lock a native phone when device-admin access is enabled')
             [CompletionResult]::new('keep-awake', 'keep-awake', [CompletionResultType]::ParameterValue, 'Ask a native phone to hold its wake lock (or release it with --release)')
             [CompletionResult]::new('tethering', 'tethering', [CompletionResultType]::ParameterValue, 'Ask a native phone to open its tethering settings screen')
+            [CompletionResult]::new('filesystem-list', 'filesystem-list', [CompletionResultType]::ParameterValue, 'Ask the phone for a bounded directory listing. Results arrive through `monitor` because the native transfer is asynchronous')
             [CompletionResult]::new('call', 'call', [CompletionResultType]::ParameterValue, 'Send a call control action to a native phone')
             break
         }
@@ -648,6 +660,9 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help;native;tethering' {
+            break
+        }
+        'handoverctl;help;native;filesystem-list' {
             break
         }
         'handoverctl;help;native;call' {

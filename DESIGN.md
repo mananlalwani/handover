@@ -1,18 +1,16 @@
 # Design
 
-Handover is Linux desktop infrastructure. Its main job is to make device state
-and actions available consistently across the desktop, not to act primarily as
-a phone-management application.
+Handover is Linux desktop infrastructure. Its job is shared device state and
+actions, not a phone-management GUI.
 
-Frontends consume normalized Handover device state. KDE Connect object paths,
-plugin names, D-Bus interfaces, and event formats belong inside the KDE Connect
-backend and must not become frontend concepts.
+Frontends consume normalized Handover types. Backend names, object paths,
+plugin IDs, D-Bus interfaces, and Google protocol objects stay inside their
+adapters.
 
-Backends are replaceable. The core domain model describes what Handover knows
-about a device without requiring a particular discovery or transport system.
-The initial KDE Connect backend proves this boundary but does not define it.
+Native Android is the primary backend. KDE Connect is optional compatibility.
+Both feed the same `StateStore`. Clients do not pick a backend.
 
-The current KDE Connect path is:
+The KDE Connect path is:
 
 ```text
 kdeconnectd
@@ -31,9 +29,9 @@ re-enumerates after a restart.
 
 ## Native Android backend
 
-The native backend is a second provider of the same normalized device events.
-`handoverd` starts the native listener alongside the KDE Connect adapter and
-merges both event streams into its existing `StateStore`. Native device IDs are
+The native backend is the main provider of the same normalized device events.
+`handoverd` can start it alongside the KDE Connect adapter and merge both
+event streams into `StateStore`. Native device IDs are
 namespaced as `native:<certificate fingerprint>`, while KDE Connect IDs remain
 unchanged. Clients continue to consume `Device`, `BatteryState`, capabilities,
 and the existing snapshot/event IPC; no client selects or identifies a backend.
@@ -41,8 +39,8 @@ and the existing snapshot/event IPC; no client selects or identifies a backend.
 The Linux native adapter persists its self-signed identity certificate and key,
 plus a peer allowlist, below `${XDG_STATE_HOME:-~/.local/state}/handover/native`
 with restrictive permissions. The Android companion persists its installation
-identity in app-private storage and keeps the private key in Android Keystore
-when the transport implementation is enabled. A peer is only trusted after the
+identity in app-private storage and keeps the private key in Android Keystore.
+A peer is only trusted after the
 two users compare the displayed eight-digit code and explicitly approve it on
 their respective sides. The code is fresh for every ceremony: each hello
 carries a SHA-256 commitment to a random 16-byte nonce, both sides reveal
@@ -102,7 +100,15 @@ entry alongside the native entry.
 
 ## Clipboard boundary
 
-The current clipboard path is owned by KDE Connect itself:
+Native Handover owns explicit clipboard transfer on the primary path. Bounded
+text, HTML, URI, and small file-backed items move over the paired TLS session.
+Contents never enter logs or ordinary daemon snapshots.
+
+Optional Android background mirroring is an in-app setting while the foreground
+service runs. Linux-to-phone send uses `handoverctl clipboard` or the IPC
+equivalent.
+
+KDE Connect still has its own clipboard plugin if that backend is enabled:
 
 ```text
 Android Clipboard
@@ -110,15 +116,10 @@ Android Clipboard
     <-> Linux system clipboard
 ```
 
-The desktop plugin reads and writes the Linux system clipboard and exchanges
-text packets with the Android plugin. The per-device D-Bus interface exposes a
-`sendClipboard()` request for Linux-to-device transfer, but it does not expose
-remote clipboard text or a signal for remote text updates. Those updates are
-handled internally by `kdeconnectd`.
-
-The native backend carries bounded text and rich-text clipboard bundles.
-`handoverd` can mirror Linux text to connected native phones. Clipboard
-contents never enter logs or normal daemon snapshots.
+That plugin reads and writes the Linux clipboard. Its per-device D-Bus
+interface exposes `sendClipboard()` for Linux-to-device transfer. It does not
+expose remote clipboard text or a signal for remote updates. Those stay inside
+`kdeconnectd`.
 
 KDE Connect suppresses clipboard write-back by comparing content and type,
 without a timer. Its enabled per-device plugins receive local changes, so a

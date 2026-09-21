@@ -40,91 +40,19 @@ class MainActivity : android.app.Activity() {
     private lateinit var awakeStatus: TextView
     private lateinit var awakeSwitch: Switch
     private lateinit var transferStatus: LinearLayout
-    private lateinit var capabilitiesStatus: TextView
+    internal lateinit var capabilitiesStatus: TextView
+    internal lateinit var remoteResult: TextView
     private lateinit var updateStatus: TextView
     private lateinit var homeConnect: Button
-    private lateinit var pageHost: LinearLayout
-    private var homePage: View? = null
+    internal lateinit var pageHost: LinearLayout
+    internal var homePage: View? = null
     private var shownPairCode: String? = null
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
     private var reconnectPromptShown = false
     private var connectionState = "offline"
-    private val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
+    internal val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
 
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-
-    private fun panel(vararg children: View) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(18), dp(16), dp(18), dp(16))
-        background = GradientDrawable().apply {
-            setColor(Color.rgb(247, 248, 252))
-            cornerRadius = dp(18).toFloat()
-            setStroke(dp(1), Color.rgb(224, 227, 235))
-        }
-        children.forEach { addView(it, LinearLayout.LayoutParams(-1, -2)) }
-    }
-
-    private fun sectionTitle(text: String) = TextView(this).apply {
-        this.text = text
-        textSize = 18f
-        setTextColor(Color.rgb(28, 34, 48))
-        setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, 0, 0, dp(10))
-    }
-
-    private fun primary(button: Button) = button.apply {
-        isAllCaps = false
-        textSize = 15f
-        setTextColor(Color.WHITE)
-        backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(48, 84, 210))
-    }
-
-    private fun secondary(button: Button) = button.apply {
-        isAllCaps = false
-        textSize = 14f
-    }
-
-    private fun refreshPermissionButtons() {
-        permissionButtons.forEach { (button, granted) ->
-            val enabled = granted()
-            button.backgroundTintList = android.content.res.ColorStateList.valueOf(
-                if (enabled) Color.rgb(35, 142, 84) else Color.rgb(105, 70, 190),
-            )
-            button.setTextColor(Color.WHITE)
-            button.alpha = if (enabled) 0.88f else 1f
-        }
-    }
-
-    private fun startHandoverConnection() {
-        val service = Intent(this, HandoverForegroundService::class.java)
-        startForegroundService(service)
-        AppUpdater.clearReconnectNeeded(this)
-        refreshStatus()
-    }
-
-    private fun menuButton(title: String, description: String, action: () -> Unit) =
-        TextView(this).apply {
-            text = "$title\n$description"
-            textSize = 16f
-            setTextColor(Color.rgb(28, 34, 48))
-            setPadding(dp(18), dp(16), dp(18), dp(16))
-            background = GradientDrawable().apply {
-                setColor(Color.WHITE)
-                cornerRadius = dp(18).toFloat()
-                setStroke(dp(1), Color.rgb(224, 227, 235))
-            }
-            isClickable = true
-            isFocusable = true
-            foreground = getDrawable(android.R.drawable.list_selector_background)
-            setOnClickListener { action() }
-        }
-
-    private fun showPage(page: View) {
-        pageHost.removeAllViews()
-        (page.parent as? android.view.ViewGroup)?.removeView(page)
-        pageHost.addView(page, LinearLayout.LayoutParams(-1, -2))
-    }
 
     private fun handleBackNavigation() {
         val home = homePage
@@ -145,13 +73,13 @@ class MainActivity : android.app.Activity() {
     private fun permissionLabel(permission: String): String =
         if (CallController.hasPermission(this, permission)) "granted" else "not granted"
 
-    private fun deviceAdminComponent() = ComponentName(this, HandoverDeviceAdminReceiver::class.java)
+    internal fun deviceAdminComponent() = ComponentName(this, HandoverDeviceAdminReceiver::class.java)
 
-    private fun deviceAdminEnabled(): Boolean =
+    internal fun deviceAdminEnabled(): Boolean =
         getSystemService(android.app.admin.DevicePolicyManager::class.java)
             .isAdminActive(deviceAdminComponent())
 
-    private fun refreshStatus() {
+    internal fun refreshStatus() {
         connectionState = HandoverForegroundService.connectionState()
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
         status.text = "Connection: ${connectionState.replaceFirstChar { it.uppercase() }}\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
@@ -296,6 +224,10 @@ class MainActivity : android.app.Activity() {
                 refreshStatus()
                 return
             }
+            if (intent.action == NativeTransport.ACTION_REMOTE_RESULT) {
+                showRemoteResult(intent.getStringExtra(NativeTransport.EXTRA_JSON).orEmpty())
+                return
+            }
             if (intent.action != NativeTransport.ACTION_PAIR_REQUEST) return
             val code = org.json.JSONObject(intent.getStringExtra(NativeTransport.EXTRA_JSON).orEmpty()).optString("code")
             showPairDialog(code)
@@ -324,6 +256,57 @@ class MainActivity : android.app.Activity() {
         shownPairCode = null
     }
 
+    private fun showRemoteResult(payload: String) {
+        if (!::remoteResult.isInitialized) return
+        val message = runCatching { org.json.JSONObject(payload) }.getOrNull() ?: return
+        remoteResult.text = when (message.optString("type")) {
+            "filesystem_entries" -> {
+                val path = message.optString("path", ".")
+                val entries = message.optJSONArray("entries")
+                buildString {
+                    append("Listing $path")
+                    if (entries == null || entries.length() == 0) {
+                        append("\n(empty)")
+                    } else {
+                        for (index in 0 until entries.length()) {
+                            val entry = entries.optJSONObject(index) ?: continue
+                            val name = entry.optString("name")
+                            if (name.isEmpty()) continue
+                            append('\n')
+                            append(if (entry.optBoolean("directory")) "dir  " else "file ")
+                            append(name)
+                        }
+                    }
+                }
+            }
+            "filesystem_failure" -> "Directory listing failed"
+            "custom_command_list" -> {
+                val names = message.optJSONArray("names")
+                buildString {
+                    append("Allowlisted commands")
+                    if (names == null || names.length() == 0) {
+                        append("\n(none configured)")
+                    } else {
+                        for (index in 0 until names.length()) {
+                            append('\n')
+                            append(names.optString(index))
+                        }
+                    }
+                }
+            }
+            "custom_command_result" -> {
+                val accepted = message.optBoolean("accepted")
+                val failure = message.optString("failure").takeIf { it.isNotEmpty() }
+                if (accepted) {
+                    "Command accepted (exit ${message.optInt("exit_code", 0)})"
+                } else {
+                    "Command rejected${failure?.let { " ($it)" } ?: ""}"
+                }
+            }
+            else -> "Remote result received"
+        }
+    }
+
     /** Harmless local notification exercising the native post/update/remove
      * path. It carries a genuine RemoteInput reply action so the desktop
      * inline-reply path has something real to target. */
@@ -346,6 +329,7 @@ class MainActivity : android.app.Activity() {
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
             addAction(NativeTransport.ACTION_TRANSFER_RESULT)
+            addAction(NativeTransport.ACTION_REMOTE_RESULT)
         }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             registerReceiver(pairReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -401,6 +385,7 @@ class MainActivity : android.app.Activity() {
             ) { handleBackNavigation() }
         }
         handleShareIntent(intent)
+        HandoverForegroundService.startIfPaired(this)
         if (android.os.Build.VERSION.SDK_INT >= 37 &&
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf("android.permission.ACCESS_LOCAL_NETWORK"), LOCAL_NETWORK_REQUEST)
@@ -592,39 +577,13 @@ class MainActivity : android.app.Activity() {
         }
         refreshPermissionButtons()
 
-        fun page(title: String, description: String, vararg sections: View) =
-            LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                val back = secondary(Button(this@MainActivity).apply {
-                    text = "‹  Back"
-                    setOnClickListener { homePage?.let(::showPage) }
-                })
-                addView(back, LinearLayout.LayoutParams(-2, -2))
-                addView(TextView(this@MainActivity).apply {
-                    text = title
-                    textSize = 28f
-                    setTextColor(Color.rgb(24, 30, 44))
-                    setTypeface(typeface, Typeface.BOLD)
-                    setPadding(0, dp(10), 0, dp(4))
-                })
-                addView(TextView(this@MainActivity).apply {
-                    text = description
-                    textSize = 15f
-                    setTextColor(Color.rgb(92, 99, 116))
-                    setPadding(0, 0, 0, dp(10))
-                })
-                sections.forEach { section ->
-                    addView(section, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-                }
-            }
-
-        val connectionPage = page(
+        val connectionPage = featurePage(
             "Connection", "Connect this phone to your trusted Linux desktop.",
             panel(sectionTitle("Handover service"), start),
             panel(sectionTitle("Manual connection"), address, manualConnect),
             panel(sectionTitle("Pairing"), revoke),
         )
-        val permissionsPage = page(
+        val permissionsPage = featurePage(
             "Permissions", "Enable only the capabilities you want Handover to provide.",
             panel(sectionTitle("Current access"), capabilitiesStatus),
             panel(sectionTitle("Notifications"), notificationAccess, appNotificationAccess),
@@ -667,7 +626,7 @@ class MainActivity : android.app.Activity() {
                 }
             })),
         )
-        val activityPage = page(
+        val activityPage = featurePage(
             "Activity", "Current phone-side Handover activity.",
             panel(sectionTitle("Notifications"), notificationStatus),
             panel(sectionTitle("Media"), mediaStatus),
@@ -685,77 +644,8 @@ class MainActivity : android.app.Activity() {
                     setOnClickListener { TransferHistory.clear(this@MainActivity); refreshStatus() }
                 })),
         )
-        var pointerX = 0f
-        var pointerY = 0f
-        var pointerMoved = false
-        val pointerPad = View(this).apply {
-            minimumHeight = dp(220)
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(225, 229, 239))
-                cornerRadius = dp(14).toFloat()
-            }
-            setOnTouchListener { _, event ->
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        pointerX = event.x
-                        pointerY = event.y
-                        pointerMoved = false
-                        true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = ((event.x - pointerX) / 2f).toInt()
-                        val dy = ((event.y - pointerY) / 2f).toInt()
-                        if (dx != 0 || dy != 0) {
-                            pointerMoved = true
-                            HandoverForegroundService.presentation("pointer_move", dx, dy)
-                            pointerX = event.x
-                            pointerY = event.y
-                        }
-                        true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        if (!pointerMoved) {
-                            HandoverForegroundService.presentation("pointer_click")
-                        }
-                        true
-                    }
-                    else -> true
-                }
-            }
-        }
-        val presentationPage = page(
-            "Presentation remote", "Control the active presentation on Linux.",
-            panel(sectionTitle("Slides"), LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Previous"
-                    setOnClickListener { HandoverForegroundService.presentation("previous") }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Next"
-                    setOnClickListener { HandoverForegroundService.presentation("next") }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-            }, LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Start"
-                    setOnClickListener { HandoverForegroundService.presentation("start") }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Stop"
-                    setOnClickListener { HandoverForegroundService.presentation("stop") }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Fullscreen"
-                    setOnClickListener { HandoverForegroundService.presentation("fullscreen") }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-            }),
-            panel(sectionTitle("Pointer"), TextView(this).apply {
-                text = "Drag to move. Tap to click."
-                setTextColor(Color.rgb(70, 77, 94))
-            }, pointerPad),
-        )
-        val diagnosticsPage = page(
+        val presentationPage = buildPresentationPage()
+        val diagnosticsPage = featurePage(
             "Diagnostics", "Local test tools. These do not contact anyone.",
             panel(sectionTitle("Notification test"), postTest, updateTest, removeTest),
             panel(sectionTitle("Media test"), startTestMedia, stopTestMedia),
@@ -776,7 +666,7 @@ class MainActivity : android.app.Activity() {
             text = "Scan for updates"
             setOnClickListener { scanForUpdates() }
         })
-        val updatesPage = page(
+        val updatesPage = featurePage(
             "Updates", "Updates received from your desktop are verified before installation.",
             panel(sectionTitle("App version"), updateStatus, scanUpdates, installUpdate),
             panel(sectionTitle("Security"), TextView(this).apply {
@@ -785,81 +675,9 @@ class MainActivity : android.app.Activity() {
                 setTextColor(Color.rgb(70, 77, 94))
             }),
         )
-        var remoteX = 0f
-        var remoteY = 0f
-        var remoteMoved = false
-        val remotePad = View(this).apply {
-            minimumHeight = dp(240)
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(225, 229, 239))
-                cornerRadius = dp(14).toFloat()
-            }
-            setOnTouchListener { _, event ->
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        remoteX = event.x
-                        remoteY = event.y
-                        remoteMoved = false
-                        true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = ((event.x - remoteX) / 2f).toInt()
-                        val dy = ((event.y - remoteY) / 2f).toInt()
-                        if (dx != 0 || dy != 0) {
-                            remoteMoved = true
-                            HandoverForegroundService.remoteInput("move", dx, dy)
-                            remoteX = event.x
-                            remoteY = event.y
-                        }
-                        true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        if (!remoteMoved) HandoverForegroundService.remoteInput("click", button = 1)
-                        true
-                    }
-                    else -> true
-                }
-            }
-        }
-        val remoteText = EditText(this).apply {
-            hint = "Text to type on Linux"
-            setSingleLine(false)
-        }
-        val remoteInputPage = page(
-            "Remote input", "Control the Linux pointer and type text.",
-            panel(sectionTitle("Touchpad"), TextView(this).apply {
-                text = "Drag to move. Tap to click."
-                setTextColor(Color.rgb(70, 77, 94))
-            }, remotePad, LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Left click"
-                    setOnClickListener { HandoverForegroundService.remoteInput("click", button = 1) }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Right click"
-                    setOnClickListener { HandoverForegroundService.remoteInput("click", button = 3) }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-            }, LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Scroll up"
-                    setOnClickListener { HandoverForegroundService.remoteInput("scroll", deltaY = -1) }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(secondary(Button(this@MainActivity).apply {
-                    text = "Scroll down"
-                    setOnClickListener { HandoverForegroundService.remoteInput("scroll", deltaY = 1) }
-                }), LinearLayout.LayoutParams(0, -2, 1f))
-            }),
-            panel(sectionTitle("Keyboard"), remoteText, secondary(Button(this).apply {
-                text = "Type on Linux"
-                setOnClickListener {
-                    HandoverForegroundService.remoteInput("type", text = remoteText.text.toString())
-                    remoteText.text.clear()
-                }
-            })),
-        )
-        val volumePage = page(
+        val remoteInputPage = buildRemoteInputPage()
+        val remotePage = buildRemoteDesktopPage()
+        val volumePage = featurePage(
             "System volume", "Control the default Linux audio output.",
             panel(sectionTitle("Volume"), LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -877,7 +695,7 @@ class MainActivity : android.app.Activity() {
                 }), LinearLayout.LayoutParams(0, -2, 1f))
             }),
         )
-        val contactsPage = page(
+        val contactsPage = featurePage(
             "Contacts", "Send a fresh, on-demand contacts snapshot to Linux.",
             panel(sectionTitle("Privacy"), TextView(this).apply {
                 text = "Contacts are read only when you request a sync and are not retained in phone-side history."
@@ -932,12 +750,24 @@ class MainActivity : android.app.Activity() {
                 setPadding(0, dp(2), 0, dp(16))
             })
             addView(panel(sectionTitle("Status"), status, homeConnect), LinearLayout.LayoutParams(-1, -2))
+            addView(panel(
+                sectionTitle("On this phone"),
+                TextView(this@MainActivity).apply {
+                    text = "Share files and links from any app with Handover. Send clipboard from the tile or below. Slides, the Linux pointer, volume, files, and allowlisted commands are on the following pages."
+                    setTextColor(Color.rgb(70, 77, 94))
+                },
+                secondary(Button(this@MainActivity).apply {
+                    text = "Send current clipboard to Linux"
+                    setOnClickListener { HandoverForegroundService.sendClipboard() }
+                }),
+            ), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             listOf(
                 menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
                 menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
                 menuButton("Remote input", "Control the Linux pointer and keyboard") { showPage(remoteInputPage) },
+                menuButton("Remote desktop", "Browse files and run configured commands") { showPage(remotePage) },
                 menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
                 menuButton("Contacts", "Send an on-demand contacts snapshot") { showPage(contactsPage) },
                 menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },
@@ -1010,9 +840,9 @@ class MainActivity : android.app.Activity() {
     }
 
     companion object {
-        private const val LOCAL_NETWORK_REQUEST = 42
-        private const val POST_NOTIFICATIONS_REQUEST = 43
-        private const val CALL_PERMISSIONS_REQUEST = 45
-        private const val CONTACTS_PERMISSION_REQUEST = 46
+        internal const val LOCAL_NETWORK_REQUEST = 42
+        internal const val POST_NOTIFICATIONS_REQUEST = 43
+        internal const val CALL_PERMISSIONS_REQUEST = 45
+        internal const val CONTACTS_PERMISSION_REQUEST = 46
     }
 }

@@ -3,7 +3,8 @@
 ## Reporting a vulnerability
 
 Do not report security issues in a public GitHub issue. Use GitHub's private
-vulnerability reporting for this repository. Include a short description, the
+vulnerability reporting for this repository. Enable it in the GitHub Security
+advisories settings before the repository is public. Include a short description, the
 affected revision, reproduction steps that do not contain secrets, and the
 impact. If private reporting is unavailable, contact the maintainers privately
 before sharing details.

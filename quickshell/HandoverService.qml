@@ -63,6 +63,14 @@ Singleton {
     }
     property var lastReceivedShare: null
     property var lastShareResult: null
+    property var lastShareProgress: null
+    property var filesystemResult: null
+    property var clipboardHistory: []
+    property bool clipboardMirrorEnabled: false
+    property var customCommands: []
+    property var customResult: null
+    property var pendingPeers: []
+    property var snapshotBuffer: null
     property string lastError: ""
     property string nativeNotice: ""
     property bool nativePending: false
@@ -412,6 +420,56 @@ Singleton {
         return sendRequest("clipboard.mirror_status", {});
     }
 
+    function listPendingPeers() {
+        return sendRequest("native.pending", {});
+    }
+
+    function approvePair(id, code) {
+        if (!id || !code) {
+            lastError = "pairing needs an id and the comparison code";
+            return false;
+        }
+        return sendRequest("native.pair", { id: id, code: code });
+    }
+
+    function listPhoneDirectory(device, path) {
+        if (!device || !device.id || !device.id.startsWith("native:")) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        const id = device.id.substring("native:".length);
+        return sendRequest("native.filesystem_list", { id: id, path: path || "." });
+    }
+
+    function refreshClipboardHistory() {
+        return sendRequest("clipboard.history_list", {});
+    }
+
+    function pinClipboardHistory(id, pinned) {
+        return sendRequest("clipboard.history_pin", { id: id, pinned: pinned });
+    }
+
+    function copyClipboardHistory(id) {
+        return sendRequest("clipboard.history_copy", { id: id });
+    }
+
+    function clearClipboardHistory(includePinned) {
+        return sendRequest("clipboard.history_clear", { include_pinned: !!includePinned });
+    }
+
+    function sendPhoneNotification(device, title, body) {
+        if (!device || !device.id) {
+            lastError = "native phone is unavailable";
+            return false;
+        }
+        return sendRequest("notification.send", {
+            device_id: device.id,
+            app: "Handover",
+            title: title,
+            body: body
+        });
+    }
+
     function nativeAction(device, action) {
         if (!device || !device.id || !device.id.startsWith("native:"))
             return false;
@@ -493,6 +551,10 @@ Singleton {
         sendRequest("hello", null, socket);
         sendRequest("devices.list", null, socket);
         sendRequest("contacts.list", null, socket);
+        sendRequest("native.pending", null, socket);
+        sendRequest("custom.commands", null, socket);
+        sendRequest("clipboard.mirror_status", null, socket);
+        sendRequest("clipboard.history_list", null, socket);
         sendRequest("subscribe", { shares: true, media: true, messages: true }, socket);
     }
 
@@ -507,6 +569,13 @@ Singleton {
         callNotice = "";
         lastReceivedShare = null;
         lastShareResult = null;
+        lastShareProgress = null;
+        filesystemResult = null;
+        clipboardHistory = [];
+        customCommands = [];
+        customResult = null;
+        pendingPeers = [];
+        snapshotBuffer = null;
         messagingAccounts = [];
         conversations = [];
         conversationMessages = {};
@@ -565,6 +634,40 @@ Singleton {
         mediaSessions = mediaSessions.filter(session => !sameMediaId(session.id, mediaId));
     }
 
+    function applySnapshot(message, accumulating) {
+        function concatField(name) {
+            const incoming = message[name] || [];
+            if (!accumulating || !snapshotBuffer)
+                return incoming;
+            return (snapshotBuffer[name] || []).concat(incoming);
+        }
+        const next = {
+            devices: concatField("devices"),
+            notifications: concatField("notifications"),
+            media_sessions: concatField("media_sessions"),
+            calls: concatField("calls"),
+            messaging_accounts: concatField("messaging_accounts"),
+            conversations: concatField("conversations"),
+            typing_states: concatField("typing_states"),
+            read_states: concatField("read_states")
+        };
+        if (accumulating && message.done !== true) {
+            snapshotBuffer = next;
+            return;
+        }
+        snapshotBuffer = null;
+        devices = next.devices;
+        notifications = next.notifications;
+        mediaSessions = next.media_sessions;
+        calls = next.calls;
+        messagingAccounts = next.messaging_accounts;
+        conversations = next.conversations;
+        typingStates = next.typing_states;
+        readStates = next.read_states;
+        if (!message.conversations)
+            refreshMessaging();
+    }
+
     function finishPending(success, error) {
         if (!pendingCommand)
             return;
@@ -610,19 +713,41 @@ Singleton {
             break;
         case "subscribed":
         case "snapshot":
-            devices = message.devices || [];
-            notifications = message.notifications || [];
-            mediaSessions = message.media_sessions || [];
-            calls = message.calls || [];
-            messagingAccounts = message.messaging_accounts || [];
-            conversations = message.conversations || [];
-            typingStates = message.typing_states || [];
-            readStates = message.read_states || [];
-            // History is loaded when the user selects a conversation. Do
-            // not fan out one RPC per conversation on every snapshot: large
-            // accounts can have hundreds of threads and flood the relay.
-            if (!message.conversations) {
-                refreshMessaging();
+            applySnapshot(message, false);
+            break;
+        case "subscribed_chunk":
+        case "snapshot_chunk":
+            applySnapshot(message, true);
+            break;
+        case "conversations_chunk":
+            for (const conversation of message.conversations || [])
+                replaceConversation(conversation);
+            break;
+        case "filesystem":
+            filesystemResult = message.result || null;
+            break;
+        case "clipboard_mirror":
+            clipboardMirrorEnabled = !!message.enabled;
+            break;
+        case "clipboard_history":
+            clipboardHistory = message.entries || [];
+            break;
+        case "custom_commands":
+            customCommands = message.commands || [];
+            break;
+        case "custom_result":
+            customResult = message.result || null;
+            break;
+        case "native_pending":
+            pendingPeers = message.pending || [];
+            break;
+        case "device_command_result":
+            if (message.result) {
+                nativePending = false;
+                nativeNotice = message.result.accepted
+                    ? "Phone accepted " + String(message.result.action || "command")
+                    : "Phone rejected " + String(message.result.action || "command")
+                        + (message.result.failure ? ": " + message.result.failure : "");
             }
             break;
         case "call_audio":
@@ -672,6 +797,9 @@ Singleton {
             break;
         case "share_received":
             lastReceivedShare = message.share;
+            break;
+        case "share_progress":
+            lastShareProgress = message.progress;
             break;
         case "share_result":
             lastShareResult = message.result;

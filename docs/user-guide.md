@@ -6,7 +6,9 @@ read a fresh snapshot when they start.
 
 ## Install
 
-Install Handover for your user:
+Tagged releases include a Linux tarball. Unpack it and run `./install.sh`.
+
+Or install from source:
 
 ```sh
 make install-user
@@ -61,11 +63,10 @@ in the Android app. A reachable Tailscale address works as well.
 
 ## KDE Connect compatibility backend
 
-KDE Connect is optional. Use it when you need a capability that the native
-connection does not provide yet. Install KDE Connect, pair the phone in KDE
-Connect, and let Handover discover the paired device. Clipboard synchronization
-remains available through KDE Connect. Native Handover clipboard transfer is
-documented below.
+KDE Connect is optional. Use it only if you still want a capability that lives
+there. Install KDE Connect, pair the phone in that app, and let Handover
+discover it. Native clipboard is documented below. KDE Connect may still run
+its own background clipboard sync if you keep that backend.
 
 ## Common commands
 
@@ -186,3 +187,14 @@ Remove the installed user service and binaries with:
 ```sh
 make uninstall-user
 ```
+
+That does not delete pairing state. To wipe native identity and peer records:
+
+```sh
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/handover"
+```
+
+The Android app keeps its own identity in app storage and Keystore. Uninstall
+the Android package separately if you want that side gone too.
+
+See [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for current gaps.

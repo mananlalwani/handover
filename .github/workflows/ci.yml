@@ -126,4 +126,5 @@ jobs:
           qt_qml="$(nix eval --raw nixpkgs#qt6Packages.qtdeclarative)/lib/qt-6/qml"
           test -f "$quickshell_qml/Quickshell/qmldir"
           qmllint -I "$quickshell_qml" -I "$qt_qml" \
-            quickshell/HandoverService.qml quickshell/example.qml
+            quickshell/HandoverService.qml quickshell/example.qml \
+            quickshell/pages/*.qml

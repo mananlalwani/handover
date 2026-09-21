@@ -1,6 +1,12 @@
 /target/
+/dist/
 /android/.gradle/
+/android/build/
+/android/.cxx/
 /android/app/build/
+.cursor/
+*.log
+*.orig
 *.swp
 *.swo
 .DS_Store

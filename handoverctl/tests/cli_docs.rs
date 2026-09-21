@@ -135,11 +135,26 @@ fn generated_completions_match_checked_in_artifacts() {
             .1;
         let checked_in = std::fs::read(workspace_root().join("completions").join(name))
             .unwrap_or_else(|_| panic!("completions/{name} is checked in"));
-        assert_eq!(
-            buffer, checked_in,
-            "completions/{name} drifted from clap definitions; regenerate with \
-             `cargo run -p handoverctl --bin handoverctl-gen -- <out-dir>`"
-        );
+        if matches!(shell, Shell::Bash | Shell::Zsh) {
+            let generated_len = buffer.len();
+            assert!(
+                checked_in.starts_with(&buffer),
+                "completions/{name} drifted from clap definitions; regenerate with \
+                 `cargo run -p handoverctl --bin handoverctl-gen -- <out-dir>`"
+            );
+            let extension = String::from_utf8_lossy(&checked_in[generated_len..]);
+            assert!(
+                extension.contains("_handoverctl_live_devices")
+                    && extension.contains("filesystem-list"),
+                "completions/{name} is missing live device completion support"
+            );
+        } else {
+            assert_eq!(
+                buffer, checked_in,
+                "completions/{name} drifted from clap definitions; regenerate with \
+                 `cargo run -p handoverctl --bin handoverctl-gen -- <out-dir>`"
+            );
+        }
     }
 }
 

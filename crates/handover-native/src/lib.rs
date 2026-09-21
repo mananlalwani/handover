@@ -1,4 +1,20 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
+
+mod discovery;
+mod errors;
+mod identity;
+mod limits;
+mod pairing;
+mod protocol;
+mod services;
+mod session;
+mod transfer;
+
+pub(crate) use transfer::*;
+
+pub use errors::{NativeCommandError, NativeError};
+pub use limits::{MAX_FRAME, WIRE_VERSION};
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -9,95 +25,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use handover_core::{
-    BatteryState, CallAction, CallCommandFailure, CallCommandResult, CallEvent, CallPhase,
-    CallState, Capability, ClipboardFile, ClipboardText, ConnectivityState, ConnectivityTransport,
-    Contact, ContactsEvent, Device, DeviceCommandAction, DeviceCommandFailure, DeviceCommandResult,
-    DeviceEvent, DeviceId, MediaCommand, MediaControl, MediaEvent, MediaSession, MediaSessionId,
-    Notification, NotificationAction, NotificationCommand, NotificationEvent, NotificationId,
-    PlaybackState, PresentationAction, PresentationCommand, ReceivedShare, RemoteInputAction,
-    RemoteInputCommand, ShareFailure, ShareProgress, ShareResult, ShareStatus, SharedResource,
-    StateEvent, VolumeAction, VolumeCommand,
+    BatteryState, CallAction, CallEvent, Capability, ConnectivityState, Device, DeviceEvent,
+    DeviceId, MediaCommand, MediaEvent, MediaSessionId, NotificationCommand, NotificationEvent,
+    NotificationId, PresentationCommand, RemoteInputCommand, ShareFailure, ShareResult,
+    ShareStatus, StateEvent, VolumeCommand,
 };
-use mdns_sd::{ServiceDaemon, ServiceInfo};
-use openssl::asn1::Asn1Time;
-use openssl::bn::{BigNum, MsbOption};
-use openssl::ec::{EcGroup, EcKey};
-use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
-use openssl::pkey::{Id, PKey, Private};
-use openssl::ssl::{SslAcceptor, SslMethod, SslVerifyMode, SslVersion};
-use openssl::x509::{X509, X509NameBuilder};
+use openssl::pkey::{PKey, Private};
+use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use thiserror::Error;
-use tracing::warn;
 
-pub const WIRE_VERSION: u32 = 1;
-pub const MAX_FRAME: usize = 64 * 1024;
-const MAX_SESSIONS: usize = 16;
-const MAX_SESSIONS_PER_SOURCE: usize = 8;
-const MAX_ATTEMPTS_PER_SOURCE: usize = 16;
-const ATTEMPT_WINDOW: Duration = Duration::from_secs(10);
-const MAX_TRACKED_SOURCES: usize = 256;
-const PREAUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
-const LISTEN_PORT: u16 = 24837;
-// Bounds for native notification fields. They keep one phone from filling the
-// frame budget with a single oversized field and mirror the Android sender's
-// truncation limits so both sides pin the same contract.
-const MAX_NOTIFICATION_KEY: usize = 256;
-const MAX_NOTIFICATION_APP: usize = 128;
-const MAX_NOTIFICATION_TITLE: usize = 512;
-const MAX_NOTIFICATION_BODY: usize = 4096;
-const MAX_NOTIFICATION_ACTIONS: usize = 8;
-const MAX_NOTIFICATION_ACTION_ID: usize = 64;
-const MAX_NOTIFICATION_ACTION_LABEL: usize = 128;
-const MAX_NOTIFICATIONS_PER_SYNC: usize = 64;
-const MAX_NOTIFICATION_REPLY: usize = 1024;
-// Bounds for native media fields. They mirror the Android sender's truncation
-// limits so both sides pin the same contract; volume is never transported.
-const MAX_MEDIA_PLAYER: usize = 128;
-const MAX_MEDIA_APP: usize = 128;
-const MAX_MEDIA_TEXT: usize = 512;
-const MAX_MEDIA_SESSIONS_PER_SYNC: usize = 16;
-const MAX_MEDIA_POSITION_MS: u64 = i32::MAX as u64;
-const MAX_OUTBOX_PER_PEER: usize = 32;
-const MAX_SHARE_SIZE: u64 = 100 * 1024 * 1024;
-/// Aggregate cap for received shares: one 100 MiB file is legal, but
-/// a paired endpoint must not fill the disk by repeating valid sends.
-const MAX_RECEIVED_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_RECEIVED_FILES: usize = 1024;
-/// Received shares older than this are garbage collected.
-const RECEIVED_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-const SHARE_BUFFER: usize = 32 * 1024;
-const MAX_PENDING_SHARES_PER_PEER: usize = 32;
-const SHARE_RESULT_TIMEOUT: Duration = Duration::from_secs(120);
-const INBOUND_TRANSFER_DEADLINE: Duration = Duration::from_secs(120);
-
-#[derive(Debug, Error)]
-pub enum NativeCommandError {
-    #[error("native device is disconnected")]
-    Offline,
-    #[error("native command queue is full")]
-    QueueFull,
-}
-
-#[derive(Debug, Error)]
-pub enum NativeError {
-    #[error("I/O: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("TLS: {0}")]
-    Tls(#[from] openssl::error::ErrorStack),
-    #[error("JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("invalid peer frame")]
-    InvalidFrame,
-    #[error("received-share quota exceeded")]
-    QuotaExceeded,
-    #[error("unknown pending peer or comparison code")]
-    UnknownPending,
-    #[error("discovery: {0}")]
-    Discovery(String),
-}
+use crate::discovery::*;
+use crate::identity::*;
+use crate::limits::*;
+use crate::protocol::*;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Peer {
@@ -114,60 +54,60 @@ pub struct PendingPeer {
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
-struct PeerFile {
-    peers: BTreeMap<String, Peer>,
+pub(crate) struct PeerFile {
+    pub(crate) peers: BTreeMap<String, Peer>,
 }
 
-struct Candidate {
-    peer: Peer,
-    code: String,
-    commit: String,
-    approved: bool,
-    created: Instant,
+pub(crate) struct Candidate {
+    pub(crate) peer: Peer,
+    pub(crate) code: String,
+    pub(crate) commit: String,
+    pub(crate) approved: bool,
+    pub(crate) created: Instant,
 }
-struct Runtime {
-    peers: PeerFile,
-    pending: BTreeMap<String, Candidate>,
-    active: BTreeMap<String, TcpStream>,
-    sessions: usize,
-    source_admissions: BTreeMap<IpAddr, SourceAdmission>,
-    connecting: BTreeSet<String>,
-    batteries: BTreeMap<String, BatteryState>,
-    connectivity: BTreeMap<String, ConnectivityState>,
+pub(crate) struct Runtime {
+    pub(crate) peers: PeerFile,
+    pub(crate) pending: BTreeMap<String, Candidate>,
+    pub(crate) active: BTreeMap<String, TcpStream>,
+    pub(crate) sessions: usize,
+    pub(crate) source_admissions: BTreeMap<IpAddr, SourceAdmission>,
+    pub(crate) connecting: BTreeSet<String>,
+    pub(crate) batteries: BTreeMap<String, BatteryState>,
+    pub(crate) connectivity: BTreeMap<String, ConnectivityState>,
     // Native notification state, owned per paired peer. Keys are the Android
     // notification keys advertised as `local_id` in the normalized model.
-    notif_enabled: BTreeMap<String, bool>,
-    notif_keys: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) notif_enabled: BTreeMap<String, bool>,
+    pub(crate) notif_keys: BTreeMap<String, BTreeSet<String>>,
     // Native media state, owned per paired peer. Players are the Android
     // package names advertised as `player_id` in the normalized model.
-    media_enabled: BTreeMap<String, bool>,
-    media_players: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) media_enabled: BTreeMap<String, bool>,
+    pub(crate) media_players: BTreeMap<String, BTreeSet<String>>,
     // Queued Linux-to-phone notification commands, drained by the owning
     // session thread. Bounded per peer; IPC reports acceptance, not delivery.
-    outbox: BTreeMap<String, Vec<Message>>,
-    pending_shares: BTreeMap<String, BTreeMap<String, Instant>>,
+    pub(crate) outbox: BTreeMap<String, Vec<Message>>,
+    pub(crate) pending_shares: BTreeMap<String, BTreeMap<String, Instant>>,
     // Latest call-state generation reported by each peer. A queued call
     // command stamped with an older generation is stale: a new call may have
     // started or ended since the user acted, so the command is dropped.
-    call_generations: BTreeMap<String, u64>,
-    pending_call_results: BTreeMap<String, BTreeMap<String, CallAction>>,
+    pub(crate) call_generations: BTreeMap<String, u64>,
+    pub(crate) pending_call_results: BTreeMap<String, BTreeMap<String, CallAction>>,
     // Peers that asked the desktop to stay awake. Cleared on disconnect so a
     // dead phone cannot hold the inhibitor past its session.
-    screensaver_requests: BTreeSet<String>,
+    pub(crate) screensaver_requests: BTreeSet<String>,
     /// In-flight received-share reservations (bytes, files). Disk scans
     /// cannot see concurrent transfers, so each transfer reserves
     /// before streaming and releases on failure; completed files stay
     /// counted by later scans.
-    quota_reserved: (u64, usize),
+    pub(crate) quota_reserved: (u64, usize),
 }
 
 #[derive(Default)]
-struct SourceAdmission {
-    active: usize,
-    attempts: VecDeque<Instant>,
+pub(crate) struct SourceAdmission {
+    pub(crate) active: usize,
+    pub(crate) attempts: VecDeque<Instant>,
 }
 
-fn admit_source(inner: &mut Runtime, source: IpAddr, now: Instant) -> bool {
+pub(crate) fn admit_source(inner: &mut Runtime, source: IpAddr, now: Instant) -> bool {
     for admission in inner.source_admissions.values_mut() {
         admission
             .attempts
@@ -192,7 +132,7 @@ fn admit_source(inner: &mut Runtime, source: IpAddr, now: Instant) -> bool {
     true
 }
 
-fn release_source(inner: &mut Runtime, source: IpAddr) {
+pub(crate) fn release_source(inner: &mut Runtime, source: IpAddr) {
     if let Some(admission) = inner.source_admissions.get_mut(&source) {
         admission.active = admission.active.saturating_sub(1);
     }
@@ -200,20 +140,20 @@ fn release_source(inner: &mut Runtime, source: IpAddr) {
 
 #[derive(Clone)]
 pub struct NativeBackend {
-    inner: Arc<Mutex<Runtime>>,
-    directory: PathBuf,
-    certificate: X509,
-    key: PKey<Private>,
-    id: String,
+    pub(crate) inner: Arc<Mutex<Runtime>>,
+    pub(crate) directory: PathBuf,
+    pub(crate) certificate: X509,
+    pub(crate) key: PKey<Private>,
+    pub(crate) id: String,
 }
 
 // Serializes session teardown with peer admission so an old disconnect cannot
 // overwrite a replacement connection's presence.
-struct Session<'a> {
-    backend: &'a NativeBackend,
-    peer: Peer,
-    event: &'a Arc<dyn Fn(StateEvent) + Send + Sync>,
-    published: bool,
+pub(crate) struct Session<'a> {
+    pub(crate) backend: &'a NativeBackend,
+    pub(crate) peer: Peer,
+    pub(crate) event: &'a Arc<dyn Fn(StateEvent) + Send + Sync>,
+    pub(crate) published: bool,
 }
 
 impl Drop for Session<'_> {
@@ -302,480 +242,9 @@ impl Drop for Session<'_> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-struct WireNotificationAction {
-    id: String,
-    label: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-struct WireNotification {
-    key: String,
-    app: String,
-    title: String,
-    body: String,
-    clearable: bool,
-    #[serde(default)]
-    actions: Vec<WireNotificationAction>,
-    #[serde(default)]
-    reply_supported: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WirePlayback {
-    Playing,
-    Paused,
-    Stopped,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WireControl {
-    Play,
-    Pause,
-    PlayPause,
-    Next,
-    Previous,
-    Seek,
-    SetPosition,
-}
-
-/// Linux-to-phone media command verb. `Seek` is deliberately absent: Android
-/// exposes absolute `seekTo`, which maps to `SetPosition`; relative seeks
-/// have no genuine platform API, so the daemon can never route one here.
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WireCommand {
-    Play,
-    Pause,
-    PlayPause,
-    Next,
-    Previous,
-    SetPosition,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-struct WireMediaSession {
-    player: String,
-    application: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    artist: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    album: Option<String>,
-    playback: WirePlayback,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    position_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    duration_ms: Option<u64>,
-    #[serde(default)]
-    controls: Vec<WireControl>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-struct WireContact {
-    local_id: String,
-    display_name: String,
-    #[serde(default)]
-    phones: Vec<String>,
-    #[serde(default)]
-    emails: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    photo: Option<String>,
-}
-
-#[derive(Debug, PartialEq, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Message {
-    Hello {
-        protocol: u32,
-        id: String,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        trusted_server_id: Option<String>,
-        // Hex SHA-256 commitment to the sender's fresh pairing nonce. Present
-        // on every hello; required from unknown peers so the comparison code
-        // binds this ceremony instead of only the long-lived certificates.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pair_commit: Option<String>,
-    },
-    PairOpen {
-        protocol: u32,
-        // Hex 16-byte nonce revealing the hello's commitment.
-        nonce: String,
-    },
-    PairConfirm {
-        protocol: u32,
-        // The ceremony code the phone user approved. The server verifies it
-        // against the pending candidate; a confirmation that does not repeat
-        // the displayed code aborts pairing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        code: Option<String>,
-    },
-    Paired {
-        protocol: u32,
-    },
-    Battery {
-        protocol: u32,
-        percentage: u8,
-        charging: bool,
-    },
-    Connectivity {
-        protocol: u32,
-        transport: ConnectivityTransport,
-        validated: bool,
-        metered: bool,
-    },
-    // Phone-to-Linux notification state. `notification_post` upserts one
-    // notification; `notification_removed` retracts it; `notifications_sync`
-    // carries the phone's full current list so a (re)connect reconciles stale
-    // entries and advertises listener permission via `enabled`.
-    NotificationPost {
-        protocol: u32,
-        key: String,
-        app: String,
-        title: String,
-        body: String,
-        clearable: bool,
-        #[serde(default)]
-        actions: Vec<WireNotificationAction>,
-        #[serde(default)]
-        reply_supported: bool,
-    },
-    NotificationRemoved {
-        protocol: u32,
-        key: String,
-    },
-    NotificationsSync {
-        protocol: u32,
-        enabled: bool,
-        #[serde(default)]
-        notifications: Vec<WireNotification>,
-    },
-    // Linux-to-phone direction. IPC acceptance means the command was queued
-    // for the live session, not that Android confirmed the effect.
-    NotificationsRequest {
-        protocol: u32,
-    },
-    ContactsRequest {
-        protocol: u32,
-    },
-    ContactsSync {
-        protocol: u32,
-        contacts: Vec<WireContact>,
-    },
-    ClipboardPost {
-        protocol: u32,
-        text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        html: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        uri: Option<String>,
-    },
-    ClipboardSet {
-        protocol: u32,
-        request_id: String,
-        text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        html: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        uri: Option<String>,
-    },
-    ClipboardFile {
-        protocol: u32,
-        transfer_id: String,
-        name: String,
-        size: u64,
-        mime: String,
-    },
-    ClipboardResult {
-        protocol: u32,
-        transfer_id: String,
-        status: ShareStatus,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<ShareFailure>,
-    },
-    NotificationDismiss {
-        protocol: u32,
-        key: String,
-    },
-    NotificationReply {
-        protocol: u32,
-        key: String,
-        text: String,
-    },
-    NotificationAction {
-        protocol: u32,
-        key: String,
-        action_id: String,
-    },
-    /// Linux-to-phone notification. The phone owns presentation and may
-    /// replace an existing notification with the same request id.
-    RemoteNotification {
-        protocol: u32,
-        request_id: String,
-        app: String,
-        title: String,
-        body: String,
-    },
-    PresentationControl {
-        protocol: u32,
-        action: PresentationAction,
-        #[serde(default)]
-        delta_x: i32,
-        #[serde(default)]
-        delta_y: i32,
-    },
-    VolumeControl {
-        protocol: u32,
-        action: VolumeAction,
-    },
-    RemoteInputControl {
-        protocol: u32,
-        action: RemoteInputAction,
-        #[serde(default)]
-        delta_x: i32,
-        #[serde(default)]
-        delta_y: i32,
-        #[serde(default)]
-        button: u8,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        text: Option<String>,
-    },
-    CallControl {
-        protocol: u32,
-        request_id: String,
-        action: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        address: Option<String>,
-        /// Call-state generation observed when the command was queued. The
-        /// session drops the command if the phone reported newer state since;
-        /// the phone independently re-checks its own current generation.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        generation: Option<u64>,
-    },
-    CallResult {
-        protocol: u32,
-        request_id: String,
-        action: CallAction,
-        accepted: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        failure: Option<CallCommandFailure>,
-    },
-    CallState {
-        protocol: u32,
-        phase: CallPhase,
-        controls: BTreeSet<handover_core::CallAction>,
-        /// Monotonic counter owned by the phone. Commands are stamped with the
-        /// latest observed value; the phone refuses mismatches, and the drain
-        /// drops commands stamped before the newest report.
-        #[serde(default)]
-        generation: u64,
-    },
-    CallRequest {
-        protocol: u32,
-    },
-    // Phone-to-Linux media state. `media_post` upserts one player session;
-    // `media_removed` retracts it; `media_sync` carries the phone's full
-    // current session list so a (re)connect reconciles stale entries.
-    MediaPost {
-        protocol: u32,
-        player: String,
-        application: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        artist: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        album: Option<String>,
-        playback: WirePlayback,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        position_ms: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        duration_ms: Option<u64>,
-        #[serde(default)]
-        controls: Vec<WireControl>,
-    },
-    MediaRemoved {
-        protocol: u32,
-        player: String,
-    },
-    MediaSync {
-        protocol: u32,
-        #[serde(default)]
-        sessions: Vec<WireMediaSession>,
-    },
-    // Linux-to-phone direction. IPC acceptance means the command was queued
-    // for the live session, not that Android confirmed the effect.
-    MediaRequest {
-        protocol: u32,
-    },
-    MediaControl {
-        protocol: u32,
-        request_id: String,
-        player: String,
-        action: WireCommand,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        position_ms: Option<u64>,
-    },
-    Ring {
-        protocol: u32,
-        request_id: String,
-    },
-    UserPing {
-        protocol: u32,
-        request_id: String,
-    },
-    LockDevice {
-        protocol: u32,
-        request_id: String,
-    },
-    /// Desktop-to-phone request to hold or release a wake lock. Acceptance
-    /// means Android changed the wake-lock state, not a battery guarantee.
-    KeepAwake {
-        protocol: u32,
-        request_id: String,
-        inhibit: bool,
-    },
-    /// Phone-to-desktop request to hold or release the desktop idle inhibitor.
-    ScreensaverControl {
-        protocol: u32,
-        request_id: String,
-        inhibit: bool,
-    },
-    /// Desktop-to-phone request to open the tethering settings screen.
-    /// Third-party apps cannot toggle tethering directly (that requires
-    /// privileged system permissions), so acceptance means the settings
-    /// screen opened for the user to act, never that sharing started.
-    TetheringSettings {
-        protocol: u32,
-        request_id: String,
-    },
-    DeviceCommandResult {
-        protocol: u32,
-        request_id: String,
-        action: DeviceCommandAction,
-        accepted: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        failure: Option<DeviceCommandFailure>,
-    },
-    ShareUrl {
-        protocol: u32,
-        transfer_id: String,
-        url: String,
-    },
-    ShareFile {
-        protocol: u32,
-        transfer_id: String,
-        name: String,
-        size: u64,
-        #[serde(default, skip_serializing_if = "is_false")]
-        clipboard: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        mime: Option<String>,
-        #[serde(skip)]
-        path: PathBuf,
-    },
-    ShareResult {
-        protocol: u32,
-        transfer_id: String,
-        status: ShareStatus,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<ShareFailure>,
-    },
-    Revoke {
-        protocol: u32,
-    },
-    Ping {
-        protocol: u32,
-    },
-    Pong {
-        protocol: u32,
-    },
-}
-
-fn is_false(value: &bool) -> bool {
-    !value
-}
-
-impl Message {
-    fn version(&self) -> u32 {
-        match self {
-            Self::Hello { protocol, .. }
-            | Self::PairOpen { protocol, .. }
-            | Self::PairConfirm { protocol, .. }
-            | Self::Paired { protocol }
-            | Self::Battery { protocol, .. }
-            | Self::Connectivity { protocol, .. }
-            | Self::NotificationPost { protocol, .. }
-            | Self::NotificationRemoved { protocol, .. }
-            | Self::NotificationsSync { protocol, .. }
-            | Self::NotificationsRequest { protocol }
-            | Self::ContactsRequest { protocol }
-            | Self::ContactsSync { protocol, .. }
-            | Self::ClipboardPost { protocol, .. }
-            | Self::ClipboardSet { protocol, .. }
-            | Self::ClipboardFile { protocol, .. }
-            | Self::ClipboardResult { protocol, .. }
-            | Self::NotificationDismiss { protocol, .. }
-            | Self::NotificationReply { protocol, .. }
-            | Self::NotificationAction { protocol, .. }
-            | Self::RemoteNotification { protocol, .. }
-            | Self::PresentationControl { protocol, .. }
-            | Self::VolumeControl { protocol, .. }
-            | Self::RemoteInputControl { protocol, .. }
-            | Self::CallControl { protocol, .. }
-            | Self::CallResult { protocol, .. }
-            | Self::CallState { protocol, .. }
-            | Self::CallRequest { protocol }
-            | Self::MediaPost { protocol, .. }
-            | Self::MediaRemoved { protocol, .. }
-            | Self::MediaSync { protocol, .. }
-            | Self::MediaRequest { protocol }
-            | Self::MediaControl { protocol, .. }
-            | Self::Ring { protocol, .. }
-            | Self::UserPing { protocol, .. }
-            | Self::LockDevice { protocol, .. }
-            | Self::KeepAwake { protocol, .. }
-            | Self::ScreensaverControl { protocol, .. }
-            | Self::TetheringSettings { protocol, .. }
-            | Self::DeviceCommandResult { protocol, .. }
-            | Self::ShareUrl { protocol, .. }
-            | Self::ShareFile { protocol, .. }
-            | Self::ShareResult { protocol, .. }
-            | Self::Revoke { protocol }
-            | Self::Ping { protocol }
-            | Self::Pong { protocol } => *protocol,
-        }
-    }
-}
-
 /// Temp path owned by a queued clipboard share, if any. Only
 /// `clipboard: true` entries name daemon-owned temp files; user files
 /// must never be deleted by queue cleanup.
-fn clipboard_temp_path(message: &Message) -> Option<&PathBuf> {
-    match message {
-        Message::ShareFile {
-            clipboard: true,
-            path,
-            ..
-        } => Some(path),
-        _ => None,
-    }
-}
-
-/// Delete a queued clipboard share's temp file. Every terminal path
-/// for a queued entry (streamed, cancelled, expired, timed out,
-/// disconnected, send-failed) must call this.
-fn delete_clipboard_temp(message: &Message) {
-    if let Some(path) = clipboard_temp_path(message) {
-        let _ = fs::remove_file(path);
-    }
-}
-
 /// Reservation against the received-share quota. Dropping an
 /// uncommitted reservation releases it; a completed transfer commits
 /// it, leaving the on-disk file to future scans.
@@ -807,6 +276,17 @@ impl Drop for QuotaReservation {
         let mut inner = self.backend.inner.lock().unwrap();
         inner.quota_reserved.0 = inner.quota_reserved.0.saturating_sub(self.bytes);
         inner.quota_reserved.1 = inner.quota_reserved.1.saturating_sub(1);
+    }
+}
+
+struct PartialShare(PathBuf, PathBuf);
+
+impl Drop for PartialShare {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.0);
+            let _ = fs::remove_dir(&self.1);
+        }
     }
 }
 
@@ -1097,7 +577,13 @@ impl NativeBackend {
         html: Option<String>,
         uri: Option<String>,
     ) -> Result<(), NativeCommandError> {
-        if text.len() > 32 * 1024 {
+        let html_len = html.as_ref().map_or(0, String::len);
+        let uri_len = uri.as_ref().map_or(0, String::len);
+        if text.len() > 32 * 1024
+            || html_len > 32 * 1024
+            || uri_len > 32 * 1024
+            || text.len() + html_len + uri_len > 48 * 1024
+        {
             return Err(NativeCommandError::QueueFull);
         }
         let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
@@ -1310,7 +796,34 @@ impl NativeBackend {
         )
     }
 
-    fn queue_simple(&self, peer_id: &str, message: Message) -> Result<(), NativeCommandError> {
+    /// Ask Android for a bounded directory listing. The response is delivered
+    /// asynchronously on the native session and is not treated as daemon
+    /// state.
+    pub fn filesystem_list(
+        &self,
+        peer_id: &str,
+        path: String,
+    ) -> Result<String, NativeCommandError> {
+        if !safe_browse_path(&path) {
+            return Err(NativeCommandError::QueueFull);
+        }
+        let request_id = new_transfer_id().map_err(|_| NativeCommandError::QueueFull)?;
+        self.queue_simple(
+            peer_id,
+            Message::FilesystemList {
+                protocol: WIRE_VERSION,
+                request_id: request_id.clone(),
+                path,
+            },
+        )?;
+        Ok(request_id)
+    }
+
+    pub(crate) fn queue_simple(
+        &self,
+        peer_id: &str,
+        message: Message,
+    ) -> Result<(), NativeCommandError> {
         let mut inner = self.inner.lock().unwrap();
         if !inner.active.contains_key(peer_id) {
             return Err(NativeCommandError::Offline);
@@ -1468,7 +981,7 @@ impl NativeBackend {
         removed
     }
 
-    fn queue_share(
+    pub(crate) fn queue_share(
         &self,
         peer_id: &str,
         message: Message,
@@ -1498,7 +1011,7 @@ impl NativeBackend {
     /// directory cannot fit the file. The check and the reservation
     /// are atomic under the runtime lock: concurrent transfers cannot
     /// all observe spare capacity and overshoot together.
-    fn reserve_received_quota(
+    pub(crate) fn reserve_received_quota(
         &self,
         directory: &Path,
         incoming: u64,
@@ -1581,7 +1094,7 @@ impl NativeBackend {
         })
     }
 
-    fn receive_share_file<R: Read>(
+    pub(crate) fn receive_share_file<R: Read>(
         &self,
         input: &mut R,
         name: &str,
@@ -1595,7 +1108,7 @@ impl NativeBackend {
         )
     }
 
-    fn receive_share_file_until<R: Read>(
+    pub(crate) fn receive_share_file_until<R: Read>(
         &self,
         input: &mut R,
         name: &str,
@@ -1639,7 +1152,7 @@ impl NativeBackend {
         guard.0 = PathBuf::new();
         Ok(destination)
     }
-    fn save_peers(&self, peers: &PeerFile) -> Result<(), NativeError> {
+    pub(crate) fn save_peers(&self, peers: &PeerFile) -> Result<(), NativeError> {
         let path = self.directory.join("peers.json");
         let tmp = self.directory.join("peers.json.tmp");
         write_private(&tmp, &serde_json::to_vec(peers)?)?;
@@ -1706,1212 +1219,9 @@ impl NativeBackend {
         }
         Ok(())
     }
-
-    fn handle(
-        &self,
-        stream: TcpStream,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        // TLS and the first hello are unauthenticated. Keep each socket read
-        // bounded while the admission controls cap concurrent attempts.
-        stream.set_read_timeout(Some(PREAUTH_READ_TIMEOUT))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-        let mut builder = SslAcceptor::mozilla_modern_v5(SslMethod::tls())?;
-        builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
-        builder.set_certificate(&self.certificate)?;
-        builder.set_private_key(&self.key)?;
-        builder.set_verify_callback(
-            SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
-            |_preverified, _context| true,
-        );
-        let acceptor = builder.build();
-        let mut tls = match acceptor.accept(stream) {
-            Ok(tls) => tls,
-            Err(error) => {
-                warn!(%error, "native TLS handshake failed");
-                return Err(NativeError::InvalidFrame);
-            }
-        };
-        tls.get_ref()
-            .set_read_timeout(Some(Duration::from_secs(2)))?;
-        let cert = tls
-            .ssl()
-            .peer_certificate()
-            .ok_or(NativeError::InvalidFrame)?;
-        validate_peer_certificate(&cert)?;
-        let peer_fp = fingerprint(&cert)?;
-        let hello = read_frame(&mut tls)?;
-        let Message::Hello {
-            protocol: WIRE_VERSION,
-            id,
-            name,
-            trusted_server_id,
-            pair_commit,
-        } = hello
-        else {
-            return Err(NativeError::InvalidFrame);
-        };
-        if id != peer_fp || name.is_empty() || name.len() > 128 {
-            return Err(NativeError::InvalidFrame);
-        }
-        // Every ceremony gets a fresh nonce. The hello carries only its
-        // commitment; the opening follows, so a middlebox that committed to
-        // its certificates at the TLS handshake cannot grind the displayed
-        // code offline before the users compare it.
-        let mut nonce = [0u8; 16];
-        openssl::rand::rand_bytes(&mut nonce)?;
-        let nonce_hex = hex::encode(nonce);
-        write_frame(
-            &mut tls,
-            &Message::Hello {
-                protocol: WIRE_VERSION,
-                id: self.id.clone(),
-                name: "Linux desktop".into(),
-                trusted_server_id: None,
-                pair_commit: Some(hex::encode(Sha256::digest(nonce))),
-            },
-        )?;
-        let peer = Peer {
-            id: id.clone(),
-            name: name.clone(),
-            fingerprint: peer_fp.clone(),
-        };
-        if trusted_server_id.as_deref() == Some(self.id.as_str())
-            && !self.inner.lock().unwrap().peers.peers.contains_key(&id)
-        {
-            write_frame(
-                &mut tls,
-                &Message::Revoke {
-                    protocol: WIRE_VERSION,
-                },
-            )?;
-            return Ok(());
-        }
-        let known = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.active.contains_key(&id) || !inner.connecting.insert(id.clone()) {
-                // A live session for this peer must not be overwritten by a
-                // second concurrent connection with the same identity.
-                return Err(NativeError::InvalidFrame);
-            }
-            let known = inner
-                .peers
-                .peers
-                .get(&id)
-                .is_some_and(|p| p.fingerprint == peer_fp);
-            if !known {
-                inner
-                    .pending
-                    .retain(|_, candidate| candidate.created.elapsed() < Duration::from_secs(120));
-                if inner.pending.len() >= MAX_SESSIONS {
-                    inner.connecting.remove(&id);
-                    return Err(NativeError::InvalidFrame);
-                }
-                let Some(commit) = pair_commit else {
-                    // Unknown peers must commit to a fresh nonce; without it
-                    // the ceremony code would be a static function of the
-                    // certificates and grindable offline by a middlebox.
-                    inner.connecting.remove(&id);
-                    return Err(NativeError::InvalidFrame);
-                };
-                if !hex::decode(&commit).is_ok_and(|bytes| bytes.len() == 32) {
-                    inner.connecting.remove(&id);
-                    return Err(NativeError::InvalidFrame);
-                }
-                inner.pending.insert(
-                    id.clone(),
-                    Candidate {
-                        peer: peer.clone(),
-                        // Computed once the phone reveals its nonce.
-                        code: String::new(),
-                        commit,
-                        approved: false,
-                        created: Instant::now(),
-                    },
-                );
-            }
-            known
-        };
-        let mut session = Session {
-            backend: self,
-            peer: peer.clone(),
-            event,
-            published: false,
-        };
-        if !known {
-            // Created after the session guard so a failed opening write
-            // still releases the identity slot for a fresh ceremony.
-            write_frame(
-                &mut tls,
-                &Message::PairOpen {
-                    protocol: WIRE_VERSION,
-                    nonce: nonce_hex.clone(),
-                },
-            )?;
-        }
-        if !known {
-            // Both sides committed to a fresh nonce in their hellos and have
-            // now revealed the openings. Each side verifies the peer's
-            // opening against its commitment, then both users compare the
-            // resulting code out of band and approve on their own side: Linux
-            // through local IPC, the phone by repeating the code it
-            // displayed. Pairing completes only when the local approval and
-            // the matching phone confirmation meet within one ceremony.
-            let started = Instant::now();
-            let mut opened = false;
-            let mut phone_confirmed = false;
-            loop {
-                if started.elapsed() > Duration::from_secs(120) {
-                    return Err(NativeError::InvalidFrame);
-                }
-                match read_frame(&mut tls) {
-                    Ok(Message::PairOpen {
-                        protocol: WIRE_VERSION,
-                        nonce: peer_nonce,
-                    }) => {
-                        if opened {
-                            return Err(NativeError::InvalidFrame);
-                        }
-                        let Some(bytes) = parse_nonce(&peer_nonce) else {
-                            return Err(NativeError::InvalidFrame);
-                        };
-                        let mut inner = self.inner.lock().unwrap();
-                        let Some(candidate) = inner.pending.get_mut(&id) else {
-                            return Err(NativeError::InvalidFrame);
-                        };
-                        if hex::encode(Sha256::digest(bytes)) != candidate.commit {
-                            // The opening does not match the hello's
-                            // commitment: drop the ceremony instead of
-                            // displaying a code the peer did not commit to.
-                            return Err(NativeError::InvalidFrame);
-                        }
-                        candidate.code =
-                            comparison_code(&self.id, &nonce_hex, &peer_fp, &peer_nonce);
-                        opened = true;
-                    }
-                    Ok(Message::PairConfirm {
-                        protocol: WIRE_VERSION,
-                        code,
-                    }) => {
-                        let expected = self
-                            .inner
-                            .lock()
-                            .unwrap()
-                            .pending
-                            .get(&id)
-                            .map_or(String::new(), |candidate| candidate.code.clone());
-                        if expected.is_empty() || code.as_deref() != Some(expected.as_str()) {
-                            // A confirmation that does not repeat the displayed
-                            // ceremony code is a malfunction or an attack. Drop
-                            // the session so any retry starts a fresh,
-                            // user-visible ceremony instead of allowing
-                            // unlimited guesses against this one.
-                            return Err(NativeError::InvalidFrame);
-                        }
-                        phone_confirmed = true;
-                    }
-                    Ok(Message::Ping {
-                        protocol: WIRE_VERSION,
-                    }) => write_frame(
-                        &mut tls,
-                        &Message::Pong {
-                            protocol: WIRE_VERSION,
-                        },
-                    )?,
-                    Err(NativeError::Io(e))
-                        if e.kind() == std::io::ErrorKind::WouldBlock
-                            || e.kind() == std::io::ErrorKind::TimedOut => {}
-                    _ => return Err(NativeError::InvalidFrame),
-                }
-                let mut inner = self.inner.lock().unwrap();
-                if phone_confirmed && inner.pending.get(&id).is_some_and(|p| p.approved) {
-                    let mut peers = inner.peers.clone();
-                    peers.peers.insert(id.clone(), peer.clone());
-                    self.save_peers(&peers)?;
-                    inner.peers = peers;
-                    inner.pending.remove(&id);
-                    break;
-                }
-            }
-        }
-        write_frame(
-            &mut tls,
-            &Message::Paired {
-                protocol: WIRE_VERSION,
-            },
-        )?;
-        let added = {
-            let mut inner = self.inner.lock().unwrap();
-            if !inner.peers.peers.contains_key(&id) {
-                return Err(NativeError::InvalidFrame);
-            }
-            inner.active.insert(id.clone(), tls.get_ref().try_clone()?);
-            session.published = true;
-            device(
-                &peer,
-                true,
-                inner.batteries.get(&id).cloned(),
-                inner.notif_enabled.get(&id).copied().unwrap_or(false),
-                inner.media_enabled.get(&id).copied().unwrap_or(false),
-            )
-        };
-        // The device event emits without the lock held: callbacks may call
-        // back into the backend.
-        event(StateEvent::Device(DeviceEvent::Added(added)));
-        // Ask a freshly paired phone for its current notification list. The
-        // phone also syncs proactively after `paired`; the request covers a
-        // daemon restart where the phone never saw the pairing transition.
-        let _ = write_frame(
-            &mut tls,
-            &Message::NotificationsRequest {
-                protocol: WIRE_VERSION,
-            },
-        );
-        let _ = write_frame(
-            &mut tls,
-            &Message::CallRequest {
-                protocol: WIRE_VERSION,
-            },
-        );
-        // Same recovery for media sessions: a daemon restart must not wait
-        // for the next playback change to learn the current players.
-        let _ = write_frame(
-            &mut tls,
-            &Message::MediaRequest {
-                protocol: WIRE_VERSION,
-            },
-        );
-        let mut last_received = Instant::now();
-        let session_started = Instant::now();
-        let mut snapshot_retry_sent = false;
-        loop {
-            if last_received.elapsed() > Duration::from_secs(90) {
-                break;
-            }
-            if !self.inner.lock().unwrap().peers.peers.contains_key(&id) {
-                break;
-            }
-            if !snapshot_retry_sent && session_started.elapsed() >= Duration::from_secs(5) {
-                let notification_answered = {
-                    let inner = self.inner.lock().unwrap();
-                    inner.notif_enabled.contains_key(&id)
-                };
-                if !notification_answered {
-                    let _ = write_frame(
-                        &mut tls,
-                        &Message::NotificationsRequest {
-                            protocol: WIRE_VERSION,
-                        },
-                    );
-                }
-                snapshot_retry_sent = true;
-            }
-            let expired = {
-                let mut inner = self.inner.lock().unwrap();
-                let pending = inner.pending_shares.entry(id.clone()).or_default();
-                let expired = take_expired_shares(pending, Instant::now());
-                if let Some(queue) = inner.outbox.get_mut(&id) {
-                    let mut temps = Vec::new();
-                    queue.retain(|message| {
-                        let drop_it = match message {
-                            Message::ShareUrl { transfer_id, .. }
-                            | Message::ShareFile { transfer_id, .. } => {
-                                expired.contains(transfer_id)
-                            }
-                            _ => false,
-                        };
-                        if drop_it {
-                            temps.extend(clipboard_temp_path(message).cloned());
-                        }
-                        !drop_it
-                    });
-                    drop(inner);
-                    for temp in temps {
-                        let _ = fs::remove_file(temp);
-                    }
-                }
-                expired
-            };
-            for transfer_id in expired {
-                event(StateEvent::ShareResult(ShareResult {
-                    device_id: DeviceId::new(format!("native:{id}")),
-                    transfer_id,
-                    status: ShareStatus::Failed,
-                    reason: Some(ShareFailure::TimedOut),
-                }));
-            }
-            // Drain queued Linux-to-phone notification commands before
-            // blocking on the next inbound frame. Acceptance was already
-            // reported over IPC; a write failure ends the session and the
-            // phone resyncs on reconnect.
-            let outbound = self
-                .inner
-                .lock()
-                .unwrap()
-                .outbox
-                .remove(&id)
-                .unwrap_or_default();
-            // A call command queued before the phone's latest report is stale:
-            // state re-observation proves a call may have started or ended
-            // since the user acted. Dropping it here keeps a delayed command
-            // from answering, declining or hanging up a *later* call.
-            let latest_generation = self
-                .inner
-                .lock()
-                .unwrap()
-                .call_generations
-                .get(&id)
-                .copied();
-            let outbound: Vec<_> = outbound
-                .into_iter()
-                .filter(|message| match message {
-                    Message::CallControl {
-                        generation: Some(stamped),
-                        ..
-                    } => latest_generation == Some(*stamped),
-                    _ => true,
-                })
-                .collect();
-            for (index, message) in outbound.iter().enumerate() {
-                let share_id = match message {
-                    Message::ShareUrl { transfer_id, .. }
-                    | Message::ShareFile { transfer_id, .. } => Some(transfer_id),
-                    _ => None,
-                };
-                let started = share_id.and_then(|transfer_id| {
-                    self.inner
-                        .lock()
-                        .unwrap()
-                        .pending_shares
-                        .get(&id)
-                        .and_then(|pending| pending.get(transfer_id))
-                        .copied()
-                });
-                if share_id.is_some() && started.is_none() {
-                    continue;
-                }
-                if let (Some(transfer_id), Some(started)) = (share_id, started)
-                    && started.elapsed() >= SHARE_RESULT_TIMEOUT
-                {
-                    self.inner
-                        .lock()
-                        .unwrap()
-                        .pending_shares
-                        .entry(id.clone())
-                        .or_default()
-                        .remove(transfer_id);
-                    delete_clipboard_temp(message);
-                    event(StateEvent::ShareResult(ShareResult {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        transfer_id: transfer_id.clone(),
-                        status: ShareStatus::Failed,
-                        reason: Some(ShareFailure::TimedOut),
-                    }));
-                    continue;
-                }
-                if let Err(error) = write_frame(&mut tls, message) {
-                    tracing::debug!(peer = %id, %error, "native notification command write failed");
-                    // The session is over; every unsent queued entry
-                    // ends here. Delete their clipboard temps.
-                    for remaining in outbound.iter().skip(index) {
-                        delete_clipboard_temp(remaining);
-                    }
-                    return Err(error);
-                }
-                if let Message::CallControl {
-                    request_id, action, ..
-                } = message
-                    && let Some(action) = match action.as_str() {
-                        "place" => Some(CallAction::Place),
-                        "answer" => Some(CallAction::Answer),
-                        "decline" => Some(CallAction::Decline),
-                        "hangup" => Some(CallAction::Hangup),
-                        _ => None,
-                    }
-                {
-                    self.inner
-                        .lock()
-                        .unwrap()
-                        .pending_call_results
-                        .entry(id.clone())
-                        .or_default()
-                        .insert(request_id.clone(), action);
-                }
-                if let Message::ShareFile {
-                    path,
-                    size,
-                    transfer_id,
-                    clipboard,
-                    ..
-                } = message
-                {
-                    // A send that never completes must not leave its
-                    // clipboard temp behind. User files are never
-                    // touched; only clipboard-owned temps are cleaned.
-                    let temp = clipboard.then(|| path.clone());
-                    let cleanup = |temp: &Option<PathBuf>| {
-                        if let Some(path) = temp {
-                            let _ = fs::remove_file(path);
-                        }
-                    };
-                    let file = File::open(path).inspect_err(|_| cleanup(&temp))?;
-                    let metadata = file.metadata().inspect_err(|_| cleanup(&temp))?;
-                    if !metadata.is_file() || metadata.len() != *size {
-                        cleanup(&temp);
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    let started = started.ok_or(NativeError::InvalidFrame).inspect_err(|_| {
-                        cleanup(&temp);
-                    })?;
-                    let device_id = DeviceId::new(format!("native:{id}"));
-                    let mut report_progress = |bytes_sent| {
-                        event(StateEvent::ShareProgress(ShareProgress {
-                            device_id: device_id.clone(),
-                            transfer_id: transfer_id.clone(),
-                            bytes_sent,
-                            total_bytes: *size,
-                        }));
-                    };
-                    if let Err(error) = stream_file_until(
-                        &mut file.take(*size),
-                        &mut tls,
-                        *size,
-                        started,
-                        &mut report_progress,
-                    ) {
-                        if error.kind() == std::io::ErrorKind::TimedOut {
-                            self.inner
-                                .lock()
-                                .unwrap()
-                                .pending_shares
-                                .entry(id.clone())
-                                .or_default()
-                                .remove(transfer_id);
-                            event(StateEvent::ShareResult(ShareResult {
-                                device_id: DeviceId::new(format!("native:{id}")),
-                                transfer_id: transfer_id.clone(),
-                                status: ShareStatus::Failed,
-                                reason: Some(ShareFailure::TimedOut),
-                            }));
-                        }
-                        cleanup(&temp);
-                        return Err(NativeError::Io(error));
-                    }
-                    if let Err(error) = tls.flush() {
-                        cleanup(&temp);
-                        return Err(NativeError::Io(error));
-                    }
-                    if *clipboard {
-                        let _ = fs::remove_file(path);
-                    }
-                }
-            }
-            match read_frame(&mut tls) {
-                Ok(Message::ShareUrl {
-                    protocol: WIRE_VERSION,
-                    transfer_id,
-                    url,
-                }) => {
-                    last_received = Instant::now();
-                    if !valid_transfer_id(&transfer_id) || !valid_share_url(&url) {
-                        write_frame(
-                            &mut tls,
-                            &Message::ShareResult {
-                                protocol: WIRE_VERSION,
-                                transfer_id,
-                                status: ShareStatus::Failed,
-                                reason: Some(ShareFailure::InvalidResource),
-                            },
-                        )?;
-                        continue;
-                    }
-                    event(StateEvent::ShareReceived(ReceivedShare {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        resource: SharedResource::Url { url },
-                    }));
-                    write_frame(
-                        &mut tls,
-                        &Message::ShareResult {
-                            protocol: WIRE_VERSION,
-                            transfer_id,
-                            status: ShareStatus::Completed,
-                            reason: None,
-                        },
-                    )?;
-                }
-                Ok(Message::ShareFile {
-                    protocol: WIRE_VERSION,
-                    transfer_id,
-                    name,
-                    size,
-                    ..
-                }) => {
-                    let rejected = if !valid_transfer_id(&transfer_id)
-                        || !safe_share_name(&name)
-                        || name.len() > 255
-                    {
-                        Some(ShareFailure::InvalidResource)
-                    } else if size > MAX_SHARE_SIZE {
-                        Some(ShareFailure::SizeLimit)
-                    } else {
-                        None
-                    };
-                    if let Some(reason) = rejected {
-                        let _ = write_frame(
-                            &mut tls,
-                            &Message::ShareResult {
-                                protocol: WIRE_VERSION,
-                                transfer_id,
-                                status: ShareStatus::Failed,
-                                reason: Some(reason),
-                            },
-                        );
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    let path = match self.receive_share_file(&mut tls, &name, size) {
-                        Ok(path) => path,
-                        Err(error) => {
-                            let reason = match &error {
-                                NativeError::Io(io)
-                                    if io.kind() == std::io::ErrorKind::UnexpectedEof =>
-                                {
-                                    ShareFailure::Interrupted
-                                }
-                                _ => ShareFailure::Storage,
-                            };
-                            let _ = write_frame(
-                                &mut tls,
-                                &Message::ShareResult {
-                                    protocol: WIRE_VERSION,
-                                    transfer_id,
-                                    status: ShareStatus::Failed,
-                                    reason: Some(reason),
-                                },
-                            );
-                            return Err(error);
-                        }
-                    };
-                    last_received = Instant::now();
-                    event(StateEvent::ShareReceived(ReceivedShare {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        resource: SharedResource::File {
-                            path: path.to_string_lossy().into_owned(),
-                        },
-                    }));
-                    write_frame(
-                        &mut tls,
-                        &Message::ShareResult {
-                            protocol: WIRE_VERSION,
-                            transfer_id,
-                            status: ShareStatus::Completed,
-                            reason: None,
-                        },
-                    )?;
-                }
-                Ok(Message::ShareResult {
-                    protocol: WIRE_VERSION,
-                    transfer_id,
-                    status,
-                    reason,
-                }) => {
-                    last_received = Instant::now();
-                    if !valid_transfer_id(&transfer_id)
-                        || (status == ShareStatus::Completed && reason.is_some())
-                        || (status == ShareStatus::Failed && reason.is_none())
-                    {
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    let was_pending = self
-                        .inner
-                        .lock()
-                        .unwrap()
-                        .pending_shares
-                        .entry(id.clone())
-                        .or_default()
-                        .remove(&transfer_id)
-                        .is_some();
-                    if was_pending {
-                        event(StateEvent::ShareResult(ShareResult {
-                            device_id: DeviceId::new(format!("native:{id}")),
-                            transfer_id,
-                            status,
-                            reason,
-                        }));
-                    }
-                }
-                Ok(Message::DeviceCommandResult {
-                    protocol: WIRE_VERSION,
-                    request_id,
-                    action,
-                    accepted,
-                    failure,
-                }) => {
-                    last_received = Instant::now();
-                    if !valid_transfer_id(&request_id)
-                        || (accepted && failure.is_some())
-                        || (!accepted && failure.is_none())
-                    {
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    event(StateEvent::DeviceCommandResult(DeviceCommandResult {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        request_id,
-                        action,
-                        accepted,
-                        failure,
-                    }));
-                }
-                Ok(Message::ScreensaverControl {
-                    protocol: WIRE_VERSION,
-                    request_id,
-                    inhibit,
-                }) => {
-                    last_received = Instant::now();
-                    if !valid_transfer_id(&request_id) {
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    // The phone only requests; the daemon owns the inhibitor.
-                    // A release from a peer that never requested is still
-                    // accepted so both sides converge on awake policy.
-                    let mut inner = self.inner.lock().unwrap();
-                    if inhibit {
-                        inner.screensaver_requests.insert(id.clone());
-                    } else {
-                        inner.screensaver_requests.remove(&id);
-                    }
-                    drop(inner);
-                    event(StateEvent::DeviceCommandResult(DeviceCommandResult {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        request_id,
-                        action: DeviceCommandAction::Screensaver,
-                        accepted: true,
-                        failure: None,
-                    }));
-                }
-                Ok(Message::Battery {
-                    protocol: WIRE_VERSION,
-                    percentage,
-                    charging,
-                }) => {
-                    last_received = Instant::now();
-                    let battery = BatteryState::new(percentage, charging)
-                        .map_err(|_| NativeError::InvalidFrame)?;
-                    let updated = {
-                        let mut inner = self.inner.lock().unwrap();
-                        if !inner.peers.peers.contains_key(&id) {
-                            break;
-                        }
-                        inner.batteries.insert(id.clone(), battery);
-                        let notifications_supported =
-                            inner.notif_enabled.get(&id).copied().unwrap_or(false);
-                        let media_supported =
-                            inner.media_enabled.get(&id).copied().unwrap_or(false);
-                        let mut updated = device(
-                            &peer,
-                            true,
-                            Some(battery),
-                            notifications_supported,
-                            media_supported,
-                        );
-                        updated.connectivity = inner.connectivity.get(&id).copied();
-                        if updated.connectivity.is_some() {
-                            updated.capabilities.insert(Capability::Connectivity);
-                        }
-                        updated
-                    };
-                    // Emit without the lock held: callbacks may call back
-                    // into the backend.
-                    event(StateEvent::Device(DeviceEvent::Updated(updated)));
-                }
-                Ok(Message::Connectivity {
-                    protocol: WIRE_VERSION,
-                    transport,
-                    validated,
-                    metered,
-                }) => {
-                    last_received = Instant::now();
-                    let connectivity = ConnectivityState {
-                        transport,
-                        validated,
-                        metered,
-                    };
-                    let updated = {
-                        let mut inner = self.inner.lock().unwrap();
-                        if !inner.peers.peers.contains_key(&id) {
-                            break;
-                        }
-                        inner.connectivity.insert(id.clone(), connectivity);
-                        let mut updated = device(
-                            &peer,
-                            true,
-                            inner.batteries.get(&id).cloned(),
-                            inner.notif_enabled.get(&id).copied().unwrap_or(false),
-                            inner.media_enabled.get(&id).copied().unwrap_or(false),
-                        );
-                        updated.connectivity = Some(connectivity);
-                        updated.capabilities.insert(Capability::Connectivity);
-                        updated
-                    };
-                    // Emit without the lock held: callbacks may call back
-                    // into the backend.
-                    event(StateEvent::Device(DeviceEvent::Updated(updated)));
-                }
-                Ok(Message::CallState {
-                    protocol: WIRE_VERSION,
-                    phase,
-                    controls,
-                    generation,
-                }) => {
-                    last_received = Instant::now();
-                    // The generation is the phone's own counter, not a daemon
-                    // guess: storing the received value keeps stamps and the
-                    // phone's execution check in one sequence.
-                    self.inner
-                        .lock()
-                        .unwrap()
-                        .call_generations
-                        .insert(id.clone(), generation);
-                    event(StateEvent::Call(CallEvent::Updated(CallState {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        phase,
-                        controls,
-                        generation,
-                    })));
-                }
-                Ok(Message::CallResult {
-                    protocol: WIRE_VERSION,
-                    request_id,
-                    action,
-                    accepted,
-                    failure,
-                }) => {
-                    last_received = Instant::now();
-                    let pending_action = self
-                        .inner
-                        .lock()
-                        .unwrap()
-                        .pending_call_results
-                        .entry(id.clone())
-                        .or_default()
-                        .remove(&request_id);
-                    if !valid_transfer_id(&request_id)
-                        || pending_action != Some(action)
-                        || (accepted && failure.is_some())
-                        || (!accepted && failure.is_none())
-                    {
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    event(StateEvent::CallCommandResult(CallCommandResult {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        request_id,
-                        action,
-                        accepted,
-                        failure,
-                    }));
-                }
-                Ok(Message::PresentationControl {
-                    protocol: WIRE_VERSION,
-                    action,
-                    delta_x,
-                    delta_y,
-                }) => {
-                    last_received = Instant::now();
-                    event(StateEvent::Presentation(PresentationCommand {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        action,
-                        delta_x,
-                        delta_y,
-                    }));
-                }
-                Ok(Message::VolumeControl {
-                    protocol: WIRE_VERSION,
-                    action,
-                }) => {
-                    last_received = Instant::now();
-                    event(StateEvent::Volume(VolumeCommand {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        action,
-                    }));
-                }
-                Ok(Message::RemoteInputControl {
-                    protocol: WIRE_VERSION,
-                    action,
-                    delta_x,
-                    delta_y,
-                    button,
-                    text,
-                }) => {
-                    let valid = match action {
-                        RemoteInputAction::Move => delta_x.abs() <= 2000 && delta_y.abs() <= 2000,
-                        RemoteInputAction::Click => (1..=5).contains(&button),
-                        RemoteInputAction::Scroll => delta_y.unsigned_abs() <= 20,
-                        RemoteInputAction::Type => {
-                            text.as_ref().is_some_and(|value| value.len() <= 512)
-                        }
-                    };
-                    if !valid {
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    last_received = Instant::now();
-                    event(StateEvent::RemoteInput(RemoteInputCommand {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        action,
-                        delta_x,
-                        delta_y,
-                        button,
-                        text,
-                    }));
-                }
-                Ok(Message::ContactsSync {
-                    protocol: WIRE_VERSION,
-                    contacts,
-                }) => {
-                    last_received = Instant::now();
-                    let device_id = DeviceId::new(format!("native:{id}"));
-                    let contacts = contacts
-                        .into_iter()
-                        .map(|contact| Contact {
-                            device_id: device_id.clone(),
-                            local_id: contact.local_id,
-                            display_name: contact.display_name,
-                            phones: contact.phones,
-                            emails: contact.emails,
-                            photo: contact.photo,
-                        })
-                        .collect();
-                    event(StateEvent::Contacts(ContactsEvent::Synced {
-                        device_id,
-                        contacts,
-                    }));
-                }
-                Ok(Message::ClipboardPost {
-                    protocol: WIRE_VERSION,
-                    text,
-                    html,
-                    uri,
-                }) => {
-                    last_received = Instant::now();
-                    let rich_size = text.len()
-                        + html.as_ref().map_or(0, String::len)
-                        + uri.as_ref().map_or(0, String::len);
-                    if text.len() <= 32 * 1024
-                        && html.as_ref().is_none_or(|value| value.len() <= 32 * 1024)
-                        && uri.as_ref().is_none_or(|value| value.len() <= 32 * 1024)
-                        && rich_size <= 48 * 1024
-                    {
-                        event(StateEvent::Clipboard(ClipboardText {
-                            device_id: DeviceId::new(format!("native:{id}")),
-                            text,
-                            html,
-                            uri,
-                        }));
-                    }
-                }
-                Ok(Message::ClipboardFile {
-                    protocol: WIRE_VERSION,
-                    transfer_id,
-                    name,
-                    size,
-                    mime,
-                }) => {
-                    if !valid_transfer_id(&transfer_id)
-                        || size > 10 * 1024 * 1024
-                        || !safe_share_name(&name)
-                        || name.len() > 255
-                        || mime.is_empty()
-                        || mime.len() > 128
-                    {
-                        let _ = write_frame(
-                            &mut tls,
-                            &Message::ClipboardResult {
-                                protocol: WIRE_VERSION,
-                                transfer_id,
-                                status: ShareStatus::Failed,
-                                reason: Some(ShareFailure::InvalidResource),
-                            },
-                        );
-                        return Err(NativeError::InvalidFrame);
-                    }
-                    let path = match self.receive_share_file(&mut tls, &name, size) {
-                        Ok(path) => path,
-                        Err(error) => {
-                            let reason = match &error {
-                                NativeError::Io(io)
-                                    if io.kind() == std::io::ErrorKind::UnexpectedEof =>
-                                {
-                                    ShareFailure::Interrupted
-                                }
-                                _ => ShareFailure::Storage,
-                            };
-                            let _ = write_frame(
-                                &mut tls,
-                                &Message::ClipboardResult {
-                                    protocol: WIRE_VERSION,
-                                    transfer_id,
-                                    status: ShareStatus::Failed,
-                                    reason: Some(reason),
-                                },
-                            );
-                            return Err(error);
-                        }
-                    };
-                    event(StateEvent::ClipboardFile(ClipboardFile {
-                        device_id: DeviceId::new(format!("native:{id}")),
-                        path: path.to_string_lossy().into_owned(),
-                        mime,
-                    }));
-                    last_received = Instant::now();
-                    write_frame(
-                        &mut tls,
-                        &Message::ClipboardResult {
-                            protocol: WIRE_VERSION,
-                            transfer_id,
-                            status: ShareStatus::Completed,
-                            reason: None,
-                        },
-                    )?;
-                }
-                Ok(Message::NotificationPost {
-                    protocol: WIRE_VERSION,
-                    key,
-                    app,
-                    title,
-                    body,
-                    clearable,
-                    actions,
-                    reply_supported,
-                }) => {
-                    last_received = Instant::now();
-                    self.handle_notification_post(
-                        &peer,
-                        WireNotification {
-                            key,
-                            app,
-                            title,
-                            body,
-                            clearable,
-                            actions,
-                            reply_supported,
-                        },
-                        event,
-                    )?;
-                }
-                Ok(Message::NotificationRemoved {
-                    protocol: WIRE_VERSION,
-                    key,
-                }) => {
-                    last_received = Instant::now();
-                    self.handle_notification_removed(&peer, &key, event)?;
-                }
-                Ok(Message::NotificationsSync {
-                    protocol: WIRE_VERSION,
-                    enabled,
-                    notifications,
-                }) => {
-                    last_received = Instant::now();
-                    self.handle_notifications_sync(&peer, enabled, notifications, event)?;
-                }
-                Ok(Message::MediaPost {
-                    protocol: WIRE_VERSION,
-                    player,
-                    application,
-                    title,
-                    artist,
-                    album,
-                    playback,
-                    position_ms,
-                    duration_ms,
-                    controls,
-                }) => {
-                    last_received = Instant::now();
-                    self.handle_media_post(
-                        &peer,
-                        WireMediaSession {
-                            player,
-                            application,
-                            title,
-                            artist,
-                            album,
-                            playback,
-                            position_ms,
-                            duration_ms,
-                            controls,
-                        },
-                        event,
-                    )?;
-                }
-                Ok(Message::MediaRemoved {
-                    protocol: WIRE_VERSION,
-                    player,
-                }) => {
-                    last_received = Instant::now();
-                    self.handle_media_removed(&peer, &player, event)?;
-                }
-                Ok(Message::MediaSync {
-                    protocol: WIRE_VERSION,
-                    sessions,
-                }) => {
-                    last_received = Instant::now();
-                    self.handle_media_sync(&peer, sessions, event)?;
-                }
-                Ok(Message::Ping {
-                    protocol: WIRE_VERSION,
-                }) => {
-                    last_received = Instant::now();
-                    write_frame(
-                        &mut tls,
-                        &Message::Pong {
-                            protocol: WIRE_VERSION,
-                        },
-                    )?;
-                }
-                Ok(Message::Revoke {
-                    protocol: WIRE_VERSION,
-                }) => {
-                    self.unpair(&id)?;
-                    break;
-                }
-                Err(NativeError::Io(e))
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut => {}
-                _ => break,
-            }
-        }
-        Ok(())
-    }
 }
 
-struct PartialShare(PathBuf, PathBuf);
-
-impl Drop for PartialShare {
-    fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            let _ = fs::remove_file(&self.0);
-            let _ = fs::remove_dir(&self.1);
-        }
-    }
-}
-
-fn safe_share_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\'])
-        && !name.chars().any(char::is_control)
-}
-
-fn new_transfer_id() -> Result<String, openssl::error::ErrorStack> {
-    let mut bytes = [0u8; 16];
-    openssl::rand::rand_bytes(&mut bytes)?;
-    Ok(hex::encode(bytes))
-}
-
-fn valid_transfer_id(id: &str) -> bool {
-    id.len() == 32
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn take_expired_shares(pending: &mut BTreeMap<String, Instant>, now: Instant) -> Vec<String> {
-    let expired = pending
-        .iter()
-        .filter(|(_, started)| now.duration_since(**started) >= SHARE_RESULT_TIMEOUT)
-        .map(|(id, _)| id.clone())
-        .collect::<Vec<_>>();
-    for id in &expired {
-        pending.remove(id);
-    }
-    expired
-}
-
-fn stream_file_until<R: Read, W: Write>(
-    input: &mut R,
-    output: &mut W,
-    size: u64,
-    started: Instant,
-    progress: &mut impl FnMut(u64),
-) -> std::io::Result<()> {
-    let mut remaining = size;
-    let mut next_progress = 256 * 1024;
-    let mut buffer = [0u8; SHARE_BUFFER];
-    progress(0);
-    while remaining > 0 {
-        if started.elapsed() >= SHARE_RESULT_TIMEOUT {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "share result deadline",
-            ));
-        }
-        let amount = usize::try_from(remaining.min(SHARE_BUFFER as u64)).unwrap();
-        input.read_exact(&mut buffer[..amount])?;
-        output.write_all(&buffer[..amount])?;
-        remaining -= amount as u64;
-        let sent = size - remaining;
-        if sent >= next_progress || remaining == 0 {
-            progress(sent);
-            next_progress = sent.saturating_add(256 * 1024);
-        }
-    }
-    output.flush()
-}
-
-fn read_exact_until<R: Read>(
-    input: &mut R,
-    buffer: &mut [u8],
-    deadline: Instant,
-) -> std::io::Result<()> {
-    let mut offset = 0;
-    while offset < buffer.len() {
-        if Instant::now() >= deadline {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "inbound transfer deadline",
-            ));
-        }
-        match input.read(&mut buffer[offset..]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "inbound transfer ended early",
-                ));
-            }
-            Ok(amount) => offset += amount,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                ) =>
-            {
-                if Instant::now() >= deadline {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "inbound transfer deadline",
-                    ));
-                }
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
-}
-
-fn valid_share_url(url: &str) -> bool {
-    if url.is_empty()
-        || url.len() > 8192
-        || url.trim() != url
-        || url.chars().any(char::is_whitespace)
-        || url.chars().any(char::is_control)
-    {
-        return false;
-    }
-    let Ok(parsed) = url::Url::parse(url) else {
-        return false;
-    };
-    !matches!(parsed.scheme(), "file" | "javascript" | "data")
-}
-
-fn device(
+pub(crate) fn device(
     peer: &Peer,
     connected: bool,
     battery: Option<BatteryState>,
@@ -2936,529 +1246,14 @@ fn device(
     }
 }
 
-/// Validates one phone-reported notification without logging its content.
-/// Titles and bodies never reach normal log levels; callers log only the
-/// device-scoped key and counts.
-fn normalize_native_notification(
-    peer: &Peer,
-    wire: &WireNotification,
-) -> Result<Notification, NativeError> {
-    let key = wire.key.trim();
-    if key.is_empty() || key.len() > MAX_NOTIFICATION_KEY || key.chars().any(char::is_control) {
-        return Err(NativeError::InvalidFrame);
-    }
-    if wire.app.len() > MAX_NOTIFICATION_APP
-        || wire.title.len() > MAX_NOTIFICATION_TITLE
-        || wire.body.len() > MAX_NOTIFICATION_BODY
-    {
-        return Err(NativeError::InvalidFrame);
-    }
-    if wire.actions.len() > MAX_NOTIFICATION_ACTIONS {
-        return Err(NativeError::InvalidFrame);
-    }
-    let mut seen = BTreeSet::new();
-    let mut actions = Vec::with_capacity(wire.actions.len());
-    for action in &wire.actions {
-        if action.id.is_empty()
-            || action.id.len() > MAX_NOTIFICATION_ACTION_ID
-            || action.label.is_empty()
-            || action.label.len() > MAX_NOTIFICATION_ACTION_LABEL
-            || !seen.insert(action.id.clone())
-        {
-            return Err(NativeError::InvalidFrame);
-        }
-        actions.push(NotificationAction {
-            id: action.id.clone(),
-            label: action.label.clone(),
-        });
-    }
-    Ok(Notification {
-        id: NotificationId::new(DeviceId::new(format!("native:{}", peer.id)), key.to_owned()),
-        app_name: wire.app.clone(),
-        title: wire.title.clone(),
-        body: wire.body.clone(),
-        icon_path: None,
-        clearable: wire.clearable,
-        actions,
-        reply_supported: wire.reply_supported,
-    })
-}
-
-/// Validates one phone-reported media session without logging its content.
-/// Track titles and artists never reach normal log levels; callers log only
-/// the device-scoped player id and counts.
-fn normalize_native_media(
-    peer: &Peer,
-    wire: &WireMediaSession,
-) -> Result<MediaSession, NativeError> {
-    let player = wire.player.trim();
-    if player.is_empty() || player.len() > MAX_MEDIA_PLAYER || player.chars().any(char::is_control)
-    {
-        return Err(NativeError::InvalidFrame);
-    }
-    if wire.application.len() > MAX_MEDIA_APP {
-        return Err(NativeError::InvalidFrame);
-    }
-    for text in [&wire.title, &wire.artist, &wire.album]
-        .into_iter()
-        .flatten()
-    {
-        if text.len() > MAX_MEDIA_TEXT {
-            return Err(NativeError::InvalidFrame);
-        }
-    }
-    for bound in [wire.position_ms, wire.duration_ms].into_iter().flatten() {
-        if bound > MAX_MEDIA_POSITION_MS {
-            return Err(NativeError::InvalidFrame);
-        }
-    }
-    let mut controls = BTreeSet::new();
-    for control in &wire.controls {
-        match control {
-            WireControl::Play => controls.insert(MediaControl::Play),
-            WireControl::Pause => controls.insert(MediaControl::Pause),
-            WireControl::PlayPause => controls.insert(MediaControl::PlayPause),
-            WireControl::Next => controls.insert(MediaControl::Next),
-            WireControl::Previous => controls.insert(MediaControl::Previous),
-            WireControl::SetPosition => controls.insert(MediaControl::SetPosition),
-            // Relative seeks have no genuine Android API behind them; a
-            // phone advertising one is malfunctioning or malicious.
-            WireControl::Seek => return Err(NativeError::InvalidFrame),
-        };
-    }
-    let playback = match wire.playback {
-        WirePlayback::Playing => PlaybackState::Playing,
-        WirePlayback::Paused => PlaybackState::Paused,
-        WirePlayback::Stopped => PlaybackState::Stopped,
-        WirePlayback::Unknown => PlaybackState::Unknown,
-    };
-    Ok(MediaSession {
-        id: MediaSessionId::new(
-            DeviceId::new(format!("native:{}", peer.id)),
-            player.to_owned(),
-        ),
-        application: wire.application.clone(),
-        title: wire.title.clone().filter(|text| !text.is_empty()),
-        artist: wire.artist.clone().filter(|text| !text.is_empty()),
-        album: wire.album.clone().filter(|text| !text.is_empty()),
-        playback,
-        position_ms: wire.position_ms,
-        duration_ms: wire.duration_ms,
-        // Volume is read-only in the Handover model and never transported.
-        volume_percent: None,
-        controls,
-    })
-}
-
-impl NativeBackend {
-    fn handle_notification_post(
-        &self,
-        peer: &Peer,
-        wire: WireNotification,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        let notification = normalize_native_notification(peer, &wire)?;
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.peers.peers.contains_key(&peer.id) {
-            return Err(NativeError::InvalidFrame);
-        }
-        let keys = inner.notif_keys.entry(peer.id.clone()).or_default();
-        let is_new = !keys.contains(&wire.key);
-        keys.insert(wire.key.clone());
-        let device_changed = inner.notif_enabled.get(&peer.id).copied() != Some(true);
-        inner.notif_enabled.insert(peer.id.clone(), true);
-        let device_update = device_changed.then(|| {
-            device(
-                peer,
-                true,
-                inner.batteries.get(&peer.id).cloned(),
-                true,
-                inner.media_enabled.get(&peer.id).copied().unwrap_or(false),
-            )
-        });
-        drop(inner);
-        if let Some(device) = device_update {
-            event(StateEvent::Device(DeviceEvent::Updated(device)));
-        }
-        event(StateEvent::Notification(if is_new {
-            NotificationEvent::Added(notification)
-        } else {
-            NotificationEvent::Updated(notification)
-        }));
-        Ok(())
-    }
-
-    fn handle_notification_removed(
-        &self,
-        peer: &Peer,
-        key: &str,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        if key.is_empty() || key.len() > MAX_NOTIFICATION_KEY {
-            return Err(NativeError::InvalidFrame);
-        }
-        let mut inner = self.inner.lock().unwrap();
-        let known = inner
-            .notif_keys
-            .get_mut(&peer.id)
-            .is_some_and(|keys| keys.remove(key));
-        drop(inner);
-        if known {
-            event(StateEvent::Notification(NotificationEvent::Removed(
-                NotificationId::new(DeviceId::new(format!("native:{}", peer.id)), key.to_owned()),
-            )));
-        }
-        Ok(())
-    }
-
-    fn handle_notifications_sync(
-        &self,
-        peer: &Peer,
-        enabled: bool,
-        wires: Vec<WireNotification>,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        if wires.len() > MAX_NOTIFICATIONS_PER_SYNC {
-            return Err(NativeError::InvalidFrame);
-        }
-        let mut notifications = Vec::with_capacity(wires.len());
-        let mut keys = BTreeSet::new();
-        for wire in &wires {
-            if !keys.insert(wire.key.clone()) {
-                return Err(NativeError::InvalidFrame);
-            }
-            notifications.push(normalize_native_notification(peer, wire)?);
-        }
-        if !enabled && !notifications.is_empty() {
-            return Err(NativeError::InvalidFrame);
-        }
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.peers.peers.contains_key(&peer.id) {
-            return Err(NativeError::InvalidFrame);
-        }
-        let previous = inner
-            .notif_keys
-            .insert(peer.id.clone(), keys.clone())
-            .unwrap_or_default();
-        let device_changed = inner.notif_enabled.get(&peer.id).copied() != Some(enabled);
-        inner.notif_enabled.insert(peer.id.clone(), enabled);
-        let device_update = device_changed.then(|| {
-            device(
-                peer,
-                true,
-                inner.batteries.get(&peer.id).cloned(),
-                enabled,
-                inner.media_enabled.get(&peer.id).copied().unwrap_or(false),
-            )
-        });
-        drop(inner);
-        if let Some(device) = device_update {
-            event(StateEvent::Device(DeviceEvent::Updated(device)));
-        }
-        for id in previous.difference(&keys) {
-            event(StateEvent::Notification(NotificationEvent::Removed(
-                NotificationId::new(DeviceId::new(format!("native:{}", peer.id)), id.clone()),
-            )));
-        }
-        for notification in notifications {
-            let id = notification.id.clone();
-            let is_new = !previous.contains(&id.local_id);
-            event(StateEvent::Notification(if is_new {
-                NotificationEvent::Added(notification)
-            } else {
-                NotificationEvent::Updated(notification)
-            }));
-        }
-        if !enabled {
-            // Media observation shares the notification-listener permission,
-            // so a revoked listener must not leave native sessions behind.
-            self.clear_native_media(peer, event);
-        }
-        Ok(())
-    }
-
-    fn handle_media_post(
-        &self,
-        peer: &Peer,
-        wire: WireMediaSession,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        let session = normalize_native_media(peer, &wire)?;
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.peers.peers.contains_key(&peer.id) {
-            return Err(NativeError::InvalidFrame);
-        }
-        let players = inner.media_players.entry(peer.id.clone()).or_default();
-        let is_new = !players.contains(&wire.player);
-        players.insert(wire.player.clone());
-        let device_changed = inner.media_enabled.get(&peer.id).copied() != Some(true);
-        inner.media_enabled.insert(peer.id.clone(), true);
-        let device_update = device_changed.then(|| {
-            device(
-                peer,
-                true,
-                inner.batteries.get(&peer.id).cloned(),
-                inner.notif_enabled.get(&peer.id).copied().unwrap_or(false),
-                true,
-            )
-        });
-        drop(inner);
-        if let Some(device) = device_update {
-            event(StateEvent::Device(DeviceEvent::Updated(device)));
-        }
-        event(StateEvent::Media(if is_new {
-            MediaEvent::Added(session)
-        } else {
-            MediaEvent::Updated(session)
-        }));
-        Ok(())
-    }
-
-    fn handle_media_removed(
-        &self,
-        peer: &Peer,
-        player: &str,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        if player.is_empty() || player.len() > MAX_MEDIA_PLAYER {
-            return Err(NativeError::InvalidFrame);
-        }
-        let mut inner = self.inner.lock().unwrap();
-        let known = inner
-            .media_players
-            .get_mut(&peer.id)
-            .is_some_and(|players| players.remove(player));
-        drop(inner);
-        if known {
-            event(StateEvent::Media(MediaEvent::Removed(MediaSessionId::new(
-                DeviceId::new(format!("native:{}", peer.id)),
-                player.to_owned(),
-            ))));
-        }
-        Ok(())
-    }
-
-    fn handle_media_sync(
-        &self,
-        peer: &Peer,
-        wires: Vec<WireMediaSession>,
-        event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
-    ) -> Result<(), NativeError> {
-        if wires.len() > MAX_MEDIA_SESSIONS_PER_SYNC {
-            return Err(NativeError::InvalidFrame);
-        }
-        let mut sessions = Vec::with_capacity(wires.len());
-        let mut players = BTreeSet::new();
-        for wire in &wires {
-            if !players.insert(wire.player.clone()) {
-                return Err(NativeError::InvalidFrame);
-            }
-            sessions.push(normalize_native_media(peer, wire)?);
-        }
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.peers.peers.contains_key(&peer.id) {
-            return Err(NativeError::InvalidFrame);
-        }
-        let previous = inner
-            .media_players
-            .insert(peer.id.clone(), players.clone())
-            .unwrap_or_default();
-        let device_changed = inner.media_enabled.get(&peer.id).copied() != Some(true);
-        inner.media_enabled.insert(peer.id.clone(), true);
-        let device_update = device_changed.then(|| {
-            device(
-                peer,
-                true,
-                inner.batteries.get(&peer.id).cloned(),
-                inner.notif_enabled.get(&peer.id).copied().unwrap_or(false),
-                true,
-            )
-        });
-        drop(inner);
-        if let Some(device) = device_update {
-            event(StateEvent::Device(DeviceEvent::Updated(device)));
-        }
-        for player in previous.difference(&players) {
-            event(StateEvent::Media(MediaEvent::Removed(MediaSessionId::new(
-                DeviceId::new(format!("native:{}", peer.id)),
-                player.clone(),
-            ))));
-        }
-        for session in sessions {
-            let id = session.id.clone();
-            let is_new = !previous.contains(&id.player_id);
-            event(StateEvent::Media(if is_new {
-                MediaEvent::Added(session)
-            } else {
-                MediaEvent::Updated(session)
-            }));
-        }
-        Ok(())
-    }
-
-    /// Drops the peer's native media sessions, used when the shared
-    /// notification-listener permission is revoked: the listener powers
-    /// media observation too, so its sessions must not linger as ghosts.
-    fn clear_native_media(&self, peer: &Peer, event: &Arc<dyn Fn(StateEvent) + Send + Sync>) {
-        let mut inner = self.inner.lock().unwrap();
-        let previous = inner.media_players.remove(&peer.id).unwrap_or_default();
-        let was_enabled = inner.media_enabled.remove(&peer.id).unwrap_or(false);
-        let device_update = (was_enabled && inner.peers.peers.contains_key(&peer.id)).then(|| {
-            device(
-                peer,
-                true,
-                inner.batteries.get(&peer.id).cloned(),
-                inner.notif_enabled.get(&peer.id).copied().unwrap_or(false),
-                false,
-            )
-        });
-        drop(inner);
-        if let Some(device) = device_update {
-            event(StateEvent::Device(DeviceEvent::Updated(device)));
-        }
-        let mut removals: Vec<MediaSessionId> = previous
-            .into_iter()
-            .map(|player| MediaSessionId::new(DeviceId::new(format!("native:{}", peer.id)), player))
-            .collect();
-        removals.sort();
-        for id in removals {
-            event(StateEvent::Media(MediaEvent::Removed(id)));
-        }
-    }
-}
-
-/// Registers the `_handover._tcp.local.` advertisement for a bound port and
-/// returns the daemon handle, which keeps the record alive while it is held.
-fn advertise(port: u16, id: &str) -> Result<ServiceDaemon, NativeError> {
-    let mdns = ServiceDaemon::new().map_err(|e| NativeError::Discovery(e.to_string()))?;
-    mdns.register(discovery_service(port, id)?)
-        .map_err(|e| NativeError::Discovery(e.to_string()))?;
-    Ok(mdns)
-}
-
-/// Builds the DNS-SD record advertised by [`NativeBackend::run`]. Discovery
-/// addresses and TXT values are untrusted hints; trust comes from the TLS
-/// certificate fingerprint pinned at pairing time.
-fn discovery_service(port: u16, id: &str) -> Result<ServiceInfo, NativeError> {
-    let name = format!("Handover-{}", &id[..12]);
-    Ok(ServiceInfo::new(
-        "_handover._tcp.local.",
-        &name,
-        &format!("{}.local.", name.to_lowercase()),
-        "",
-        port,
-        &[("v", "1")][..],
-    )
-    .map_err(|e| NativeError::Discovery(e.to_string()))?
-    .enable_addr_auto())
-}
-
-fn generate_identity() -> Result<(PKey<Private>, X509), NativeError> {
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
-    let key = PKey::from_ec_key(EcKey::generate(&group)?)?;
-    let mut subject = X509NameBuilder::new()?;
-    subject.append_entry_by_text("CN", "Handover Linux")?;
-    let subject = subject.build();
-    let mut cert = X509::builder()?;
-    cert.set_version(2)?;
-    let mut serial = BigNum::new()?;
-    serial.rand(128, MsbOption::MAYBE_ZERO, false)?;
-    let serial = serial.to_asn1_integer()?;
-    cert.set_serial_number(serial.as_ref())?;
-    cert.set_subject_name(&subject)?;
-    cert.set_issuer_name(&subject)?;
-    cert.set_pubkey(&key)?;
-    let not_before = Asn1Time::days_from_now(0)?;
-    let not_after = Asn1Time::days_from_now(3650)?;
-    cert.set_not_before(not_before.as_ref())?;
-    cert.set_not_after(not_after.as_ref())?;
-    cert.sign(&key, MessageDigest::sha256())?;
-    Ok((key, cert.build()))
-}
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), NativeError> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
-}
-fn fingerprint(cert: &X509) -> Result<String, NativeError> {
-    Ok(hex::encode(Sha256::digest(cert.to_der()?)))
-}
-
-fn validate_peer_certificate(cert: &X509) -> Result<(), NativeError> {
-    let now = Asn1Time::days_from_now(0)?;
-    if cert.not_before() > now.as_ref() || cert.not_after() < now.as_ref() {
-        return Err(NativeError::InvalidFrame);
-    }
-    // Native identities are deliberately self-signed and authenticated by the
-    // pairing ceremony/fingerprint pin. Still reject malformed or non-leaf
-    // certificates before accepting them as an identity.
-    let key = cert.public_key()?;
-    let valid_curve =
-        key.id() == Id::EC && key.ec_key()?.group().curve_name() == Some(Nid::X9_62_PRIME256V1);
-    if !valid_curve || !cert.verify(&key)? {
-        return Err(NativeError::InvalidFrame);
-    }
-    Ok(())
-}
-fn comparison_code(own_fp: &str, own_nonce: &str, peer_fp: &str, peer_nonce: &str) -> String {
-    // Each nonce stays bound to its fingerprint owner, so both sides derive
-    // the same code without roles while a middlebox cannot swap openings.
-    let ((low_fp, low_nonce), (high_fp, high_nonce)) = if own_fp <= peer_fp {
-        ((own_fp, own_nonce), (peer_fp, peer_nonce))
-    } else {
-        ((peer_fp, peer_nonce), (own_fp, own_nonce))
-    };
-    let digest = Sha256::digest(
-        format!("handover-pair-v2:{low_fp}:{high_fp}:{low_nonce}:{high_nonce}").as_bytes(),
-    );
-    let number = u32::from_be_bytes(digest[..4].try_into().unwrap()) % 100_000_000;
-    format!("{number:08}")
-}
-fn parse_nonce(hex_nonce: &str) -> Option<[u8; 16]> {
-    hex::decode(hex_nonce).ok()?.try_into().ok()
-}
-fn read_frame<R: Read>(reader: &mut R) -> Result<Message, NativeError> {
-    let mut len = [0u8; 4];
-    reader.read_exact(&mut len[..1])?;
-    reader
-        .read_exact(&mut len[1..])
-        .map_err(|_| NativeError::InvalidFrame)?;
-    let len = u32::from_be_bytes(len) as usize;
-    if len == 0 || len > MAX_FRAME {
-        return Err(NativeError::InvalidFrame);
-    }
-    let mut data = vec![0; len];
-    reader
-        .read_exact(&mut data)
-        .map_err(|_| NativeError::InvalidFrame)?;
-    let msg: Message = serde_json::from_slice(&data)?;
-    if msg.version() != WIRE_VERSION {
-        return Err(NativeError::InvalidFrame);
-    }
-    Ok(msg)
-}
-fn write_frame<W: Write>(writer: &mut W, message: &Message) -> Result<(), NativeError> {
-    let data = serde_json::to_vec(message)?;
-    if data.is_empty() || data.len() > MAX_FRAME {
-        return Err(NativeError::InvalidFrame);
-    }
-    writer.write_all(&(data.len() as u32).to_be_bytes())?;
-    writer.write_all(&data)?;
-    writer.flush()?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pairing::comparison_code;
+    use crate::services::media::normalize_native_media;
+    use crate::services::notifications::normalize_native_notification;
+    use handover_core::{DeviceCommandAction, DeviceCommandFailure, MediaControl, PlaybackState};
+    use mdns_sd::ServiceDaemon;
 
     #[test]
     fn lock_command_and_permission_result_use_correlated_wire_ids() {
@@ -4139,5 +1934,84 @@ mod tests {
             Err(NativeCommandError::Offline)
         ));
         assert!(!backend.request_media_sync("android-device-01"));
+    }
+
+    #[test]
+    fn browse_paths_reject_traversal_and_absolute_roots() {
+        assert!(safe_browse_path("."));
+        assert!(safe_browse_path("Documents"));
+        assert!(safe_browse_path("Documents/notes"));
+        assert!(!safe_browse_path(""));
+        assert!(!safe_browse_path("/etc"));
+        assert!(!safe_browse_path("../"));
+        assert!(!safe_browse_path("foo/../bar"));
+        assert!(!safe_browse_path("foo//bar"));
+        assert!(!safe_browse_path("foo\\bar"));
+    }
+
+    #[test]
+    fn directory_listings_stay_inside_the_configured_root() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("ok")).unwrap();
+        fs::write(root.path().join("ok/note.txt"), b"hi").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
+
+        let entries = list_directory_under(root.path().to_path_buf(), "ok").unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.name == "note.txt" && !entry.directory)
+        );
+        assert!(list_directory_under(root.path().to_path_buf(), "/etc").is_err());
+        assert!(list_directory_under(root.path().to_path_buf(), "../").is_err());
+        assert!(list_directory_under(root.path().to_path_buf(), "escape").is_err());
+    }
+
+    #[test]
+    fn custom_command_allowlist_matches_daemon_parser_rules() {
+        let commands = parse_custom_commands(
+            "# stay-awake helpers\n[[command]]\nname = \"lock-screen\"\nargv = [\"loginctl\", \"lock-session\"]\n\
+             [[command]]\nname = \"Bad Name!\"\nargv = [\"x\"]\n\
+             [[command]]\nname = \"ok\"\nargv = [\"true\"]\n",
+        );
+        assert_eq!(
+            commands,
+            vec![
+                (
+                    "lock-screen".to_owned(),
+                    vec!["loginctl".to_owned(), "lock-session".to_owned()]
+                ),
+                ("ok".to_owned(), vec!["true".to_owned()]),
+            ]
+        );
+        assert!(safe_command_name("lock-screen"));
+        assert!(!safe_command_name("Bad Name!"));
+        assert!(!safe_command_name("has.dot"));
+    }
+
+    #[test]
+    fn clipboard_set_rejects_oversized_rich_payloads_without_a_live_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().to_path_buf()).unwrap();
+        let too_big = "x".repeat(32 * 1024 + 1);
+        assert!(matches!(
+            backend.clipboard_set("missing", &too_big, None, None),
+            Err(NativeCommandError::QueueFull)
+        ));
+        assert!(matches!(
+            backend.clipboard_set("missing", "ok", Some(too_big.clone()), None),
+            Err(NativeCommandError::QueueFull)
+        ));
+        let combined = "y".repeat(24 * 1024);
+        assert!(matches!(
+            backend.clipboard_set(
+                "missing",
+                &combined,
+                Some(combined.clone()),
+                Some(combined.clone()),
+            ),
+            Err(NativeCommandError::QueueFull)
+        ));
     }
 }

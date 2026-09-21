@@ -60,43 +60,48 @@ import javax.net.ssl.X509TrustManager
 import org.handover.android.DeviceIdentityStore.Companion.fingerprint
 
 /** Native Handover transport. Frames are 4-byte big-endian length + UTF-8 JSON, max 64 KiB. */
-class NativeTransport(private val context: Context) {
-    private val callObserver = CallObserver(context) { frame ->
+class NativeTransport(internal val context: Context) {
+    internal val callObserver = CallObserver(context) { frame ->
         if (serverFingerprint != null) send(frame)
     }
-    private val identity = DeviceIdentityStore(context)
-    private val nsd = context.getSystemService(NsdManager::class.java)
-    private val multicastLock = context.getSystemService(WifiManager::class.java)
+    internal val identity = DeviceIdentityStore(context)
+    internal val nsd = context.getSystemService(NsdManager::class.java)
+    internal val multicastLock = context.getSystemService(WifiManager::class.java)
         .createMulticastLock("handover-discovery").apply { setReferenceCounted(false) }
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val writerExecutor = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+    internal val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    internal val writerExecutor = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(32)) { _, _ -> Thread { runCatching { socket?.close() } }.start() }
-    private val transferExpiry = Executors.newSingleThreadScheduledExecutor()
-    private val pendingTransfers = ConcurrentHashMap<String, PendingTransfer>()
-    private val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
-    @Volatile private var socket: SSLSocket? = null
-    @Volatile private var output: BufferedOutputStream? = null
-    private val outputLock = Any()
-    @Volatile private var serverId: String? = null
-    @Volatile private var serverFingerprint: String? = null
-    @Volatile private var pendingCode: String? = null
-    @Volatile private var approvalGranted = false
-    @Volatile private var ownNonce: String? = null
-    @Volatile private var serverCommit: String? = null
-    @Volatile private var discovery: NsdManager.DiscoveryListener? = null
-    @Volatile private var endpoint: Pair<InetAddress, Int>? = null
-    @Volatile private var manualEndpoint = false
-    @Volatile private var workerStarted = false
-    @Volatile private var remoteClipboardHash: String? = null
-    @Volatile private var connectionStatus = "offline"
-    private var clipboardListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
-    @Volatile private var clipboardLogProcess: Process? = null
-    private var wakeLock: android.os.PowerManager.WakeLock? = null
+    internal val transferExpiry = Executors.newSingleThreadScheduledExecutor()
+    internal val pendingTransfers = ConcurrentHashMap<String, PendingTransfer>()
+    internal val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
+    @Volatile internal var socket: SSLSocket? = null
+    @Volatile internal var output: BufferedOutputStream? = null
+    internal val outputLock = Any()
+    @Volatile internal var serverId: String? = null
+    @Volatile internal var serverFingerprint: String? = null
+    @Volatile internal var pendingCode: String? = null
+    @Volatile internal var approvalGranted = false
+    @Volatile internal var ownNonce: String? = null
+    @Volatile internal var serverCommit: String? = null
+    @Volatile internal var discovery: NsdManager.DiscoveryListener? = null
+    @Volatile internal var endpoint: Pair<InetAddress, Int>? = null
+    @Volatile internal var manualEndpoint = false
+    @Volatile internal var workerStarted = false
+    @Volatile internal var remoteClipboardHash: String? = null
+    @Volatile internal var connectionStatus = "offline"
+    @Volatile internal var running = false
+    internal var clipboardListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
+    @Volatile internal var clipboardLogProcess: Process? = null
+    internal var wakeLock: android.os.PowerManager.WakeLock? = null
+    internal var connectionWakeLock: android.os.PowerManager.WakeLock? = null
 
-    /** Reconnects to the stored manual endpoint after a restart when already paired. */
+    /** Reconnects to a stored endpoint after a restart when already paired. */
     fun connectToSavedEndpoint() {
         if (trustedPeerFingerprint(context) == null) return
-        preferences.getString(MANUAL_ENDPOINT_KEY, null)?.let(::connectTo)
+        val manual = preferences.getString(MANUAL_ENDPOINT_KEY, null)
+        val last = preferences.getString(LAST_ENDPOINT_KEY, null)
+        val address = savedEndpointAddress(manual, last) ?: return
+        applyEndpoint(address, persistManual = false, markManual = endpointIsManual(manual, address))
     }
 
     fun start() {
@@ -115,9 +120,8 @@ class NativeTransport(private val context: Context) {
                 }
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                if (!manualEndpoint && serviceInfo.serviceType.startsWith(SERVICE_TYPE)) {
-                    endpoint = null
-                    socket?.close()
+                if (serviceInfo.serviceType.startsWith(SERVICE_TYPE)) {
+                    Log.i(TAG, "LAN advertisement lost; keeping the current socket")
                 }
             }
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -127,13 +131,18 @@ class NativeTransport(private val context: Context) {
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
         }
         nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discovery)
-        preferences.getString(MANUAL_ENDPOINT_KEY, null)?.let(::connectTo)
+        running = true
+        holdConnectionWakeLock()
+        connectToSavedEndpoint()
+        startWorker()
     }
 
     fun refreshCalls() = callObserver.refresh()
 
     fun stop() {
+        running = false
         releaseWakeLock()
+        releaseConnectionWakeLock()
         clipboardLogProcess?.destroy()
         clipboardLogProcess = null
         clipboardListener?.let {
@@ -155,35 +164,7 @@ class NativeTransport(private val context: Context) {
         transferExpiry.shutdownNow()
     }
 
-    fun setClipboardSync(enabled: Boolean) {
-        preferences.edit().putBoolean(CLIPBOARD_SYNC_KEY, enabled).apply()
-        configureClipboardSync(enabled)
-    }
-
-    fun clipboardSyncEnabled(): Boolean = preferences.getBoolean(CLIPBOARD_SYNC_KEY, false)
-
     fun connectionState(): String = connectionStatus
-
-    fun setOverlayAssist(enabled: Boolean) {
-        preferences.edit().putBoolean(OVERLAY_ASSIST_KEY, enabled).apply()
-        configureClipboardLogMonitor()
-    }
-
-    fun overlayAssistEnabled(): Boolean = preferences.getBoolean(OVERLAY_ASSIST_KEY, false)
-
-    fun overlayPermissionGranted(): Boolean =
-        android.provider.Settings.canDrawOverlays(context)
-
-    /** Whether an overlay-assisted read may be attempted: an explicit
-     * double opt-in (sync plus assist) with the system overlay grant, and
-     * only after the plain background read came back empty. */
-    internal fun shouldAssistBackgroundRead(clipWasNull: Boolean): Boolean =
-        shouldAssistBackgroundRead(
-            clipboardSyncEnabled(),
-            overlayAssistEnabled(),
-            overlayPermissionGranted(),
-            clipWasNull,
-        )
 
     /** Hold or release the phone screen at the desktop's request. True
      * means the wake lock changed as asked, never a battery guarantee. The
@@ -208,7 +189,7 @@ class NativeTransport(private val context: Context) {
 
     fun phoneAwakeHeld(): Boolean = wakeLock?.isHeld == true
 
-    private fun releaseWakeLock() {
+    internal fun releaseWakeLock() {
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
         wakeLock = null
     }
@@ -226,88 +207,31 @@ class NativeTransport(private val context: Context) {
 
     fun desktopAwakeRequested(): Boolean = preferences.getBoolean(DESKTOP_AWAKE_KEY, false)
 
-    private fun configureClipboardSync(enabled: Boolean) {
-        configureClipboardLogMonitor()
-        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
-        clipboardListener?.let(manager::removePrimaryClipChangedListener)
-        clipboardListener = null
-        if (!enabled) return
-        val listener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
-            if (serverFingerprint == null) return@OnPrimaryClipChangedListener
-            val clip = manager.primaryClip
-            if (clip == null) {
-                return@OnPrimaryClipChangedListener
-            }
-            if (isSensitiveClip(clip)) return@OnPrimaryClipChangedListener
-            val item = clip.getItemAt(0) ?: return@OnPrimaryClipChangedListener
-            val text = item.coerceToText(context)?.toString() ?: ""
-            if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return@OnPrimaryClipChangedListener
-            val hash = clipboardHash(text)
-            if (remoteClipboardHash == hash) {
-                remoteClipboardHash = null
-                return@OnPrimaryClipChangedListener
-            }
-            sendClipboardPayload(manager.primaryClip)
-        }
-        clipboardListener = listener
-        manager.addPrimaryClipChangedListener(listener)
-    }
 
-    private fun configureClipboardLogMonitor() {
-        clipboardLogProcess?.destroy()
-        clipboardLogProcess = null
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        if (!shouldAssistBackgroundRead(true)) return
-        if (context.checkSelfPermission(android.Manifest.permission.READ_LOGS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED) return
 
-        Thread({
-            try {
-                val filter = if (Build.VERSION.SDK_INT > 35) {
-                    "E ClipboardService"
-                } else {
-                    "ClipboardService:E"
-                }
-                val process = Runtime.getRuntime().exec(arrayOf("logcat", "-T", "1", filter, "*:S"))
-                clipboardLogProcess = process
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.filter { it.contains(context.packageName) }.forEach {
-                        context.startActivity(Intent(context, ClipboardReadActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TASK or
-                                Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                        })
-                    }
-                }
-            } catch (_: Exception) {
-                // The assist remains unavailable if log access is revoked or
-                // Android rejects the background activity launch.
-            }
-        }, "handover-clipboard-monitor").apply { isDaemon = true }.start()
-    }
 
-    private fun clipboardHash(text: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    fun connectTo(rawAddress: String): Boolean =
+        applyEndpoint(rawAddress, persistManual = true, markManual = true)
 
-    fun connectTo(rawAddress: String): Boolean {
-        Log.i(TAG, "Manual LAN endpoint requested")
+    internal fun applyEndpoint(rawAddress: String, persistManual: Boolean, markManual: Boolean): Boolean {
+        Log.i(TAG, "LAN endpoint requested")
         val address = rawAddress.trim()
         val separator = address.lastIndexOf(':')
-        if (separator <= 0) { Log.w(TAG, "Manual endpoint format invalid"); return false }
+        if (separator <= 0) { Log.w(TAG, "Endpoint format invalid"); return false }
         val port = address.substring(separator + 1).toIntOrNull()?.takeIf { it in 1..65535 }
-            ?: return false.also { Log.w(TAG, "Manual endpoint port invalid") }
+            ?: return false.also { Log.w(TAG, "Endpoint port invalid") }
         val host = runCatching { InetAddress.getByName(address.substring(0, separator)) }.getOrNull()
-            ?: return false.also { Log.w(TAG, "Manual endpoint address invalid") }
-        Log.i(TAG, "Manual endpoint accepted")
-        manualEndpoint = true
+            ?: return false.also { Log.w(TAG, "Endpoint address invalid") }
+        Log.i(TAG, "Endpoint accepted")
+        manualEndpoint = markManual
         endpoint = host to port
-        preferences.edit().putString(MANUAL_ENDPOINT_KEY, address).apply()
+        if (persistManual) preferences.edit().putString(MANUAL_ENDPOINT_KEY, address).apply()
         writerExecutor.execute { runCatching { socket?.close() } }
         startWorker()
         return true
     }
 
-    private fun startWorker() {
+    internal fun startWorker() {
         if (!workerStarted) {
             workerStarted = true
             executor.execute { connectionLoop() }
@@ -377,222 +301,12 @@ class NativeTransport(private val context: Context) {
         return true
     }
 
-    fun sendClipboardToLinux(): Boolean {
-        if (serverFingerprint == null) return false
-        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
-        return sendClipboardPayload(manager.primaryClip)
-    }
 
-    fun sendAutomaticClipboardToLinux(): Boolean {
-        if (serverFingerprint == null) return false
-        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
-        val clip = manager.primaryClip ?: return false
-        if (isSensitiveClip(clip)) return false
-        return sendClipboardPayload(clip)
-    }
 
-    private fun isSensitiveClip(clip: android.content.ClipData): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
-            clip.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
 
-    private fun sendClipboardPayload(clip: android.content.ClipData?): Boolean {
-        val item = clip?.getItemAt(0) ?: return false
-        val text = item.coerceToText(context)?.toString() ?: ""
-        if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) return false
-        val html = item.htmlText
-        val uri = item.uri?.toString()
-        val mime = clip.description?.getMimeType(0)
-        if (uri != null && mime != null && !mime.startsWith("text/"))
-            return sendClipboardFile(item.uri!!, mime)
-        val richSize = text.toByteArray(Charsets.UTF_8).size +
-            (html?.toByteArray(Charsets.UTF_8)?.size ?: 0) +
-            (uri?.toByteArray(Charsets.UTF_8)?.size ?: 0)
-        if (richSize > 48 * 1024 || (html?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 32 * 1024 ||
-            (uri?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 32 * 1024) return false
-        send(JSONObject().put("type", "clipboard_post").put("protocol", 1).put("text", text).apply {
-            if (!html.isNullOrEmpty()) put("html", html)
-            if (!uri.isNullOrEmpty()) put("uri", uri)
-        })
-        return true
-    }
 
-    private fun sendClipboardFile(uri: Uri, mime: String): Boolean {
-        if (serverFingerprint == null || socket?.isClosed != false || output == null) return false
-        val metadata = runCatching { fileMetadata(context.contentResolver, uri, null) }.getOrNull() ?: return false
-        if (metadata.second > 10 * 1024 * 1024) return false
-        return enqueue {
-            try {
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    val transferId = UUID.randomUUID().toString().replace("-", "")
-                    writeNow(JSONObject().put("type", "clipboard_file").put("protocol", 1)
-                        .put("transfer_id", transferId)
-                        .put("name", metadata.first).put("size", metadata.second).put("mime", mime))
-                    val buffer = ByteArray(STREAM_BUFFER_BYTES)
-                    var remaining = metadata.second
-                    while (remaining > 0) {
-                        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                        if (count <= 0) throw java.io.EOFException("clipboard changed while reading")
-                        synchronized(outputLock) { output?.write(buffer, 0, count) ?: throw java.io.IOException("disconnected") }
-                        remaining -= count
-                    }
-                    synchronized(outputLock) { output?.flush() ?: throw java.io.IOException("disconnected") }
-                } ?: throw java.io.FileNotFoundException(uri.toString())
-            } catch (_: Exception) {
-                socket?.close()
-            }
-        }
-    }
 
-    fun requestContactsSync(): Boolean {
-        if (serverFingerprint == null || context.checkSelfPermission("android.permission.READ_CONTACTS") !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED) return false
-        // Explicit bounded snapshot contract: the whole list must fit
-        // one 64 KiB frame. Names, numbers, and emails stop accumulating
-        // once the serialized list nears the budget (photos already
-        // stop at 48 KiB), so a large address book truncates instead of
-        // throwing inside the writer and killing the sync.
-        val contacts = org.json.JSONArray()
-        var truncated = false
-        var usedBytes = 0
-        val projection = arrayOf(
-            ContactsContract.Contacts._ID,
-            ContactsContract.Contacts.DISPLAY_NAME,
-            ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
-            ContactsContract.Contacts.PHOTO_URI,
-            ContactsContract.Contacts.PHOTO_FILE_ID,
-            ContactsContract.Contacts.LOOKUP_KEY,
-        )
-        context.contentResolver.query(
-            ContactsContract.Contacts.CONTENT_URI, projection, null, null,
-            ContactsContract.Contacts.DISPLAY_NAME + " COLLATE NOCASE ASC",
-        )?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
-            val nameIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME)
-            val photoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
-            val fullPhotoIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_URI)
-            val photoFileIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_FILE_ID)
-            val lookupIndex = cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY)
-            while (cursor.moveToNext()) {
-                // Budget in UTF-8 bytes: the wire frame is byte-limited
-                // while String.length counts UTF-16 units, so CJK/emoji
-                // heavy data could pass a char check and still burst
-                // the frame and close the connection.
-                val id = cursor.getString(idIndex)
-                val item = JSONObject().put("local_id", id)
-                    .put("display_name", (cursor.getString(nameIndex) ?: "").take(MAX_CONTACT_FIELD_CHARS))
-                val phones = org.json.JSONArray()
-                context.contentResolver.query(
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                    arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-                    "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID}=?", arrayOf(id), null,
-                )?.use { phoneCursor ->
-                    while (phoneCursor.moveToNext() && phones.length() < MAX_CONTACT_VALUES) {
-                        phoneCursor.getString(0)?.let { phones.put(it.take(MAX_CONTACT_FIELD_CHARS)) }
-                    }
-                }
-                item.put("phones", phones).put("emails", org.json.JSONArray())
-                val emails = org.json.JSONArray()
-                context.contentResolver.query(
-                    ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-                    arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
-                    "${ContactsContract.CommonDataKinds.Email.CONTACT_ID}=?", arrayOf(id), null,
-                )?.use { emailCursor ->
-                    while (emailCursor.moveToNext() && emails.length() < MAX_CONTACT_VALUES) {
-                        emailCursor.getString(0)?.let { emails.put(it.take(MAX_CONTACT_FIELD_CHARS)) }
-                    }
-                }
-                item.put("emails", emails)
-                val photoUri = cursor.getString(photoIndex)
-                if (photoUri != null) {
-                    val photoFileId = cursor.getLong(photoFileIndex).takeIf { it > 0 }
-                    val lookupKey = cursor.getString(lookupIndex)
-                    val fullPhotoUri = cursor.getString(fullPhotoIndex)
-                    val photo = encodeContactPhoto(
-                        id,
-                        photoUri?.let(Uri::parse) ?: fullPhotoUri?.let(Uri::parse),
-                        photoFileId,
-                        lookupKey,
-                    )
-                    if (!photo.isNullOrEmpty() && usedBytes + photo.toByteArray(Charsets.UTF_8).size < 48 * 1024)
-                        item.put("photo", photo)
-                }
-                val itemBytes = item.toString().toByteArray(Charsets.UTF_8).size + 1
-                if (usedBytes + itemBytes > CONTACTS_BUDGET_BYTES) {
-                    truncated = true
-                    break
-                }
-                contacts.put(item)
-                usedBytes += itemBytes
-            }
-        }
-        if (truncated) android.util.Log.i("Handover", "contacts snapshot truncated to frame budget")
-        send(JSONObject().put("type", "contacts_sync").put("protocol", 1).put("contacts", contacts))
-        return true
-    }
 
-    private fun encodeContactPhoto(
-        contactId: String,
-        thumbnailUri: Uri?,
-        photoFileId: Long?,
-        lookupKey: String?,
-    ): String? = runCatching {
-        val contactUri = ContactsContract.Contacts.CONTENT_URI.buildUpon()
-            .appendPath(contactId).build()
-        val lookupUri = lookupKey?.let {
-            ContactsContract.Contacts.getLookupUri(contactId.toLong(), it)
-        }
-        val fileUri = photoFileId?.let {
-            ContactsContract.DisplayPhoto.CONTENT_URI.buildUpon().appendPath(it.toString()).build()
-        }
-        val input = thumbnailUri?.let { context.contentResolver.openInputStream(it) }
-            ?: fileUri?.let { context.contentResolver.openInputStream(it) }
-            ?: lookupUri?.let {
-                ContactsContract.Contacts.openContactPhotoInputStream(context.contentResolver, it, true)
-            }
-            ?: ContactsContract.Contacts.openContactPhotoInputStream(
-                context.contentResolver, contactUri, true,
-            )
-        val bitmap = input?.use(BitmapFactory::decodeStream) ?: context.contentResolver.query(
-            ContactsContract.Data.CONTENT_URI,
-            arrayOf(
-                ContactsContract.Data.DATA15,
-                ContactsContract.CommonDataKinds.Photo.PHOTO_FILE_ID,
-            ),
-            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
-            arrayOf(
-                contactId,
-                ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE,
-            ),
-            null,
-        )?.use { cursor ->
-            if (!cursor.moveToFirst()) return@use null
-            if (!cursor.isNull(0)) {
-                val blob = cursor.getBlob(0)
-                BitmapFactory.decodeByteArray(blob, 0, blob.size)
-            } else if (!cursor.isNull(1)) {
-                val id = cursor.getLong(1)
-                val uri = ContactsContract.DisplayPhoto.CONTENT_URI.buildUpon()
-                    .appendPath(id.toString()).build()
-                context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
-            } else null
-        }
-            ?: return@runCatching null
-        val size = maxOf(bitmap.width, bitmap.height)
-        val scaled = if (size > 96) {
-            val scale = 96f / size
-            Bitmap.createScaledBitmap(
-                bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
-                (bitmap.height * scale).toInt().coerceAtLeast(1), true,
-            )
-        } else bitmap
-        ByteArrayOutputStream().use { output ->
-            if (!scaled.compress(Bitmap.CompressFormat.JPEG, 70, output)) return@runCatching null
-            Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
-        }.also {
-            if (scaled !== bitmap) scaled.recycle()
-            bitmap.recycle()
-        }
-    }.getOrNull()
 
     /** Never send notification content before the peer is authenticated. */
     fun publishNotification(notification: WireNotification) {
@@ -631,63 +345,17 @@ class NativeTransport(private val context: Context) {
         send(MediaObserver.syncJson(sessions.take(16)))
     }
 
-    /** Sends a URL to the one explicitly paired desktop. */
-    fun shareUrl(url: String): Boolean {
-        if (serverFingerprint == null || socket?.isClosed != false || output == null || !isValidShareUrl(url)) return false
-        val transferId = registerTransfer("url", url, Uri.parse(url)) ?: return false
-        return if (enqueue {
-            announceAccepted(transferId)
-            writeNow(JSONObject().put("type", "share_url").put("protocol", 1)
-                .put("transfer_id", transferId).put("url", url))
-        }) true else {
-            completeTransfer(transferId, "failed", TRANSFER_INTERRUPTED)
-            false
-        }
-    }
 
-    /**
-     * Streams a content URI after its JSON header. The operation is serialized
-     * with every other writer so raw bytes can never be mistaken for a frame.
-     */
-    fun shareFile(uri: Uri, requestedName: String? = null): Boolean {
-        if (serverFingerprint == null || socket?.isClosed != false || output == null) return false
-        val metadata = runCatching { fileMetadata(context.contentResolver, uri, requestedName) }.getOrNull() ?: return false
-        val transferId = registerTransfer("file", metadata.first, uri) ?: return false
-        return enqueue {
-            announceAccepted(transferId)
-            try {
-                val resolver = context.contentResolver
-                resolver.openInputStream(uri)?.use { input ->
-                    writeNow(JSONObject().put("type", "share_file").put("protocol", 1)
-                        .put("transfer_id", transferId).put("name", metadata.first).put("size", metadata.second))
-                    val buffer = ByteArray(STREAM_BUFFER_BYTES)
-                    var remaining = metadata.second
-                    while (remaining > 0) {
-                        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                        if (count < 0) throw java.io.EOFException("file changed while sharing")
-                        if (count == 0) continue
-                        synchronized(outputLock) { output?.write(buffer, 0, count) ?: throw java.io.IOException("disconnected") }
-                        remaining -= count
-                    }
-                    synchronized(outputLock) { output?.flush() ?: throw java.io.IOException("disconnected") }
-                } ?: throw java.io.FileNotFoundException(uri.toString())
-            } catch (error: Exception) {
-                // A partial raw stream cannot be resynchronized as JSON. Drop
-                // the authenticated session so the receiver deletes its temp.
-                Log.w(TAG, "native file share failed: ${error.javaClass.simpleName}")
-                completeTransfer(transferId, "failed", TRANSFER_INTERRUPTED)
-                socket?.close()
-            }
-        }.also { accepted ->
-            if (!accepted) completeTransfer(transferId, "failed", TRANSFER_INTERRUPTED)
-        }
-    }
 
-    private val resolver = object : NsdManager.ResolveListener {
+
+
+
+    internal val resolver = object : NsdManager.ResolveListener {
         override fun onServiceResolved(info: NsdServiceInfo) {
             Log.i(TAG, "Handover LAN service resolved")
             if (!manualEndpoint) {
                 endpoint = info.host to info.port
+                rememberLastEndpoint(info.host, info.port)
                 startWorker()
             }
         }
@@ -696,9 +364,9 @@ class NativeTransport(private val context: Context) {
         }
     }
 
-    private fun connectionLoop() {
+    internal fun connectionLoop() {
         broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "reconnecting"))
-        while (discovery != null) {
+        while (running) {
             val target = endpoint
             try {
                 if (target == null) {
@@ -718,6 +386,7 @@ class NativeTransport(private val context: Context) {
                 ssl.soTimeout = SOCKET_READ_TIMEOUT_MS.toInt()
                 ssl.startHandshake()
                 socket = ssl
+                rememberLastEndpoint(target.first, target.second)
                 broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "connected"))
                 val input = BufferedInputStream(ssl.inputStream)
                 output = BufferedOutputStream(ssl.outputStream)
@@ -748,341 +417,36 @@ class NativeTransport(private val context: Context) {
                 ownNonce = null
                 serverCommit = null
             }
-            if (discovery != null) try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) { return }
+            if (running) try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) { return }
         }
     }
 
-    private fun handle(message: JSONObject, input: BufferedInputStream) {
-        if (message.optInt("protocol", -1) != 1) {
-            socket?.close()
-            return
-        }
-        when (message.optString("type")) {
-            "hello" -> {
-                val presentedFingerprint = peerFingerprint()
-                val advertisedId = message.optString("id")
-                if (presentedFingerprint == null || advertisedId != presentedFingerprint) {
-                    socket?.close()
-                    return
-                }
-                serverId = advertisedId.takeIf { it.isNotEmpty() }
-                if (serverFingerprint != null) {
-                    approvalGranted = true
-                    return
-                }
-                // Unknown server: require a well-formed nonce commitment, then
-                // reveal our own opening. The displayed code is derived after
-                // both openings arrive, so it binds this ceremony rather than
-                // only the long-lived certificates.
-                val commit = message.optString("pair_commit")
-                if (commit.isEmpty() || !isSha256Hex(commit)) {
-                    socket?.close()
-                    return
-                }
-                serverCommit = commit
-                approvalGranted = false
-                val nonce = ownNonce ?: return
-                send(JSONObject().put("type", "pair_open").put("protocol", 1).put("nonce", nonce))
-            }
-            "pair_open" -> {
-                if (serverFingerprint != null) return
-                val commit = serverCommit
-                val peer = serverId
-                val nonce = ownNonce
-                val serverNonce = message.optString("nonce")
-                if (commit == null || peer == null || nonce == null
-                    || !isPairingNonce(serverNonce) || pairingCommitment(serverNonce) != commit
-                ) {
-                    socket?.close()
-                    return
-                }
-                val code = pairingCode(identity.deviceId, nonce, peer, serverNonce)
-                pendingCode = code
-                preferences.edit().putString(PENDING_CODE_KEY, code).apply()
-                broadcast(ACTION_PAIR_REQUEST, JSONObject().put("code", code).put("server_id", peer))
-            }
-            "paired" -> {
-                if (!approvalGranted && serverFingerprint == null) return
-                val fingerprint = peerFingerprint() ?: return
-                preferences.edit().putString(PIN_KEY, fingerprint).apply()
-                serverFingerprint = fingerprint
-                preferences.edit().remove(PENDING_CODE_KEY).apply()
-                broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
-                sendBattery()
-                publishConnectivity()
-                // Proactively share the current notification list; the server
-                // also requests it, so a lost frame is recovered on request.
-                HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
-                    syncNotifications(enabled, list)
-                }
-                callObserver.refresh()
-                // Same recovery for media sessions.
-                MediaObserver.activePushSync()
-                // The daemon drops keep-awake requests on disconnect, so a
-                // still-enabled request is re-asserted on every session.
-                if (desktopAwakeRequested()) requestDesktopAwake(true)
-            }
-            "revoke" -> {
-                preferences.edit().remove(PIN_KEY).apply()
-                serverFingerprint = null
-                releaseWakeLock()
-                broadcast(ACTION_REVOKED, JSONObject())
-                socket?.close()
-            }
-            "battery_request" -> sendBattery()
-            "ring" -> handleAudibleCommand(message, "ring")
-            "user_ping" -> handleAudibleCommand(message, "ping")
-            "keep_awake" -> {
-                if (serverFingerprint == null) return
-                val requestId = message.optString("request_id")
-                if (!isTransferId(requestId)) return
-                val inhibit = message.optBoolean("inhibit", false)
-                if (setPhoneAwake(inhibit)) {
-                    sendDeviceCommandResult(requestId, "keep_awake", true, null)
-                } else {
-                    sendDeviceCommandResult(requestId, "keep_awake", false, "unavailable")
-                }
-            }
-            "tethering_settings" -> {
-                if (serverFingerprint == null) return
-                val requestId = message.optString("request_id")
-                if (!isTransferId(requestId)) return
-                // Third-party apps cannot toggle tethering directly; opening
-                // the system screen for the user is the full extent of it.
-                // There is no SDK constant for this action, so the documented
-                // action string is used and failure is reported honestly.
-                val opened = runCatching {
-                    context.startActivity(android.content.Intent(
-                        "android.settings.TETHER_SETTINGS",
-                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-                    true
-                }.getOrDefault(false)
-                sendDeviceCommandResult(
-                    requestId,
-                    "tethering",
-                    opened,
-                    if (opened) null else "unavailable",
-                )
-            }
-            "lock_device" -> {
-                if (serverFingerprint == null) return
-                val requestId = message.optString("request_id")
-                if (!isTransferId(requestId)) return
-                val admin = ComponentName(context, HandoverDeviceAdminReceiver::class.java)
-                val manager = context.getSystemService(android.app.admin.DevicePolicyManager::class.java)
-                if (!manager.isAdminActive(admin)) {
-                    sendDeviceCommandResult(requestId, "lock", false, "permission_denied")
-                } else {
-                    runCatching { manager.lockNow() }
-                        .onSuccess { sendDeviceCommandResult(requestId, "lock", true, null) }
-                        .onFailure { sendDeviceCommandResult(requestId, "lock", false, "rejected") }
-                }
-            }
-            "notifications_request" -> {
-                if (serverFingerprint == null) return
-                HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
-                    syncNotifications(enabled, list)
-                }
-            }
-            "contacts_request" -> requestContactsSync()
-            "clipboard_set" -> {
-                if (serverFingerprint != null) {
-                    val requestId = message.optString("request_id")
-                    if (!isTransferId(requestId)) return
-                    val text = message.optString("text")
-                    val html = message.optString("html").takeIf { it.isNotEmpty() }
-                    val uri = message.optString("uri").takeIf { it.isNotEmpty() }
-                    if (text.toByteArray(Charsets.UTF_8).size > 32 * 1024) {
-                        sendDeviceCommandResult(requestId, "clipboard", false, "rejected")
-                        return
-                    }
-                    val previousRemoteHash = remoteClipboardHash
-                    remoteClipboardHash = clipboardHash(text)
-                    runCatching {
-                        val clip = when {
-                            html != null -> android.content.ClipData.newHtmlText("Handover", text, html)
-                            else -> android.content.ClipData.newPlainText("Handover", text)
-                        }
-                        if (uri != null) {
-                            clip.addItem(
-                                context.contentResolver,
-                                android.content.ClipData.Item(Uri.parse(uri)),
-                            )
-                        }
-                        context.getSystemService(android.content.ClipboardManager::class.java)
-                            .setPrimaryClip(clip)
-                    }.onSuccess {
-                        sendDeviceCommandResult(requestId, "clipboard", true, null)
-                    }.onFailure {
-                        remoteClipboardHash = previousRemoteHash
-                        sendDeviceCommandResult(requestId, "clipboard", false, "rejected")
-                    }
-                }
-            }
-            "notification_dismiss" -> {
-                if (serverFingerprint == null) return
-                HandoverNotificationService.dismiss(message.optString("key"))
-            }
-            "notification_reply" -> {
-                if (serverFingerprint == null) return
-                HandoverNotificationService.reply(message.optString("key"), message.optString("text"))
-            }
-            "notification_action" -> {
-                if (serverFingerprint == null) return
-                HandoverNotificationService.invokeAction(
-                    message.optString("key"), message.optString("action_id"),
-                )
-            }
-            "remote_notification" -> {
-                if (serverFingerprint == null) return
-                val requestId = message.optString("request_id")
-                if (!isTransferId(requestId)) return
-                val posted = runCatching {
-                    HandoverNotificationService.postRemote(
-                        requestId,
-                        message.optString("app"),
-                        message.optString("title"),
-                        message.optString("body"),
-                    )
-                }.getOrDefault(false)
-                if (posted) {
-                    sendDeviceCommandResult(requestId, "notification", true, null)
-                } else {
-                    sendDeviceCommandResult(requestId, "notification", false, "rejected")
-                }
-            }
-            "call_request" -> {
-                if (serverFingerprint == null) return
-                callObserver.refresh()
-            }
-            "call_control" -> {
-                if (serverFingerprint == null) return
-                val requestId = message.optString("request_id")
-                val action = message.optString("action")
-                val requested = message.optLong("generation", -1L)
-                val stale = requested != callObserver.generation
-                val result = when (action) {
-                    "place" -> if (stale) CallController.Result(false, "stale_state")
-                        else CallController.place(context, message.optString("address"))
-                    "answer" -> if (stale) CallController.Result(false, "stale_state")
-                        else CallController.answer(context)
-                    "decline" -> if (stale) CallController.Result(false, "stale_state")
-                        else CallController.hangup(context, decline = true)
-                    "hangup" -> if (stale) CallController.Result(false, "stale_state")
-                        else CallController.hangup(context)
-                    else -> CallController.Result(false, "rejected")
-                }
-                send(JSONObject().put("type", "call_result").put("protocol", 1)
-                    .put("request_id", requestId).put("action", action)
-                    .put("accepted", result.accepted).apply {
-                        result.failure?.let { put("failure", it) }
-                    })
-                callObserver.refresh()
-            }
-            "media_request" -> {
-                if (serverFingerprint == null) return
-                MediaObserver.activePushSync()
-            }
-            "media_control" -> {
-                if (serverFingerprint == null) return
-                val requestId = message.optString("request_id")
-                if (!isTransferId(requestId)) return
-                val position = message.takeIf { it.has("position_ms") }?.optLong("position_ms")
-                val applied = MediaObserver.executeControl(
-                    message.optString("player"), message.optString("action"), position,
-                )
-                sendDeviceCommandResult(
-                    requestId,
-                    "media",
-                    applied,
-                    if (applied) null else "rejected",
-                )
-            }
-            "share_result" -> {
-                if (serverFingerprint == null) return
-                val transferId = message.optString("transfer_id")
-                if (!isTransferId(transferId)) return
-                val status = message.optString("status")
-                if (status != "completed" && status != "failed") return
-                val reason = message.optString("reason").takeIf { it.isNotEmpty() }
-                if ((status == "completed" && reason != null) ||
-                    (status == "failed" && reason !in TRANSFER_REASONS)) return
-                completeTransfer(transferId, status, reason)
-            }
-            "clipboard_result" -> {
-                if (serverFingerprint == null) return
-                val transferId = message.optString("transfer_id")
-                val status = message.optString("status")
-                if (!isTransferId(transferId) || (status != "completed" && status != "failed")) return
-                val reason = message.optString("reason").takeIf { it.isNotEmpty() }
-                broadcast(ACTION_TRANSFER_RESULT, JSONObject().put("transfer_id", transferId)
-                    .put("status", status).apply { reason?.let { put("reason", it) } })
-            }
-            "share_url" -> {
-                if (serverFingerprint == null) return
-                val transferId = message.optString("transfer_id")
-                val url = message.optString("url")
-                if (!isTransferId(transferId) || !isValidShareUrl(url)) {
-                    sendTransferResult(transferId, "failed", TRANSFER_INVALID_RESOURCE)
-                    return
-                }
-                runCatching {
-                    notifyReceived("url", url, url)
-                    TransferHistory.add(context, "url", url, Uri.parse(url))
-                    broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "url").put("url", url)
-                        .put("source", serverId ?: serverFingerprint))
-                }.onSuccess { sendTransferResult(transferId, "completed", null) }
-                    .onFailure { sendTransferResult(transferId, "failed", TRANSFER_STORAGE) }
-            }
-            "share_file" -> {
-                if (serverFingerprint == null) return
-                val transferId = message.optString("transfer_id")
-                val name = safeFileName(message.optString("name")) ?: run {
-                    sendTransferFailureAndClose(transferId, TRANSFER_INVALID_RESOURCE); return
-                }
-                val size = message.optLong("size", -1L)
-                if (size !in 0..MAX_FILE_BYTES) {
-                    sendTransferFailureAndClose(transferId, TRANSFER_SIZE_LIMIT); return
-                }
-                if (!isTransferId(transferId)) { socket?.close(); return }
-                if (message.optBoolean("clipboard", false)) {
-                    val mime = message.optString("mime").takeIf { it.isNotEmpty() }
-                    if (mime == null || size > MAX_CLIPBOARD_FILE_BYTES) {
-                        sendTransferFailureAndClose(transferId, TRANSFER_INVALID_RESOURCE); return
-                    }
-                    receiveClipboardFile(input, transferId, name, size, mime)
-                } else {
-                    receiveFile(input, transferId, name, size)
-                }
-            }
-        }
+    internal fun rememberLastEndpoint(host: InetAddress, port: Int) {
+        val text = host.hostAddress ?: return
+        preferences.edit().putString(LAST_ENDPOINT_KEY, "$text:$port").apply()
     }
 
-    private fun ringPhone() {
-        if (serverFingerprint == null) return
-        val ringtone = RingtoneManager.getRingtone(
-            context,
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-        )
-        ringtone?.play()
-        Handler(Looper.getMainLooper()).postDelayed({ ringtone?.stop() }, 4_000)
-        val vibrator = context.getSystemService(Vibrator::class.java)
-        if (vibrator?.hasVibrator() == true) {
-            val effect = VibrationEffect.createOneShot(1200, VibrationEffect.DEFAULT_AMPLITUDE)
-            vibrator.vibrate(effect)
-        }
+    internal fun holdConnectionWakeLock() {
+        if (connectionWakeLock?.isHeld == true) return
+        connectionWakeLock = context.getSystemService(android.os.PowerManager::class.java)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Handover:connection")
+            .apply {
+                setReferenceCounted(false)
+                acquire()
+            }
     }
 
-    private fun handleAudibleCommand(message: JSONObject, action: String) {
-        if (serverFingerprint == null) return
-        val requestId = message.optString("request_id")
-        if (!isTransferId(requestId)) return
-        runCatching { ringPhone() }
-            .onSuccess { sendDeviceCommandResult(requestId, action, true, null) }
-            .onFailure { sendDeviceCommandResult(requestId, action, false, "unavailable") }
+    internal fun releaseConnectionWakeLock() {
+        runCatching { if (connectionWakeLock?.isHeld == true) connectionWakeLock?.release() }
+        connectionWakeLock = null
     }
 
-    private fun sendDeviceCommandResult(
+    internal fun handle(message: JSONObject, input: BufferedInputStream) {
+        handleInbound(message, input)
+    }
+
+
+    internal fun sendDeviceCommandResult(
         requestId: String,
         action: String,
         accepted: Boolean,
@@ -1091,301 +455,41 @@ class NativeTransport(private val context: Context) {
         send(deviceCommandResultJson(requestId, action, accepted, failure))
     }
 
-    private fun receiveFile(input: BufferedInputStream, transferId: String, name: String, size: Long) {
-        if (Build.VERSION.SDK_INT >= 29) {
-            receivePublicDownload(input, transferId, name, size)
-            return
-        }
-        val root = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "Handover")
-        if (!root.exists() && !root.mkdirs()) {
-            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE); return
-        }
-        val destination = uniqueDestination(root, name)
-        val temporary = File(root, ".${name}.${java.util.UUID.randomUUID()}.part")
-        val deadline = inboundTransferDeadline()
-        try {
-            FileOutputStream(temporary).use { outputStream ->
-                val buffer = ByteArray(STREAM_BUFFER_BYTES)
-                var remaining = size
-                while (remaining > 0) {
-                    checkInboundTransferDeadline(deadline)
-                    configureInboundReadTimeout(deadline)
-                    val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (count < 0) throw EOFException("interrupted file transfer")
-                    if (count == 0) continue
-                    outputStream.write(buffer, 0, count)
-                    remaining -= count
-                }
-                outputStream.fd.sync()
-            }
-            try {
-                Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-                Files.move(temporary.toPath(), destination.toPath())
-            }
-            runCatching { notifyReceived("file", name, null, null) }
-            broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
-                .put("path", destination.absolutePath).put("source", serverId ?: serverFingerprint))
-            TransferHistory.add(context, "file", name, null)
-            sendTransferResult(transferId, "completed", null)
-        } catch (error: Exception) {
-            temporary.delete()
-            Log.w(TAG, "native file receive failed: ${error.javaClass.simpleName}")
-            sendTransferFailureAndClose(transferId, inboundFailureReason(error, deadline))
-        } finally {
-            restoreInboundReadTimeout()
-        }
-    }
 
-    private class InboundTransferTimeout : java.io.IOException("inbound transfer deadline exceeded")
 
-    private fun inboundTransferDeadline(): Long =
-        System.nanoTime() + INBOUND_TRANSFER_TIMEOUT_MS * 1_000_000L
 
-    private fun checkInboundTransferDeadline(deadlineNanos: Long) {
-        if (transferDeadlineExpired(deadlineNanos)) throw InboundTransferTimeout()
-    }
 
-    private fun configureInboundReadTimeout(deadlineNanos: Long) {
-        socket?.soTimeout = remainingTransferTimeoutMillis(deadlineNanos).toInt()
-    }
 
-    private fun restoreInboundReadTimeout() {
-        runCatching { socket?.soTimeout = SOCKET_READ_TIMEOUT_MS.toInt() }
-    }
 
-    private fun inboundFailureReason(error: Exception, deadlineNanos: Long): String = when {
-        error is InboundTransferTimeout -> TRANSFER_TIMED_OUT
-        error is SocketTimeoutException && transferDeadlineExpired(deadlineNanos) -> TRANSFER_TIMED_OUT
-        error is EOFException -> TRANSFER_INTERRUPTED
-        else -> TRANSFER_STORAGE
-    }
 
-    private fun receiveClipboardFile(
-        input: BufferedInputStream,
-        transferId: String,
-        name: String,
-        size: Long,
-        mime: String,
-    ) {
-        if (Build.VERSION.SDK_INT < 29) {
-            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
-            return
-        }
-        val values = android.content.ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/Handover clipboard")
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-        if (uri == null) {
-            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
-            return
-        }
-        val deadline = inboundTransferDeadline()
-        try {
-            context.contentResolver.openOutputStream(uri)?.use { output ->
-                val buffer = ByteArray(STREAM_BUFFER_BYTES)
-                var remaining = size
-                while (remaining > 0) {
-                    checkInboundTransferDeadline(deadline)
-                    configureInboundReadTimeout(deadline)
-                    val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (count < 0) throw EOFException("interrupted clipboard transfer")
-                    if (count == 0) continue
-                    output.write(buffer, 0, count)
-                    remaining -= count
-                }
-                output.flush()
-            } ?: throw java.io.IOException("clipboard output unavailable")
-            context.contentResolver.update(uri, ContentValues().apply {
-                put(MediaStore.Downloads.IS_PENDING, 0)
-            }, null, null)
-            context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(
-                android.content.ClipData.newUri(context.contentResolver, name, uri),
-            )
-            sendTransferResult(transferId, "completed", null)
-        } catch (error: Exception) {
-            context.contentResolver.delete(uri, null, null)
-            sendTransferFailureAndClose(
-                transferId,
-                inboundFailureReason(error, deadline),
-            )
-        } finally {
-            restoreInboundReadTimeout()
-        }
-    }
 
-    @SuppressLint("NewApi")
-    private fun receivePublicDownload(
-        input: BufferedInputStream, transferId: String, name: String, size: Long,
-    ) {
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Handover")
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val resolver = context.contentResolver
-        val destination = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-        if (destination == null) {
-            sendTransferFailureAndClose(transferId, TRANSFER_STORAGE)
-            return
-        }
-        val deadline = inboundTransferDeadline()
-        try {
-            resolver.openOutputStream(destination, "w")!!.use { output ->
-                val buffer = ByteArray(STREAM_BUFFER_BYTES)
-                var remaining = size
-                while (remaining > 0) {
-                    checkInboundTransferDeadline(deadline)
-                    configureInboundReadTimeout(deadline)
-                    val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (count < 0) throw EOFException("interrupted file transfer")
-                    if (count > 0) {
-                        output.write(buffer, 0, count)
-                        remaining -= count
-                    }
-                }
-            }
-            resolver.update(destination, ContentValues().apply {
-                put(MediaStore.Downloads.IS_PENDING, 0)
-            }, null, null)
-            notifyReceived("file", name, null, destination)
-            broadcast(ACTION_SHARE_RECEIVED, JSONObject().put("kind", "file").put("name", name)
-                .put("path", destination.toString()).put("source", serverId ?: serverFingerprint))
-            TransferHistory.add(context, "file", name, destination)
-            sendTransferResult(transferId, "completed", null)
-        } catch (error: Exception) {
-            resolver.delete(destination, null, null)
-            Log.w(TAG, "native public download failed: ${error.javaClass.simpleName}")
-            sendTransferFailureAndClose(
-                transferId, inboundFailureReason(error, deadline),
-            )
-        } finally {
-            restoreInboundReadTimeout()
-        }
-    }
-
-    private fun notifyReceived(kind: String, value: String, url: String?, file: Uri? = null) {
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(SHARE_CHANNEL, "Received shares", NotificationManager.IMPORTANCE_DEFAULT))
-        val source = (serverId ?: serverFingerprint ?: "unknown desktop").take(12)
-        val builder = android.app.Notification.Builder(context, SHARE_CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setAutoCancel(true)
-        if (kind == "url") {
-            builder.setContentTitle("URL received from $source")
-                .setContentText("Tap to open the received URL")
-            val parsed = url?.let { Uri.parse(it) }
-            if (parsed != null && parsed.scheme?.lowercase() in setOf("http", "https")) {
-                val intent = Intent(Intent.ACTION_VIEW, parsed)
-                builder.setContentIntent(PendingIntent.getActivity(context, 0, intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-            }
-        } else {
-            val update = file?.let { AppUpdater.inspectAndRemember(context, it) }
-            builder.setContentTitle(if (update != null) "Handover update ready" else "File received from $source")
-                .setContentText(if (update != null) "Version ${update.versionName.ifEmpty { update.versionCode.toString() }} · tap to install" else value)
-            if (file != null) {
-                val intent = if (update != null) AppUpdater.installIntent(context, update) else {
-                    val mime = context.contentResolver.getType(file)
-                        ?: java.net.URLConnection.guessContentTypeFromName(value)
-                        ?: "application/octet-stream"
-                    Intent(Intent.ACTION_VIEW).setDataAndType(file, mime)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                builder.setContentIntent(PendingIntent.getActivity(
-                    context, file.hashCode(), intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                ))
-            }
-        }
-        manager.notify((System.currentTimeMillis() and 0x7fffffff).toInt(), builder.build())
-    }
-
-    private fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
+    internal fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
         .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
         .apply {
             serverFingerprint?.let { put("trusted_server_id", it) }
             ownNonce?.let { put("pair_commit", pairingCommitment(it)) }
         }
 
-    private fun sendBattery() {
+    internal fun sendBattery() {
         val intent = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val reading = intent?.let(BatteryObserver::reading) ?: return
         send(JSONObject().put("type", "battery").put("protocol", 1)
             .put("percentage", reading.percentage).put("charging", reading.charging))
     }
 
-    private fun writeNow(message: JSONObject) = synchronized(outputLock) {
+    internal fun writeNow(message: JSONObject) = synchronized(outputLock) {
         output?.let { stream -> runCatching { write(stream, message) }.onFailure { socket?.close() } }
     }
 
-    private fun sendTransferResult(transferId: String, status: String, reason: String?) {
-        if (!isTransferId(transferId)) return
-        val result = JSONObject().put("type", "share_result").put("protocol", 1)
-            .put("transfer_id", transferId).put("status", status)
-        reason?.let { result.put("reason", it) }
-        if (!enqueue { writeNow(result) }) socket?.close()
-    }
 
-    private fun sendTransferFailureAndClose(transferId: String, reason: String) {
-        if (isTransferId(transferId)) {
-            val result = JSONObject().put("type", "share_result").put("protocol", 1)
-                .put("transfer_id", transferId).put("status", "failed").put("reason", reason)
-            runCatching { writerExecutor.submit { writeNow(result) }.get(2, TimeUnit.SECONDS) }
-        }
-        socket?.close()
-    }
 
-    private fun registerTransfer(kind: String, name: String, uri: Uri?): String? {
-        if (pendingTransfers.size >= MAX_PENDING_TRANSFERS) return null
-        val id = UUID.randomUUID().toString().replace("-", "")
-        pendingTransfers[id] = PendingTransfer(
-            android.os.SystemClock.elapsedRealtime() + TRANSFER_TIMEOUT_MS, kind, name, uri,
-        )
-        return id
-    }
 
-    private fun announceAccepted(id: String) {
-        val transfer = pendingTransfers[id] ?: return
-        publishTransferResult(transfer.result(id, "accepted"))
-    }
 
-    private fun completeTransfer(id: String, status: String, reason: String?) {
-        val transfer = pendingTransfers.remove(id) ?: return
-        val result = transfer.result(id, status)
-        reason?.let { result.put("reason", it) }
-        publishTransferResult(result)
-    }
 
-    private fun publishTransferResult(result: JSONObject) {
-        TransferHistory.recordResult(
-            context,
-            result.optString("transfer_id"),
-            result.optString("status"),
-            result.optString("kind").takeIf(String::isNotEmpty),
-            result.optString("name").takeIf(String::isNotEmpty),
-            result.optString("uri").takeIf(String::isNotEmpty)?.let(Uri::parse),
-        )
-        broadcast(ACTION_TRANSFER_RESULT, result)
-    }
 
-    private fun expireTransfers() {
-        val now = android.os.SystemClock.elapsedRealtime()
-        val expired = pendingTransfers.entries.filter { it.value.deadline <= now }
-        expired.forEach {
-            completeTransfer(it.key, "failed", TRANSFER_TIMED_OUT)
-        }
-        if (expired.isNotEmpty()) socket?.close()
-    }
 
-    private fun failPendingTransfers(reason: String) {
-        pendingTransfers.keys.toList().forEach { completeTransfer(it, "failed", reason) }
-    }
 
-    private data class PendingTransfer(
+    internal data class PendingTransfer(
         val deadline: Long,
         val kind: String,
         val name: String,
@@ -1396,15 +500,15 @@ class NativeTransport(private val context: Context) {
             .apply { uri?.let { put("uri", it.toString()) } }
     }
 
-    private fun send(message: JSONObject) {
+    internal fun send(message: JSONObject) {
         enqueue { writeNow(message) }
     }
 
-    private fun enqueue(operation: () -> Unit): Boolean = try {
+    internal fun enqueue(operation: () -> Unit): Boolean = try {
         if (writerExecutor.isShutdown) false else { writerExecutor.execute(operation); true }
     } catch (_: java.util.concurrent.RejectedExecutionException) { false }
 
-    private fun sslContext(): SSLContext {
+    internal fun sslContext(): SSLContext {
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
             init(identity.keyStore(), null)
         }.keyManagers
@@ -1412,7 +516,7 @@ class NativeTransport(private val context: Context) {
         return SSLContext.getInstance("TLSv1.3").apply { init(keyManagers, arrayOf(trust), SecureRandom()) }
     }
 
-    private fun pinnedTrustManager(pin: String?): X509TrustManager =
+    internal fun pinnedTrustManager(pin: String?): X509TrustManager =
         // This is deliberately custom: the first pairing handshake has no CA
         // trust anchor. It accepts only a non-empty, currently valid leaf for
         // the user-visible pairing ceremony; every subsequent handshake is
@@ -1420,9 +524,9 @@ class NativeTransport(private val context: Context) {
         // an empty chain and never disables TLS verification for a paired peer.
         PinnedIdentityTrustManager(pin)
 
-    private fun peerFingerprint(): String? = (socket?.session?.peerCertificates?.firstOrNull() as? X509Certificate)?.fingerprint()
+    internal fun peerFingerprint(): String? = (socket?.session?.peerCertificates?.firstOrNull() as? X509Certificate)?.fingerprint()
 
-    private fun write(output: BufferedOutputStream, message: JSONObject) {
+    internal fun write(output: BufferedOutputStream, message: JSONObject) {
         val bytes = message.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= MAX_FRAME)
         output.write(ByteBuffer.allocate(4).putInt(bytes.size).array())
@@ -1430,7 +534,7 @@ class NativeTransport(private val context: Context) {
         output.flush()
     }
 
-    private fun read(input: BufferedInputStream): JSONObject? {
+    internal fun read(input: BufferedInputStream): JSONObject? {
         val data = DataInputStream(input)
         val header = ByteArray(4)
         val first = input.read()
@@ -1444,7 +548,7 @@ class NativeTransport(private val context: Context) {
         return runCatching { JSONObject(String(payload, Charsets.UTF_8)) }.getOrNull()
     }
 
-    private fun broadcast(action: String, payload: JSONObject) {
+    internal fun broadcast(action: String, payload: JSONObject) {
         if (action == ACTION_CONNECTION_STATE) {
             connectionStatus = payload.optString("state", "offline")
         }
@@ -1486,45 +590,56 @@ class NativeTransport(private val context: Context) {
         const val ACTION_CONNECTION_STATE = "org.handover.android.CONNECTION_STATE"
         const val EXTRA_JSON = "json"
         private const val SERVICE_TYPE = "_handover._tcp"
-        private const val TAG = "HandoverNative"
-        private const val PIN_KEY = "server_cert_sha256"
-        private const val PENDING_CODE_KEY = "pending_pair_code"
+        internal const val TAG = "HandoverNative"
+        internal const val PIN_KEY = "server_cert_sha256"
+        internal const val PENDING_CODE_KEY = "pending_pair_code"
         private const val MANUAL_ENDPOINT_KEY = "manual_endpoint"
+        private const val LAST_ENDPOINT_KEY = "last_endpoint"
+
+        internal fun savedEndpointAddress(manual: String?, last: String?): String? =
+            manual?.takeIf { it.isNotBlank() } ?: last?.takeIf { it.isNotBlank() }
+
+        internal fun endpointIsManual(manual: String?, chosen: String?): Boolean =
+            !manual.isNullOrBlank() && chosen == manual
+
+        fun shouldAutoStartService(pairedFingerprint: String?): Boolean =
+            !pairedFingerprint.isNullOrEmpty()
         private const val MAX_FRAME = 64 * 1024
         // Bounded snapshot contract: the whole contacts list must fit
         // one frame with envelope headroom. Per-field caps keep one
         // pathological record from eating the budget.
-        private const val CONTACTS_BUDGET_BYTES = 56 * 1024
-        private const val MAX_CONTACT_VALUES = 16
-        private const val MAX_CONTACT_FIELD_CHARS = 256
-        private const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"
-        private const val OVERLAY_ASSIST_KEY = "clipboard_overlay_assist"
+        internal const val CONTACTS_BUDGET_BYTES = 56 * 1024
+        internal const val MAX_CONTACT_VALUES = 16
+        internal const val MAX_CONTACT_FIELD_CHARS = 256
+        internal const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"
+        internal const val OVERLAY_ASSIST_KEY = "clipboard_overlay_assist"
         private const val DESKTOP_AWAKE_KEY = "desktop_awake_requested"
-        private const val MAX_FILE_BYTES = 100L * 1024 * 1024
-        private const val MAX_CLIPBOARD_FILE_BYTES = 10L * 1024 * 1024
+        internal const val MAX_FILE_BYTES = 100L * 1024 * 1024
+        internal const val MAX_CLIPBOARD_FILE_BYTES = 10L * 1024 * 1024
         private const val MAX_URL_BYTES = 8 * 1024
         private const val MAX_NAME_BYTES = 255
-        private const val STREAM_BUFFER_BYTES = 32 * 1024
-        private const val SHARE_CHANNEL = "handover_received_shares"
+        internal const val STREAM_BUFFER_BYTES = 32 * 1024
+        internal const val SHARE_CHANNEL = "handover_received_shares"
+        const val ACTION_REMOTE_RESULT = "org.handover.android.REMOTE_RESULT"
         private const val RECONNECT_DELAY_MS = 2_000L
 
         const val ACTION_SHARE_RECEIVED = "org.handover.android.SHARE_RECEIVED"
         const val ACTION_TRANSFER_RESULT = "org.handover.android.TRANSFER_RESULT"
         const val EXTRA_SHARE_URI = "uri"
         const val EXTRA_SHARE_TEXT = "text"
-        private const val MAX_PENDING_TRANSFERS = 32
-        private const val TRANSFER_TIMEOUT_MS = 120_000L
-        private const val INBOUND_TRANSFER_TIMEOUT_MS = 120_000L
-        private const val SOCKET_READ_TIMEOUT_MS = 30_000L
+        internal const val MAX_PENDING_TRANSFERS = 32
+        internal const val TRANSFER_TIMEOUT_MS = 120_000L
+        internal const val INBOUND_TRANSFER_TIMEOUT_MS = 120_000L
+        internal const val SOCKET_READ_TIMEOUT_MS = 30_000L
         private const val TRANSFER_SWEEP_MS = 5_000L
-        private const val TRANSFER_INVALID_RESOURCE = "invalid_resource"
-        private const val TRANSFER_SIZE_LIMIT = "size_limit"
-        private const val TRANSFER_STORAGE = "storage"
-        private const val TRANSFER_INTERRUPTED = "interrupted"
-        private const val TRANSFER_TIMED_OUT = "timed_out"
-        private const val TRANSFER_DISCONNECTED = "disconnected"
+        internal const val TRANSFER_INVALID_RESOURCE = "invalid_resource"
+        internal const val TRANSFER_SIZE_LIMIT = "size_limit"
+        internal const val TRANSFER_STORAGE = "storage"
+        internal const val TRANSFER_INTERRUPTED = "interrupted"
+        internal const val TRANSFER_TIMED_OUT = "timed_out"
+        internal const val TRANSFER_DISCONNECTED = "disconnected"
         private const val TRANSFER_REJECTED = "rejected"
-        private val TRANSFER_REASONS = setOf("invalid_resource", "size_limit", "storage",
+        internal val TRANSFER_REASONS = setOf("invalid_resource", "size_limit", "storage",
             "interrupted", "rejected", "timed_out", "disconnected", "transport")
 
         internal fun transferDeadlineExpired(deadlineNanos: Long, nowNanos: Long = System.nanoTime()): Boolean =
@@ -1544,7 +659,7 @@ class NativeTransport(private val context: Context) {
         fun pendingPairingCode(context: Context): String? =
             context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE).getString(PENDING_CODE_KEY, null)
 
-        private fun fileMetadata(resolver: ContentResolver, uri: Uri, requestedName: String?): Pair<String, Long>? {
+        internal fun fileMetadata(resolver: ContentResolver, uri: Uri, requestedName: String?): Pair<String, Long>? {
             val name = requestedName ?: resolver.query(uri, arrayOf("_display_name"), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) cursor.getString(0) else null
             } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "shared-file"
@@ -1558,7 +673,7 @@ class NativeTransport(private val context: Context) {
             return safe to size
         }
 
-        private fun safeFileName(raw: String): String? {
+        internal fun safeFileName(raw: String): String? {
             val basename = raw.replace('\\', '/').substringAfterLast('/').trim()
             if (basename.isEmpty() || basename == "." || basename == ".." || basename.any { it.code < 0x20 || it == '\u0000' }) return null
             val bytes = basename.toByteArray(Charsets.UTF_8)
@@ -1575,10 +690,21 @@ class NativeTransport(private val context: Context) {
             return parsed.scheme?.lowercase() in setOf("http", "https")
         }
 
-        private fun isTransferId(value: String): Boolean =
+        internal fun isSafeBrowsePath(value: String): Boolean {
+            if (value == ".") return true
+            return value.length in 1..512 && !value.startsWith('/') && !value.contains('\u0000') &&
+                value.split('/').all { part ->
+                    part.isNotEmpty() && part != "." && part != ".." && !part.contains('\\')
+                }
+        }
+
+        internal fun isSafeCommandName(value: String): Boolean =
+            value.length in 1..64 && value.all { it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' }
+
+        internal fun isTransferId(value: String): Boolean =
             value.length == 32 && value.all { it in '0'..'9' || it in 'a'..'f' }
 
-        private fun uniqueDestination(root: File, name: String): File {
+        internal fun uniqueDestination(root: File, name: String): File {
             var candidate = File(root, name)
             var suffix = 1
             while (candidate.exists()) {
@@ -1617,15 +743,15 @@ class NativeTransport(private val context: Context) {
 
         private data class Quad(val first: String, val second: String, val third: String, val fourth: String)
 
-        private fun String.hexBytes(): ByteArray {
+        internal fun String.hexBytes(): ByteArray {
             check(length % 2 == 0)
             return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
         }
 
-        private fun isSha256Hex(value: String) =
+        internal fun isSha256Hex(value: String) =
             value.length == 64 && runCatching { value.hexBytes() }.isSuccess
 
-        private fun isPairingNonce(value: String) =
+        internal fun isPairingNonce(value: String) =
             value.length == 32 && runCatching { value.hexBytes() }.isSuccess
     }
 }

@@ -30,6 +30,7 @@ _handoverctl() {
         case $line[1] in
             (devices)
 _arguments "${_arguments_options[@]}" : \
+'--include-compatibility[Include devices supplied by the optional KDE Connect backend]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 && ret=0
@@ -111,6 +112,14 @@ _arguments "${_arguments_options[@]}" : \
 ':device -- Native peer name (when unique) or peer ID:_default' \
 && ret=0
 ;;
+(filesystem-list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':device:_default' \
+'::path:_default' \
+&& ret=0
+;;
 (call)
 _arguments "${_arguments_options[@]}" : \
 '--confirm[Explicitly authorize placing a real phone call (required for place)]' \
@@ -166,6 +175,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (tethering)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(filesystem-list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -268,35 +281,35 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+':session -- Session id (DEVICE\:PLAYER) or unique player ID or application name:_default' \
 && ret=0
 ;;
 (pause)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+':session -- Session id (DEVICE\:PLAYER) or unique player ID or application name:_default' \
 && ret=0
 ;;
 (play-pause)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+':session -- Session id (DEVICE\:PLAYER) or unique player ID or application name:_default' \
 && ret=0
 ;;
 (next)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+':session -- Session id (DEVICE\:PLAYER) or unique player ID or application name:_default' \
 && ret=0
 ;;
 (previous)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':session -- Session id (DEVICE\:PLAYER) or unique application name:_default' \
+':session -- Session id (DEVICE\:PLAYER) or unique player ID or application name:_default' \
 && ret=0
 ;;
 (help)
@@ -851,6 +864,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(filesystem-list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (call)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1115,7 +1132,7 @@ esac
 (( $+functions[_handoverctl_commands] )) ||
 _handoverctl_commands() {
     local commands; commands=(
-'devices:List devices known to handoverd' \
+'devices:List native devices known to handoverd' \
 'native:Inspect and manage native Android pairing and device commands' \
 'notifications:List active remote notifications from the daemon snapshot' \
 'contacts:List or request an on-demand native contacts snapshot' \
@@ -1341,7 +1358,7 @@ _handoverctl__subcmd__devices_commands() {
 (( $+functions[_handoverctl__subcmd__help_commands] )) ||
 _handoverctl__subcmd__help_commands() {
     local commands; commands=(
-'devices:List devices known to handoverd' \
+'devices:List native devices known to handoverd' \
 'native:Inspect and manage native Android pairing and device commands' \
 'notifications:List active remote notifications from the daemon snapshot' \
 'contacts:List or request an on-demand native contacts snapshot' \
@@ -1619,6 +1636,7 @@ _handoverctl__subcmd__help__subcmd__native_commands() {
 'lock:Lock a native phone when device-admin access is enabled' \
 'keep-awake:Ask a native phone to hold its wake lock (or release it with --release)' \
 'tethering:Ask a native phone to open its tethering settings screen' \
+'filesystem-list:Ask the phone for a bounded directory listing. Results arrive through \`monitor\` because the native transfer is asynchronous' \
 'call:Send a call control action to a native phone' \
     )
     _describe -t commands 'handoverctl help native commands' commands "$@"
@@ -1627,6 +1645,11 @@ _handoverctl__subcmd__help__subcmd__native_commands() {
 _handoverctl__subcmd__help__subcmd__native__subcmd__call_commands() {
     local commands; commands=()
     _describe -t commands 'handoverctl help native call commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__filesystem-list_commands] )) ||
+_handoverctl__subcmd__help__subcmd__native__subcmd__filesystem-list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help native filesystem-list commands' commands "$@"
 }
 (( $+functions[_handoverctl__subcmd__help__subcmd__native__subcmd__keep-awake_commands] )) ||
 _handoverctl__subcmd__help__subcmd__native__subcmd__keep-awake_commands() {
@@ -1993,6 +2016,7 @@ _handoverctl__subcmd__native_commands() {
 'lock:Lock a native phone when device-admin access is enabled' \
 'keep-awake:Ask a native phone to hold its wake lock (or release it with --release)' \
 'tethering:Ask a native phone to open its tethering settings screen' \
+'filesystem-list:Ask the phone for a bounded directory listing. Results arrive through \`monitor\` because the native transfer is asynchronous' \
 'call:Send a call control action to a native phone' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -2002,6 +2026,11 @@ _handoverctl__subcmd__native_commands() {
 _handoverctl__subcmd__native__subcmd__call_commands() {
     local commands; commands=()
     _describe -t commands 'handoverctl native call commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__filesystem-list_commands] )) ||
+_handoverctl__subcmd__native__subcmd__filesystem-list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native filesystem-list commands' commands "$@"
 }
 (( $+functions[_handoverctl__subcmd__native__subcmd__help_commands] )) ||
 _handoverctl__subcmd__native__subcmd__help_commands() {
@@ -2015,6 +2044,7 @@ _handoverctl__subcmd__native__subcmd__help_commands() {
 'lock:Lock a native phone when device-admin access is enabled' \
 'keep-awake:Ask a native phone to hold its wake lock (or release it with --release)' \
 'tethering:Ask a native phone to open its tethering settings screen' \
+'filesystem-list:Ask the phone for a bounded directory listing. Results arrive through \`monitor\` because the native transfer is asynchronous' \
 'call:Send a call control action to a native phone' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
@@ -2024,6 +2054,11 @@ _handoverctl__subcmd__native__subcmd__help_commands() {
 _handoverctl__subcmd__native__subcmd__help__subcmd__call_commands() {
     local commands; commands=()
     _describe -t commands 'handoverctl native help call commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__filesystem-list_commands] )) ||
+_handoverctl__subcmd__native__subcmd__help__subcmd__filesystem-list_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl native help filesystem-list commands' commands "$@"
 }
 (( $+functions[_handoverctl__subcmd__native__subcmd__help__subcmd__help_commands] )) ||
 _handoverctl__subcmd__native__subcmd__help__subcmd__help_commands() {
@@ -2151,3 +2186,23 @@ if [ "$funcstack[1]" = "_handoverctl" ]; then
 else
     compdef _handoverctl handoverctl
 fi
+
+
+# Live device arguments are supplied by the daemon.
+_handoverctl_live_devices() {
+    local -a values
+    values=( ${(f)"$(handoverctl devices 2>/dev/null | awk 'NR > 1 && NF { print $1 }')"} )
+    _describe 'Handover devices' values
+}
+_handoverctl_generated_device_completion() {
+    case "${words[CURRENT-1]}" in
+        send-url|send-file|notify|clipboard|calls|cancel-share|ping|ring|lock|keep-awake|tethering|filesystem-list|call|sync)
+            _handoverctl_live_devices
+            return 0
+            ;;
+    esac
+    _handoverctl_generated "$@"
+}
+functions[_handoverctl_generated]=$functions[_handoverctl]
+unfunction _handoverctl
+function _handoverctl { _handoverctl_generated_device_completion "$@" }

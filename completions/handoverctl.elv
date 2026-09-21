@@ -22,7 +22,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand --help 'Print help (see more with ''--help'')'
             cand -V 'Print version'
             cand --version 'Print version'
-            cand devices 'List devices known to handoverd'
+            cand devices 'List native devices known to handoverd'
             cand native 'Inspect and manage native Android pairing and device commands'
             cand notifications 'List active remote notifications from the daemon snapshot'
             cand contacts 'List or request an on-demand native contacts snapshot'
@@ -42,6 +42,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'handoverctl;devices'= {
+            cand --include-compatibility 'Include devices supplied by the optional KDE Connect backend'
             cand -h 'Print help (see more with ''--help'')'
             cand --help 'Print help (see more with ''--help'')'
         }
@@ -57,6 +58,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand lock 'Lock a native phone when device-admin access is enabled'
             cand keep-awake 'Ask a native phone to hold its wake lock (or release it with --release)'
             cand tethering 'Ask a native phone to open its tethering settings screen'
+            cand filesystem-list 'Ask the phone for a bounded directory listing. Results arrive through `monitor` because the native transfer is asynchronous'
             cand call 'Send a call control action to a native phone'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
@@ -97,6 +99,10 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand -h 'Print help (see more with ''--help'')'
             cand --help 'Print help (see more with ''--help'')'
         }
+        &'handoverctl;native;filesystem-list'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
+        }
         &'handoverctl;native;call'= {
             cand --confirm 'Explicitly authorize placing a real phone call (required for place)'
             cand -h 'Print help (see more with ''--help'')'
@@ -112,6 +118,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand lock 'Lock a native phone when device-admin access is enabled'
             cand keep-awake 'Ask a native phone to hold its wake lock (or release it with --release)'
             cand tethering 'Ask a native phone to open its tethering settings screen'
+            cand filesystem-list 'Ask the phone for a bounded directory listing. Results arrive through `monitor` because the native transfer is asynchronous'
             cand call 'Send a call control action to a native phone'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
@@ -132,6 +139,8 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;native;help;keep-awake'= {
         }
         &'handoverctl;native;help;tethering'= {
+        }
+        &'handoverctl;native;help;filesystem-list'= {
         }
         &'handoverctl;native;help;call'= {
         }
@@ -474,7 +483,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;messages;help;help'= {
         }
         &'handoverctl;help'= {
-            cand devices 'List devices known to handoverd'
+            cand devices 'List native devices known to handoverd'
             cand native 'Inspect and manage native Android pairing and device commands'
             cand notifications 'List active remote notifications from the daemon snapshot'
             cand contacts 'List or request an on-demand native contacts snapshot'
@@ -505,6 +514,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand lock 'Lock a native phone when device-admin access is enabled'
             cand keep-awake 'Ask a native phone to hold its wake lock (or release it with --release)'
             cand tethering 'Ask a native phone to open its tethering settings screen'
+            cand filesystem-list 'Ask the phone for a bounded directory listing. Results arrive through `monitor` because the native transfer is asynchronous'
             cand call 'Send a call control action to a native phone'
         }
         &'handoverctl;help;native;peers'= {
@@ -524,6 +534,8 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;help;native;keep-awake'= {
         }
         &'handoverctl;help;native;tethering'= {
+        }
+        &'handoverctl;help;native;filesystem-list'= {
         }
         &'handoverctl;help;native;call'= {
         }

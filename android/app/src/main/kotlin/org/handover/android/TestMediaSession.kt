@@ -78,7 +78,14 @@ object TestMediaSession {
 
     private fun applyState(playing: Boolean) {
         this.playing = playing
-        session?.let(::publish)
+        session?.let { mediaSession ->
+            publish(mediaSession)
+            // A second publish catches observers that sampled during the
+            // transport-control callback before the first state landed.
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (session === mediaSession) publish(mediaSession)
+            }
+        }
     }
 
     private fun publish(mediaSession: MediaSession) {

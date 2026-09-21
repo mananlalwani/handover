@@ -10,10 +10,13 @@ ZSH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/zsh/site-functions
 FISH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/fish/vendor_completions.d
 BIN_DIR := $(DESTDIR)$(PREFIX)/bin
 
-.PHONY: install-user uninstall-user systemd-smoke
+.PHONY: install-user uninstall-user systemd-smoke dist
 
 systemd-smoke: target/debug/handoverd target/debug/handoverctl
 	./scripts/systemd-smoke.sh target/debug/handoverd target/debug/handoverctl
+
+dist:
+	./scripts/dist.sh
 
 install-user:
 	cargo build --release --locked -p handoverd -p handoverctl
@@ -28,6 +31,8 @@ install-user:
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
 	install -Dm644 quickshell/README.md $(QUICKSHELL_INSTALL_DIR)/README.md
+	install -d $(QUICKSHELL_INSTALL_DIR)/pages
+	install -Dm644 quickshell/pages/*.qml $(QUICKSHELL_INSTALL_DIR)/pages/
 	systemctl --user daemon-reload
 	systemctl --user reenable handoverd.service
 	systemctl --user restart handoverd.service
@@ -50,5 +55,7 @@ uninstall-user:
 	rm -f $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/README.md
+	rm -f $(QUICKSHELL_INSTALL_DIR)/pages/*.qml
+	-rmdir $(QUICKSHELL_INSTALL_DIR)/pages
 	-rmdir $(QUICKSHELL_INSTALL_DIR)
 	-systemctl --user daemon-reload

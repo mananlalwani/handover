@@ -69,6 +69,8 @@ pub enum Method {
     NativeKeepAwake { id: String, inhibit: bool },
     #[serde(rename = "native.tethering")]
     NativeTethering { id: String },
+    #[serde(rename = "native.filesystem_list")]
+    NativeFilesystemList { id: String, path: String },
     #[serde(rename = "screensaver.inhibit")]
     ScreensaverInhibit,
     #[serde(rename = "screensaver.release")]
@@ -379,6 +381,9 @@ pub enum ServerPayload {
         pending: Vec<NativePendingPeer>,
     },
     NativeAccepted,
+    Filesystem {
+        result: handover_core::FilesystemResult,
+    },
     CallQueued {
         request_id: String,
     },
@@ -857,6 +862,18 @@ impl Client {
 
     pub async fn native_tethering(&mut self, id: String) -> Result<(), IpcError> {
         self.send(Method::NativeTethering { id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn native_filesystem_list(
+        &mut self,
+        id: String,
+        path: String,
+    ) -> Result<(), IpcError> {
+        self.send(Method::NativeFilesystemList { id, path }).await?;
         match self.receive().await?.payload {
             ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),

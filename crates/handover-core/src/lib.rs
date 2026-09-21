@@ -338,6 +338,24 @@ pub struct CustomCommandResult {
     pub failure: Option<CustomCommandFailure>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FilesystemEntry {
+    pub name: String,
+    pub directory: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FilesystemResult {
+    pub device_id: DeviceId,
+    pub request_id: String,
+    pub path: String,
+    pub entries: Vec<FilesystemEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceCommandAction {
@@ -477,6 +495,7 @@ pub enum StateEvent {
     Clipboard(ClipboardText),
     ClipboardFile(ClipboardFile),
     RemoteInput(RemoteInputCommand),
+    Filesystem(FilesystemResult),
     Contacts(ContactsEvent),
 }
 

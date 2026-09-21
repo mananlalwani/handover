@@ -39,7 +39,9 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Command::Devices) => list_devices().await,
+        Some(Command::Devices {
+            include_compatibility,
+        }) => list_devices(include_compatibility).await,
         Some(Command::Native { command }) => native(command).await,
         Some(Command::Notifications) => list_notifications().await,
         Some(Command::Contacts { command }) => contacts(command).await,
@@ -174,6 +176,11 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
             client.native_tethering(id).await?;
             println!("Tethering settings queued; use monitor to observe the Android result");
         }
+        NativeCommand::FilesystemList { device, path } => {
+            let id = select_native_peer(&mut client, &device).await?;
+            client.native_filesystem_list(id, path).await?;
+            println!("Filesystem listing queued; use monitor to observe the result");
+        }
         NativeCommand::Call {
             device,
             action,
@@ -193,9 +200,17 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
     Ok(())
 }
 
-async fn list_devices() -> Result<(), CliError> {
+async fn list_devices(include_compatibility: bool) -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let devices = client.devices().await?;
+    let devices = if include_compatibility {
+        devices
+    } else {
+        devices
+            .into_iter()
+            .filter(|device| device.id.as_str().starts_with("native:"))
+            .collect()
+    };
     print_table(&devices);
     Ok(())
 }
@@ -1077,6 +1092,20 @@ fn print_message(payload: ServerPayload) {
                 result.name, result.accepted, result.exit_code, result.failure
             );
         }
+        ServerPayload::Filesystem { result } => {
+            if let Some(failure) = result.failure {
+                println!("filesystem {}: failed ({failure})", result.path);
+            } else {
+                println!("filesystem {}:", result.path);
+                for entry in result.entries {
+                    println!(
+                        "{}\t{}",
+                        if entry.directory { "dir" } else { "file" },
+                        entry.name
+                    );
+                }
+            }
+        }
         ServerPayload::ClipboardMirror { enabled } => {
             println!(
                 "background clipboard mirroring: {}",
@@ -1217,6 +1246,20 @@ fn select_media_session(
         .find(|session| media_selector(&session.id) == selector)
     {
         return Ok(session.id.clone());
+    }
+
+    let by_player: Vec<_> = sessions
+        .iter()
+        .filter(|session| session.id.player_id == selector)
+        .collect();
+    match by_player.as_slice() {
+        [session] => return Ok(session.id.clone()),
+        [] => {}
+        _ => {
+            return Err(CliError::MediaSelection(format!(
+                "multiple media sessions use player {selector:?}; use a session ID"
+            )));
+        }
     }
 
     let matches: Vec<_> = sessions
@@ -1368,6 +1411,12 @@ mod tests {
             select_media_session(&[first.clone(), second.clone()], "Music").expect("unique app"),
             second.id
         );
+        let test_player = media_session("native:abc", "org.handover.android", "Handover");
+        assert_eq!(
+            select_media_session(std::slice::from_ref(&test_player), "org.handover.android")
+                .expect("unique player ID"),
+            test_player.id
+        );
     }
 
     #[test]
@@ -1381,6 +1430,12 @@ mod tests {
         assert!(matches!(
             select_media_session(&[first], "missing"),
             Err(CliError::MediaSelection(message)) if message.contains("no media session")
+        ));
+        let player_a = media_session("phone-a", "org.handover.android", "Handover");
+        let player_b = media_session("phone-b", "org.handover.android", "Handover");
+        assert!(matches!(
+            select_media_session(&[player_a, player_b], "org.handover.android"),
+            Err(CliError::MediaSelection(message)) if message.contains("multiple")
         ));
     }
 

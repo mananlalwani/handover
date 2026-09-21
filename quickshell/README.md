@@ -23,10 +23,10 @@ The KDE Connect backend currently exposes no action list over D-Bus, so
 for current KDE Connect notifications.
 
 `sendFile(device, fileUrl)` and `sendUrl(device, url)` address one device from
-`devices`. `shareFinished` reports whether KDE Connect accepted the request;
-it does not indicate delivery. The example includes a one-file chooser and a
-URL field. Incoming share events carry the source device, but KDE Connect
-already saved the file or handled the URL before the signal reaches Handover.
+`devices`. `shareFinished` reports whether the daemon accepted the request, not
+delivery. The example includes a one-file chooser and a URL field. Incoming
+share events carry the source device. On the KDE Connect backend, the file or
+URL is already handled before that signal reaches Handover.
 
 `mediaCommand(session, action, value)` sends a supported media control such as
 `play`, `pause`, `play_pause`, `previous`, `next`, `seek`, or `set_position`.
@@ -61,11 +61,13 @@ With `handoverd` running, launch the minimal example from the repository root:
 quickshell --path quickshell/example.qml
 ```
 
-The window displays the first connected device as `Name · 69%`, a compact media
-card, and one phone notification card. Repliable notifications have a text
-field and clearable notifications have a Dismiss button. The cards are
-intentionally not a full media or notification center and do not take over
-Quickshell's `NotificationServer`.
+The window has a sidebar for Overview, Messages, Calls, Notifications,
+Media, Contacts, Clipboard, Phone files, Commands, Remote input, and
+Transfers. Overview lists native phones with ping, ring, lock, keep-awake,
+and tethering. Notifications and media list every current session, not one
+card. Clipboard includes history. Phone files lists a home-confined
+directory. Commands run names from the local allowlist. Pairing still uses
+the comparison code shown on both sides.
 
 `refreshContacts()` reads the contacts snapshot held by the daemon. `syncContacts(device)` asks
 one connected native phone for a fresh snapshot. Android must grant Contacts access first.

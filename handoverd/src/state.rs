@@ -80,6 +80,10 @@ impl StateStore {
                 changed: false,
                 changes: Vec::new(),
             },
+            StateEvent::Filesystem(result) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::Filesystem(result)],
+            },
         }
     }
 
@@ -404,6 +408,7 @@ pub(crate) enum StateChange {
     ShareReceived(ReceivedShare),
     ShareProgress(ShareProgress),
     ShareResult(ShareResult),
+    Filesystem(handover_core::FilesystemResult),
     Messaging(MessagingChange),
 }
 

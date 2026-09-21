@@ -69,6 +69,24 @@ class NativeTransportTest {
         )
     }
 
+    @Test fun savedEndpointPrefersManualThenLast() {
+        assertEquals(
+            "10.0.0.2:24837",
+            NativeTransport.savedEndpointAddress("10.0.0.2:24837", "100.64.0.1:24837"),
+        )
+        assertEquals("100.64.0.1:24837", NativeTransport.savedEndpointAddress(null, "100.64.0.1:24837"))
+        assertEquals(null, NativeTransport.savedEndpointAddress("  ", null))
+        assertEquals(true, NativeTransport.endpointIsManual("10.0.0.2:24837", "10.0.0.2:24837"))
+        assertEquals(false, NativeTransport.endpointIsManual("10.0.0.2:24837", "100.64.0.1:24837"))
+        assertEquals(false, NativeTransport.endpointIsManual(null, "100.64.0.1:24837"))
+    }
+
+    @Test fun autoStartsOnlyWhenAPeerIsPaired() {
+        assertEquals(true, NativeTransport.shouldAutoStartService("aa".repeat(32)))
+        assertEquals(false, NativeTransport.shouldAutoStartService(null))
+        assertEquals(false, NativeTransport.shouldAutoStartService(""))
+    }
+
     @Test fun pairingCodeMatchesCrossLanguageVectorAndIsOrderIndependent() {
         // Shared with handover-native's comparison_code unit test: the same
         // fingerprints and nonces must produce this code in both languages.
@@ -110,6 +128,20 @@ class NativeTransportTest {
         assertEquals(30_000L, NativeTransport.remainingTransferTimeoutMillis(60_000_000_000L, 0L))
         assertEquals(1L, NativeTransport.remainingTransferTimeoutMillis(100L, 100L))
         assertEquals(2L, NativeTransport.remainingTransferTimeoutMillis(2_000_000L, 0L))
+    }
+
+    @Test fun browsePathsRejectTraversal() {
+        assertEquals(true, NativeTransport.isSafeBrowsePath("."))
+        assertEquals(true, NativeTransport.isSafeBrowsePath("Documents/notes"))
+        assertEquals(false, NativeTransport.isSafeBrowsePath("/etc"))
+        assertEquals(false, NativeTransport.isSafeBrowsePath("../secret"))
+        assertEquals(false, NativeTransport.isSafeBrowsePath("foo/../bar"))
+    }
+
+    @Test fun commandNamesMatchLinuxAllowlistRules() {
+        assertEquals(true, NativeTransport.isSafeCommandName("lock-screen"))
+        assertEquals(false, NativeTransport.isSafeCommandName("Bad Name!"))
+        assertEquals(false, NativeTransport.isSafeCommandName("has.dot"))
     }
 
     private fun fpOf(prefix: String) = prefix.repeat(32)

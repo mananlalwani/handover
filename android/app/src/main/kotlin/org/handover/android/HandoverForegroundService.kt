@@ -109,6 +109,9 @@ class HandoverForegroundService : Service() {
         fun syncContacts() { activeTransport?.requestContactsSync() }
         fun sendClipboard() { activeTransport?.sendClipboardToLinux() }
         fun sendAutomaticClipboard() { activeTransport?.sendAutomaticClipboardToLinux() }
+        fun browseLinux(path: String): Boolean = activeTransport?.requestLinuxDirectory(path) == true
+        fun runLinuxCommand(name: String): Boolean = activeTransport?.runLinuxCommand(name) == true
+        fun requestLinuxCommands(): Boolean = activeTransport?.requestLinuxCommands() == true
         fun setClipboardSync(enabled: Boolean) { activeTransport?.setClipboardSync(enabled) }
         fun clipboardSyncEnabled(): Boolean = activeTransport?.clipboardSyncEnabled() == true
         fun setOverlayAssist(enabled: Boolean) { activeTransport?.setOverlayAssist(enabled) }
@@ -119,6 +122,18 @@ class HandoverForegroundService : Service() {
         fun desktopAwakeRequested(): Boolean = activeTransport?.desktopAwakeRequested() == true
         fun phoneAwakeHeld(): Boolean = activeTransport?.phoneAwakeHeld() == true
         fun connectionState(): String = activeTransport?.connectionState() ?: "offline"
+
+        fun startIfPaired(context: android.content.Context) {
+            if (!NativeTransport.shouldAutoStartService(NativeTransport.trustedPeerFingerprint(context))) {
+                return
+            }
+            val intent = Intent(context, HandoverForegroundService::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
 
         const val ACTION_PAIR = "org.handover.android.PAIR"
         const val ACTION_REVOKE = "org.handover.android.REVOKE"

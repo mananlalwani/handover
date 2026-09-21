@@ -252,7 +252,7 @@ class MediaObserver(private val context: Context) {
                 if (action !in reported) return false
                 action
             }
-            return runCatching {
+            val accepted = runCatching {
                 val transportControls = controller.transportControls
                 when (effective) {
                     "play" -> transportControls.play()
@@ -271,6 +271,10 @@ class MediaObserver(private val context: Context) {
                 }
                 true
             }.getOrDefault(false)
+            if (accepted) {
+                observer.mainHandler.post { observer.pushSync() }
+            }
+            return accepted
         }
 
         fun postJson(session: WireMediaSession): JSONObject =

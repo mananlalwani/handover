@@ -26,11 +26,15 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List devices known to handoverd.
+    /// List native devices known to handoverd.
     ///
     /// Prints the current daemon snapshot: name, connection state, pairing
     /// state, and battery. Requires a running handoverd.
-    Devices,
+    Devices {
+        /// Include devices supplied by the optional KDE Connect backend.
+        #[arg(long)]
+        include_compatibility: bool,
+    },
     /// Inspect and manage native Android pairing and device commands.
     ///
     /// Peer selection accepts a peer ID or, when unique, a device name.
@@ -52,7 +56,7 @@ pub enum Command {
     /// With no subcommand, prints the current media snapshot. With a
     /// subcommand, the command is accepted by the daemon; playback change
     /// is not confirmed. Sessions are selected by `DEVICE:PLAYER` or, when
-    /// unique, by application name.
+    /// unique, by player ID or application name.
     Media {
         #[command(subcommand)]
         command: Option<MediaSubcommand>,
@@ -312,6 +316,14 @@ pub enum NativeCommand {
         #[arg(value_name = "DEVICE")]
         device: String,
     },
+    /// Ask the phone for a bounded directory listing. Results arrive through
+    /// `monitor` because the native transfer is asynchronous.
+    FilesystemList {
+        #[arg(value_name = "DEVICE")]
+        device: String,
+        #[arg(default_value = ".", value_name = "PATH")]
+        path: String,
+    },
     /// Send a call control action to a native phone.
     ///
     /// Call commands are accepted, not confirmed. The `place` action dials
@@ -482,32 +494,32 @@ pub enum MessagesCommand {
 pub enum MediaSubcommand {
     /// Start playback on one session.
     Play {
-        /// Session id (DEVICE:PLAYER) or unique application name.
+        /// Session id (DEVICE:PLAYER) or unique player ID or application name.
         #[arg(value_name = "SESSION")]
         session: String,
     },
     /// Pause playback on one session.
     Pause {
-        /// Session id (DEVICE:PLAYER) or unique application name.
+        /// Session id (DEVICE:PLAYER) or unique player ID or application name.
         #[arg(value_name = "SESSION")]
         session: String,
     },
     /// Toggle playback on one session.
     #[command(name = "play-pause")]
     PlayPause {
-        /// Session id (DEVICE:PLAYER) or unique application name.
+        /// Session id (DEVICE:PLAYER) or unique player ID or application name.
         #[arg(value_name = "SESSION")]
         session: String,
     },
     /// Skip to the next item on one session.
     Next {
-        /// Session id (DEVICE:PLAYER) or unique application name.
+        /// Session id (DEVICE:PLAYER) or unique player ID or application name.
         #[arg(value_name = "SESSION")]
         session: String,
     },
     /// Return to the previous item on one session.
     Previous {
-        /// Session id (DEVICE:PLAYER) or unique application name.
+        /// Session id (DEVICE:PLAYER) or unique player ID or application name.
         #[arg(value_name = "SESSION")]
         session: String,
     },

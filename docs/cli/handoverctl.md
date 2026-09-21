@@ -71,9 +71,9 @@ app, playback state, title, and artist. With a subcommand, sends one
 playback command. The command is accepted by the daemon. A change in
 playback is not confirmed.
 
-SESSION is `DEVICE:PLAYER`, or the application name when only one session
-uses it. Ambiguous application names are rejected with a hint to use the
-session id.
+SESSION is `DEVICE:PLAYER`, or the player ID or application name when
+only one session uses it. Ambiguous names are rejected with a hint to
+use the session id.
 
 ## monitor
 

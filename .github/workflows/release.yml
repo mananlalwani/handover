@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/dist.sh
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  android:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew assembleDebug
+      - name: Name the debug APK
+        working-directory: ${{ github.workspace }}
+        run: |
+          version="$(awk -F '"' '/^version = / { print $2; exit }' handoverd/Cargo.toml)"
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+            "dist/handover-android-${version}-debug.apk"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/handover-android-*-debug.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

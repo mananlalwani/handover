@@ -295,6 +295,9 @@ _handoverctl() {
             handoverctl__subcmd__help__subcmd__native,call)
                 cmd="handoverctl__subcmd__help__subcmd__native__subcmd__call"
                 ;;
+            handoverctl__subcmd__help__subcmd__native,filesystem-list)
+                cmd="handoverctl__subcmd__help__subcmd__native__subcmd__filesystem__subcmd__list"
+                ;;
             handoverctl__subcmd__help__subcmd__native,keep-awake)
                 cmd="handoverctl__subcmd__help__subcmd__native__subcmd__keep__subcmd__awake"
                 ;;
@@ -457,6 +460,9 @@ _handoverctl() {
             handoverctl__subcmd__native,call)
                 cmd="handoverctl__subcmd__native__subcmd__call"
                 ;;
+            handoverctl__subcmd__native,filesystem-list)
+                cmd="handoverctl__subcmd__native__subcmd__filesystem__subcmd__list"
+                ;;
             handoverctl__subcmd__native,help)
                 cmd="handoverctl__subcmd__native__subcmd__help"
                 ;;
@@ -489,6 +495,9 @@ _handoverctl() {
                 ;;
             handoverctl__subcmd__native__subcmd__help,call)
                 cmd="handoverctl__subcmd__native__subcmd__help__subcmd__call"
+                ;;
+            handoverctl__subcmd__native__subcmd__help,filesystem-list)
+                cmd="handoverctl__subcmd__native__subcmd__help__subcmd__filesystem__subcmd__list"
                 ;;
             handoverctl__subcmd__native__subcmd__help,help)
                 cmd="handoverctl__subcmd__native__subcmd__help__subcmd__help"
@@ -1003,7 +1012,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__devices)
-            opts="-h --help"
+            opts="-h --include-compatibility --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1619,7 +1628,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__help__subcmd__native)
-            opts="peers pending pair unpair ping ring lock keep-awake tethering call"
+            opts="peers pending pair unpair ping ring lock keep-awake tethering filesystem-list call"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1633,6 +1642,20 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__help__subcmd__native__subcmd__call)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__help__subcmd__native__subcmd__filesystem__subcmd__list)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2521,7 +2544,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__native)
-            opts="-h --help peers pending pair unpair ping ring lock keep-awake tethering call help"
+            opts="-h --help peers pending pair unpair ping ring lock keep-awake tethering filesystem-list call help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2548,8 +2571,22 @@ _handoverctl() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        handoverctl__subcmd__native__subcmd__filesystem__subcmd__list)
+            opts="-h --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         handoverctl__subcmd__native__subcmd__help)
-            opts="peers pending pair unpair ping ring lock keep-awake tethering call help"
+            opts="peers pending pair unpair ping ring lock keep-awake tethering filesystem-list call help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2563,6 +2600,20 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__native__subcmd__help__subcmd__call)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__native__subcmd__help__subcmd__filesystem__subcmd__list)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2920,3 +2971,21 @@ if [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 4 || "${BASH_VERS
 else
     complete -F _handoverctl -o bashdefault -o default handoverctl
 fi
+
+
+_handoverctl_live_devices() {
+    COMPREPLY=( $(compgen -W "$(handoverctl devices 2>/dev/null | awk 'NR > 1 && NF { print $1 }')" -- "${cur}") )
+}
+_handoverctl_generated_device_completion() {
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    case "${prev}" in
+        send-url|send-file|notify|clipboard|calls|cancel-share|ping|ring|lock|keep-awake|tethering|filesystem-list|call|sync)
+            _handoverctl_live_devices
+            return 0
+            ;;
+    esac
+    _handoverctl_generated "$@"
+}
+eval "$(declare -f _handoverctl | sed '1s/^_handoverctl /_handoverctl_generated /')"
+_handoverctl() { _handoverctl_generated_device_completion "$@"; }

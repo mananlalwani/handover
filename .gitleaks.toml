@@ -1,0 +1,10 @@
+title = "Handover"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "GitHub Actions job names are not API keys"
+paths = ['''\.github/workflows/''']
+regexTarget = "line"
+regexes = ['''(?i)^[[:space:]]*key:[[:space:]]''']

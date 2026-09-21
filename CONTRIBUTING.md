@@ -20,6 +20,9 @@ repository because it has a different license.
 Read `DESIGN.md` before changing a public model, IPC method, or backend
 boundary.
 
+Ordinary bugs go to GitHub Issues. Security reports go through
+[SECURITY.md](SECURITY.md), not a public issue.
+
 ## Prerequisites
 
 Install:
@@ -51,7 +54,7 @@ Run the Android checks from `android/`:
 Run the QML check from the repository root:
 
 ```sh
-qmllint quickshell/*.qml
+qmllint quickshell/*.qml quickshell/pages/*.qml
 ```
 
 Run all checks affected by a change. Report checks that are unavailable on the

@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -93,6 +94,16 @@
                 <action android:name="org.handover.android.TEST_REMOVE" />
                 <action android:name="org.handover.android.TEST_MEDIA_START" />
                 <action android:name="org.handover.android.TEST_MEDIA_STOP" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".HandoverBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
         <receiver
