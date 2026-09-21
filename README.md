@@ -1,55 +1,36 @@
 # Handover
 
-Handover connects an Android phone to a Linux desktop so desktop apps can see
-the phone and use notifications, media controls, calls, files, and related
-device actions.
+Handover connects your Android phone to your Linux desktop. Share files, links,
+and clipboard contents, read phone notifications, control media playback, and
+access calls and contacts from Linux. The Android app also provides presentation,
+pointer, keyboard, and Linux volume controls.
 
-It runs in the background. The daemon owns the live state. `handoverctl` and
-the included Quickshell panel are clients of that daemon, not a second source
-of truth.
+`handoverd` runs in the background. Use `handoverctl` from the terminal or the
+included Quickshell reference client. The native Android connection works
+without KDE Connect, which remains an optional compatibility backend.
 
-This repository is MIT-licensed and pre-1.0. IPC types and methods may still
-change. Treat the Unix-socket protocol as experimental until a versioned 1.0
-is documented.
-
-## Current status
-
-The native Handover Android connection is the path for daily use. Milestone 1
-is closed for that path. KDE Connect is an optional compatibility backend, not
-a requirement for the native capabilities in the table below.
-
-Google Messages support is optional and lives in a separate AGPL-3.0-only
-repository. It does not ship as part of this MIT tree.
-
-## License
-
-This repository is [MIT](LICENSE).
-
-The optional Google Messages adapter is
-[AGPL-3.0-only](https://github.com/mananlalwani/handover-gmessages). Handover
-talks to it as a separate process over a coarse JSON helper contract. Google
-protocol code, cookies, and tokens stay in that adapter. Do not copy them into
-this tree.
+Handover is pre-1.0. Capabilities depend on Android permissions and device
+support, and the IPC contract is still experimental. See the
+[known limitations](docs/KNOWN_LIMITATIONS.md) for gaps and live-testing coverage.
 
 ## Install
 
-Tagged GitHub Releases attach a Linux tarball (`x86_64-unknown-linux-gnu` from
-Ubuntu 24.04) and a debug APK. Unpack the tarball and run `./install.sh`. That
-copies binaries to `~/.local/bin`, the user systemd unit, completions, and the
-Quickshell example. Put `~/.local/bin` on `PATH`.
+### Linux
 
-On Arch, you can build a `/usr` package from this tree instead:
+Download the Linux tarball from
+[Releases](https://github.com/mananlalwani/handover/releases), unpack it, and run
+`./install.sh` from the extracted directory. Release builds target x86_64 Linux
+with glibc and are built on Ubuntu 24.04.
+
+The installer copies the binaries to `~/.local/bin` and starts `handoverd` as a
+systemd user service. Add `~/.local/bin` to your shell's `PATH`, then check it:
 
 ```sh
-cd packaging/arch/handover-git
-makepkg -si
-systemctl --user enable --now handoverd.service
+systemctl --user status handoverd
+handoverctl devices
 ```
 
-See [packaging/arch/README.md](packaging/arch/README.md). Disable a previous
-`make install-user` daemon first so only one `handoverd` runs.
-
-Install from source if you have Rust and want to build locally:
+To build from source, install Rust and a C linker, then run:
 
 ```sh
 git clone https://github.com/mananlalwani/handover.git
@@ -57,105 +38,98 @@ cd handover
 make install-user
 ```
 
-`make dist` builds the same tarball layout without installing it.
+On Arch Linux, you can build a system package from the clone instead:
 
-Build the Android companion from `android/` with `./gradlew assembleDebug`,
-or install the APK from the GitHub Release. Enable the connection, and pair:
+```sh
+cd packaging/arch/handover-git
+makepkg -si
+systemctl --user enable --now handoverd.service
+```
+
+If you previously used `make install-user`, follow the
+[Arch installation guide](packaging/arch/README.md) to switch installations.
+
+### Android and pairing
+
+Install the Android debug APK from the same release, or follow the
+[build instructions](CONTRIBUTING.md) to build it yourself. Open Handover on the
+phone and enable the connection while the phone and computer can reach each
+other.
+
+On Linux, list pending pairing requests:
 
 ```sh
 handoverctl native pending
+```
+
+Compare the eight-digit code shown on Linux with the code on the phone. Only
+approve the request if they match, substituting the pending ID and code below:
+
+```sh
 handoverctl native pair <pending-id> <eight-digit-code>
 handoverctl devices
 ```
 
-The [user guide](docs/user-guide.md) covers pairing, commands, troubleshooting,
-and removal.
+If discovery does not find the computer, enter its address and port `24837` in
+the Android app. A reachable Tailscale address works too. Grant the Android
+permissions for the capabilities you want to use.
 
-## What Handover does
+### Optional desktop interface
 
-- Shows connected Android phones to Linux desktop apps.
-- Receives Android notifications.
-- Controls media playing on the phone.
-- Supports phone-call actions where the phone and backend allow them.
-- Sends files and links to a phone, and receives shares from the phone.
-- Sends explicit desktop notifications to a native phone with `handoverctl notify`.
-- Supports an on-demand contacts snapshot.
-- Provides a phone presentation remote with slide and pointer controls.
-- Provides explicit phone controls for Linux volume up, down, and mute.
-- Supports explicit clipboard transfer in both directions.
-- Can ring or ping a connected native phone.
-- Reports the phone's active network transport and battery.
-- Inhibits idle and sleep while a native phone is connected.
-- Pauses local MPRIS players when a phone call becomes active, when `playerctl`
-  is installed.
-- Provides a Quickshell example panel.
+With Quickshell installed, launch the reference client:
 
-Native clipboard transfer is explicit. Use the phone's "Send current clipboard
-to Linux" action, or `handoverctl clipboard <device> [text]`. With no text
-argument, the CLI reads the current Wayland clipboard. Contents are bounded
-and are not mirrored in daemon state. Text, HTML, and URI payloads are limited
-to 32 KiB each and 48 KiB together. File-backed clipboard items are limited to
-10 MiB. Background clipboard mirroring is an opt-in Android setting while the
-foreground service is running.
+```sh
+quickshell --path ~/.local/share/handover/quickshell/example.qml
+```
 
-Handover reports when a request was accepted. That does not always mean the
-phone completed it.
+For an Arch package installation, use
+`/usr/share/handover/quickshell/example.qml`. See the
+[Quickshell guide](quickshell/README.md) for the available views and integration
+API.
 
-## Capability status
+## Everyday use
 
-| Capability | Status |
-| --- | --- |
-| Pairing, discovery, reconnect, and persistent identity | NATIVE |
-| Notifications, updates, removals, actions, and replies | NATIVE, permission-dependent |
-| Media state and playback controls | NATIVE, permission-dependent |
-| Phone media volume over the native transport | OUT OF SCOPE |
-| Calls and contacts | NATIVE, permission-dependent |
-| Clipboard, files, and links | NATIVE |
-| Background clipboard mirroring | NATIVE opt-in, or KDE FALLBACK |
-| Presentation, pointer, keyboard, and Linux volume controls | NATIVE |
-| Battery and network state | NATIVE |
-| Remote filesystem browsing | NATIVE, bounded to the user's home or Android shared storage |
-| Configurable remote commands | NATIVE, local allowlist only |
-| Browser integration | NATIVE through URL sharing and Android share targets |
-| VPN and non-LAN operation | NATIVE when a reachable address is entered manually |
-| Google Messages conversations | OPTIONAL, separate AGPL adapter |
-| First-party Messages, Calls, or Contacts applications | PLANNED |
-| Activity handoff and shared drafts | PLANNED |
-| First-party GNOME or KDE shells | PLANNED |
-| Stable 1.0 IPC for third-party clients | PLANNED |
-| iOS | OUT OF SCOPE |
-| Independent Google protocol implementation in this repo | OUT OF SCOPE |
-| Support for every Linux distro and Android OEM | OUT OF SCOPE |
+Replace `"Phone"` with the device name or ID from `handoverctl devices`.
 
-Known gaps and assumptions are listed in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
-Architecture is in [DESIGN.md](DESIGN.md). Daemon, native transport, IPC,
-Android companion, and the Quickshell client are the main seams. Public models
-live in `handover-core` and stay backend-independent.
+```sh
+handoverctl devices
+handoverctl notifications
+handoverctl media
+handoverctl send-url "Phone" https://example.com
+handoverctl send-file "Phone" ./photo.jpg
+handoverctl clipboard "Phone" "Text to copy to the phone"
+handoverctl notify "Phone" app title body
+handoverctl monitor
+```
 
-## Privacy
+To send the current Wayland clipboard, run `handoverctl clipboard "Phone"`
+without a text argument. For the other direction, use "Send current clipboard
+to Linux" in the Android app. Background clipboard mirroring is an opt-in
+Android setting and is off by default.
 
-Native connections use TLS and require pairing. Private keys stay in Android's
-keystore. Handover does not log message text, notification contents, tokens,
-keys, or file contents.
+A successful command means the backend accepted the request. Completion and
+state updates appear in `handoverctl monitor` when the backend provides them.
 
-## Bugs and security
+The [user guide](docs/user-guide.md) covers setup, permissions, troubleshooting,
+and removal. The [CLI reference](docs/cli/handoverctl.md) is also available as
+`man handoverctl` after installation.
 
-Use [GitHub Issues](https://github.com/mananlalwani/handover/issues) for
-ordinary bugs. There is a [bug report template](.github/ISSUE_TEMPLATE/bug_report.md).
+## Optional integrations
 
-Do not file security issues in public. Follow [SECURITY.md](SECURITY.md) and
-use GitHub private vulnerability reporting.
+[Handover Google Messages](https://github.com/mananlalwani/handover-gmessages)
+is a separate install for SMS/RCS on Linux. The adapter is AGPL-3.0-only and runs
+as a separate process. Google credentials stay with the adapter.
 
-## More information
+KDE Connect can remain paired for compatibility with its existing capabilities.
 
-- [Vision](VISION.md)
-- [Roadmap](ROADMAP.md)
-- [Design](DESIGN.md)
-- [User guide](docs/user-guide.md)
-- [Known limitations](docs/KNOWN_LIMITATIONS.md)
-- [Engineering principles](docs/ENGINEERING_PRINCIPLES.md)
-- [Contributing](CONTRIBUTING.md)
-- [MIT license](LICENSE)
+## Development and support
 
-The optional Google Messages integration is
-[handover-gmessages](https://github.com/mananlalwani/handover-gmessages).
+See [Contributing](CONTRIBUTING.md) for build and test instructions,
+[Design](DESIGN.md) for the architecture, and the [Roadmap](ROADMAP.md) and
+[Vision](VISION.md) for planned work.
+
+Report bugs through [GitHub Issues](https://github.com/mananlalwani/handover/issues).
+For security vulnerabilities, follow [SECURITY.md](SECURITY.md) and use private
+reporting.
+
+This repository is licensed under [MIT](LICENSE).
