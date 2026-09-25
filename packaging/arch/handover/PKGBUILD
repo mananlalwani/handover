@@ -1,7 +1,7 @@
 # Maintainer: Handover contributors
 
 pkgname=handover
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc='Android and Linux continuity daemon and CLI'
 arch=('x86_64' 'aarch64')

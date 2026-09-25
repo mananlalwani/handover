@@ -27,7 +27,7 @@ systemctl --user enable --now handoverd.service
 ```
 
 `handover-git` builds the current Git checkout from GitHub. `handover` builds
-the `v0.3.1` source tarball. They provide and conflict with the same package,
+the `v0.3.2` source tarball. They provide and conflict with the same package,
 so use `handover-git` during development and remove the other package first.
 
 Follow the [user guide](../../docs/user-guide.md#native-android-connection)

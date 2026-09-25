@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "handover-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "handover-gmessages"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "handover-core",
  "serde",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "handover-ipc"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "handover-core",
  "serde",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "handover-kdeconnect"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "futures-util",
  "handover-core",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "handover-native"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "handover-core",
  "hex",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "handoverctl"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "handoverd"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "handover-core",
  "handover-gmessages",
