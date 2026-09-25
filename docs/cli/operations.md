@@ -126,6 +126,10 @@ bounded retention, swept at daemon startup:
 - The adapter sweeps its own staging directory on its own start:
   7 days or 256 MiB, oldest first. It also clears crash-left session
   temp files.
+- The daemon admits outbound attachment copies only while its staging
+  directory is below 256 MiB and 4,096 files. It removes copies older
+  than 7 days before each send and on startup. A full directory rejects
+  new attachment sends until space is available.
 
 ## Exit status
 

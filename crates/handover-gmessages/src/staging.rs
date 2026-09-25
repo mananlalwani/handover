@@ -9,13 +9,19 @@
 
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use handover_core::sanitize_file_name;
 use sha2::{Digest, Sha256};
 
 /// Maximum staged attachment: 50 MiB.
 pub const MAX_STAGED_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_SEND_STAGING_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SEND_STAGING_FILES: usize = 4096;
+const SEND_STAGING_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+static SEND_STAGING_LOCK: Mutex<()> = Mutex::new(());
 
 const COPY_BUFFER: usize = 32 * 1024;
 const MAX_IMPORTED_FILES: usize = 1024;
@@ -345,7 +351,16 @@ fn imported_usage(directory: &Path) -> Result<(usize, u64), StageError> {
 /// caller-supplied path, closing validation-to-open replacement.
 /// Basenames are sanitized with the same rules as staged uploads.
 pub fn stage_send_copy(source: &str) -> Result<PathBuf, StageError> {
-    let source = Path::new(source);
+    let root = default_staging_directory()?;
+    stage_send_copy_into(Path::new(source), &root)
+}
+
+fn stage_send_copy_into(source: &Path, root: &Path) -> Result<PathBuf, StageError> {
+    // IPC clients can request sends concurrently. Serialize admission and
+    // copying so every accepted copy counts against the same live quota.
+    let _guard = SEND_STAGING_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let name = source
         .file_name()
         .and_then(|name| name.to_str())
@@ -359,28 +374,88 @@ pub fn stage_send_copy(source: &str) -> Result<PathBuf, StageError> {
     if !metadata.is_file() || metadata.len() > MAX_STAGED_BYTES {
         return Err(StageError::NotAFile);
     }
-    let root = default_staging_directory()?;
+    std::fs::create_dir_all(root)?;
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+    sweep_directory(root, SEND_STAGING_MAX_AGE, u64::MAX, usize::MAX)?;
+    let (file_count, byte_count) = staging_usage(root)?;
+    let remaining = MAX_SEND_STAGING_BYTES.saturating_sub(byte_count);
+    if file_count >= MAX_SEND_STAGING_FILES || metadata.len() > remaining {
+        return Err(StageError::TooLarge(
+            byte_count.saturating_add(metadata.len()),
+        ));
+    }
     let mut random = [0u8; 8];
     read_random(&mut random)?;
     let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     let directory = root.join(format!("send-{suffix}"));
-    std::fs::create_dir_all(&directory).map_err(StageError::Io)?;
+    std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
     let staged = directory.join(clean);
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged)
-        .map_err(StageError::Io)?;
-    {
-        let copied = std::io::copy(&mut input, &mut output).map_err(StageError::Io)?;
-        if copied != metadata.len() {
-            drop(output);
-            let _ = std::fs::remove_dir_all(&directory);
-            return Err(StageError::NotAFile);
+    let result = (|| {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staged)?;
+        copy_exact_bounded(
+            &mut input,
+            &mut output,
+            metadata.len(),
+            MAX_STAGED_BYTES.min(remaining),
+        )?;
+        output.sync_all()?;
+        Ok(staged)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+    result
+}
+
+fn copy_exact_bounded(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    expected: u64,
+    limit: u64,
+) -> Result<(), StageError> {
+    let mut buffer = [0u8; COPY_BUFFER];
+    let mut copied = 0u64;
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        if copied > limit {
+            return Err(StageError::TooLarge(copied));
+        }
+        output.write_all(&buffer[..read])?;
+    }
+    if copied != expected {
+        return Err(StageError::NotAFile);
+    }
+    Ok(())
+}
+
+fn staging_usage(directory: &Path) -> Result<(usize, u64), StageError> {
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_file() {
+            count = count.saturating_add(1);
+            bytes = bytes.saturating_add(entry.metadata()?.len());
+        } else if kind.is_dir() {
+            for child in std::fs::read_dir(entry.path())? {
+                let child = child?;
+                if child.file_type()?.is_file() {
+                    count = count.saturating_add(1);
+                    bytes = bytes.saturating_add(child.metadata()?.len());
+                }
+            }
         }
     }
-    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
-    Ok(staged)
+    Ok((count, bytes))
 }
 
 fn read_random(buffer: &mut [u8]) -> Result<(), StageError> {
@@ -508,6 +583,56 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn send_copy_is_private_and_rejects_a_full_staging_root() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let root = temporary.path().join("staging");
+        let source = temporary.path().join("photo.jpg");
+        std::fs::write(&source, b"private attachment").expect("source");
+        let staged = stage_send_copy_into(&source, &root).expect("stage");
+        assert_eq!(std::fs::read(&staged).expect("read"), b"private attachment");
+        assert_eq!(
+            std::fs::metadata(&root).expect("root").permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(staged.parent().expect("parent"))
+                .expect("send directory")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&staged)
+                .expect("file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let retained = root.join("retained");
+        let file = std::fs::File::create(&retained).expect("retained");
+        file.set_len(MAX_SEND_STAGING_BYTES)
+            .expect("sparse retained file");
+        assert!(matches!(
+            stage_send_copy_into(&source, &root),
+            Err(StageError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn send_copy_stops_when_source_exceeds_the_copy_limit() {
+        let mut source = std::io::Cursor::new(b"six bytes".to_vec());
+        let mut output = Vec::new();
+        assert!(matches!(
+            copy_exact_bounded(&mut source, &mut output, 6, 6),
+            Err(StageError::TooLarge(_))
+        ));
+        assert!(output.is_empty());
+    }
 
     #[test]
     fn sweep_removes_expired_files_and_never_symlinks() {
