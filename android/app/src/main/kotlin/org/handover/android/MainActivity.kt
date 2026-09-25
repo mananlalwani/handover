@@ -51,6 +51,7 @@ class MainActivity : android.app.Activity() {
     private var testCounter = 1
     private var reconnectPromptShown = false
     private var connectionState = "offline"
+    private var githubUpdateStatus = "Check GitHub for a signed release APK"
     internal val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
 
 
@@ -123,9 +124,9 @@ class MainActivity : android.app.Activity() {
         val installed = packageManager.getPackageInfo(packageName, 0)
         val pending = AppUpdater.pending(this)
         updateStatus.text = if (pending == null) {
-            "Installed: ${installed.versionName}\nVerified desktop updates: active\nNo downloaded update"
+            "Installed: ${installed.versionName}\nNo verified update ready\n$githubUpdateStatus"
         } else {
-            "Installed: ${installed.versionName}\nReady to install: ${pending.versionName.ifEmpty { pending.versionCode.toString() }}"
+            "Installed: ${installed.versionName}\nReady to install: ${pending.versionName.ifEmpty { pending.versionCode.toString() }}\n$githubUpdateStatus"
         }
         if (::homeConnect.isInitialized) {
             val reconnect = AppUpdater.reconnectNeeded(this)
@@ -197,6 +198,31 @@ class MainActivity : android.app.Activity() {
         AppUpdater.scanDownloads(this)
         refreshStatus()
         android.widget.Toast.makeText(this, "Downloads/Handover scanned", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun checkGitHubUpdates(button: Button) {
+        button.isEnabled = false
+        githubUpdateStatus = "Checking GitHub..."
+        refreshStatus()
+        Thread {
+            val result = runCatching { GitHubUpdates.checkAndDownload(this) }
+            runOnUiThread {
+                button.isEnabled = true
+                githubUpdateStatus = result.fold(
+                    onSuccess = { outcome -> when (outcome) {
+                        GitHubUpdateResult.Current -> "GitHub release is up to date"
+                        is GitHubUpdateResult.Ready ->
+                            "GitHub APK verified: ${outcome.update.versionName}. Tap Install downloaded update."
+                        is GitHubUpdateResult.NoSignedApk ->
+                            "Release ${outcome.version} has no signed Android APK"
+                        GitHubUpdateResult.RejectedApk ->
+                            "APK rejected: package, version, or signing key differs. Older debug builds require a one-time reinstall."
+                    } },
+                    onFailure = { error -> "GitHub check failed: ${error.message ?: "try again later"}" },
+                )
+                refreshStatus()
+            }
+        }.start()
     }
     private val pairReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
@@ -663,12 +689,16 @@ class MainActivity : android.app.Activity() {
             }
         })
         val scanUpdates = secondary(Button(this).apply {
-            text = "Scan for updates"
+            text = "Scan received APKs"
             setOnClickListener { scanForUpdates() }
         })
+        val checkGitHub = secondary(Button(this).apply {
+            text = "Check GitHub releases"
+            setOnClickListener { checkGitHubUpdates(this) }
+        })
         val updatesPage = featurePage(
-            "Updates", "Updates received from your desktop are verified before installation.",
-            panel(sectionTitle("App version"), updateStatus, scanUpdates, installUpdate),
+            "Updates", "Download a signed GitHub release or install an APK received from your desktop.",
+            panel(sectionTitle("App version"), updateStatus, checkGitHub, scanUpdates, installUpdate),
             panel(sectionTitle("Security"), TextView(this).apply {
                 text = "Only a newer Handover APK signed by the same certificate is accepted. Android always asks before installing it."
                 textSize = 14f
@@ -770,7 +800,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Remote desktop", "Browse files and run configured commands") { showPage(remotePage) },
                 menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
                 menuButton("Contacts", "Send an on-demand contacts snapshot") { showPage(contactsPage) },
-                menuButton("Updates", "Install a verified update received from Linux") { showPage(updatesPage) },
+                menuButton("Updates", "Check GitHub or install a verified APK") { showPage(updatesPage) },
                 menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
             ).forEach { item ->
                 addView(item, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })

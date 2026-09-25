@@ -50,9 +50,15 @@ If you previously used `make install-user`, follow the
 
 ### Android and pairing
 
-Install the Android debug APK from the release, or follow the [build
-instructions](CONTRIBUTING.md) to build it yourself. Open Handover on the phone
-and enable the connection while the phone and computer can reach each other.
+Install the signed Android APK from [Releases](https://github.com/mananlalwani/handover/releases),
+or follow the [build instructions](CONTRIBUTING.md) for a local debug build.
+Open Handover on the phone and enable the connection while the phone and
+computer can reach each other. The Updates page checks GitHub for later signed
+releases and verifies the downloaded APK before asking Android to install it.
+
+APKs from v0.3.2 and earlier used changing debug signing keys. To switch to
+signed releases, uninstall the old app, install the new APK, and pair again.
+Android cannot install an APK signed with a different key over the old app.
 
 On Linux, list pending pairing requests:
 

@@ -19,11 +19,11 @@ rust-version = "1.85"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 clap_mangen = "0.2"
-handover-core = { version = "0.3.2", path = "crates/handover-core" }
-handover-gmessages = { version = "0.3.2", path = "crates/handover-gmessages" }
-handover-ipc = { version = "0.3.2", path = "crates/handover-ipc" }
-handover-kdeconnect = { version = "0.3.2", path = "crates/handover-kdeconnect" }
-handover-native = { version = "0.3.2", path = "crates/handover-native" }
+handover-core = { version = "0.3.3", path = "crates/handover-core" }
+handover-gmessages = { version = "0.3.3", path = "crates/handover-gmessages" }
+handover-ipc = { version = "0.3.3", path = "crates/handover-ipc" }
+handover-kdeconnect = { version = "0.3.3", path = "crates/handover-kdeconnect" }
+handover-native = { version = "0.3.3", path = "crates/handover-native" }
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

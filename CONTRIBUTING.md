@@ -92,6 +92,13 @@ The output is
 must preserve the certificate identity and pairing model. Do not replace
 certificate checks with permissive trust or disable TLS verification.
 
+GitHub releases build `assembleRelease` with a dedicated signing key. The
+release workflow needs `HANDOVER_ANDROID_KEYSTORE_B64`,
+`HANDOVER_ANDROID_STORE_PASSWORD`, `HANDOVER_ANDROID_KEY_ALIAS`, and
+`HANDOVER_ANDROID_KEY_PASSWORD` as repository secrets. Keep the keystore and
+password backed up outside this repository. A lost signing key prevents Android
+from installing later releases over the current app.
+
 When testing with a physical phone, record whether each result came from a
 physical device, an emulator, or automated tests. Do not commit private device
 identifiers, credentials, pairing codes, message content, or live logs.

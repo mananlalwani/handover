@@ -33,21 +33,43 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew assembleDebug
-      - name: Name the debug APK
+      - name: Check Android release version
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/check-android-release.py "$GITHUB_REF_NAME"
+      - name: Restore release signing key
+        env:
+          HANDOVER_ANDROID_KEYSTORE_B64: ${{ secrets.HANDOVER_ANDROID_KEYSTORE_B64 }}
+        run: |
+          test -n "$HANDOVER_ANDROID_KEYSTORE_B64"
+          umask 077
+          printf '%s' "$HANDOVER_ANDROID_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/handover-release.jks"
+          echo "HANDOVER_ANDROID_SIGNING_FILE=$RUNNER_TEMP/handover-release.jks" >> "$GITHUB_ENV"
+      - name: Build signed Android APK
+        env:
+          HANDOVER_ANDROID_STORE_PASSWORD: ${{ secrets.HANDOVER_ANDROID_STORE_PASSWORD }}
+          HANDOVER_ANDROID_KEY_ALIAS: ${{ secrets.HANDOVER_ANDROID_KEY_ALIAS }}
+          HANDOVER_ANDROID_KEY_PASSWORD: ${{ secrets.HANDOVER_ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$HANDOVER_ANDROID_STORE_PASSWORD"
+          test -n "$HANDOVER_ANDROID_KEY_ALIAS"
+          test -n "$HANDOVER_ANDROID_KEY_PASSWORD"
+          ./gradlew assembleRelease
+      - name: Name the signed APK
         working-directory: ${{ github.workspace }}
         run: |
           version="$(awk -F '"' '/^version = / { print $2; exit }' handoverd/Cargo.toml)"
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-            "dist/handover-android-${version}-debug.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk \
+            "dist/handover-android-${version}.apk"
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/handover-android-*-debug.apk
+          files: dist/handover-android-*.apk
           generate_release_notes: true
           fail_on_unmatched_files: true
