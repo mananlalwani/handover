@@ -517,7 +517,7 @@ impl NativeBackend {
         peer_id: &str,
         command: &PresentationCommand,
     ) -> Result<(), NativeCommandError> {
-        if command.delta_x.abs() > 2000 || command.delta_y.abs() > 2000 {
+        if command.delta_x.unsigned_abs() > 2000 || command.delta_y.unsigned_abs() > 2000 {
             return Err(NativeCommandError::QueueFull);
         }
         self.queue_simple(
@@ -550,8 +550,8 @@ impl NativeBackend {
         peer_id: &str,
         command: &RemoteInputCommand,
     ) -> Result<(), NativeCommandError> {
-        if command.delta_x.abs() > 2000
-            || command.delta_y.abs() > 2000
+        if command.delta_x.unsigned_abs() > 2000
+            || command.delta_y.unsigned_abs() > 2000
             || command.button > 5
             || command.text.as_ref().is_some_and(|text| text.len() > 512)
         {
@@ -2011,6 +2011,34 @@ mod tests {
                 Some(combined.clone()),
                 Some(combined.clone()),
             ),
+            Err(NativeCommandError::QueueFull)
+        ));
+    }
+
+    #[test]
+    fn remote_control_bounds_reject_i32_min_without_a_live_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().to_path_buf()).unwrap();
+        let presentation = PresentationCommand {
+            device_id: DeviceId::new("native:missing"),
+            action: handover_core::PresentationAction::PointerMove,
+            delta_x: i32::MIN,
+            delta_y: 0,
+        };
+        assert!(matches!(
+            backend.presentation_control("missing", &presentation),
+            Err(NativeCommandError::QueueFull)
+        ));
+        let remote_input = RemoteInputCommand {
+            device_id: DeviceId::new("native:missing"),
+            action: handover_core::RemoteInputAction::Move,
+            delta_x: 0,
+            delta_y: i32::MIN,
+            button: 0,
+            text: None,
+        };
+        assert!(matches!(
+            backend.remote_input("missing", &remote_input),
             Err(NativeCommandError::QueueFull)
         ));
     }

@@ -293,7 +293,7 @@ class NativeTransport(internal val context: Context) {
     fun remoteInput(action: String, deltaX: Int = 0, deltaY: Int = 0,
                     button: Int = 0, text: String? = null): Boolean {
         if (serverFingerprint == null || action !in setOf("move", "click", "scroll", "type")) return false
-        if (kotlin.math.abs(deltaX) > 2000 || kotlin.math.abs(deltaY) > 2000 ||
+        if (!isWithinRemoteInputBounds(deltaX, deltaY) ||
             button !in 0..5 || (text?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 512) return false
         send(JSONObject().put("type", "remote_input_control").put("protocol", 1)
             .put("action", action).put("delta_x", deltaX).put("delta_y", deltaY)
@@ -556,6 +556,9 @@ class NativeTransport(internal val context: Context) {
     }
 
     companion object {
+        internal fun isWithinRemoteInputBounds(deltaX: Int, deltaY: Int): Boolean =
+            deltaX in -2000..2000 && deltaY in -2000..2000
+
         internal fun shouldAssistBackgroundRead(
             syncEnabled: Boolean,
             assistEnabled: Boolean,

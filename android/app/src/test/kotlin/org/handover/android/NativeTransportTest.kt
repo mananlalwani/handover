@@ -5,6 +5,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class NativeTransportTest {
+    @Test fun remoteInputBoundsRejectIntMinValueAndAcceptInclusiveEdges() {
+        assertEquals(false, NativeTransport.isWithinRemoteInputBounds(Int.MIN_VALUE, 0))
+        assertEquals(false, NativeTransport.isWithinRemoteInputBounds(0, Int.MIN_VALUE))
+        assertEquals(true, NativeTransport.isWithinRemoteInputBounds(-2000, 2000))
+        assertEquals(false, NativeTransport.isWithinRemoteInputBounds(-2001, 0))
+    }
+
     @Test fun deviceCommandResultReportsPermissionDenial() {
         val result = NativeTransport.deviceCommandResultFields(
             "0123456789abcdef0123456789abcdef", "lock", false, "permission_denied",

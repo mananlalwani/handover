@@ -980,14 +980,7 @@ impl NativeBackend {
                     button,
                     text,
                 }) => {
-                    let valid = match action {
-                        RemoteInputAction::Move => delta_x.abs() <= 2000 && delta_y.abs() <= 2000,
-                        RemoteInputAction::Click => (1..=5).contains(&button),
-                        RemoteInputAction::Scroll => delta_y.unsigned_abs() <= 20,
-                        RemoteInputAction::Type => {
-                            text.as_ref().is_some_and(|value| value.len() <= 512)
-                        }
-                    };
+                    let valid = valid_remote_input(action, delta_x, delta_y, button, text.as_ref());
                     if !valid {
                         return Err(NativeError::InvalidFrame);
                     }
@@ -1233,5 +1226,58 @@ impl NativeBackend {
             }
         }
         Ok(())
+    }
+}
+
+fn valid_remote_input(
+    action: RemoteInputAction,
+    delta_x: i32,
+    delta_y: i32,
+    button: u8,
+    text: Option<&String>,
+) -> bool {
+    match action {
+        RemoteInputAction::Move => delta_x.unsigned_abs() <= 2000 && delta_y.unsigned_abs() <= 2000,
+        RemoteInputAction::Click => (1..=5).contains(&button),
+        RemoteInputAction::Scroll => delta_y.unsigned_abs() <= 20,
+        RemoteInputAction::Type => text.is_some_and(|value| value.len() <= 512),
+    }
+}
+
+#[cfg(test)]
+mod remote_input_validation_tests {
+    use super::valid_remote_input;
+    use handover_core::RemoteInputAction;
+
+    #[test]
+    fn move_rejects_i32_min_and_accepts_inclusive_boundary() {
+        assert!(!valid_remote_input(
+            RemoteInputAction::Move,
+            i32::MIN,
+            0,
+            0,
+            None
+        ));
+        assert!(!valid_remote_input(
+            RemoteInputAction::Move,
+            0,
+            i32::MIN,
+            0,
+            None
+        ));
+        assert!(valid_remote_input(
+            RemoteInputAction::Move,
+            -2000,
+            2000,
+            0,
+            None
+        ));
+        assert!(!valid_remote_input(
+            RemoteInputAction::Move,
+            2001,
+            0,
+            0,
+            None
+        ));
     }
 }
