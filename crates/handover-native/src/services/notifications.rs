@@ -52,9 +52,7 @@ pub(crate) fn normalize_native_notification(
     })
 }
 
-/// Validates one phone-reported media session without logging its content.
-/// Track titles and artists never reach normal log levels; callers log only
-/// the device-scoped player id and counts.
+/// Handle phone notifications without logging their content.
 impl NativeBackend {
     pub(crate) fn handle_notification_post(
         &self,

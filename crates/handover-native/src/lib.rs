@@ -1773,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn native_notification_keeps_device_scoped_identity_without_content_in_debug() {
+    fn native_notification_preserves_device_scoped_identity_and_fields() {
         let notification =
             normalize_native_notification(&test_peer(), &wire_notification("key-1")).unwrap();
         assert_eq!(
@@ -1781,12 +1781,13 @@ mod tests {
             NotificationId::new(DeviceId::new("native:android-device-01"), "key-1")
         );
         assert_eq!(notification.actions.len(), 1);
+        assert_eq!(notification.actions[0].id, "0");
+        assert_eq!(notification.actions[0].label, "Reply");
+        assert_eq!(notification.app_name, "Example");
+        assert_eq!(notification.title, "Hello");
+        assert_eq!(notification.body, "World");
         assert!(notification.reply_supported);
         assert!(notification.icon_path.is_none());
-        // Reply tokens and action internals stay out of the normalized model;
-        // only the advertised id/label pairs cross the boundary.
-        let debug = format!("{notification:?}");
-        assert!(debug.contains("Example"));
     }
 
     #[test]
