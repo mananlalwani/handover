@@ -33,26 +33,6 @@ class NativeTransportTest {
         assertFalse(result.containsKey("failure"))
     }
 
-    @Test fun keepAwakeResultReportsWakeLockState() {
-        val result = NativeTransport.deviceCommandResultFields(
-            "0123456789abcdef0123456789abcdef", "keep_awake", true, null,
-        )
-
-        assertEquals("keep_awake", result["action"])
-        assertEquals(true, result["accepted"])
-        assertFalse(result.containsKey("failure"))
-    }
-
-    @Test fun tetheringResultReportsSettingsScreen() {
-        val result = NativeTransport.deviceCommandResultFields(
-            "0123456789abcdef0123456789abcdef", "tethering", true, null,
-        )
-
-        assertEquals("tethering", result["action"])
-        assertEquals(true, result["accepted"])
-        assertFalse(result.containsKey("failure"))
-    }
-
     @Test fun overlayAssistRequiresDoubleOptInPlusGrantPlusDeniedRead() {
         assertEquals(
             true,

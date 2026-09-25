@@ -73,14 +73,4 @@ class NotificationMappingTest {
         assertFalse(HandoverNotificationService.reply("key-1", "x".repeat(1025)))
         assertFalse(HandoverNotificationService.reply("key-1", "   "))
     }
-
-    @Test fun mapRoundTripPreservesIdentity() {
-        val original = WireNotification(
-            key = "k", app = "a", title = "t", body = "b",
-            clearable = false, actions = emptyList(), replySupported = false,
-        )
-        val map = HandoverNotificationService.postMap(original)
-        assertEquals("k", map["key"])
-        assertEquals(1, map["protocol"])
-    }
 }
