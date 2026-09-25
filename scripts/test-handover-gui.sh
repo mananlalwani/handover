@@ -31,3 +31,16 @@ if ! cmp -s "$expected" "$TMP_DIR/args"; then
 	diff -u "$expected" "$TMP_DIR/args" >&2 || true
 	exit 1
 fi
+
+mkdir -p "$EMPTY_DATA_HOME/handover/quickshell"
+touch "$EMPTY_DATA_HOME/handover/quickshell/example.qml"
+HANDOVER_GUI_ARGS="$TMP_DIR/args" \
+XDG_DATA_HOME="$EMPTY_DATA_HOME" \
+PATH="$TMP_DIR/fake-bin:$PATH" \
+"$BIN_DIR/handover-gui"
+printf '%s\n' --path "$EMPTY_DATA_HOME/handover/quickshell/example.qml" > "$expected"
+if ! cmp -s "$expected" "$TMP_DIR/args"; then
+	echo "handover-gui did not prefer XDG_DATA_HOME" >&2
+	diff -u "$expected" "$TMP_DIR/args" >&2 || true
+	exit 1
+fi
