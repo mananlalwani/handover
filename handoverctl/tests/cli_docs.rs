@@ -50,21 +50,22 @@ fn help_states_acceptance_not_completion() {
 }
 
 #[test]
-fn login_help_forbids_argv_secrets() {
+fn login_help_and_parser_keep_credentials_out_of_argv() {
     handoverctl()
         .args(["messages", "login", "--help"])
         .assert()
         .success()
         .stdout(contains("never argv").and(contains("--from-file")));
-    // No password, token, or bundle value travels through argv.
-    let output = handoverctl()
-        .args(["messages", "login", "--help"])
-        .output()
-        .expect("login help runs");
-    let help = String::from_utf8(output.stdout).expect("help is UTF-8");
-    assert!(!help.to_lowercase().contains("password"), "{help}");
-    assert!(!help.to_lowercase().contains("token"), "{help}");
-    assert!(!help.contains("BUNDLE]"), "{help}");
+    for args in [
+        ["messages", "login", "account", "secret"],
+        ["messages", "login", "account", "--token"],
+    ] {
+        handoverctl()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(contains("unexpected argument"));
+    }
 }
 
 #[test]
