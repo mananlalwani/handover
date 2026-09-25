@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Handover
+Comment=Connect your Android phone to the Linux desktop
+Exec=handover-gui
+Icon=network-wireless
+Terminal=false
+Categories=Utility;
+Keywords=Android;phone;clipboard;notifications;

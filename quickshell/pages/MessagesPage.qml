@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import Quickshell
+import ".."
 
 Rectangle {
     id: messagesCard
@@ -385,8 +386,6 @@ Rectangle {
                     ? "unread" : "read");
         }
     }
-}
-
 Item {
     id: modernMessages
     parent: messagesCard
@@ -846,4 +845,6 @@ Item {
             }
         }
     }
+}
+
 }

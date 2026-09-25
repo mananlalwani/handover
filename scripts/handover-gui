@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+configured_data_home=
+if test -f "$script_dir/handover-gui.data-home"; then
+	IFS= read -r configured_data_home < "$script_dir/handover-gui.data-home" || :
+fi
+
+qml_path=
+for data_home in "${XDG_DATA_HOME:-${HOME}/.local/share}" "$configured_data_home" /usr/share; do
+	if test -n "$data_home" && test -f "$data_home/handover/quickshell/example.qml"; then
+		qml_path=$data_home/handover/quickshell/example.qml
+		break
+	fi
+done
+
+if test -z "$qml_path"; then
+	echo "Handover's Quickshell interface is not installed." >&2
+	exit 1
+fi
+
+exec quickshell --path "$qml_path" "$@"

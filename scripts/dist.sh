@@ -24,11 +24,13 @@ mkdir -p \
 	"$STAGE_DIR/share/bash-completion/completions" \
 	"$STAGE_DIR/share/zsh/site-functions" \
 	"$STAGE_DIR/share/fish/vendor_completions.d" \
+	"$STAGE_DIR/share/applications" \
 	"$STAGE_DIR/share/systemd/user" \
 	"$STAGE_DIR/share/handover/quickshell/pages"
 
 install -Dm755 target/release/handoverd "$STAGE_DIR/bin/handoverd"
 install -Dm755 target/release/handoverctl "$STAGE_DIR/bin/handoverctl"
+install -Dm755 scripts/handover-gui "$STAGE_DIR/bin/handover-gui"
 if command -v strip >/dev/null 2>&1; then
 	strip "$STAGE_DIR/bin/handoverd" "$STAGE_DIR/bin/handoverctl" || true
 fi
@@ -43,6 +45,8 @@ install -Dm644 completions/handoverctl.fish \
 	"$STAGE_DIR/share/fish/vendor_completions.d/handoverctl.fish"
 install -Dm644 packaging/systemd/handoverd.local.service \
 	"$STAGE_DIR/share/systemd/user/handoverd.service"
+install -Dm644 packaging/handover.desktop \
+	"$STAGE_DIR/share/applications/handover.desktop"
 install -Dm644 quickshell/HandoverService.qml \
 	"$STAGE_DIR/share/handover/quickshell/HandoverService.qml"
 install -Dm644 quickshell/example.qml \

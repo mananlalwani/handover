@@ -9,6 +9,7 @@ MAN8_DIR := $(DESTDIR)$(PREFIX)/share/man/man8
 BASH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/bash-completion/completions
 ZSH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/zsh/site-functions
 FISH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/fish/vendor_completions.d
+APPLICATIONS_DIR := $(DESTDIR)$(USER_DATA_HOME)/applications
 BIN_DIR := $(DESTDIR)$(PREFIX)/bin
 
 .PHONY: install-user uninstall-user systemd-smoke dist install-files
@@ -22,6 +23,9 @@ dist:
 install-files:
 	install -Dm755 target/release/handoverd $(BIN_DIR)/handoverd
 	install -Dm755 target/release/handoverctl $(BIN_DIR)/handoverctl
+	install -Dm755 scripts/handover-gui $(BIN_DIR)/handover-gui
+	printf '%s\n' '$(USER_DATA_HOME)' > $(BIN_DIR)/handover-gui.data-home
+	install -Dm644 packaging/handover.desktop $(APPLICATIONS_DIR)/handover.desktop
 	install -Dm644 docs/man/handoverctl.1 $(MAN_DIR)/handoverctl.1
 	install -Dm644 docs/man/handoverd.8 $(MAN8_DIR)/handoverd.8
 	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
@@ -51,6 +55,9 @@ uninstall-user:
 	-systemctl --user disable --now handoverd.service
 	rm -f $(USER_UNIT_DIR)/handoverd.service
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
+	rm -f $(BIN_DIR)/handover-gui
+	rm -f $(BIN_DIR)/handover-gui.data-home
+	rm -f $(APPLICATIONS_DIR)/handover.desktop
 	rm -f $(MAN_DIR)/handoverctl.1
 	rm -f $(MAN8_DIR)/handoverd.8
 	rm -f $(BASH_COMPLETION_DIR)/handoverctl
