@@ -106,6 +106,14 @@ Monitor changes as they arrive:
 handoverctl monitor
 ```
 
+## Idle and sleep
+
+By default, Handover prevents idle locking and sleep while a paired native
+phone is connected. Set `HANDOVER_INHIBIT_ON_CONNECT=0` in the daemon's
+environment to let the desktop's idle policy run while connected. Explicit
+keep-awake requests from the phone and `handoverctl screensaver inhibit` still
+hold the inhibitor.
+
 ## Google Messages
 
 Google Messages support is optional and uses the separate

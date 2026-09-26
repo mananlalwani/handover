@@ -354,7 +354,11 @@ pub(crate) fn refresh_screensaver(state: &Arc<RwLock<StateStore>>) {
     let manual = *MANUAL_SCREENSAVER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    screensaver::update(manual.unwrap_or(native_connected || phone_requests));
+    let inhibit_on_connect = std::env::var_os("HANDOVER_INHIBIT_ON_CONNECT").as_deref()
+        != Some(std::ffi::OsStr::new("0"));
+    screensaver::update(
+        manual.unwrap_or((inhibit_on_connect && native_connected) || phone_requests),
+    );
 }
 
 fn pause_desktop_media() {
