@@ -94,7 +94,8 @@ fn generated_man_page_matches_checked_in_artifact() {
     let checked_in = std::fs::read(workspace_root().join("docs/man/handoverctl.1"))
         .expect("man page is checked in");
     assert_eq!(
-        buffer, checked_in,
+        String::from_utf8(buffer).expect("generated man page is UTF-8"),
+        String::from_utf8(checked_in).expect("checked-in man page is UTF-8"),
         "docs/man/handoverctl.1 drifted from clap definitions; regenerate with \
          `cargo run -p handoverctl --bin handoverctl-gen -- <out-dir>`"
     );
