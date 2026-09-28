@@ -34,6 +34,7 @@ import java.util.Date
 // logged or persisted by the activity.
 @SuppressLint("SetTextI18n", "InlinedApi", "UnspecifiedRegisterReceiverFlag", "GestureBackNavigation")
 class MainActivity : android.app.Activity() {
+    private val pickFileRequest = 47
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
@@ -250,6 +251,12 @@ class MainActivity : android.app.Activity() {
                 refreshStatus()
                 return
             }
+            if (intent.action == HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED) {
+                android.widget.Toast.makeText(this@MainActivity,
+                    "File could not be queued. Check the connection, file name, and 100 MiB limit.",
+                    android.widget.Toast.LENGTH_LONG).show()
+                return
+            }
             if (intent.action == NativeTransport.ACTION_REMOTE_RESULT) {
                 showRemoteResult(intent.getStringExtra(NativeTransport.EXTRA_JSON).orEmpty())
                 return
@@ -355,6 +362,7 @@ class MainActivity : android.app.Activity() {
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
             addAction(NativeTransport.ACTION_TRANSFER_RESULT)
+            addAction(HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED)
             addAction(NativeTransport.ACTION_REMOTE_RESULT)
         }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -783,9 +791,19 @@ class MainActivity : android.app.Activity() {
             addView(panel(
                 sectionTitle("On this phone"),
                 TextView(this@MainActivity).apply {
-                    text = "Share files and links from any app with Handover. Send clipboard from the tile or below. Slides, the Linux pointer, volume, files, and allowlisted commands are on the following pages."
+                    text = "Choose a file here or share files and links from another app. Send clipboard from the tile or below. Slides, the Linux pointer, volume, files, and allowlisted commands are on the following pages."
                     setTextColor(Color.rgb(70, 77, 94))
                 },
+                primary(Button(this@MainActivity).apply {
+                    text = "Send file to desktop"
+                    setOnClickListener {
+                        if (!canSendToDesktop()) return@setOnClickListener
+                        startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply {
+                            type = "*/*"
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                        }, pickFileRequest)
+                    }
+                }),
                 secondary(Button(this@MainActivity).apply {
                     text = "Send current clipboard to Linux"
                     setOnClickListener { HandoverForegroundService.sendClipboard() }
@@ -834,8 +852,45 @@ class MainActivity : android.app.Activity() {
         if (intent != null) handleShareIntent(intent)
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != pickFileRequest || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        sendFileWithConfirmation(uri)
+    }
+
+    private fun canSendToDesktop(): Boolean {
+        val paired = NativeTransport.trustedPeerFingerprint(this) != null
+        if (paired && HandoverForegroundService.connectionState() == "connected") return true
+        android.widget.Toast.makeText(this,
+            if (paired) "Connect to the desktop before sending" else "Pair a desktop before sending",
+            android.widget.Toast.LENGTH_LONG).show()
+        return false
+    }
+
+    private fun sendFileWithConfirmation(uri: Uri) {
+        if (!canSendToDesktop()) return
+        val target = NativeTransport.trustedPeerFingerprint(this) ?: return
+        val service = Intent(this, HandoverForegroundService::class.java)
+            .setAction(HandoverForegroundService.ACTION_SHARE_FILE)
+            .putExtra(HandoverForegroundService.EXTRA_URI, uri)
+        service.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        service.clipData = android.content.ClipData.newUri(contentResolver, "Shared file", uri)
+        AlertDialog.Builder(this)
+            .setTitle("Send with Handover")
+            .setMessage("Send to paired desktop $target?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Send") { _, _ ->
+                if (canSendToDesktop()) startForegroundService(service)
+            }.show()
+    }
+
     private fun handleShareIntent(intent: Intent) {
         if (intent.action != Intent.ACTION_SEND) return
+        intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { uri ->
+            sendFileWithConfirmation(uri)
+            return
+        }
         val service = Intent(this, HandoverForegroundService::class.java)
         when {
             intent.type == "text/plain" -> {
@@ -843,30 +898,17 @@ class MainActivity : android.app.Activity() {
                 service.action = HandoverForegroundService.ACTION_SHARE_URL
                 service.putExtra(HandoverForegroundService.EXTRA_URL, text)
             }
-            intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM) != null -> {
-                service.action = HandoverForegroundService.ACTION_SHARE_FILE
-                service.putExtra(HandoverForegroundService.EXTRA_URI,
-                    intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM))
-                addUriPermission(intent, service)
-            }
             else -> return
         }
+        if (!canSendToDesktop()) return
         val target = NativeTransport.trustedPeerFingerprint(this) ?: return
         AlertDialog.Builder(this)
             .setTitle("Send with Handover")
             .setMessage("Send to paired desktop $target?")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Send") { _, _ ->
-                startForegroundService(service)
+                if (canSendToDesktop()) startForegroundService(service)
             }.show()
-    }
-
-    private fun addUriPermission(source: Intent, destination: Intent) {
-        val uri = source.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM) ?: return
-        if ((source.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
-            destination.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            destination.clipData = android.content.ClipData.newUri(contentResolver, "Shared file", uri)
-        }
     }
 
     companion object {

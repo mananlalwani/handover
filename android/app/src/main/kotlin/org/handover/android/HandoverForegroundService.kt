@@ -51,7 +51,12 @@ class HandoverForegroundService : Service() {
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
         ACTION_SHARE_URL -> transport.shareUrl(intent.getStringExtra(EXTRA_URL).orEmpty()).let { START_STICKY }
-        ACTION_SHARE_FILE -> intent.getParcelableExtra<Uri>(EXTRA_URI)?.let { transport.shareFile(it) }.let { START_STICKY }
+        ACTION_SHARE_FILE -> {
+            if (intent.getParcelableExtra<Uri>(EXTRA_URI)?.let { transport.shareFile(it) } != true) {
+                sendBroadcast(Intent(ACTION_SHARE_QUEUE_FAILED).setPackage(packageName))
+            }
+            START_STICKY
+        }
         ACTION_SEND_CLIPBOARD -> transport.sendClipboardToLinux().let { START_STICKY }
         else -> START_STICKY
     }
@@ -142,6 +147,7 @@ class HandoverForegroundService : Service() {
         const val EXTRA_ADDRESS = "address"
         const val ACTION_SHARE_URL = "org.handover.android.SHARE_URL"
         const val ACTION_SHARE_FILE = "org.handover.android.SHARE_FILE"
+        const val ACTION_SHARE_QUEUE_FAILED = "org.handover.android.SHARE_QUEUE_FAILED"
         const val ACTION_SEND_CLIPBOARD = "org.handover.android.SEND_CLIPBOARD"
         const val EXTRA_URL = "url"
         const val EXTRA_URI = "uri"

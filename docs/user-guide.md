@@ -174,8 +174,10 @@ back to its origin.
 
 Native transfers also carry HTML and URI clipboard data. Image and other
 file-backed clipboard items up to 10 MiB use the authenticated file stream and
-retain their MIME type. Android share-sheet actions can send URLs and files to
-the paired desktop.
+retain their MIME type. On Android, tap "Send file to desktop" to choose one
+file, or share a file or URL from another app to Handover. The phone must be
+connected to its paired desktop. Check Activity > Recent transfers for the
+receiver's result. A queued transfer is not a delivery confirmation.
 
 The Android app also provides presentation controls, a pointer pad, and Linux
 volume controls. These commands report acceptance of the request; they do not
