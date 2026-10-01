@@ -1538,11 +1538,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_subscriber_does_not_receive_new_share_event() {
+    async fn opt_out_subscriber_does_not_receive_new_share_event() {
         let (_directory, path, _state, events, task) = server_with_device().await;
         let mut stream = UnixStream::connect(path).await.expect("connect");
         stream
-            .write_all(b"{\"protocol\":1,\"method\":\"subscribe\"}\n")
+            .write_all(b"{\"protocol\":1,\"method\":\"subscribe\",\"shares\":false,\"media\":false,\"messages\":false}\n")
             .await
             .expect("subscribe");
         let (reader, _writer) = stream.into_split();
@@ -1574,11 +1574,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_subscriber_does_not_receive_media_events() {
+    async fn opt_out_subscriber_does_not_receive_media_events() {
         let (_directory, path, _state, events, task) = server_with_device().await;
         let mut stream = UnixStream::connect(path).await.expect("connect");
         stream
-            .write_all(b"{\"protocol\":1,\"method\":\"subscribe\"}\n")
+            .write_all(b"{\"protocol\":1,\"method\":\"subscribe\",\"shares\":false,\"media\":false,\"messages\":false}\n")
             .await
             .expect("subscribe");
         let (reader, _writer) = stream.into_split();

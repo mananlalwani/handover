@@ -93,18 +93,12 @@ struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
     fetches: Mutex<FetchWaiters>,
-    /// Per-conversation fetch serialization: helper pages carry no
-    /// request identity, so concurrent fetches for one conversation
-    /// with different cursors cannot be told apart. Waiters queue
-    /// here instead of sharing one flight.
+    /// Serialize fetches per conversation so their cached pages and cursors
+    /// are published in request order. Waiters queue rather than share a flight.
     fetch_locks: Mutex<FetchSerializers>,
     /// Waiters queued on fetch locks. Bounds total history waiters;
     /// `fetches` alone cannot, since one key holds one flight.
     fetch_waiters: std::sync::atomic::AtomicUsize,
-    /// The active helper contract carries fetch ids. Set when a request is
-    /// submitted so an id-less background event cannot complete its waiter
-    /// before the first response arrives.
-    fetch_id_supported: std::sync::atomic::AtomicBool,
     counter: AtomicU64,
     shutdown: AtomicBool,
     /// Account id -> (generation, announced conversation ids).
@@ -137,7 +131,6 @@ impl MessagingHub {
                 shutdown: AtomicBool::new(false),
                 fetch_locks: Mutex::new(HashMap::new()),
                 fetch_waiters: std::sync::atomic::AtomicUsize::new(0),
-                fetch_id_supported: std::sync::atomic::AtomicBool::new(false),
                 page_floors: Mutex::new(HashMap::new()),
                 conversation_syncs: Mutex::new(HashMap::new()),
                 window_syncs: Mutex::new(HashMap::new()),
@@ -219,9 +212,7 @@ impl MessagingHub {
     }
 
     /// Page history through the helper and wait for the matching window.
-    /// Fetches for one conversation run one at a time: helper pages
-    /// carry no request identity, so concurrent cursors would all be
-    /// completed by whichever page arrives first.
+    /// Fetches for one conversation run one at a time to preserve cursor order.
     pub(crate) async fn fetch_through_helper(
         &self,
         account: &str,
@@ -268,7 +259,6 @@ impl MessagingHub {
                 .await
                 .insert(key.clone(), (fetch_id, tx));
         }
-        self.inner.fetch_id_supported.store(true, Ordering::Relaxed);
         if let Err(error) = self
             .submit(HelperCommand::FetchHistory {
                 account: account.into(),
@@ -328,18 +318,9 @@ impl MessagingHub {
     async fn complete_fetch(&self, account: &str, conversation: &str, fetch_id: Option<u64>) {
         let key = (account.to_string(), conversation.to_string());
         let mut fetches = self.inner.fetches.lock().await;
-        let matched = match fetches.get(&key) {
-            Some((expected, _)) => {
-                if self.inner.fetch_id_supported.load(Ordering::Relaxed) {
-                    fetch_id.is_some_and(|id| id == *expected)
-                } else {
-                    // Legacy helper: no echo to match on. Key-only
-                    // completion, with its known cross-talk limits.
-                    true
-                }
-            }
-            None => false,
-        };
+        let matched = fetches
+            .get(&key)
+            .is_some_and(|(expected, _)| fetch_id == Some(*expected));
         if matched {
             if let Some((_, waiter)) = fetches.remove(&key) {
                 let _ = waiter.send(Ok(()));
@@ -362,14 +343,10 @@ impl MessagingHub {
         }
         // A dead helper never closes its open generations. Drop them so
         // the next helper generation starts from clean buffers instead
-        // of reconciling against a stale partial set. Fetch-id support
-        // is relearned from the replacement helper.
+        // of reconciling against a stale partial set.
         self.inner.conversation_syncs.lock().await.clear();
         self.inner.window_syncs.lock().await.clear();
         self.inner.page_floors.lock().await.clear();
-        self.inner
-            .fetch_id_supported
-            .store(false, Ordering::Relaxed);
     }
 
     /// Accumulate one conversation chunk into its generation buffer.
@@ -562,12 +539,6 @@ impl MessagingHub {
             .map(|(id, _)| *id)
     }
 
-    /// Whether explicit fetch identity is required for the current helper
-    /// connection.
-    async fn fetch_id_known(&self) -> bool {
-        self.inner.fetch_id_supported.load(Ordering::Relaxed)
-    }
-
     async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
         *self.inner.sender.lock().await = sender;
     }
@@ -756,6 +727,10 @@ async fn ingest_event(
             full,
             generation,
         } => {
+            if full && generation.is_none() {
+                warn!("dropping conversation snapshot without generation");
+                return;
+            }
             let account_id = MessagingAccountId::new(account.clone());
             let mut announced = HashSet::new();
             for wire in conversations {
@@ -810,10 +785,7 @@ async fn ingest_event(
                         }
                     }
                 }
-                (None, true) => {
-                    reconcile_against(state, events, &account_id, &announced);
-                }
-                (None, false) => {}
+                (None, _) => {}
             }
         }
         HelperEvent::ConversationRemoved {
@@ -839,6 +811,10 @@ async fn ingest_event(
             generation,
             fetch_id,
         } => {
+            if full && generation.is_none() {
+                warn!("dropping message snapshot without generation");
+                return;
+            }
             let conversation_id = ConversationId::new(
                 MessagingAccountId::new(account.clone()),
                 conversation.clone(),
@@ -875,9 +851,6 @@ async fn ingest_event(
             let expected = hub.expected_fetch(&account, &conversation).await;
             let fetch_matches = match (expected, fetch_id) {
                 (Some(expected), Some(actual)) => expected == actual,
-                // Legacy helpers never echo an id: fall back to key
-                // matching while none has ever been observed.
-                (Some(_), None) => !hub.fetch_id_known().await,
                 _ => false,
             };
             let is_page = generation.is_some()
@@ -937,17 +910,6 @@ async fn ingest_event(
             // the same reason as conversation lists: reconciling an
             // intermediate chunk would drop messages that arrive later.
             match (generation, full) {
-                (None, true) => {
-                    let outcome = state
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .messaging_mut()
-                        .reconcile_window(&conversation_id, normalized);
-                    publish_outcome(state, events, outcome);
-                    if let Err(error) = crate::messaging_cache::persist(state) {
-                        warn!(%error, "could not persist messaging cache");
-                    }
-                }
                 (Some(generation), true) => {
                     let announced: HashSet<String> = normalized
                         .iter()
@@ -1008,7 +970,7 @@ async fn ingest_event(
                             .sort_window(&conversation_id);
                     }
                 }
-                (None, false) => {
+                (None, _) => {
                     for message in &normalized {
                         hub.note_live_message(&account, &conversation, &message.id.local_id)
                             .await;
@@ -1366,7 +1328,7 @@ mod tests {
         )
         .await;
 
-        // Seed one thread with a legacy full list.
+        // Seed one thread with a complete conversation list.
         ingest_event(
             &state,
             &events,
@@ -1376,7 +1338,7 @@ mod tests {
                 account: account.clone(),
                 conversations: vec![wire_conversation("seeded")],
                 full: true,
-                generation: None,
+                generation: Some(1),
             },
         )
         .await;
@@ -1463,7 +1425,7 @@ mod tests {
                 account: "personal".into(),
                 conversations: vec![wire_conversation("thread")],
                 full: true,
-                generation: None,
+                generation: Some(1),
             },
         )
         .await;
@@ -1480,7 +1442,7 @@ mod tests {
                 page_complete: false,
                 full: true,
                 fetch_id: None,
-                generation: None,
+                generation: Some(1),
             },
         )
         .await;
@@ -1528,6 +1490,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authoritative_snapshots_require_generation() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+        for generation in [None, Some(1)] {
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::Conversations {
+                    account: "personal".into(),
+                    conversations: vec![wire_conversation("thread")],
+                    full: true,
+                    generation,
+                },
+            )
+            .await;
+            assert_eq!(
+                conversation_ids(&state).len(),
+                usize::from(generation.is_some())
+            );
+        }
+        let conversation =
+            ConversationId::new(MessagingAccountId::new("personal"), "thread".to_string());
+        for generation in [None, Some(2)] {
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::Messages {
+                    account: "personal".into(),
+                    conversation: "thread".into(),
+                    messages: vec![wire_message("m1")],
+                    full: true,
+                    generation,
+                    fetch_id: None,
+                    cursor_next: None,
+                    page_complete: true,
+                },
+            )
+            .await;
+            assert_eq!(
+                window_ids(&state, &conversation).len(),
+                usize::from(generation.is_some())
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn fetch_completion_reaches_only_its_waiter() {
         let hub = MessagingHub::new();
         let key = ("a".to_string(), "c".to_string());
@@ -1546,12 +1573,9 @@ mod tests {
         let hub = MessagingHub::new();
         let key = ("a".to_string(), "c".to_string());
         let (tx, rx) = oneshot::channel();
-        hub.inner
-            .fetch_id_supported
-            .store(true, std::sync::atomic::Ordering::Relaxed);
         hub.inner.fetches.lock().await.insert(key.clone(), (7, tx));
         // A background window (no id) must not complete the waiter
-        // once ids are in play.
+        // without a matching request id.
         hub.complete_fetch("a", "c", None).await;
         assert!(hub.inner.fetches.lock().await.contains_key(&key));
         // Neither may a different fetch's page.
@@ -1591,7 +1615,7 @@ mod tests {
                 account: "personal".into(),
                 conversations: vec![wire_conversation("thread")],
                 full: true,
-                generation: None,
+                generation: Some(1),
             },
             // Newer chunk first: the cursor must still come from the
             // older chunk that arrives last.
@@ -1738,7 +1762,7 @@ mod tests {
                     capabilities: vec!["text".into()],
                 }],
                 full: true,
-                generation: None,
+                generation: Some(1),
             },
         )
         .await;

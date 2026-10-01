@@ -5,9 +5,9 @@
 //! protocol code, no AGPL source, and no protobuf definitions. It speaks
 //! the coarse JSON contract on stdin/stdout and delegates relay work to a
 //! [`Relay`] implementation. The only bundled relay is [`LoopbackRelay`],
-//! an in-memory stand-in for development and tests. A production relay
-//! that drives the unmodified upstream bridge is operator-supplied and
-//! lives outside this repository (see `docs/gmessages-sidecar.md`).
+//! an in-memory stand-in built only with the `loopback-test` feature. The
+//! production adapter lives in the sibling `handover-gmessages` repository
+//! (see `docs/gmessages-sidecar.md`).
 //!
 //! The helper owns credential bundles (0600 files via [`secrets`]), pairing
 //! ceremony state, relay RPCs, polling/recovery, and media transfer. It
@@ -177,6 +177,7 @@ struct StoredAccount {
 
 struct LoopbackRelay {
     accounts: BTreeMap<String, StoredAccount>,
+    generation: u64,
     media_sample: Option<PathBuf>,
     _media_staging: Option<tempfile::TempDir>,
 }
@@ -185,6 +186,7 @@ impl LoopbackRelay {
     fn new() -> Self {
         let mut relay = Self {
             accounts: BTreeMap::new(),
+            generation: 0,
             media_sample: None,
             _media_staging: None,
         };
@@ -486,6 +488,7 @@ impl Relay for LoopbackRelay {
     }
 
     fn sync(&mut self, account: &str) -> Vec<HelperEvent> {
+        self.generation += 1;
         // Flip pairing-pending accounts to authenticated (models the user
         // confirming on the phone between login and this sync).
         if let Some(stored) = self.accounts.get_mut(account) {
@@ -512,7 +515,7 @@ impl Relay for LoopbackRelay {
                 .map(|conversation| conversation.wire.clone())
                 .collect(),
             full: true,
-            generation: None,
+            generation: Some(self.generation),
         });
         for (local_id, conversation) in &stored.conversations {
             events.push(HelperEvent::Messages {
@@ -522,7 +525,7 @@ impl Relay for LoopbackRelay {
                 cursor_next: None,
                 page_complete: false,
                 full: true,
-                generation: None,
+                generation: Some(self.generation),
                 fetch_id: None,
             });
             events.push(HelperEvent::Read {

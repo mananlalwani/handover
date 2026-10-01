@@ -48,8 +48,9 @@ supplied records and removes records missing from that window. `full: false`
 merges records without removing missing entries. Large syncs use
 size-bounded chunks that share a `generation`. Only the last chunk sets
 `full`; the daemon reconciles when the generation closes. Reconciling a
-middle chunk would drop records that arrive later. Events with no
-`generation` still reconcile on a lone `full: true`.
+middle chunk would drop records that arrive later. A `full: true` snapshot must carry a `generation`; events without one
+are incremental updates. Explicit history responses must echo `fetch_id` to
+complete their request.
 
 `command_result ok` is acceptance, not delivery. `sent` / `delivered` /
 `displayed` arrive only as later `status` events.
@@ -98,9 +99,8 @@ restarted daemon can restore its account list.
 ## Running the helper
 
 The helper is optional. `HANDOVER_GMESSAGES_HELPER` selects an explicit binary.
-Otherwise the daemon searches `PATH` for the loopback binary
-`handover-gmessages-helper`, then the production binary `handover-gmessages`.
-If neither exists, messaging stays disabled. Other backends keep working.
+Otherwise the daemon searches `PATH` for `handover-gmessages`.
+If it is absent, messaging stays disabled. Other backends keep working.
 
 Reconnect backoff ranges from 1 to 60 seconds. After connecting, the daemon
 syncs known accounts and requests catch-up syncs for accounts the helper
@@ -120,6 +120,11 @@ prompts, bundles, tokens, keys, and media bytes stay out. `redact_command`
 strips bundles before a command can be logged.
 
 ## Loopback and production
+
+Build the test helper explicitly with
+`cargo build -p handover-gmessages --features loopback-test --bin handover-gmessages-helper`.
+It is never discovered automatically. Use `HANDOVER_GMESSAGES_HELPER` to select
+it for a test run.
 
 The loopback helper supplies one RCS direct conversation, one SMS thread, and
 one RCS group. Login stores the bundle and finishes pairing on the next sync.

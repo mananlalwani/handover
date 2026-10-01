@@ -64,6 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build -p handover-gmessages --features loopback-test --bin handover-gmessages-helper
       - run: cargo test --workspace
 
   cargo-deny:

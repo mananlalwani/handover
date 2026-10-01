@@ -48,9 +48,9 @@ pub enum HelperCommand {
         limit: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
-        /// Matches this request to its response pages. Helpers that
-        /// understand it echo it on every `Messages` event of the
-        /// page; background windows carry none and therefore never
+        /// Matches this request to its response pages. The helper echoes
+        /// it on every `Messages` event of the page; background windows
+        /// carry none and therefore never
         /// complete an explicit waiter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fetch_id: Option<u64>,
@@ -143,9 +143,9 @@ pub enum HelperEvent {
         /// In a multi-chunk sync only the closing chunk sets this; see
         /// `generation`.
         full: bool,
-        /// Groups the chunks of one multi-chunk sync. Absent for
-        /// single-chunk and live events. The daemon buffers chunks that
-        /// share a generation and reconciles once it closes.
+        /// Identifies an authoritative snapshot, including empty and
+        /// single-chunk lists. Incremental events carry none. The daemon
+        /// buffers chunks and reconciles when the generation closes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generation: Option<u64>,
     },
@@ -166,13 +166,12 @@ pub enum HelperEvent {
         /// reconciles its stored window against it. In a multi-chunk
         /// window only the closing chunk sets this; see `generation`.
         full: bool,
-        /// Groups the chunks of one multi-chunk window. Absent for
-        /// single-chunk and live events.
+        /// Identifies an authoritative window, including empty and
+        /// single-chunk windows. Incremental events carry none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generation: Option<u64>,
-        /// Echo of the requesting `FetchHistory` fetch id, when the
-        /// helper supports it. Lets the daemon tell a requested page
-        /// from background window traffic on the same conversation.
+        /// Echo of the requesting `FetchHistory` fetch id. Required on
+        /// requested pages, absent from background window traffic.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fetch_id: Option<u64>,
     },

@@ -93,6 +93,7 @@ pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std
     if disabled() {
         return Ok(());
     }
+    let handle = tokio::runtime::Handle::try_current()?;
     // Coalesce bursts: a 100-message chunk would otherwise snapshot,
     // serialize, fsync, and rename the whole cache ~100 times while
     // helper ingestion waits. At most one persist starts per
@@ -118,38 +119,28 @@ pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std
     if !due {
         DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
         if !SCHEDULED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let state = Arc::clone(state);
-                handle.spawn(async move {
-                    tokio::time::sleep(PERSIST_INTERVAL).await;
-                    SCHEDULED.store(false, std::sync::atomic::Ordering::Relaxed);
-                    if DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                        if let Err(error) = persist_async(&state).await {
-                            tracing::warn!(%error, "could not persist messaging cache");
-                        }
-                    }
-                });
-            } else {
+            let state = Arc::clone(state);
+            handle.spawn(async move {
+                tokio::time::sleep(PERSIST_INTERVAL).await;
                 SCHEDULED.store(false, std::sync::atomic::Ordering::Relaxed);
-            }
+                if DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    if let Err(error) = persist_async(&state).await {
+                        tracing::warn!(%error, "could not persist messaging cache");
+                    }
+                }
+            });
         }
         return Ok(());
     }
     // Due: schedule the write off the event path. Awaiting
     // serialization and fsync here would stall helper ingestion.
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            let state = Arc::clone(state);
-            handle.spawn(async move {
-                if let Err(error) = persist_async(&state).await {
-                    tracing::warn!(%error, "could not persist messaging cache");
-                }
-            });
-            Ok(())
+    let state = Arc::clone(state);
+    handle.spawn(async move {
+        if let Err(error) = persist_async(&state).await {
+            tracing::warn!(%error, "could not persist messaging cache");
         }
-        // No runtime (unit tests): persist inline.
-        Err(_) => persist_now_legacy(state),
-    }
+    });
+    Ok(())
 }
 
 /// Flush a coalesced persist, e.g. on shutdown. Awaits completion.
@@ -230,40 +221,6 @@ async fn persist_async(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn st
     .await
     .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?
     .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
-    Ok(())
-}
-
-/// Synchronous legacy persist for contexts without a runtime
-/// (unit tests). Same atomic temp-file discipline as the async path.
-fn persist_now_legacy(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std::error::Error>> {
-    if disabled() {
-        return Ok(());
-    }
-    let mut cache = {
-        let guard = state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        MessagingCache {
-            version: CACHE_VERSION,
-            accounts: guard.messaging().snapshot_accounts(),
-            conversations: guard.messaging().snapshot_conversations(),
-            messages: guard.messaging().snapshot_messages(),
-            read_states: guard.messaging().snapshot_read(),
-        }
-    };
-    prune_cache(&mut cache);
-    let encoded = serde_json::to_vec(&cache)?;
-    let path = cache_path()?;
-    let directory = path.parent().expect("cache path has parent");
-    fs::create_dir_all(directory)?;
-    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    // Unique temp file in the target directory: concurrent persists
-    // must never share (and clobber) one temp path before the rename.
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.as_file_mut().write_all(&encoded)?;
-    temporary.as_file().sync_all()?;
-    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o600))?;
-    temporary.persist(&path)?;
     Ok(())
 }
 

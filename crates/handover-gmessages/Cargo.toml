@@ -8,6 +8,10 @@ rust-version.workspace = true
 [[bin]]
 name = "handover-gmessages-helper"
 path = "src/bin/helper.rs"
+required-features = ["loopback-test"]
+
+[features]
+loopback-test = []
 
 [dependencies]
 handover-core.workspace = true

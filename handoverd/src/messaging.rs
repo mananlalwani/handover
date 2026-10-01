@@ -56,55 +56,12 @@ impl MessagingStore {
         }
     }
 
-    /// Reconcile an authoritative window from the helper after (re)connect:
-    /// upsert every record and drop locally stored messages the window no
-    /// longer contains. Removals are reported so clients stay truthful.
-    pub(crate) fn reconcile_window(
-        &mut self,
-        conversation_id: &ConversationId,
-        messages: Vec<Message>,
-    ) -> MessagingOutcome {
-        let mut changes = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        for message in messages {
-            if validate_message(&message).is_err() {
-                continue;
-            }
-            if message.id.conversation_id != *conversation_id {
-                continue;
-            }
-            seen.insert(message.id.local_id.clone());
-            let outcome = self.upsert_message(message);
-            changes.extend(outcome.changes);
-        }
-        let window = self.messages.entry(conversation_id.clone()).or_default();
-        let before: Vec<MessageId> = window.iter().map(|message| message.id.clone()).collect();
-        window.retain(|message| seen.contains(&message.id.local_id));
-        for id in before {
-            if !seen.contains(&id.local_id) {
-                self.statuses.remove(&id);
-                changes.push(MessagingChange::MessageRemoved(id));
-            }
-        }
-        // Rebuild order by (sent_at, local_id) so reconciled windows read
-        // oldest-first regardless of arrival order.
-        let window = self.messages.entry(conversation_id.clone()).or_default();
-        let mut sorted: Vec<Message> = window.drain(..).collect();
-        sorted.sort_by(|a, b| (a.sent_at, &a.id.local_id).cmp(&(b.sent_at, &b.id.local_id)));
-        *window = sorted.into_iter().collect();
-        MessagingOutcome {
-            changed: !changes.is_empty(),
-            changes,
-        }
-    }
-
     pub(crate) fn snapshot_accounts(&self) -> Vec<MessagingAccount> {
         self.accounts.values().cloned().collect()
     }
 
     /// Drop window messages absent from a closed generation's keep-set.
-    /// Unlike [`Self::reconcile_window`], this upserts nothing: every
-    /// record was already merged when its chunk arrived. Removals are
+    /// Records were already merged when their chunks arrived. Removals are
     /// reported so clients stay truthful.
     pub(crate) fn prune_window(
         &mut self,
@@ -909,20 +866,22 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_replaces_window_and_reports_removals() {
+    fn closed_generation_prunes_window_and_reports_removals() {
         let mut store = live_store();
         for id in ["m1", "m2", "m3"] {
             store.apply(MessagingEvent::Message(MessageEvent::Added(message(
                 id, "peer", 10, id,
             ))));
         }
-        let outcome = store.reconcile_window(
-            &conversation_id(),
-            vec![
-                message("m2", "peer", 11, "m2"),
-                message("m4", "peer", 13, "m4"),
-            ],
-        );
+        for record in [
+            message("m2", "peer", 11, "m2"),
+            message("m4", "peer", 13, "m4"),
+        ] {
+            store.apply(MessagingEvent::Message(MessageEvent::Added(record)));
+        }
+        let keep = ["m2".to_string(), "m4".to_string()].into_iter().collect();
+        let outcome = store.prune_window(&conversation_id(), &keep);
+        store.sort_window(&conversation_id());
         assert!(outcome.changed);
         assert!(outcome.changes.iter().any(
             |change| matches!(change, MessagingChange::MessageRemoved(id) if id.local_id == "m1")

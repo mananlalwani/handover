@@ -161,7 +161,7 @@ pub fn default_staging_directory() -> Result<PathBuf, StageError> {
 }
 
 /// Staging directory used by the production sidecar adapter. Keep this
-/// compatibility root while the adapter remains a separate repository.
+/// root distinct from daemon-owned imports and simulated test attachments.
 pub fn adapter_staging_directory() -> Result<PathBuf, StageError> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)

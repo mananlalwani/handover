@@ -152,11 +152,8 @@ pub enum Method {
     MediaList,
     #[serde(rename = "subscribe")]
     Subscribe {
-        #[serde(default)]
         shares: bool,
-        #[serde(default)]
         media: bool,
-        #[serde(default)]
         messages: bool,
     },
     #[serde(rename = "notification.dismiss")]
@@ -404,71 +401,43 @@ pub enum ServerPayload {
     },
     Subscribed {
         devices: Vec<Device>,
-        #[serde(default)]
         notifications: Vec<Notification>,
-        #[serde(default)]
         media_sessions: Vec<MediaSession>,
-        #[serde(default)]
         calls: Vec<CallState>,
-        #[serde(default)]
         messaging_accounts: Vec<MessagingAccount>,
-        #[serde(default)]
         conversations: Vec<Conversation>,
-        #[serde(default)]
         typing_states: Vec<TypingState>,
-        #[serde(default)]
         read_states: Vec<ReadState>,
     },
     SubscribedChunk {
         devices: Vec<Device>,
-        #[serde(default)]
         notifications: Vec<Notification>,
-        #[serde(default)]
         media_sessions: Vec<MediaSession>,
-        #[serde(default)]
         calls: Vec<CallState>,
-        #[serde(default)]
         messaging_accounts: Vec<MessagingAccount>,
-        #[serde(default)]
         conversations: Vec<Conversation>,
-        #[serde(default)]
         typing_states: Vec<TypingState>,
-        #[serde(default)]
         read_states: Vec<ReadState>,
         done: bool,
     },
     Snapshot {
         devices: Vec<Device>,
-        #[serde(default)]
         notifications: Vec<Notification>,
-        #[serde(default)]
         media_sessions: Vec<MediaSession>,
-        #[serde(default)]
         calls: Vec<CallState>,
-        #[serde(default)]
         messaging_accounts: Vec<MessagingAccount>,
-        #[serde(default)]
         conversations: Vec<Conversation>,
-        #[serde(default)]
         typing_states: Vec<TypingState>,
-        #[serde(default)]
         read_states: Vec<ReadState>,
     },
     SnapshotChunk {
         devices: Vec<Device>,
-        #[serde(default)]
         notifications: Vec<Notification>,
-        #[serde(default)]
         media_sessions: Vec<MediaSession>,
-        #[serde(default)]
         calls: Vec<CallState>,
-        #[serde(default)]
         messaging_accounts: Vec<MessagingAccount>,
-        #[serde(default)]
         conversations: Vec<Conversation>,
-        #[serde(default)]
         typing_states: Vec<TypingState>,
-        #[serde(default)]
         read_states: Vec<ReadState>,
         done: bool,
     },
@@ -1894,24 +1863,18 @@ mod tests {
     }
 
     #[test]
-    fn subscription_and_snapshot_default_missing_notifications() {
-        let subscribed = serde_json::from_str::<ServerMessage>(
+    fn current_subscription_and_snapshot_payloads_require_all_collections() {
+        for json in [
             r#"{"protocol":1,"type":"subscribed","devices":[]}"#,
-        )
-        .expect("legacy subscription decodes");
-        let snapshot = serde_json::from_str::<ServerMessage>(
+            r#"{"protocol":1,"type":"subscribed_chunk","devices":[],"done":true}"#,
             r#"{"protocol":1,"type":"snapshot","devices":[]}"#,
-        )
-        .expect("legacy snapshot decodes");
-
-        assert!(matches!(
-            subscribed.payload,
-            ServerPayload::Subscribed { notifications, .. } if notifications.is_empty()
-        ));
-        assert!(matches!(
-            snapshot.payload,
-            ServerPayload::Snapshot { notifications, .. } if notifications.is_empty()
-        ));
+            r#"{"protocol":1,"type":"snapshot_chunk","devices":[],"done":true}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ServerMessage>(json).is_err(),
+                "{json}"
+            );
+        }
     }
 
     #[test]
@@ -2100,33 +2063,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_snapshot_decodes_without_messaging_fields() {
-        let snapshot = serde_json::from_str::<ServerMessage>(
-            r#"{"protocol":1,"type":"snapshot","devices":[]}"#,
-        )
-        .expect("legacy snapshot decodes");
-        assert!(matches!(
-            snapshot.payload,
-            ServerPayload::Snapshot {
-                messaging_accounts,
-                conversations,
-                ..
-            } if messaging_accounts.is_empty() && conversations.is_empty()
-        ));
-    }
-
-    #[test]
-    fn share_subscription_is_opt_in_for_older_protocol_one_clients() {
-        let legacy: Request = serde_json::from_str(r#"{"protocol":1,"method":"subscribe"}"#)
-            .expect("old subscription still decodes");
-        assert_eq!(
-            legacy.method,
-            Method::Subscribe {
-                shares: false,
-                media: false,
-                messages: false,
-            }
-        );
+    fn subscription_requires_explicit_current_flags() {
+        assert!(serde_json::from_str::<Request>(r#"{"protocol":1,"method":"subscribe"}"#).is_err());
         let current = Request::new(Method::Subscribe {
             shares: true,
             media: true,
