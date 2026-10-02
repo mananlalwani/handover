@@ -12,9 +12,10 @@ pub use messaging::{
     Attachment, AttachmentKind, Conversation, ConversationEvent, ConversationId, ConversationKind,
     MAX_PAGE_LIMIT, MAX_TEXT_CHARS, Message, MessageEvent, MessageId, MessageStatus,
     MessageStatusUpdate, MessagingAccount, MessagingAccountEvent, MessagingAccountId,
-    MessagingCapability, MessagingCommand, MessagingEvent, PairingPrompt, Participant, Reaction,
-    ReadState, SendFailure, TransportKind, TypingState, ValidationError, sanitize_file_name,
-    validate_account, validate_command, validate_conversation, validate_message,
+    MessagingCapability, MessagingCommand, MessagingEvent, OutgoingOperation,
+    OutgoingOperationKind, OutgoingOutcome, PairingPrompt, Participant, Reaction, ReadState,
+    SendFailure, TransportKind, TypingState, ValidationError, sanitize_file_name, validate_account,
+    validate_command, validate_conversation, validate_message,
 };
 
 /// A stable identifier assigned to a device by a backend.

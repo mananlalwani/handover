@@ -353,6 +353,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand accounts 'List messaging accounts with connection state'
             cand conversations 'List conversations for one account'
             cand history 'Show message history for one conversation (ACCOUNT:THREAD or THREAD)'
+            cand outgoing 'List durable outgoing message operations and their last attested outcome'
             cand send 'Send a text message (accepted, not delivered)'
             cand send-file 'Send a file attachment with an optional caption'
             cand reply 'Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)'
@@ -380,6 +381,10 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand --cursor 'Cursor printed by a previous history page'
             cand -h 'Print help (see more with ''--help'')'
             cand --help 'Print help (see more with ''--help'')'
+        }
+        &'handoverctl;messages;outgoing'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
         }
         &'handoverctl;messages;send'= {
             cand -h 'Print help (see more with ''--help'')'
@@ -436,6 +441,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand accounts 'List messaging accounts with connection state'
             cand conversations 'List conversations for one account'
             cand history 'Show message history for one conversation (ACCOUNT:THREAD or THREAD)'
+            cand outgoing 'List durable outgoing message operations and their last attested outcome'
             cand send 'Send a text message (accepted, not delivered)'
             cand send-file 'Send a file attachment with an optional caption'
             cand reply 'Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)'
@@ -455,6 +461,8 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;messages;help;conversations'= {
         }
         &'handoverctl;messages;help;history'= {
+        }
+        &'handoverctl;messages;help;outgoing'= {
         }
         &'handoverctl;messages;help;send'= {
         }
@@ -616,6 +624,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand accounts 'List messaging accounts with connection state'
             cand conversations 'List conversations for one account'
             cand history 'Show message history for one conversation (ACCOUNT:THREAD or THREAD)'
+            cand outgoing 'List durable outgoing message operations and their last attested outcome'
             cand send 'Send a text message (accepted, not delivered)'
             cand send-file 'Send a file attachment with an optional caption'
             cand reply 'Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)'
@@ -634,6 +643,8 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;help;messages;conversations'= {
         }
         &'handoverctl;help;messages;history'= {
+        }
+        &'handoverctl;help;messages;outgoing'= {
         }
         &'handoverctl;help;messages;send'= {
         }

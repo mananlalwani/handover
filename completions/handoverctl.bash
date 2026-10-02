@@ -268,6 +268,9 @@ _handoverctl() {
             handoverctl__subcmd__help__subcmd__messages,open)
                 cmd="handoverctl__subcmd__help__subcmd__messages__subcmd__open"
                 ;;
+            handoverctl__subcmd__help__subcmd__messages,outgoing)
+                cmd="handoverctl__subcmd__help__subcmd__messages__subcmd__outgoing"
+                ;;
             handoverctl__subcmd__help__subcmd__messages,react)
                 cmd="handoverctl__subcmd__help__subcmd__messages__subcmd__react"
                 ;;
@@ -385,6 +388,9 @@ _handoverctl() {
             handoverctl__subcmd__messages,open)
                 cmd="handoverctl__subcmd__messages__subcmd__open"
                 ;;
+            handoverctl__subcmd__messages,outgoing)
+                cmd="handoverctl__subcmd__messages__subcmd__outgoing"
+                ;;
             handoverctl__subcmd__messages,react)
                 cmd="handoverctl__subcmd__messages__subcmd__react"
                 ;;
@@ -432,6 +438,9 @@ _handoverctl() {
                 ;;
             handoverctl__subcmd__messages__subcmd__help,open)
                 cmd="handoverctl__subcmd__messages__subcmd__help__subcmd__open"
+                ;;
+            handoverctl__subcmd__messages__subcmd__help,outgoing)
+                cmd="handoverctl__subcmd__messages__subcmd__help__subcmd__outgoing"
                 ;;
             handoverctl__subcmd__messages__subcmd__help,react)
                 cmd="handoverctl__subcmd__messages__subcmd__help__subcmd__react"
@@ -1390,7 +1399,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__help__subcmd__messages)
-            opts="accounts conversations history send send-file reply react unreact read typing delete open login logout sync"
+            opts="accounts conversations history outgoing send send-file reply react unreact read typing delete open login logout sync"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1488,6 +1497,20 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__help__subcmd__messages__subcmd__open)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__help__subcmd__messages__subcmd__outgoing)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2048,7 +2071,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__messages)
-            opts="-h --help accounts conversations history send send-file reply react unreact read typing delete open login logout sync help"
+            opts="-h --help accounts conversations history outgoing send send-file reply react unreact read typing delete open login logout sync help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2104,7 +2127,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__messages__subcmd__help)
-            opts="accounts conversations history send send-file reply react unreact read typing delete open login logout sync help"
+            opts="accounts conversations history outgoing send send-file reply react unreact read typing delete open login logout sync help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2216,6 +2239,20 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__messages__subcmd__help__subcmd__open)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__messages__subcmd__help__subcmd__outgoing)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2396,6 +2433,20 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__messages__subcmd__open)
+            opts="-h --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__messages__subcmd__outgoing)
             opts="-h --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

@@ -152,3 +152,38 @@ unauthenticated until the helper reports their current state.
 Workspace tests cover daemon ↔ loopback, helper-down, gaps, bundles,
 isolation, and malformed lines. One live RCS pass was done on a test
 account. That is not a guarantee about Google's protocol.
+
+## Outgoing operation recovery
+
+The daemon records text and media sends before helper submission in
+`handover/outgoing-operations.json` under the state directory. This journal is
+separate from the optional message-content cache. It contains normalized IDs,
+operation kind, timestamps, outcome, and an optional provider message ID.
+It contains no message text, captions, attachment paths, or credentials.
+
+The journal retains up to 512 operations. When full, a new send replaces the
+oldest resolved or unknown operation; it does not evict an active submission or
+accepted send. If all records are active, new sends are rejected before submission.
+Atomic writes use private files and directories. A journal that cannot be restored
+is preserved, and new sends fail before submission until the file is repaired.
+
+The additive helper `send_status` event carries `request_id`, `account`,
+`conversation`, optional `message`, and the existing normalized `status` token.
+It correlates temporary and final provider message IDs with one daemon operation.
+Generic message `status` events continue to update delivery evidence once a final
+message ID is known. Older helpers without `send_status` can accept sends, but
+cannot correlate them with delivery evidence in outgoing-operation records.
+
+`messages.outgoing` returns bounded chunks with a final `done` marker. Messaging
+subscriptions send nonempty outgoing snapshots after the initial state snapshot
+and after lag recovery, before queued live events. A state snapshot resets the
+client's outgoing collection; `outgoing_operation` and
+`outgoing_operation_removed` events maintain it afterward.
+
+On daemon restart, helper disconnection, or ten minutes without evidence beyond
+acceptance, unresolved operations become `unknown`. A submitted send that loses
+its acknowledgement reports `send_outcome_unknown`, rather than claiming rejection.
+Late provider evidence can resolve an unknown operation. No journal entry triggers
+a resend. Check the conversation before explicitly sending again. Confirmed sent,
+delivered, displayed, and failed outcomes survive restart; logout removes the
+account's operation records.

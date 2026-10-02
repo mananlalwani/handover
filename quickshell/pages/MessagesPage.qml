@@ -50,6 +50,12 @@ Rectangle {
             item.conversation_id.account_id === selectedConversation.account_id
             && item.conversation_id.local_id === selectedConversation.local_id)
         : null
+    property var selectedOutgoingOperation: selectedConversation
+        ? HandoverService.outgoingOperations.filter(item =>
+            HandoverService.sameConversationId(item.conversation_id, selectedConversation))
+            .slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0)
+                || (a.id < b.id ? 1 : (a.id > b.id ? -1 : 0)))[0] || null
+        : null
     onSelectedConversationChanged: {
         modernMessageList.followTail = true;
         Qt.callLater(() => modernMessageList.positionViewAtEnd());
@@ -75,6 +81,30 @@ Rectangle {
         return Qt.formatDateTime(
             new Date(Number(message.sent_at) / 1000),
             "MMM d, yyyy · h:mm AP");
+    }
+
+    function outgoingStatusLabel(operation) {
+        if (!operation)
+            return "";
+        const outcome = operation.outcome;
+        if (outcome === "unknown")
+            return "Outcome unknown. Check the conversation before sending again.";
+        if (outcome === "submitting")
+            return "Sending…";
+        if (outcome === "rejected")
+            return "Send rejected";
+        const provider = outcome && outcome.provider;
+        if (!provider)
+            return "";
+        if (typeof provider === "object")
+            return "Failed";
+        switch (provider) {
+        case "accepted": return "Accepted";
+        case "sent": return "Sent";
+        case "delivered": return "Delivered";
+        case "displayed": return "Displayed";
+        default: return "";
+        }
     }
 
 Item {
@@ -442,6 +472,19 @@ Item {
                                 }
                             }
                         }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: messagesCard.outgoingStatusLabel(
+                            messagesCard.selectedOutgoingOperation).length > 0
+                        text: messagesCard.outgoingStatusLabel(
+                            messagesCard.selectedOutgoingOperation)
+                        color: messagesCard.selectedOutgoingOperation
+                            && messagesCard.selectedOutgoingOperation.outcome === "unknown"
+                            ? "#ffcf8b" : "#9caec5"
+                        wrapMode: Text.Wrap
+                        elide: Text.ElideRight
+                        font.pixelSize: 12
                     }
                     RowLayout {
                         Layout.fillWidth: true

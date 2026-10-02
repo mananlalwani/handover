@@ -1,4 +1,63 @@
 use super::*;
+use std::collections::VecDeque;
+
+pub(crate) async fn write_outgoing_operations<W>(
+    writer: &mut W,
+    operations: Vec<handover_core::OutgoingOperation>,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut chunks = Vec::new();
+    let mut remaining: VecDeque<_> = operations.into();
+    loop {
+        let mut chunk = Vec::new();
+        for _ in 0..MAX_OUTGOING_CHUNK_ITEMS {
+            let Some(operation) = remaining.pop_front() else {
+                break;
+            };
+            chunk.push(operation);
+        }
+        if chunk.is_empty() {
+            if chunks.is_empty() {
+                chunks.push(Vec::new());
+            }
+            break;
+        }
+        loop {
+            let probe = ServerMessage::new(ServerPayload::OutgoingOperations {
+                operations: chunk.clone(),
+                done: false,
+            });
+            if serde_json::to_vec(&probe)?.len() < handover_ipc::MAX_LINE_BYTES {
+                break;
+            }
+            let Some(last) = chunk.pop() else {
+                return Err(IpcError::LineTooLong);
+            };
+            if chunk.is_empty() {
+                return Err(IpcError::LineTooLong);
+            }
+            remaining.push_front(last);
+        }
+        chunks.push(chunk);
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    let count = chunks.len();
+    for (index, operations) in chunks.into_iter().enumerate() {
+        write_json_line(
+            writer,
+            &ServerMessage::new(ServerPayload::OutgoingOperations {
+                operations,
+                done: index + 1 == count,
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
 
 pub(crate) fn snapshot(state: &Arc<RwLock<StateStore>>) -> StateSnapshot {
     state
@@ -148,7 +207,7 @@ pub(crate) fn messaging_validation_error(
 
 pub(crate) fn helper_call_error(error: HelperCallError) -> (ErrorCode, String) {
     match error {
-        HelperCallError::Unavailable => (
+        HelperCallError::Unavailable | HelperCallError::NotSubmitted => (
             ErrorCode::MessagingUnavailable,
             "messaging helper is unavailable".into(),
         ),

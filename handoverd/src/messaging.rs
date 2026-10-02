@@ -38,11 +38,20 @@ pub(crate) struct MessagingStore {
     typing: BTreeMap<ConversationId, TypingState>,
     read: BTreeMap<ConversationId, ReadState>,
     pending_accepts: BTreeMap<MessageId, std::time::Instant>,
+    outgoing: BTreeMap<String, handover_core::OutgoingOperation>,
 }
 
 impl MessagingStore {
     pub(crate) fn apply(&mut self, event: MessagingEvent) -> MessagingOutcome {
         match event {
+            MessagingEvent::Outgoing(operation) => self.apply_outgoing(operation),
+            MessagingEvent::OutgoingRemoved(id) => {
+                if self.outgoing.remove(&id).is_some() {
+                    MessagingOutcome::changed(MessagingChange::OutgoingRemoved(id))
+                } else {
+                    MessagingOutcome::unchanged()
+                }
+            }
             MessagingEvent::Account(event) => self.apply_account(event),
             MessagingEvent::Conversation(event) => self.apply_conversation(event),
             MessagingEvent::Message(event) => self.apply_message(event),
@@ -58,6 +67,55 @@ impl MessagingStore {
 
     pub(crate) fn snapshot_accounts(&self) -> Vec<MessagingAccount> {
         self.accounts.values().cloned().collect()
+    }
+
+    pub(crate) fn snapshot_outgoing(&self) -> Vec<handover_core::OutgoingOperation> {
+        self.outgoing.values().cloned().collect()
+    }
+
+    pub(crate) fn outgoing(&self, id: &str) -> Option<&handover_core::OutgoingOperation> {
+        self.outgoing.get(id)
+    }
+
+    fn apply_outgoing(&mut self, operation: handover_core::OutgoingOperation) -> MessagingOutcome {
+        use handover_core::OutgoingOutcome;
+        if handover_core::messaging::validate_outgoing(&operation).is_err() {
+            return MessagingOutcome::unchanged();
+        }
+        if let Some(previous) = self.outgoing.get(&operation.id) {
+            if previous == &operation
+                || previous.conversation_id != operation.conversation_id
+                || previous.kind != operation.kind
+                || previous.created_at != operation.created_at
+            {
+                return MessagingOutcome::unchanged();
+            }
+            // Late evidence may resolve Unknown, but local acknowledgement must
+            // never overwrite an already attested provider outcome.
+            if let OutgoingOutcome::Provider(current) = &previous.outcome {
+                if let OutgoingOutcome::Provider(next) = &operation.outcome {
+                    if matches!(current, MessageStatus::Failed(_))
+                        || status_rank(next) < status_rank(current)
+                    {
+                        return MessagingOutcome::unchanged();
+                    }
+                } else if operation.outcome != OutgoingOutcome::Unknown
+                    || !matches!(current, MessageStatus::Accepted)
+                {
+                    return MessagingOutcome::unchanged();
+                }
+            }
+        }
+        let mut changes = Vec::new();
+        if !self.outgoing.contains_key(&operation.id) && self.outgoing.len() >= 512 {
+            return MessagingOutcome::unchanged();
+        }
+        changes.push(MessagingChange::Outgoing(operation.id.clone()));
+        self.outgoing.insert(operation.id.clone(), operation);
+        MessagingOutcome {
+            changed: true,
+            changes,
+        }
     }
 
     /// Drop window messages absent from a closed generation's keep-set.
@@ -255,6 +313,16 @@ impl MessagingStore {
     /// Remove every record owned by one account (logout/revoke).
     pub(crate) fn remove_account(&mut self, id: &MessagingAccountId) -> MessagingOutcome {
         let mut changes = Vec::new();
+        let operations: Vec<String> = self
+            .outgoing
+            .values()
+            .filter(|operation| &operation.conversation_id.account_id == id)
+            .map(|operation| operation.id.clone())
+            .collect();
+        for operation in operations {
+            self.outgoing.remove(&operation);
+            changes.push(MessagingChange::OutgoingRemoved(operation));
+        }
         let conversations: Vec<ConversationId> = self
             .conversations
             .keys()
@@ -543,6 +611,8 @@ impl From<ValidationError> for MessagingValidationError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MessagingChange {
+    Outgoing(String),
+    OutgoingRemoved(String),
     AccountAdded(MessagingAccountId),
     AccountUpdated(MessagingAccountId),
     AccountRemoved(MessagingAccountId),

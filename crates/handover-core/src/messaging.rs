@@ -276,6 +276,51 @@ pub enum MessageStatus {
     Failed(SendFailure),
 }
 
+/// A daemon-owned send record. It contains no text, attachment paths, or secrets.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OutgoingOperation {
+    pub id: String,
+    pub conversation_id: ConversationId,
+    pub kind: OutgoingOperationKind,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub outcome: OutgoingOutcome,
+    pub message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutgoingOperationKind {
+    Text,
+    Media,
+}
+
+/// Unknown means submission may have taken effect. It must never trigger replay.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutgoingOutcome {
+    Submitting,
+    Unknown,
+    Rejected,
+    Provider(MessageStatus),
+}
+
+pub fn validate_outgoing(operation: &OutgoingOperation) -> Result<(), ValidationError> {
+    check_id(&operation.id, "operation id")?;
+    check_account_id(operation.conversation_id.account_id.as_str())?;
+    check_id(&operation.conversation_id.local_id, "conversation id")?;
+    if operation.updated_at < operation.created_at {
+        return Err(ValidationError::InvalidId("operation timestamp".into()));
+    }
+    if let Some(message) = &operation.message_id {
+        check_id(&message.local_id, "message id")?;
+        if message.conversation_id != operation.conversation_id {
+            return Err(ValidationError::InvalidId("operation message scope".into()));
+        }
+    }
+    Ok(())
+}
+
 /// Why a send failed, where attested. `Transport` is a backend-reported
 /// failure with no further detail; platform error text never crosses.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -392,6 +437,8 @@ pub enum MessagingCommand {
 /// A normalized messaging state transition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MessagingEvent {
+    Outgoing(OutgoingOperation),
+    OutgoingRemoved(String),
     Account(MessagingAccountEvent),
     Conversation(ConversationEvent),
     Message(MessageEvent),

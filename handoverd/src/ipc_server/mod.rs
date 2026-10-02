@@ -50,6 +50,7 @@ pub(crate) const PRE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// cursor always advances to the oldest kept message, so paging
 /// overlaps instead of gapping.
 pub(crate) const MAX_HISTORY_LINE_BYTES: usize = 768 * 1024;
+pub(crate) const MAX_OUTGOING_CHUNK_ITEMS: usize = 256;
 
 /// Cut a history page to the line budget, newest messages first. The
 /// returned cursor addresses the oldest kept message, so the next
@@ -709,6 +710,15 @@ where
         } => {
             return handle_history(conversation_id, limit, cursor, writer, state, messaging).await;
         }
+        Method::MessagesOutgoing => {
+            let operations = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .messaging()
+                .snapshot_outgoing();
+            write_outgoing_operations(writer, operations).await?;
+            return Ok(true);
+        }
         Method::MessagesTypingStates => ServerPayload::TypingStates {
             states: messaging_snapshot(state).typing,
         },
@@ -727,6 +737,7 @@ where
                 writer,
                 state,
                 messaging,
+                events,
             )
             .await;
         }
@@ -735,8 +746,16 @@ where
             file_url,
             caption,
         } => {
-            return handle_send_file(conversation_id, file_url, caption, writer, state, messaging)
-                .await;
+            return handle_send_file(
+                conversation_id,
+                file_url,
+                caption,
+                writer,
+                state,
+                messaging,
+                events,
+            )
+            .await;
         }
         Method::MessagesReact { message_id, emoji } => {
             return handle_react(message_id, emoji, true, writer, state, messaging).await;
@@ -814,6 +833,16 @@ where
             .await?;
         } else {
             write_json_line(writer, &full).await?;
+        }
+        if flags.messages {
+            let operations = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .messaging()
+                .snapshot_outgoing();
+            if !operations.is_empty() {
+                write_outgoing_operations(writer, operations).await?;
+            }
         }
     } else {
         write_json_line(writer, &ServerMessage::new(response)).await?;

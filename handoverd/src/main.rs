@@ -8,6 +8,7 @@ mod local_cmd;
 mod messaging;
 mod messaging_backend;
 mod messaging_cache;
+mod outgoing;
 mod presentation;
 mod remote_input;
 mod screensaver;
@@ -68,6 +69,9 @@ async fn main() {
     let _ = clipboard_history();
 
     let mut initial_state = StateStore::default();
+    if let Err(error) = outgoing::restore(&mut initial_state) {
+        warn!(%error, "could not restore outgoing operations");
+    }
     if !messaging_cache::disabled() {
         if let Err(error) = messaging_cache::restore(&mut initial_state) {
             warn!(%error, "could not restore messaging cache");
@@ -116,7 +120,11 @@ async fn main() {
         Err(error) => warn!(%error, "staging directory unavailable"),
     }
     let state = Arc::new(RwLock::new(initial_state));
+    if let Err(error) = outgoing::persist(&state).await {
+        warn!(%error, "could not persist restored outgoing operations");
+    }
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
+    tokio::spawn(outgoing::run_expiry(Arc::clone(&state), events.clone()));
     let mirror = Arc::new(clipboard_mirror::Mirror::new(
         clipboard_mirror::enabled_from_env(
             std::env::var_os("HANDOVER_CLIPBOARD_MIRROR").as_deref(),
@@ -195,6 +203,9 @@ async fn main() {
     // outlive the daemon. An unclean kill can still orphan the helper; the
     // next supervisor generation replaces it on restart.
     messaging_hub.shutdown().await;
+    if let Err(error) = outgoing::persist(&state).await {
+        warn!(%error, "could not flush outgoing operations");
+    }
     if let Err(error) = messaging_cache::flush(&state).await {
         warn!(%error, "could not flush messaging cache");
     }
@@ -320,6 +331,16 @@ fn apply_backend_event(
         }
     }
     let messaging_event = matches!(event, StateEvent::Messaging(_));
+    let outgoing_event = matches!(
+        &event,
+        StateEvent::Messaging(
+            handover_core::MessagingEvent::Outgoing(_)
+                | handover_core::MessagingEvent::OutgoingRemoved(_)
+                | handover_core::MessagingEvent::Account(
+                    handover_core::MessagingAccountEvent::Removed(_)
+                )
+        )
+    );
     let outcome = state
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -329,6 +350,9 @@ fn apply_backend_event(
     }
     if outcome.changed {
         let _subscriber_count = events.send(event);
+        if outgoing_event {
+            outgoing::schedule_persist(state);
+        }
         if messaging_event && let Err(error) = messaging_cache::persist(state) {
             warn!(%error, "could not persist messaging cache");
         }
@@ -477,6 +501,9 @@ fn log_change(change: StateChange) {
 /// bodies, titles, names, addresses, and staged paths never enter logs.
 pub(crate) fn log_messaging_change(change: MessagingChange) {
     match change {
+        MessagingChange::Outgoing(id) | MessagingChange::OutgoingRemoved(id) => {
+            info!(operation_id = %id, "outgoing operation changed");
+        }
         MessagingChange::AccountAdded(id) | MessagingChange::AccountUpdated(id) => {
             info!(account_id = %id, "messaging account updated")
         }

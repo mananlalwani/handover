@@ -551,6 +551,23 @@ async fn messages(command: MessagesCommand) -> Result<(), CliError> {
                 None => println!("-- start of stored window --"),
             }
         }
+        MessagesCommand::Outgoing => {
+            let operations = client.messaging_outgoing().await?;
+            println!("OPERATION  CONVERSATION  KIND  OUTCOME  UPDATED  MESSAGE");
+            for operation in operations {
+                println!(
+                    "{}\t{}\t{:?}\t{:?}\t{}\t{}",
+                    operation.id,
+                    operation.conversation_id,
+                    operation.kind,
+                    operation.outcome,
+                    operation.updated_at,
+                    operation
+                        .message_id
+                        .map_or_else(|| "-".into(), |id| id.to_string())
+                );
+            }
+        }
         MessagesCommand::Send { conversation, text } => {
             let conversation_id = resolve_conversation(&mut client, &conversation).await?;
             let request_id = client.send_message_text(conversation_id, text).await?;
@@ -1159,6 +1176,13 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::MessageStatus { update } => {
             println!("message status: {} {:?}", update.message_id, update.status);
         }
+        ServerPayload::OutgoingOperation { operation } => println!(
+            "outgoing operation: {} {} {:?}",
+            operation.id, operation.conversation_id, operation.outcome
+        ),
+        ServerPayload::OutgoingOperationRemoved { operation_id } => {
+            println!("outgoing operation removed: {operation_id}");
+        }
         ServerPayload::Typing { state } => {
             println!(
                 "typing in {}: {}",
@@ -1187,6 +1211,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::Conversations { .. }
         | ServerPayload::ConversationsChunk { .. }
         | ServerPayload::History { .. }
+        | ServerPayload::OutgoingOperations { .. }
         | ServerPayload::TypingStates { .. }
         | ServerPayload::ReadStates { .. }
         | ServerPayload::CommandCompleted { .. }

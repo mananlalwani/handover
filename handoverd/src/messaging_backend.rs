@@ -51,6 +51,7 @@ const STABLE_SESSION: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HelperCallError {
+    NotSubmitted,
     Unavailable,
     Busy,
     Timeout,
@@ -91,7 +92,7 @@ type PageFloors = HashMap<PageFloorKey, (Option<i64>, String)>;
 
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
-    pending: Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>,
+    pending: Mutex<HashMap<String, oneshot::Sender<Result<(), HelperCallError>>>>,
     fetches: Mutex<FetchWaiters>,
     /// Serialize fetches per conversation so their cached pages and cursors
     /// are published in request order. Waiters queue rather than share a flight.
@@ -181,6 +182,14 @@ impl MessagingHub {
         build: impl FnOnce(String) -> HelperCommand,
     ) -> Result<CommandOutcome, HelperCallError> {
         let request_id = self.next_request_id();
+        self.request_with_id(request_id, build).await
+    }
+
+    pub(crate) async fn request_with_id(
+        &self,
+        request_id: String,
+        build: impl FnOnce(String) -> HelperCommand,
+    ) -> Result<CommandOutcome, HelperCallError> {
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.inner.pending.lock().await;
@@ -192,11 +201,15 @@ impl MessagingHub {
         let command = build(request_id.clone());
         if let Err(error) = self.submit(command).await {
             self.inner.pending.lock().await.remove(&request_id);
-            return Err(error);
+            return Err(if error == HelperCallError::Unavailable {
+                HelperCallError::NotSubmitted
+            } else {
+                error
+            });
         }
         match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
             Ok(Ok(Ok(()))) => Ok(CommandOutcome { request_id }),
-            Ok(Ok(Err(reason))) => Err(HelperCallError::Rejected(reason)),
+            Ok(Ok(Err(error))) => Err(error),
             Ok(Err(_)) => Err(HelperCallError::Unavailable),
             Err(_) => {
                 self.inner.pending.lock().await.remove(&request_id);
@@ -311,7 +324,7 @@ impl MessagingHub {
 
     async fn complete_request(&self, request_id: &str, result: Result<(), String>) {
         if let Some(sender) = self.inner.pending.lock().await.remove(request_id) {
-            let _ = sender.send(result);
+            let _ = sender.send(result.map_err(HelperCallError::Rejected));
         }
     }
 
@@ -336,7 +349,7 @@ impl MessagingHub {
 
     async fn fail_all(&self) {
         for (_, sender) in self.inner.pending.lock().await.drain() {
-            let _ = sender.send(Err("helper disconnected".into()));
+            let _ = sender.send(Err(HelperCallError::Unavailable));
         }
         for (_, (_, waiter)) in self.inner.fetches.lock().await.drain() {
             let _ = waiter.send(Err(()));
@@ -565,6 +578,7 @@ pub(crate) fn spawn_supervisor(
                     let started = std::time::Instant::now();
                     run_session(&state, &events, &hub, process).await;
                     hub.fail_all().await;
+                    crate::outgoing::mark_unknown(&state, &events);
                     if hub.is_shutdown() {
                         break;
                     }
@@ -706,6 +720,9 @@ async fn ingest_event(
                     MessagingAccountId::new(account),
                 ))),
             );
+            if let Err(error) = crate::outgoing::persist(state).await {
+                warn!(%error, "could not persist outgoing account removal");
+            }
         }
         HelperEvent::Pairing { account, prompt } => {
             if prompt.len() > 512 {
@@ -1003,6 +1020,42 @@ async fn ingest_event(
                 ))),
             );
         }
+        HelperEvent::SendStatus {
+            request_id,
+            account,
+            conversation,
+            message,
+            status,
+        } => {
+            let operation = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .messaging()
+                .outgoing(&request_id)
+                .cloned();
+            if let Some(operation) = operation {
+                if operation.conversation_id.account_id.as_str() == account
+                    && operation.conversation_id.local_id == conversation
+                    && message.as_ref().is_none_or(|id| {
+                        !id.is_empty()
+                            && id.len() <= handover_core::messaging::MAX_ID_LEN
+                            && !id.chars().any(char::is_control)
+                    })
+                {
+                    if let Ok(status) = parse_status(&status) {
+                        let message_id =
+                            message.map(|id| MessageId::new(operation.conversation_id, id));
+                        crate::outgoing::update(
+                            state,
+                            events,
+                            &request_id,
+                            handover_core::OutgoingOutcome::Provider(status),
+                            message_id,
+                        );
+                    }
+                }
+            }
+        }
         HelperEvent::Status {
             account,
             conversation,
@@ -1010,6 +1063,26 @@ async fn ingest_event(
             status,
         } => match parse_status(&status) {
             Ok(parsed) => {
+                let message_id = MessageId::new(
+                    ConversationId::new(MessagingAccountId::new(&account), &conversation),
+                    &message,
+                );
+                let operations = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .snapshot_outgoing();
+                for operation in operations {
+                    if operation.message_id.as_ref() == Some(&message_id) {
+                        crate::outgoing::update(
+                            state,
+                            events,
+                            &operation.id,
+                            handover_core::OutgoingOutcome::Provider(parsed.clone()),
+                            Some(message_id.clone()),
+                        );
+                    }
+                }
                 apply_backend_event(
                     state,
                     events,
@@ -1240,6 +1313,50 @@ pub(crate) fn validate_login_bundle(bundle_b64: &str) -> Result<(), HelperCallEr
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn helper_exit_after_submission_does_not_claim_rejection() {
+        let hub = super::MessagingHub::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        hub.set_sender(Some(sender)).await;
+        let request_hub = hub.clone();
+        let request = tokio::spawn(async move {
+            request_hub
+                .request_with_id("durable-send".into(), |request_id| {
+                    handover_gmessages::contract::HelperCommand::SendText {
+                        request_id,
+                        account: "gmessages:test".into(),
+                        conversation: "thread".into(),
+                        text: "test".into(),
+                        reply_to: None,
+                    }
+                })
+                .await
+        });
+        receiver.recv().await.expect("send was submitted");
+        hub.fail_all().await;
+        assert!(matches!(
+            request.await.unwrap(),
+            Err(super::HelperCallError::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn missing_helper_is_known_not_to_have_received_send() {
+        let hub = super::MessagingHub::new();
+        let result = hub
+            .request_with_id("durable-send".into(), |request_id| {
+                handover_gmessages::contract::HelperCommand::SendText {
+                    request_id,
+                    account: "gmessages:test".into(),
+                    conversation: "thread".into(),
+                    text: "test".into(),
+                    reply_to: None,
+                }
+            })
+            .await;
+        assert!(matches!(result, Err(super::HelperCallError::NotSubmitted)));
+    }
+
     use super::*;
     use handover_gmessages::contract::{
         WireConversation, WireConversationKind, WireMessage, WireParticipant, WireTransport,

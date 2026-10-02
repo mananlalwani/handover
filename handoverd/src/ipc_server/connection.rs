@@ -48,6 +48,13 @@ pub(crate) async fn handle_client(
                                 snapshot_payload(&state, flags.media, flags.messages),
                             )
                             .await?;
+                            if flags.messages {
+                                let operations = state.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .messaging().snapshot_outgoing();
+                                if !operations.is_empty() {
+                                    write_outgoing_operations(&mut writer, operations).await?;
+                                }
+                            }
                         }
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     }

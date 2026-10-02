@@ -7,8 +7,8 @@ use handover_core::{
     CallEvent, CallState, Conversation, ConversationId, Device, DeviceEvent, DeviceId,
     MediaCommand, MediaEvent, MediaSession, MediaSessionId, Message, MessageId,
     MessageStatusUpdate, MessagingAccount, MessagingAccountId, MessagingEvent, Notification,
-    NotificationEvent, NotificationId, ReadState, ReceivedShare, ShareProgress, ShareResult,
-    TypingState,
+    NotificationEvent, NotificationId, OutgoingOperation, ReadState, ReceivedShare, ShareProgress,
+    ShareResult, TypingState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -197,6 +197,8 @@ pub enum Method {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
     },
+    #[serde(rename = "messages.outgoing")]
+    MessagesOutgoing,
     #[serde(rename = "messages.typing_states")]
     MessagesTypingStates,
     #[serde(rename = "messages.read_states")]
@@ -344,6 +346,10 @@ impl ServerMessage {
                 }
             },
             MessagingEvent::Status(update) => ServerPayload::MessageStatus { update },
+            MessagingEvent::Outgoing(operation) => ServerPayload::OutgoingOperation { operation },
+            MessagingEvent::OutgoingRemoved(operation_id) => {
+                ServerPayload::OutgoingOperationRemoved { operation_id }
+            }
             MessagingEvent::Typing(state) => ServerPayload::Typing { state },
             MessagingEvent::Read(state) => ServerPayload::ReadState { state },
             MessagingEvent::Pairing(prompt) => ServerPayload::Pairing {
@@ -528,6 +534,10 @@ pub enum ServerPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor_next: Option<String>,
     },
+    OutgoingOperations {
+        operations: Vec<OutgoingOperation>,
+        done: bool,
+    },
     TypingStates {
         states: Vec<TypingState>,
     },
@@ -563,6 +573,12 @@ pub enum ServerPayload {
     },
     MessageStatus {
         update: MessageStatusUpdate,
+    },
+    OutgoingOperation {
+        operation: OutgoingOperation,
+    },
+    OutgoingOperationRemoved {
+        operation_id: String,
     },
     Typing {
         state: TypingState,
@@ -617,6 +633,7 @@ pub struct NativePendingPeer {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    SendOutcomeUnknown,
     MalformedRequest,
     UnsupportedProtocol,
     NotificationNotFound,
@@ -1337,6 +1354,34 @@ impl Client {
         }
     }
 
+    /// Read the daemon's durable outgoing operation records. Large snapshots
+    /// arrive as bounded chunks and are collected here.
+    pub async fn messaging_outgoing(&mut self) -> Result<Vec<OutgoingOperation>, IpcError> {
+        self.send(Method::MessagesOutgoing).await?;
+        let first = self.receive().await?.payload;
+        let ServerPayload::OutgoingOperations {
+            operations,
+            mut done,
+        } = first
+        else {
+            return Err(unexpected(first));
+        };
+        let mut all = operations;
+        while !done {
+            match self.receive().await?.payload {
+                ServerPayload::OutgoingOperations {
+                    operations,
+                    done: next,
+                } => {
+                    all.extend(operations);
+                    done = next;
+                }
+                payload => return Err(unexpected(payload)),
+            }
+        }
+        Ok(all)
+    }
+
     async fn expect_message_accepted(&mut self) -> Result<String, IpcError> {
         match self.receive().await?.payload {
             ServerPayload::MessageAccepted { request_id } => Ok(request_id),
@@ -2041,6 +2086,11 @@ mod tests {
         assert!(json.contains(r#""method":"messages.history""#));
         assert!(json.contains(r#""limit":25"#));
         assert!(!json.contains("cursor"));
+
+        let outgoing = Request::new(Method::MessagesOutgoing);
+        let json = serde_json::to_string(&outgoing).expect("serializes");
+        assert_eq!(json, r#"{"protocol":1,"method":"messages.outgoing"}"#);
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), outgoing);
     }
 
     #[test]
@@ -2059,6 +2109,43 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ServerMessage>(&json).expect("deserializes"),
             message
+        );
+    }
+
+    #[test]
+    fn outgoing_operation_events_and_chunks_round_trip() {
+        let operation = OutgoingOperation {
+            id: "send-1".into(),
+            conversation_id: ConversationId::new(
+                MessagingAccountId::new("gmessages:default"),
+                "thread-1",
+            ),
+            kind: handover_core::OutgoingOperationKind::Text,
+            created_at: 10,
+            updated_at: 11,
+            outcome: handover_core::OutgoingOutcome::Unknown,
+            message_id: None,
+        };
+        for event in [
+            MessagingEvent::Outgoing(operation.clone()),
+            MessagingEvent::OutgoingRemoved(operation.id.clone()),
+        ] {
+            let message = ServerMessage::from_messaging_event(event);
+            let encoded = serde_json::to_string(&message).expect("serializes");
+            assert_eq!(
+                serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+                message
+            );
+        }
+        let chunk = ServerMessage::new(ServerPayload::OutgoingOperations {
+            operations: vec![operation],
+            done: true,
+        });
+        let encoded = serde_json::to_string(&chunk).expect("serializes");
+        assert!(encoded.contains(r#""type":"outgoing_operations""#));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            chunk
         );
     }
 

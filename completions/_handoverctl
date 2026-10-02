@@ -623,6 +623,12 @@ _arguments "${_arguments_options[@]}" : \
 ':conversation -- Conversation selector\: ACCOUNT\:THREAD, or bare THREAD:_default' \
 && ret=0
 ;;
+(outgoing)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (send)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
@@ -737,6 +743,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(outgoing)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1061,6 +1071,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(outgoing)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1529,6 +1543,7 @@ _handoverctl__subcmd__help__subcmd__messages_commands() {
 'accounts:List messaging accounts with connection state' \
 'conversations:List conversations for one account' \
 'history:Show message history for one conversation (ACCOUNT\:THREAD or THREAD)' \
+'outgoing:List durable outgoing message operations and their last attested outcome' \
 'send:Send a text message (accepted, not delivered)' \
 'send-file:Send a file attachment with an optional caption' \
 'reply:Reply to a message (ACCOUNT\:THREAD\:MESSAGE or THREAD\:MESSAGE ...)' \
@@ -1578,6 +1593,11 @@ _handoverctl__subcmd__help__subcmd__messages__subcmd__logout_commands() {
 _handoverctl__subcmd__help__subcmd__messages__subcmd__open_commands() {
     local commands; commands=()
     _describe -t commands 'handoverctl help messages open commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__outgoing_commands] )) ||
+_handoverctl__subcmd__help__subcmd__messages__subcmd__outgoing_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl help messages outgoing commands' commands "$@"
 }
 (( $+functions[_handoverctl__subcmd__help__subcmd__messages__subcmd__react_commands] )) ||
 _handoverctl__subcmd__help__subcmd__messages__subcmd__react_commands() {
@@ -1806,6 +1826,7 @@ _handoverctl__subcmd__messages_commands() {
 'accounts:List messaging accounts with connection state' \
 'conversations:List conversations for one account' \
 'history:Show message history for one conversation (ACCOUNT\:THREAD or THREAD)' \
+'outgoing:List durable outgoing message operations and their last attested outcome' \
 'send:Send a text message (accepted, not delivered)' \
 'send-file:Send a file attachment with an optional caption' \
 'reply:Reply to a message (ACCOUNT\:THREAD\:MESSAGE or THREAD\:MESSAGE ...)' \
@@ -1843,6 +1864,7 @@ _handoverctl__subcmd__messages__subcmd__help_commands() {
 'accounts:List messaging accounts with connection state' \
 'conversations:List conversations for one account' \
 'history:Show message history for one conversation (ACCOUNT\:THREAD or THREAD)' \
+'outgoing:List durable outgoing message operations and their last attested outcome' \
 'send:Send a text message (accepted, not delivered)' \
 'send-file:Send a file attachment with an optional caption' \
 'reply:Reply to a message (ACCOUNT\:THREAD\:MESSAGE or THREAD\:MESSAGE ...)' \
@@ -1898,6 +1920,11 @@ _handoverctl__subcmd__messages__subcmd__help__subcmd__logout_commands() {
 _handoverctl__subcmd__messages__subcmd__help__subcmd__open_commands() {
     local commands; commands=()
     _describe -t commands 'handoverctl messages help open commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__outgoing_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__help__subcmd__outgoing_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages help outgoing commands' commands "$@"
 }
 (( $+functions[_handoverctl__subcmd__messages__subcmd__help__subcmd__react_commands] )) ||
 _handoverctl__subcmd__messages__subcmd__help__subcmd__react_commands() {
@@ -1958,6 +1985,11 @@ _handoverctl__subcmd__messages__subcmd__logout_commands() {
 _handoverctl__subcmd__messages__subcmd__open_commands() {
     local commands; commands=()
     _describe -t commands 'handoverctl messages open commands' commands "$@"
+}
+(( $+functions[_handoverctl__subcmd__messages__subcmd__outgoing_commands] )) ||
+_handoverctl__subcmd__messages__subcmd__outgoing_commands() {
+    local commands; commands=()
+    _describe -t commands 'handoverctl messages outgoing commands' commands "$@"
 }
 (( $+functions[_handoverctl__subcmd__messages__subcmd__react_commands] )) ||
 _handoverctl__subcmd__messages__subcmd__react_commands() {

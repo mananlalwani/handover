@@ -7,13 +7,14 @@ pub(crate) async fn handle_messaging_send<W>(
     writer: &mut W,
     state: &Arc<RwLock<StateStore>>,
     messaging: &Option<MessagingHub>,
+    events: &broadcast::Sender<StateEvent>,
 ) -> Result<bool, IpcError>
 where
     W: AsyncWrite + Unpin,
 {
     let account = conversation_id.account_id.as_str().to_string();
     let conversation = conversation_id.local_id.clone();
-    request_messaging(
+    request_send(
         MessagingCommand::SendText {
             conversation_id,
             text: text.clone(),
@@ -29,6 +30,7 @@ where
         writer,
         state,
         messaging,
+        events,
     )
     .await
 }
@@ -40,6 +42,7 @@ pub(crate) async fn handle_send_file<W>(
     writer: &mut W,
     state: &Arc<RwLock<StateStore>>,
     messaging: &Option<MessagingHub>,
+    events: &broadcast::Sender<StateEvent>,
 ) -> Result<bool, IpcError>
 where
     W: AsyncWrite + Unpin,
@@ -109,7 +112,7 @@ where
     };
     let account = conversation_id.account_id.as_str().to_string();
     let conversation = conversation_id.local_id.clone();
-    request_messaging(
+    request_send(
         MessagingCommand::SendMedia {
             conversation_id,
             file_url: url.clone(),
@@ -125,6 +128,7 @@ where
         writer,
         state,
         messaging,
+        events,
     )
     .await
 }
@@ -633,6 +637,110 @@ where
 
 /// Validate a command, forward it for a `CommandResult` acceptance report,
 /// and reply with the acceptance. Acceptance is never delivery.
+async fn request_send<W>(
+    command: MessagingCommand,
+    build: impl FnOnce(String) -> handover_gmessages::contract::HelperCommand,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+    events: &broadcast::Sender<StateEvent>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    use handover_core::{MessageStatus, OutgoingOperationKind, OutgoingOutcome};
+    let validation = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .messaging()
+        .validate_messaging_command(&command);
+    if let Err(error) = validation {
+        let (code, message) = messaging_validation_error(&error);
+        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        return Ok(true);
+    }
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    let kind = if matches!(command, MessagingCommand::SendMedia { .. }) {
+        OutgoingOperationKind::Media
+    } else {
+        OutgoingOperationKind::Text
+    };
+    let id = match crate::outgoing::begin(state, events, command.conversation_id(), kind).await {
+        Ok(id) => id,
+        Err(_) => {
+            write_json_line(
+                writer,
+                &ServerMessage::protocol_error(
+                    ErrorCode::BackendRejected,
+                    "outgoing operation could not be recorded; send was not submitted",
+                ),
+            )
+            .await?;
+            return Ok(true);
+        }
+    };
+    match hub.request_with_id(id.clone(), build).await {
+        Ok(_) => {
+            crate::outgoing::update(
+                state,
+                events,
+                &id,
+                OutgoingOutcome::Provider(MessageStatus::Accepted),
+                None,
+            );
+            // Journal the acknowledgement before replying. If this fails, the
+            // pre-submit entry still makes a restart truthful as Unknown.
+            if let Err(error) = crate::outgoing::persist(state).await {
+                tracing::warn!(%error, "could not persist outgoing acknowledgement");
+            }
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::MessageAccepted { request_id: id }),
+            )
+            .await?;
+        }
+        Err(error) => {
+            let definitive = matches!(
+                error,
+                HelperCallError::NotSubmitted
+                    | HelperCallError::Busy
+                    | HelperCallError::Rejected(_)
+                    | HelperCallError::BadBundle
+            );
+            crate::outgoing::update(
+                state,
+                events,
+                &id,
+                if definitive {
+                    OutgoingOutcome::Rejected
+                } else {
+                    OutgoingOutcome::Unknown
+                },
+                None,
+            );
+            if let Err(error) = crate::outgoing::persist(state).await {
+                tracing::warn!(%error, "could not persist outgoing outcome");
+            }
+            let (code, message) = if definitive {
+                helper_call_error(error)
+            } else {
+                (
+                    ErrorCode::SendOutcomeUnknown,
+                    format!("send outcome unknown; operation {id}; do not automatically resend"),
+                )
+            };
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        }
+    }
+    Ok(true)
+}
+
 pub(crate) async fn request_messaging<W>(
     command: MessagingCommand,
     build: impl FnOnce(String) -> handover_gmessages::contract::HelperCommand,
@@ -1694,7 +1802,7 @@ mod messaging_live_tests {
         });
 
         let mut client = Client::connect_to(path.clone()).await.expect("connect");
-        let subscriber = Client::connect_to(path).await.expect("connect");
+        let subscriber = Client::connect_to(path.clone()).await.expect("connect");
         let mut subscription = subscriber.subscribe().await.expect("subscribe");
 
         // The supervisor spawns asynchronously; wait for the helper link.
@@ -1846,7 +1954,7 @@ mod messaging_live_tests {
             .send_message_text(rcs.id.clone(), "hello from the live test".into())
             .await
             .expect("send accepted");
-        assert!(request_id.starts_with("msgreq-"));
+        assert!(request_id.starts_with("send-"));
         // Drain the attested pipeline one stage per sync.
         for _ in 0..3 {
             client
@@ -1856,8 +1964,41 @@ mod messaging_live_tests {
         }
         let displayed = wait_for_status(&mut subscription, "displayed").await;
         assert!(displayed.starts_with("gmessages:test:thread-rcs:out-"));
+        let operations = client
+            .messaging_outgoing()
+            .await
+            .expect("outgoing snapshot");
+        let operation = operations
+            .iter()
+            .find(|operation| operation.id == request_id)
+            .expect("send retained");
+        assert_eq!(
+            operation.outcome,
+            handover_core::OutgoingOutcome::Provider(handover_core::MessageStatus::Displayed)
+        );
+        assert_eq!(
+            operation
+                .message_id
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some(displayed.as_str())
+        );
 
         // The sent message is visible with self attribution.
+        let replacement = Client::connect_to(path.clone())
+            .await
+            .expect("replacement client");
+        let mut replacement = replacement
+            .subscribe()
+            .await
+            .expect("replacement subscribes");
+        let snapshot = replacement.next_message().await.expect("outgoing snapshot");
+        assert!(
+            matches!(snapshot.payload, ServerPayload::OutgoingOperations { operations, done: true }
+            if operations.iter().any(|operation| operation.id == request_id))
+        );
+
         let (fresh, _) = client
             .messaging_history(rcs.id.clone(), Some(10), None)
             .await

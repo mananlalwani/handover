@@ -87,6 +87,7 @@ Singleton {
     property var exhaustiveHistoryLoads: ({})
     property var typingStates: []
     property var readStates: []
+    property var outgoingOperations: []
     property var pairingPrompt: null
     property var pendingMessaging: null
     signal messagingFinished(string method, string requestId, bool success, string error)
@@ -199,6 +200,17 @@ Singleton {
 
     function loadConversations(accountId) {
         sendRequest("messages.conversations", { account_id: accountId });
+    }
+
+    function loadOutgoingOperations() {
+        outgoingOperations = [];
+        sendRequest("messages.outgoing", null);
+    }
+
+    function replaceOutgoingOperation(operation) {
+        const next = outgoingOperations.filter(existing => existing.id !== operation.id);
+        next.push(operation);
+        outgoingOperations = next;
     }
 
     function loadHistory(conversationId, limit, cursor) {
@@ -556,6 +568,7 @@ Singleton {
         sendRequest("clipboard.mirror_status", null, socket);
         sendRequest("clipboard.history_list", null, socket);
         sendRequest("subscribe", { shares: true, media: true, messages: true }, socket);
+        loadOutgoingOperations();
     }
 
     function scheduleReconnect(message) {
@@ -582,6 +595,7 @@ Singleton {
         conversationCursors = {};
         typingStates = [];
         readStates = [];
+        outgoingOperations = [];
         pairingPrompt = null;
         nativePending = false;
         nativeNotice = "";
@@ -713,10 +727,13 @@ Singleton {
             break;
         case "subscribed":
         case "snapshot":
+            outgoingOperations = [];
             applySnapshot(message, false);
             break;
         case "subscribed_chunk":
         case "snapshot_chunk":
+            if (!snapshotBuffer)
+                outgoingOperations = [];
             applySnapshot(message, true);
             break;
         case "conversations_chunk":
@@ -853,6 +870,8 @@ Singleton {
             messagingAccounts = messagingAccounts.filter(existing => existing.id !== message.account_id);
             conversations = conversations.filter(existing =>
                 existing.id.account_id !== message.account_id);
+            outgoingOperations = outgoingOperations.filter(operation =>
+                operation.conversation_id.account_id !== message.account_id);
             break;
         case "conversation_added":
         case "conversation_updated":
@@ -869,6 +888,26 @@ Singleton {
             removeMessage(message.message_id);
             break;
         case "message_status":
+            break;
+        case "outgoing_operations":
+            {
+                const next = outgoingOperations.slice();
+                for (const operation of message.operations || []) {
+                    const index = next.findIndex(existing => existing.id === operation.id);
+                    if (index >= 0)
+                        next[index] = operation;
+                    else
+                        next.push(operation);
+                }
+                outgoingOperations = next;
+            }
+            break;
+        case "outgoing_operation":
+            replaceOutgoingOperation(message.operation);
+            break;
+        case "outgoing_operation_removed":
+            outgoingOperations = outgoingOperations.filter(
+                operation => operation.id !== message.operation_id);
             break;
         case "typing":
             replaceTyping(message.state);

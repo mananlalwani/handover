@@ -435,6 +435,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('accounts', 'accounts', [CompletionResultType]::ParameterValue, 'List messaging accounts with connection state')
             [CompletionResult]::new('conversations', 'conversations', [CompletionResultType]::ParameterValue, 'List conversations for one account')
             [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Show message history for one conversation (ACCOUNT:THREAD or THREAD)')
+            [CompletionResult]::new('outgoing', 'outgoing', [CompletionResultType]::ParameterValue, 'List durable outgoing message operations and their last attested outcome')
             [CompletionResult]::new('send', 'send', [CompletionResultType]::ParameterValue, 'Send a text message (accepted, not delivered)')
             [CompletionResult]::new('send-file', 'send-file', [CompletionResultType]::ParameterValue, 'Send a file attachment with an optional caption')
             [CompletionResult]::new('reply', 'reply', [CompletionResultType]::ParameterValue, 'Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)')
@@ -465,6 +466,11 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('--cursor', '--cursor', [CompletionResultType]::ParameterName, 'Cursor printed by a previous history page')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            break
+        }
+        'handoverctl;messages;outgoing' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'handoverctl;messages;send' {
@@ -534,6 +540,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('accounts', 'accounts', [CompletionResultType]::ParameterValue, 'List messaging accounts with connection state')
             [CompletionResult]::new('conversations', 'conversations', [CompletionResultType]::ParameterValue, 'List conversations for one account')
             [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Show message history for one conversation (ACCOUNT:THREAD or THREAD)')
+            [CompletionResult]::new('outgoing', 'outgoing', [CompletionResultType]::ParameterValue, 'List durable outgoing message operations and their last attested outcome')
             [CompletionResult]::new('send', 'send', [CompletionResultType]::ParameterValue, 'Send a text message (accepted, not delivered)')
             [CompletionResult]::new('send-file', 'send-file', [CompletionResultType]::ParameterValue, 'Send a file attachment with an optional caption')
             [CompletionResult]::new('reply', 'reply', [CompletionResultType]::ParameterValue, 'Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)')
@@ -556,6 +563,9 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;messages;help;history' {
+            break
+        }
+        'handoverctl;messages;help;outgoing' {
             break
         }
         'handoverctl;messages;help;send' {
@@ -774,6 +784,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('accounts', 'accounts', [CompletionResultType]::ParameterValue, 'List messaging accounts with connection state')
             [CompletionResult]::new('conversations', 'conversations', [CompletionResultType]::ParameterValue, 'List conversations for one account')
             [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Show message history for one conversation (ACCOUNT:THREAD or THREAD)')
+            [CompletionResult]::new('outgoing', 'outgoing', [CompletionResultType]::ParameterValue, 'List durable outgoing message operations and their last attested outcome')
             [CompletionResult]::new('send', 'send', [CompletionResultType]::ParameterValue, 'Send a text message (accepted, not delivered)')
             [CompletionResult]::new('send-file', 'send-file', [CompletionResultType]::ParameterValue, 'Send a file attachment with an optional caption')
             [CompletionResult]::new('reply', 'reply', [CompletionResultType]::ParameterValue, 'Reply to a message (ACCOUNT:THREAD:MESSAGE or THREAD:MESSAGE ...)')
@@ -795,6 +806,9 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help;messages;history' {
+            break
+        }
+        'handoverctl;help;messages;outgoing' {
             break
         }
         'handoverctl;help;messages;send' {

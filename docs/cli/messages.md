@@ -17,6 +17,7 @@ Selectors:
 handoverctl messages accounts
 handoverctl messages conversations ACCOUNT
 handoverctl messages history CONVERSATION [--limit N] [--cursor CURSOR]
+handoverctl messages outgoing
 handoverctl messages send CONVERSATION TEXT
 handoverctl messages send-file CONVERSATION PATH [--caption TEXT]
 handoverctl messages reply MESSAGE TEXT
@@ -48,6 +49,13 @@ Shows message history for one conversation. Prints a `--cursor CURSOR`
 line when older messages remain in the stored window, and a start marker
 when the window is exhausted. `--limit N` caps the page. `--cursor`
 continues from a previous page.
+
+## outgoing
+
+Lists durable send operation ids, conversations, content kind, last known
+outcome, update time, and any linked message id. Records contain no message
+text or attachment path. `unknown` means the send may have reached the
+provider, so Handover does not retry it automatically.
 
 ## send
 

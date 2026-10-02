@@ -369,6 +369,8 @@ pub enum MessagesCommand {
         #[arg(long, value_name = "CURSOR")]
         cursor: Option<String>,
     },
+    /// List durable outgoing message operations and their last attested outcome.
+    Outgoing,
     /// Send a text message (accepted, not delivered).
     ///
     /// Prints a request id. Delivery status arrives later as an attested
