@@ -18,16 +18,23 @@ continuity features, or 1.0 APIs.
 Linux-native model for calls, contacts, SMS, and RCS. Clients use Handover
 types, not provider objects.
 
-`handover-gmessages` stays the Google protocol engine for now. Handover owns
-supervision, normalization, persistence policy, lifecycle, the helper contract,
-and the Linux-facing model. Replace libgm later behind that provider boundary
-without changing clients.
+Implement Handover's own Google Messages protocol client without
+`mautrix-gmessages` or copied mautrix implementation code. Keep Google wire
+formats, authentication, pairing, encryption, and relay behavior below the
+normalized helper contract. The existing adapter remains a temporary bootstrap
+backend while the independent client is developed and verified.
+
+Start by proving fresh pairing and read-only conversation/history retrieval.
+Then implement live updates, text and media sends, provider-backed outcomes, and
+session recovery before switching the normal communications path.
 
 A first-party Messages app, if built, talks only to public Handover messaging
 IPC. It does not embed Google protocol code.
 
-Done when daily SMS and RCS from Linux is practical, Google types do not leak
-into clients, and the Google provider can change without rewriting `handoverd`.
+Done when daily SMS and RCS from Linux works through the independently authored
+client without a mautrix dependency, Google types stay out of public clients,
+and pairing, delivery evidence, media, expiry, and recovery are live-tested.
+Normalizing or hardening the existing adapter alone does not close this milestone.
 
 ## Milestone 3: Android ecosystem integration
 
@@ -70,5 +77,6 @@ Version for compatibility, not a calendar.
 
 ## Current priority
 
-Milestone 2 focuses on daily SMS and RCS from Linux through public Handover
-messaging IPC, with the Google protocol engine behind the helper contract.
+Milestone 2 prioritizes replacing the mautrix-based Google protocol engine with
+Handover's own implementation behind the existing helper contract. Calls,
+contacts, and public messaging clients remain interoperable during the transition.
