@@ -86,3 +86,42 @@ connector provides page interaction, but no network interception capability.
 Chrome was not started with a remote-debugging endpoint, so the standalone CDP
 observer could not attach to this session. Authenticated RPC schemas and
 independent-client pairing remain unverified.
+
+## Authenticated normal-Chrome trace
+
+The local Chrome observer was loaded and exercised by the user. After the
+existing helper was paused, the user refreshed the signed-in Google Messages
+page, exported 215 sanitized records, stopped the observer, and closed the test
+page. The original helper was restored and its account reported online.
+
+All captured POST responses had HTTP status 200 and content type
+`application/json+protobuf`. HTTP status alone does not establish an RPC result,
+message delivery, or any other effect.
+
+| RPC | Requests | Request array positions | Completed response array positions |
+| --- | ---: | ---: | ---: |
+| Registration/SignInGaia | 2 | 4 | 3 |
+| Registration/ListIdentities | 1 | 2 | 2 |
+| Registration/LookupRegistered | 1 | 7 | 4 |
+| Messaging/ReceiveMessages | 2 | 4 | Not captured |
+| Messaging/PullMessages | 2 | 2 | 3 |
+| Messaging/AckMessages | 17 | 2 | 1 |
+| Messaging/SendMessage | 48 | 9 | 2 |
+
+One SendMessage request had no matching completed response before export. The
+receive streams stayed open, so the observer did not record their body shapes.
+The export retained structural metadata only and remains outside Git.
+
+The normal-Chrome public script shows that SendMessage carries an opaque payload
+inside a transport envelope. In this build, the send helper is at character
+offset 1061950, the envelope class at 703962, and the request descriptor at
+931901. Its envelope setter places bytes in field 12; the send helper assigns a
+request identifier and transport metadata before invoking the RPC. This is not
+a parsed chat-send operation. The automatic traffic during refresh does not
+prove that a user chat message was sent, and the payload meanings were not
+captured.
+
+This trace establishes the authenticated transport format and useful structural
+checks for future original-client work. It does not establish cookie-based
+authentication construction, protobuf field semantics, pairing cryptography,
+session restoration, or conversation/history decoding by Handover's own client.

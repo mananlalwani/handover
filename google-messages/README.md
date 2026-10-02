@@ -63,6 +63,15 @@ For an already signed-in normal Chrome profile, the local
 Messages tab without relaunching Chrome. Its installation requires a manual
 Chrome extension-management step.
 
+Validate a saved Chrome JSON export and print aggregate facts with:
+
+```sh
+python3 google-messages/tools/summarize_observation.py /path/to/google-messages-rpc-observation.json
+```
+
+The summarizer rejects unexpected fields and emits RPC counts, HTTP facts, and
+top-level shape counts. It does not print complete nested shapes or values.
+
 ## Integration target
 
 Implement the existing Handover helper IPC v1, documented in
