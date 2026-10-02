@@ -752,16 +752,20 @@ async fn ingest_event(
             let mut announced = HashSet::new();
             for wire in conversations {
                 match normalize_conversation(&account_id, wire) {
-                    Ok(record) => {
+                    Ok(mut record) => {
                         let id = record.id.clone();
                         announced.insert(id.local_id.clone());
-                        let known = state
+                        let previous = state
                             .read()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .messaging()
                             .conversation(&id)
-                            .is_some();
-                        let change = if known {
+                            .cloned();
+                        let change = if let Some(previous) = previous {
+                            // Conversation metadata does not attest that an older
+                            // history page is exhausted. Only page events replace
+                            // the daemon's normalized history position.
+                            record.cursor = previous.cursor;
                             ConversationEvent::Updated(record)
                         } else {
                             ConversationEvent::Added(record)
@@ -1766,6 +1770,99 @@ mod tests {
             .conversation(&conversation)
             .and_then(|conversation| conversation.cursor.clone());
         assert_eq!(cursor.as_deref(), Some("m3"));
+    }
+
+    #[tokio::test]
+    async fn conversation_refresh_preserves_history_until_a_page_changes_it() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        let id = ConversationId::new(MessagingAccountId::new("personal"), "thread");
+        for event in [
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+            HelperEvent::Conversations {
+                account: "personal".into(),
+                conversations: vec![wire_conversation("thread")],
+                full: true,
+                generation: Some(1),
+            },
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![wire_message("oldest")],
+                cursor_next: Some("relay:9".into()),
+                page_complete: true,
+                full: false,
+                fetch_id: None,
+                generation: None,
+            },
+        ] {
+            ingest_event(&state, &events, &hub, &mut seen, event).await;
+        }
+        for generation in [None, Some(2)] {
+            let mut metadata = wire_conversation("thread");
+            metadata.title = Some("Updated title".into());
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::Conversations {
+                    account: "personal".into(),
+                    conversations: vec![metadata],
+                    full: generation.is_some(),
+                    generation,
+                },
+            )
+            .await;
+            let guard = state.read().unwrap();
+            let (messages, cursor) = guard.messaging().history(&id, 1, None).unwrap();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(cursor.as_deref(), Some("oldest"));
+            assert_eq!(
+                guard
+                    .messaging()
+                    .conversation(&id)
+                    .unwrap()
+                    .title
+                    .as_deref(),
+                Some("Updated title")
+            );
+        }
+        // A completed page, unlike metadata, can establish exhaustion.
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![wire_message("oldest")],
+                cursor_next: None,
+                page_complete: true,
+                full: false,
+                fetch_id: None,
+                generation: None,
+            },
+        )
+        .await;
+        assert!(
+            state
+                .read()
+                .unwrap()
+                .messaging()
+                .history(&id, 1, None)
+                .unwrap()
+                .1
+                .is_none()
+        );
     }
 
     #[tokio::test]
