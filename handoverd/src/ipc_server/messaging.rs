@@ -527,10 +527,9 @@ where
             // A successful local read may still be only a bounded live-event
             // window. If the caller asks for more than we currently hold,
             // give the helper one chance to fill the newest page before
-            // declaring that history is exhausted. This is what makes a
-            // larger "load all" request materially different from rereading
-            // the same local window.
-            if cursor.is_none() && limit == 100 && messages.len() < limit {
+            // declaring that history is exhausted. Default-size reads need
+            // this too: a live event may have created only a partial window.
+            if cursor.is_none() && messages.len() < limit {
                 if let Some(hub) = messaging {
                     if hub
                         .fetch_through_helper(
@@ -1774,6 +1773,24 @@ mod messaging_live_tests {
         assert!(!older.is_empty());
         assert!(end.is_none());
 
+        // A live event can create a short cache before history has been
+        // fetched. Default-size reads must fill it from the provider too.
+        {
+            let mut store = state.write().unwrap();
+            for message in &older {
+                store.apply(StateEvent::Messaging(
+                    handover_core::MessagingEvent::Message(handover_core::MessageEvent::Removed(
+                        message.id.clone(),
+                    )),
+                ));
+            }
+        }
+        let (refilled, _) = client
+            .messaging_history(rcs.id.clone(), None, None)
+            .await
+            .expect("default history fills short cache");
+        assert_eq!(refilled.len(), page.len() + older.len());
+
         // Unknown conversations stay unknown; bogus cursors report a gap.
         let unknown = client
             .messaging_history(
@@ -2357,6 +2374,24 @@ mod messaging_failure_tests {
             ),
             "oversized bundle must fail closed, got {error:?}"
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn short_cached_history_remains_readable_without_helper() {
+        let (_directory, path, task) = server_without_helper(seeded_state()).await;
+        let mut client = Client::connect_to(path).await.expect("connect");
+        let (messages, cursor) = client
+            .messaging_history(
+                ConversationId::new(MessagingAccountId::new("gmessages:test"), "thread-1"),
+                None,
+                None,
+            )
+            .await
+            .expect("cached history remains available");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id.local_id, "m1");
+        assert!(cursor.is_none());
         task.abort();
     }
 
