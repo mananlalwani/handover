@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RPC observer</title>
+  <style>
+    body { width: 300px; margin: 16px; color: #202124; font: 14px system-ui, sans-serif; }
+    label, button, a { display: block; margin-top: 12px; }
+    input { width: 72px; }
+    button, a { padding: 8px; }
+    #status { min-height: 2.5em; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <strong>Google Messages RPC observer</strong>
+  <p>This records only RPC names, HTTP facts, content types, and bounded body structure.</p>
+  <label>Duration in seconds (1–300)
+    <input id="duration" type="number" min="1" max="300" value="60">
+  </label>
+  <button id="start">Start on this tab</button>
+  <button id="stop">Stop</button>
+  <button id="save">Prepare JSON export</button>
+  <a id="download" hidden>Save sanitized JSON</a>
+  <p id="status" role="status"></p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

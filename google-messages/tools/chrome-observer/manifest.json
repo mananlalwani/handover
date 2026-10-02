@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "118",
+  "name": "Handover Google Messages RPC Observer",
+  "version": "1.0.0",
+  "description": "Collects bounded, sanitized network RPC structure from the active Google Messages tab.",
+  "permissions": ["debugger", "activeTab", "alarms"],
+  "background": { "service_worker": "service-worker.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "RPC observer" }
+}

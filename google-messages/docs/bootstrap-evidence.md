@@ -24,3 +24,14 @@ first-party observations and validated against actual traffic. Do not fill gaps
 from the old adapter or its upstream generated definitions. Raw authenticated
 traffic must not be printed, committed, or attached to issues; any future capture
 needs private storage and sanitization before it becomes a fixture.
+
+## Script used by normal Chrome
+
+After the user signed in, the normal Chrome page referenced a different public
+bootstrap build. Its script URL was read from a DOM `script` element and fetched
+anonymously from `www.gstatic.com`, without browser cookies or an account
+session. The script was 1,214,247 bytes with SHA-256
+`6d2bed34bb2fbc97bf9d4a7e4653a2ad6749bd6e978eb1ccda3533b1027ff4ae`.
+The strict indexer found 20 descriptors among 45 candidate path occurrences.
+Raw source remains outside Git. Evidence from the initial build must not be
+assumed to share source offsets or minified identifiers with this build.

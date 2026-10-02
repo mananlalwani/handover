@@ -58,6 +58,11 @@ click, sign in, or pair on the user's behalf. Successful pairing in Google's web
 client supplies evidence for implementation; it does not validate independent
 Handover pairing.
 
+For an already signed-in normal Chrome profile, the local
+[Chrome observer](tools/chrome-observer/README.md) observes the selected Google
+Messages tab without relaunching Chrome. Its installation requires a manual
+Chrome extension-management step.
+
 ## Integration target
 
 Implement the existing Handover helper IPC v1, documented in
