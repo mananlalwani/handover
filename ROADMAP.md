@@ -18,7 +18,8 @@ continuity features, or 1.0 APIs.
 Linux-native model for calls, contacts, SMS, and RCS. Clients use Handover
 types, not provider objects.
 
-Implement Handover's own Google Messages protocol client without
+Implement Handover's own Google Messages protocol client in `google-messages/`
+without
 `mautrix-gmessages` or copied mautrix implementation code. Keep Google wire
 formats, authentication, pairing, encryption, and relay behavior below the
 normalized helper contract. The existing adapter remains a temporary bootstrap

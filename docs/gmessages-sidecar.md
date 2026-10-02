@@ -1,10 +1,17 @@
 # Google Messages sidecar
 
-The production Google Messages adapter lives in
+The legacy production Google Messages adapter lives in
 [handover-gmessages](https://github.com/mananlalwani/handover-gmessages) and is
 licensed under AGPL-3.0-only. This MIT repository communicates with it as a
 separate process. The in-tree `handover-gmessages-helper` is a loopback helper
 for development and tests.
+
+Handover's independently authored replacement lives in
+[`google-messages/`](../google-messages/README.md) in this repository. It currently
+contains first-party bootstrap evidence tools, not a working protocol client.
+It must not import or copy the AGPL adapter or mautrix implementation. Its Google
+wire formats and authentication remain below the normalized helper contract;
+public daemon, IPC, CLI, and Quickshell models stay backend-independent.
 
 ## Layout
 
@@ -14,7 +21,7 @@ handoverctl / Quickshell
 handoverd (MIT)
   owns normalized messaging state
         |  helper IPC v1: JSON lines on helper stdin/stdout
-adapter or loopback helper
+independent client, legacy adapter, or loopback helper
   credentials, pairing, relay, media
 ```
 
