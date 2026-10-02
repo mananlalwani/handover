@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -47,11 +47,19 @@ pub(crate) fn restore(state: &mut StateStore) -> Result<(), Box<dyn std::error::
         return Ok(());
     }
     let path = cache_path()?;
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
+    restore_from_path(state, &path)
+}
+
+fn restore_from_path(
+    state: &mut StateStore,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let metadata = file.metadata()?;
     // Never buffer an unbounded file: a corrupt or hostile cache
     // cannot balloon the daemon at startup.
     if !metadata.is_file() || metadata.len() > MAX_CACHE_BYTES {
@@ -59,7 +67,13 @@ pub(crate) fn restore(state: &mut StateStore) -> Result<(), Box<dyn std::error::
             io::Error::new(io::ErrorKind::InvalidData, "messaging cache is not usable").into(),
         );
     }
-    let bytes = fs::read(path)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CACHE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "messaging cache is not usable").into(),
+        );
+    }
     let cache: MessagingCache = serde_json::from_slice(&bytes)?;
     if cache.version != CACHE_VERSION {
         return Ok(());
@@ -252,5 +266,204 @@ fn prune_cache(cache: &mut MessagingCache) {
         // These vectors contain user-controlled labels and can each be
         // large enough to exceed the file bound on their own. An empty
         // cache is preferable to writing a file restore must reject.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use handover_core::{
+        ConversationId, ConversationKind, MessagingAccountId, Participant, TransportKind,
+    };
+
+    fn account() -> MessagingAccount {
+        MessagingAccount {
+            id: MessagingAccountId::new("gmessages:phone"),
+            label: "Personal phone".into(),
+            connected: true,
+            authenticated: true,
+        }
+    }
+
+    fn participant() -> Participant {
+        Participant {
+            local_id: "self".into(),
+            display_name: Some("Me".into()),
+            address: None,
+            is_self: true,
+        }
+    }
+
+    fn seed_cache(state: &mut StateStore) -> MessagingCache {
+        let account = account();
+        let conversation_id = ConversationId::new(account.id.clone(), "thread-1");
+        let message_id = handover_core::MessageId::new(conversation_id.clone(), "message-1");
+        let conversation = Conversation {
+            id: conversation_id.clone(),
+            kind: ConversationKind::Direct,
+            transport: TransportKind::Rcs,
+            title: Some("Alex".into()),
+            participants: vec![participant()],
+            latest_message_id: Some(message_id.clone()),
+            last_activity_at: Some(1234),
+            unread_count: Some(1),
+            cursor: Some("older-page".into()),
+            capabilities: Default::default(),
+        };
+        let message = Message {
+            id: message_id.clone(),
+            sender: participant(),
+            transport: Some(TransportKind::Rcs),
+            sent_at: Some(1234),
+            text: Some("hello".into()),
+            attachments: Vec::new(),
+            reply_to: None,
+            reactions: Vec::new(),
+            deleted: false,
+        };
+        state.apply(StateEvent::Messaging(MessagingEvent::Account(
+            MessagingAccountEvent::Added(account.clone()),
+        )));
+        state.apply(StateEvent::Messaging(MessagingEvent::Conversation(
+            ConversationEvent::Added(conversation.clone()),
+        )));
+        state.apply(StateEvent::Messaging(MessagingEvent::Message(
+            MessageEvent::Added(message.clone()),
+        )));
+        let read = ReadState {
+            conversation_id,
+            last_read_message_id: Some(message_id),
+            unread: true,
+        };
+        state.apply(StateEvent::Messaging(MessagingEvent::Read(read.clone())));
+        MessagingCache {
+            version: CACHE_VERSION,
+            accounts: state.messaging().snapshot_accounts(),
+            conversations: state.messaging().snapshot_conversations(),
+            messages: state.messaging().snapshot_messages(),
+            read_states: state.messaging().snapshot_read(),
+        }
+    }
+
+    fn write_cache(path: &std::path::Path, cache: &MessagingCache) {
+        fs::write(path, serde_json::to_vec(cache).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn restores_normalized_accounts_conversations_messages_and_read_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.json");
+        let mut source = StateStore::default();
+        let cache = seed_cache(&mut source);
+        write_cache(&path, &cache);
+
+        let mut restored = StateStore::default();
+        restore_from_path(&mut restored, &path).unwrap();
+        let mut expected_accounts = cache.accounts.clone();
+        expected_accounts[0].connected = false;
+        expected_accounts[0].authenticated = false;
+        assert_eq!(restored.messaging().snapshot_accounts(), expected_accounts);
+        assert_eq!(
+            restored.messaging().snapshot_conversations(),
+            cache.conversations
+        );
+        assert_eq!(restored.messaging().snapshot_messages(), cache.messages);
+        assert_eq!(restored.messaging().snapshot_read(), cache.read_states);
+    }
+
+    #[test]
+    fn cached_accounts_restore_without_runtime_connectivity_or_authentication() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.json");
+        let cache = MessagingCache {
+            version: CACHE_VERSION,
+            accounts: vec![account()],
+            conversations: Vec::new(),
+            messages: Vec::new(),
+            read_states: Vec::new(),
+        };
+        write_cache(&path, &cache);
+
+        let mut restored = StateStore::default();
+        restore_from_path(&mut restored, &path).unwrap();
+        let accounts = restored.messaging().snapshot_accounts();
+        assert_eq!(accounts.len(), 1);
+        assert!(!accounts[0].connected);
+        assert!(!accounts[0].authenticated);
+        assert_eq!(accounts[0].label, cache.accounts[0].label);
+    }
+
+    #[test]
+    fn unsupported_version_is_ignored_without_applying_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.json");
+        let cache = MessagingCache {
+            version: CACHE_VERSION + 1,
+            accounts: vec![account()],
+            conversations: Vec::new(),
+            messages: Vec::new(),
+            read_states: Vec::new(),
+        };
+        write_cache(&path, &cache);
+        let mut restored = StateStore::default();
+        restore_from_path(&mut restored, &path).unwrap();
+        assert!(restored.messaging().snapshot_accounts().is_empty());
+    }
+
+    #[test]
+    fn malformed_and_oversized_files_are_rejected_without_partial_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.json");
+        let mut restored = StateStore::default();
+        let valid_prefix = serde_json::json!({
+            "version": CACHE_VERSION,
+            "accounts": [account()],
+            "conversations": [],
+            "messages": [],
+            "read_states": [],
+            "unexpected": "truncated"
+        });
+        fs::write(&path, format!("{} trailing", valid_prefix)).unwrap();
+        assert!(restore_from_path(&mut restored, &path).is_err());
+        assert!(restored.messaging().snapshot_accounts().is_empty());
+
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_CACHE_BYTES + 1).unwrap();
+        assert!(restore_from_path(&mut restored, &path).is_err());
+        assert!(restored.messaging().snapshot_accounts().is_empty());
+    }
+
+    #[test]
+    fn prune_cache_serializes_within_restore_bound() {
+        let account = account();
+        let conversation_id = ConversationId::new(account.id.clone(), "large-thread");
+        let messages = (0..36)
+            .map(|index| Message {
+                id: handover_core::MessageId::new(
+                    conversation_id.clone(),
+                    format!("message-{index}"),
+                ),
+                sender: participant(),
+                transport: None,
+                sent_at: Some(index),
+                text: Some("x".repeat(1024 * 1024)),
+                attachments: Vec::new(),
+                reply_to: None,
+                reactions: Vec::new(),
+                deleted: false,
+            })
+            .collect();
+        let mut cache = MessagingCache {
+            version: CACHE_VERSION,
+            accounts: vec![account],
+            conversations: Vec::new(),
+            messages,
+            read_states: Vec::new(),
+        };
+
+        prune_cache(&mut cache);
+        let encoded = serde_json::to_vec(&cache).unwrap();
+        assert!(encoded.len() <= MAX_CACHE_BYTES as usize);
+        assert!(cache.messages.len() < 36);
     }
 }
