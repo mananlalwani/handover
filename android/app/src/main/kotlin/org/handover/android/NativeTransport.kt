@@ -83,6 +83,7 @@ class NativeTransport(internal val context: Context) {
     @Volatile internal var serverFingerprint: String? = null
     @Volatile internal var pendingCode: String? = null
     @Volatile internal var approvalGranted = false
+    @Volatile internal var contactsChunkedSupported = false
     @Volatile internal var ownNonce: String? = null
     @Volatile internal var serverCommit: String? = null
     @Volatile internal var discovery: NsdManager.DiscoveryListener? = null
@@ -143,6 +144,7 @@ class NativeTransport(internal val context: Context) {
 
     fun stop() {
         running = false
+        contactsChunkedSupported = false
         releaseWakeLock()
         releaseConnectionWakeLock()
         clipboardLogProcess?.destroy()
@@ -250,6 +252,7 @@ class NativeTransport(internal val context: Context) {
         send(JSONObject().put("type", "revoke").put("protocol", 1))
         preferences.edit().remove(PIN_KEY).apply()
         serverFingerprint = null
+        contactsChunkedSupported = false
     }
 
     fun publishBattery(reading: BatteryReading) {
@@ -369,6 +372,7 @@ class NativeTransport(internal val context: Context) {
     internal fun connectionLoop() {
         broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "reconnecting"))
         while (running) {
+            contactsChunkedSupported = false
             val target = endpoint
             try {
                 if (target == null) {
@@ -407,6 +411,7 @@ class NativeTransport(internal val context: Context) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
+                contactsChunkedSupported = false
                 broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "offline"))
                 failPendingTransfers(TRANSFER_DISCONNECTED)
                 output = null

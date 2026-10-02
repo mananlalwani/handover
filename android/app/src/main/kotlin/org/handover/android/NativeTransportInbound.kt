@@ -188,7 +188,8 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
         }
         "contacts_request" -> {
             if (serverFingerprint == null) return
-            requestContactsSync(message.optBoolean("chunked", false))
+            contactsChunkedSupported = message.optBoolean("chunked", false)
+            requestContactsSync(contactsChunkedSupported)
         }
         "clipboard_set" -> {
             if (serverFingerprint != null) {

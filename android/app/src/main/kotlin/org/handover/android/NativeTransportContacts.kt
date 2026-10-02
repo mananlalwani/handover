@@ -14,7 +14,7 @@ import org.handover.android.NativeTransport.Companion.MAX_CHUNKED_CONTACTS
 import org.handover.android.NativeTransport.Companion.MAX_CHUNKED_CONTACT_BYTES
 import org.handover.android.NativeTransport.Companion.MAX_CHUNKED_CONTACT_CHUNKS
 
-fun NativeTransport.requestContactsSync(chunked: Boolean = false): Boolean {
+fun NativeTransport.requestContactsSync(chunked: Boolean = contactsChunkedSupported): Boolean {
     if (serverFingerprint == null) return false
     val generation = if (chunked) java.util.UUID.randomUUID().toString() else null
     val requestSocket = if (chunked) socket else null
