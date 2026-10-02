@@ -186,6 +186,17 @@ pub enum HelperEvent {
         message: String,
         status: String,
     },
+    /// Send lifecycle update correlated to the originating send command.
+    /// `accepted` means queued by the helper; later states come from the
+    /// relay. `message` may be absent until the relay assigns an id.
+    SendStatus {
+        request_id: String,
+        account: String,
+        conversation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        status: String,
+    },
     Typing {
         account: String,
         conversation: String,

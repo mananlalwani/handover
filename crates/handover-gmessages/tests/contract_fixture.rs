@@ -26,9 +26,14 @@ fn fixture() -> Vec<HelperEvent> {
 #[test]
 fn go_produced_events_decode_to_known_shapes() {
     let events = fixture();
-    assert_eq!(events.len(), 19);
+    assert_eq!(events.len(), 20);
     assert!(matches!(events[0], HelperEvent::Hello { .. }));
     assert!(matches!(events[1], HelperEvent::Account { .. }));
+    assert!(matches!(
+        &events[10],
+        HelperEvent::SendStatus { request_id, status, .. }
+            if request_id == "r-send-1" && status == "accepted"
+    ));
     assert!(matches!(
         events[events.len() - 2],
         HelperEvent::AccountRemoved { .. }

@@ -165,7 +165,7 @@ struct StoredConversation {
     /// Status progressions emitted on the next sync (loopback models the
     /// accepted -> sent -> delivered -> displayed pipeline honestly: each
     /// stage is a separate event, never assumed).
-    pending_status: VecDeque<(String, String)>,
+    pending_status: VecDeque<(String, String, String)>,
     counter: u64,
 }
 
@@ -537,7 +537,7 @@ impl Relay for LoopbackRelay {
         }
         // Drain one pending status stage per conversation per sync: stages
         // are attested one at a time, never fast-forwarded.
-        let pending: Vec<(String, String, String)> = self
+        let pending: Vec<(String, String, String, String)> = self
             .accounts
             .get_mut(account)
             .map(|stored| {
@@ -545,15 +545,23 @@ impl Relay for LoopbackRelay {
                     .conversations
                     .iter_mut()
                     .filter_map(|(local_id, conversation)| {
-                        conversation
-                            .pending_status
-                            .pop_front()
-                            .map(|(message, status)| (local_id.clone(), message, status))
+                        conversation.pending_status.pop_front().map(
+                            |(request_id, message, status)| {
+                                (local_id.clone(), request_id, message, status)
+                            },
+                        )
                     })
                     .collect()
             })
             .unwrap_or_default();
-        for (conversation, message, status) in pending {
+        for (conversation, request_id, message, status) in pending {
+            events.push(HelperEvent::SendStatus {
+                request_id,
+                account: account.into(),
+                conversation: conversation.clone(),
+                message: Some(message.clone()),
+                status: status.clone(),
+            });
             events.push(HelperEvent::Status {
                 account: account.into(),
                 conversation,
@@ -638,19 +646,26 @@ impl Relay for LoopbackRelay {
         // Accepted now; later stages attest one per sync.
         thread
             .pending_status
-            .push_back((local_id.clone(), "sent".into()));
+            .push_back((request_id.into(), local_id.clone(), "sent".into()));
         thread
             .pending_status
-            .push_back((local_id.clone(), "delivered".into()));
+            .push_back((request_id.into(), local_id.clone(), "delivered".into()));
         thread
             .pending_status
-            .push_back((local_id.clone(), "displayed".into()));
+            .push_back((request_id.into(), local_id.clone(), "displayed".into()));
         vec![
             Self::result(request_id, true, None),
             HelperEvent::Status {
                 account: account.into(),
                 conversation: conversation.into(),
                 message: local_id.clone(),
+                status: "accepted".into(),
+            },
+            HelperEvent::SendStatus {
+                request_id: request_id.into(),
+                account: account.into(),
+                conversation: conversation.into(),
+                message: Some(local_id.clone()),
                 status: "accepted".into(),
             },
             HelperEvent::Messages {
@@ -734,16 +749,23 @@ impl Relay for LoopbackRelay {
         thread.wire.latest_message = Some(local_id.clone());
         thread
             .pending_status
-            .push_back((local_id.clone(), "sent".into()));
+            .push_back((request_id.into(), local_id.clone(), "sent".into()));
         thread
             .pending_status
-            .push_back((local_id.clone(), "delivered".into()));
+            .push_back((request_id.into(), local_id.clone(), "delivered".into()));
         vec![
             Self::result(request_id, true, None),
             HelperEvent::Status {
                 account: account.into(),
                 conversation: conversation.into(),
                 message: local_id.clone(),
+                status: "accepted".into(),
+            },
+            HelperEvent::SendStatus {
+                request_id: request_id.into(),
+                account: account.into(),
+                conversation: conversation.into(),
+                message: Some(local_id.clone()),
                 status: "accepted".into(),
             },
             HelperEvent::Messages {
@@ -1234,5 +1256,24 @@ mod tests {
         assert_eq!(decoded, b" OPAQUE-BUNDLE:42/+".to_vec());
         assert!(decode_base64("!!!").is_err());
         assert!(decode_base64("abc").is_err());
+    }
+
+    #[test]
+    fn loopback_send_status_stays_correlated_across_stages() {
+        let mut relay = LoopbackRelay::new();
+        relay.login("test", b"bundle");
+        relay.sync("test");
+        let accepted = relay.send_text("request-1", "test", "thread-rcs", "hello", None);
+        assert!(accepted.iter().any(|event| matches!(
+            event,
+            HelperEvent::SendStatus { request_id, status, .. }
+                if request_id == "request-1" && status == "accepted"
+        )));
+        let sent = relay.sync("test");
+        assert!(sent.iter().any(|event| matches!(
+            event,
+            HelperEvent::SendStatus { request_id, status, .. }
+                if request_id == "request-1" && status == "sent"
+        )));
     }
 }

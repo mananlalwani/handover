@@ -263,6 +263,13 @@ pub fn event_ids(event: &HelperEvent) -> String {
             message,
             status,
         } => format!("status {account}:{conversation}:{message} {status}"),
+        HelperEvent::SendStatus {
+            request_id,
+            account,
+            conversation,
+            status,
+            ..
+        } => format!("send_status {request_id} {account}:{conversation} {status}"),
         HelperEvent::Typing {
             account,
             conversation,
