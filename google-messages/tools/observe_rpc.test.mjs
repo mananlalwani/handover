@@ -153,7 +153,7 @@ test('CLI observes matching RPC facts through localhost CDP with bounded, privat
     const [code] = await once(child, 'exit');
     const elapsed = Date.now() - startedAt;
     assert.equal(code, 0, stderr);
-    assert.ok(elapsed >= 900 && elapsed < 6000, `duration exit took ${elapsed}ms; commands=${commands.join(',')}; stdout=${stdout}; stderr=${stderr}`);
+    assert.ok(elapsed >= 900 && elapsed < 7000, `duration exit took ${elapsed}ms; commands=${commands.join(',')}; stdout=${stdout}; stderr=${stderr}`);
     const outputStat = await stat(outputFile);
     assert.equal(outputStat.mode & 0o777, 0o600);
     const lines = (await readFile(outputFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));

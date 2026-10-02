@@ -73,3 +73,16 @@ failure. The browser rejection reason has not been isolated.
 These observations resolve the transport-format question for the observed
 requests. They do not establish protobuf field meanings, authentication token
 sources, key derivation, or encrypted envelope construction.
+
+## Normal-browser follow-up
+
+The normal Chrome profile became available through the browser connector. The
+user completed Google's passkey confirmation, and the Google Messages page
+displayed its conversation list. No messages were sent and no conversation
+contents were saved as fixtures.
+
+This verifies access through Google's application in normal Chrome. The browser
+connector provides page interaction, but no network interception capability.
+Chrome was not started with a remote-debugging endpoint, so the standalone CDP
+observer could not attach to this session. Authenticated RPC schemas and
+independent-client pairing remain unverified.
