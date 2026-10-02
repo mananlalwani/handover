@@ -1,6 +1,6 @@
 # Handover roadmap
 
-Four milestones. Each one is usable on its own. Later work does not block an
+Three milestones. Each one is usable on its own. Later work does not block an
 earlier milestone unless skipping it would force a rewrite.
 
 ## Milestone 1: replace KDE Connect (done)
@@ -13,21 +13,7 @@ Caveats from the device pass are in `docs/KNOWN_LIMITATIONS.md`. Do not reopen
 this milestone for first-party Messages apps, independent Google protocol work,
 continuity features, or 1.0 APIs.
 
-## Milestone 2: make connectivity automatic
-
-The goal is to keep the connection working without user intervention after
-pairing.
-
-Work includes reconnect latency, suspend and resume, Android process and
-service recovery, network transitions, stale-session rejection, capability
-renegotiation, stable identity, state restoration, idle CPU and memory, Android
-battery, installation and upgrades, and desktop integration.
-
-Done when common network and process failures recover without user action, one
-physical phone stays one identity, multi-day sessions stay usable, and install
-does not require maintainer folklore.
-
-## Milestone 3: own communications
+## Milestone 2: own communications
 
 Linux-native model for calls, contacts, SMS, and RCS. Clients use Handover
 types, not provider objects.
@@ -43,7 +29,7 @@ IPC. It does not embed Google protocol code.
 Done when daily SMS and RCS from Linux is practical, Google types do not leak
 into clients, and the Google provider can change without rewriting `handoverd`.
 
-## Milestone 4: Android ecosystem integration
+## Milestone 3: Android ecosystem integration
 
 Expose Android capabilities in existing Linux workflows: launcher, file
 manager, browser, notifications, media, shell panels. Continuity (activity
@@ -71,12 +57,12 @@ Continuity feature is not required.
 
 The project is `0.3.x`. Stay on `0.x` while public interfaces may change.
 `1.0.0` is when users and integrators can depend on the promised behavior.
-It does not wait for Milestone 4.
+It does not wait for Milestone 3.
 
 ```text
 0.3.x   native path, Milestone 1 closed
-0.4.x   Milestone 2: reconnect, packaging, daily-driver reliability
-0.5+    communications, first-party apps, broader desktop integration
+0.4.x   Milestone 2: communications
+0.5+    Milestone 3: Android ecosystem integration
 1.0     stable public device-integration API
 ```
 
@@ -84,5 +70,5 @@ Version for compatibility, not a calendar.
 
 ## Current priority
 
-Test the Arch package in daily use. Milestone 2 focuses on reconnects,
-packaging, and problems found during that testing.
+Milestone 2 focuses on daily SMS and RCS from Linux through public Handover
+messaging IPC, with the Google protocol engine behind the helper contract.
