@@ -68,7 +68,7 @@ jobs:
           test -n "$HANDOVER_ANDROID_STORE_PASSWORD"
           test -n "$HANDOVER_ANDROID_KEY_ALIAS"
           test -n "$HANDOVER_ANDROID_KEY_PASSWORD"
-          ./gradlew assembleRelease lintRelease testReleaseUnitTest
+          ./gradlew :app:assembleRelease :app:lintRelease :app:testDebugUnitTest
       - name: Upload signed test APK
         uses: actions/upload-artifact@v4
         with:
