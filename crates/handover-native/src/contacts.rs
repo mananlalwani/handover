@@ -111,6 +111,10 @@ impl ContactChunks {
         if self.expire(now) && index != 0 {
             return Err(ContactsSyncFailure::Interrupted);
         }
+        // Expiry may have closed this generation during this push.
+        if self.closed.contains(&generation) {
+            return Err(ContactsSyncFailure::Rejected);
+        }
         if index == 0 {
             if let Some(active) = self.active.take() {
                 self.close(active.generation.clone());
@@ -293,6 +297,35 @@ mod tests {
             Ok(Some(vec![contact("c")]))
         );
     }
+    #[test]
+    fn expired_generation_cannot_restart_with_a_replayed_first_chunk() {
+        let mut chunks = ContactChunks::default();
+        let now = Instant::now();
+        chunks
+            .push("old".into(), 0, false, vec![contact("a")], now)
+            .unwrap();
+        assert_eq!(
+            chunks.push(
+                "old".into(),
+                0,
+                true,
+                vec![contact("a")],
+                now + GENERATION_TIMEOUT
+            ),
+            Err(ContactsSyncFailure::Rejected)
+        );
+        assert_eq!(
+            chunks.push(
+                "new".into(),
+                0,
+                true,
+                vec![contact("b")],
+                now + GENERATION_TIMEOUT
+            ),
+            Ok(Some(vec![contact("b")]))
+        );
+    }
+
     #[test]
     fn counts_and_bytes_are_bounded_before_publication() {
         let now = Instant::now();
