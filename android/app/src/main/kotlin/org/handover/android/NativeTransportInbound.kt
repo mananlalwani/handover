@@ -186,7 +186,10 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
                 syncNotifications(enabled, list)
             }
         }
-        "contacts_request" -> requestContactsSync()
+        "contacts_request" -> {
+            if (serverFingerprint == null) return
+            requestContactsSync(message.optBoolean("chunked", false))
+        }
         "clipboard_set" -> {
             if (serverFingerprint != null) {
                 val requestId = message.optString("request_id")
@@ -389,4 +392,3 @@ internal fun NativeTransport.handleAudibleCommand(message: JSONObject, action: S
         .onSuccess { sendDeviceCommandResult(requestId, action, true, null) }
         .onFailure { sendDeviceCommandResult(requestId, action, false, "unavailable") }
 }
-

@@ -215,11 +215,30 @@ pub struct Contact {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ContactsEvent {
+    /// The daemon has stored a new snapshot. Clients fetch it instead of
+    /// retaining full address books in event queues.
+    Changed {
+        device_id: DeviceId,
+        count: usize,
+    },
     Synced {
         device_id: DeviceId,
         contacts: Vec<Contact>,
     },
     Removed(DeviceId),
+    SyncFailed {
+        device_id: DeviceId,
+        failure: ContactsSyncFailure,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactsSyncFailure {
+    PermissionDenied,
+    TooLarge,
+    Interrupted,
+    Rejected,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -1,5 +1,6 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
 
+mod contacts;
 mod discovery;
 mod errors;
 mod identity;
@@ -627,6 +628,7 @@ impl NativeBackend {
         }
         queue.push(Message::ContactsRequest {
             protocol: WIRE_VERSION,
+            chunked: true,
         });
         true
     }

@@ -51,6 +51,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 import javax.net.ssl.KeyManagerFactory
@@ -77,6 +78,7 @@ class NativeTransport(internal val context: Context) {
     @Volatile internal var socket: SSLSocket? = null
     @Volatile internal var output: BufferedOutputStream? = null
     internal val outputLock = Any()
+    internal val contactsBatchQueued = AtomicBoolean(false)
     @Volatile internal var serverId: String? = null
     @Volatile internal var serverFingerprint: String? = null
     @Volatile internal var pendingCode: String? = null
@@ -504,6 +506,50 @@ class NativeTransport(internal val context: Context) {
         enqueue { writeNow(message) }
     }
 
+    internal fun queueContactsBatch(
+        frames: List<JSONObject>,
+        expectedSocket: SSLSocket,
+        expectedOutput: BufferedOutputStream,
+    ): Boolean {
+        if (!contactsBatchQueued.compareAndSet(false, true)) return false
+        if (socket !== expectedSocket || output !== expectedOutput) {
+            contactsBatchQueued.set(false)
+            return false
+        }
+        val accepted = enqueue {
+            try {
+                synchronized(outputLock) {
+                    if (socket === expectedSocket && output === expectedOutput) {
+                        try {
+                            frames.forEach { write(expectedOutput, it) }
+                        } catch (_: Exception) {
+                            runCatching { expectedSocket.close() }
+                        }
+                    }
+                }
+            } finally {
+                contactsBatchQueued.set(false)
+            }
+        }
+        if (!accepted) contactsBatchQueued.set(false)
+        return accepted
+    }
+
+    internal fun queueContactsError(
+        message: JSONObject,
+        expectedSocket: SSLSocket,
+        expectedOutput: BufferedOutputStream,
+    ) {
+        enqueue {
+            synchronized(outputLock) {
+                if (socket === expectedSocket && output === expectedOutput) {
+                    runCatching { write(expectedOutput, message) }
+                        .onFailure { runCatching { expectedSocket.close() } }
+                }
+            }
+        }
+    }
+
     internal fun enqueue(operation: () -> Unit): Boolean = try {
         if (writerExecutor.isShutdown) false else { writerExecutor.execute(operation); true }
     } catch (_: java.util.concurrent.RejectedExecutionException) { false }
@@ -612,6 +658,9 @@ class NativeTransport(internal val context: Context) {
         // one frame with envelope headroom. Per-field caps keep one
         // pathological record from eating the budget.
         internal const val CONTACTS_BUDGET_BYTES = 56 * 1024
+        internal const val MAX_CHUNKED_CONTACTS = 4096
+        internal const val MAX_CHUNKED_CONTACT_BYTES = 8 * 1024 * 1024
+        internal const val MAX_CHUNKED_CONTACT_CHUNKS = 256
         internal const val MAX_CONTACT_VALUES = 16
         internal const val MAX_CONTACT_FIELD_CHARS = 256
         internal const val CLIPBOARD_SYNC_KEY = "clipboard_sync_enabled"

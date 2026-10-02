@@ -396,6 +396,21 @@ pub enum ServerPayload {
     Contacts {
         contacts: Vec<handover_core::Contact>,
     },
+    ContactsChunk {
+        contacts: Vec<handover_core::Contact>,
+        done: bool,
+    },
+    ContactsSynced {
+        device_id: DeviceId,
+        count: usize,
+    },
+    ContactsRemoved {
+        device_id: DeviceId,
+    },
+    ContactsSyncFailed {
+        device_id: DeviceId,
+        failure: handover_core::ContactsSyncFailure,
+    },
     Calls {
         calls: Vec<CallState>,
     },
@@ -1001,6 +1016,23 @@ impl Client {
         self.send(Method::ContactsList).await?;
         match self.receive().await?.payload {
             ServerPayload::Contacts { contacts } => Ok(contacts),
+            ServerPayload::ContactsChunk { contacts, done } => {
+                let mut all = contacts;
+                let mut done = done;
+                while !done {
+                    match self.receive().await?.payload {
+                        ServerPayload::ContactsChunk {
+                            contacts,
+                            done: next,
+                        } => {
+                            all.extend(contacts);
+                            done = next;
+                        }
+                        payload => return Err(unexpected(payload)),
+                    }
+                }
+                Ok(all)
+            }
             payload => Err(unexpected(payload)),
         }
     }
@@ -2032,6 +2064,58 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
             message
+        );
+    }
+
+    #[test]
+    fn contacts_sync_events_and_chunks_round_trip_without_contact_data() {
+        let synced = ServerMessage::new(ServerPayload::ContactsSynced {
+            device_id: DeviceId::new("native:phone-a"),
+            count: 17,
+        });
+        let encoded = serde_json::to_string(&synced).expect("serializes");
+        assert!(encoded.contains(r#""type":"contacts_synced""#));
+        assert!(!encoded.contains("display_name"));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            synced
+        );
+
+        let failed = ServerMessage::new(ServerPayload::ContactsSyncFailed {
+            device_id: DeviceId::new("native:phone-a"),
+            failure: handover_core::ContactsSyncFailure::PermissionDenied,
+        });
+        let encoded = serde_json::to_string(&failed).expect("serializes");
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            failed
+        );
+
+        let removed = ServerMessage::new(ServerPayload::ContactsRemoved {
+            device_id: DeviceId::new("native:phone-a"),
+        });
+        let encoded = serde_json::to_string(&removed).expect("serializes");
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            removed
+        );
+
+        let chunk = ServerMessage::new(ServerPayload::ContactsChunk {
+            contacts: vec![handover_core::Contact {
+                device_id: DeviceId::new("native:phone-a"),
+                local_id: "contact-1".into(),
+                display_name: "Alice Example".into(),
+                phones: vec!["+15551234567".into()],
+                emails: Vec::new(),
+                photo: None,
+            }],
+            done: true,
+        });
+        let encoded = serde_json::to_string(&chunk).expect("serializes");
+        assert!(encoded.contains(r#""type":"contacts_chunk""#));
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            chunk
         );
     }
 

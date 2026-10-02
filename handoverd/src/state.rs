@@ -299,6 +299,11 @@ impl StateStore {
 
     fn apply_contacts(&mut self, event: ContactsEvent) -> ApplyOutcome {
         match event {
+            ContactsEvent::Changed { .. } => ApplyOutcome::unchanged(),
+            ContactsEvent::SyncFailed { .. } => ApplyOutcome {
+                changed: true,
+                changes: Vec::new(),
+            },
             ContactsEvent::Synced {
                 device_id,
                 contacts,
@@ -499,6 +504,34 @@ fn updated_changes(previous: &Device, current: &Device) -> Vec<StateChange> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_contact_sync_preserves_last_complete_snapshot() {
+        let mut store = super::StateStore::default();
+        let device_id = handover_core::DeviceId::new("native:phone");
+        let contact = handover_core::Contact {
+            device_id: device_id.clone(),
+            local_id: "a".into(),
+            display_name: "Contact".into(),
+            phones: vec![],
+            emails: vec![],
+            photo: None,
+        };
+        store.apply(handover_core::StateEvent::Contacts(
+            handover_core::ContactsEvent::Synced {
+                device_id: device_id.clone(),
+                contacts: vec![contact.clone()],
+            },
+        ));
+        let result = store.apply(handover_core::StateEvent::Contacts(
+            handover_core::ContactsEvent::SyncFailed {
+                device_id,
+                failure: handover_core::ContactsSyncFailure::PermissionDenied,
+            },
+        ));
+        assert!(result.changed);
+        assert_eq!(store.contacts(), vec![contact]);
+    }
+
     use std::collections::BTreeSet;
 
     use handover_core::{CallAction, CallPhase, Capability, MediaControl, PlaybackState};

@@ -1176,6 +1176,15 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::MessageStatus { update } => {
             println!("message status: {} {:?}", update.message_id, update.status);
         }
+        ServerPayload::ContactsSynced { device_id, count } => {
+            println!("contacts synced for {device_id}: {count} contacts");
+        }
+        ServerPayload::ContactsRemoved { device_id } => {
+            println!("contacts removed for {device_id}");
+        }
+        ServerPayload::ContactsSyncFailed { device_id, failure } => {
+            println!("contacts sync failed for {device_id}: {failure:?}");
+        }
         ServerPayload::OutgoingOperation { operation } => println!(
             "outgoing operation: {} {} {:?}",
             operation.id, operation.conversation_id, operation.outcome
@@ -1206,6 +1215,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::Devices { .. }
         | ServerPayload::Notifications { .. }
         | ServerPayload::Contacts { .. }
+        | ServerPayload::ContactsChunk { .. }
         | ServerPayload::Media { .. }
         | ServerPayload::Accounts { .. }
         | ServerPayload::Conversations { .. }

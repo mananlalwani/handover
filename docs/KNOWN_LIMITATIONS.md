@@ -5,6 +5,11 @@ testing.
 
 ## Product
 
+- Native contact sync supports complete generations of up to 4,096 contacts,
+  8 MiB, and 256 chunks. Failed or incomplete generations preserve the last
+  complete list. Older Android builds can still send an unmarked truncated list.
+  The chunked path has TLS integration coverage but has not been tested on a
+  physical phone.
 - Native media controls do not include phone volume. The phone can control
   Linux volume.
 - The Milestone 1 device pass did not cover overnight idle, twenty laptop
@@ -35,7 +40,7 @@ testing.
 - Rust and Go state-directory validation and permission rules still need
   alignment.
 - Helper-contract changes require synchronized fixtures in both repositories.
-- Large snapshots use chunks for devices, notifications, media, and messaging
+- Large snapshots use chunks for devices, notifications, media, contacts, and messaging
   collections. A single oversized record can still exceed the IPC line limit.
 
 ## License boundary

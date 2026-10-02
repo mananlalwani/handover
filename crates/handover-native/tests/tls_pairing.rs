@@ -1076,3 +1076,101 @@ fn phone_side_media_commands_are_rejected() {
     );
     recv_err(&mut peer);
 }
+
+fn wait_contacts(harness: &Harness) -> handover_core::ContactsEvent {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if let StateEvent::Contacts(event) = harness.events.recv_timeout(remaining).unwrap() {
+            return event;
+        }
+    }
+}
+
+#[test]
+fn native_contacts_publish_complete_generations_and_report_failures() {
+    use handover_core::{ContactsEvent, ContactsSyncFailure};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    assert!(harness.backend.request_contacts_sync(&client.fingerprint));
+    let request = recv(&mut peer);
+    assert_eq!(request["type"], "contacts_request");
+    assert_eq!(request["chunked"], true);
+
+    // Two frames carry more photo data than a single native frame can hold.
+    // The first observed contact event must contain both records, never a prefix.
+    for (index, id) in ["a", "b"].into_iter().enumerate() {
+        send(
+            &mut peer,
+            serde_json::json!({
+                "type": "contacts_chunk", "protocol": 1, "generation": "complete",
+                "index": index, "done": index == 1,
+                "contacts": [{"local_id": id, "display_name": "Test", "photo": "a".repeat(45 * 1024)}]
+            }),
+        );
+    }
+    match wait_contacts(&harness) {
+        ContactsEvent::Synced {
+            device_id,
+            contacts,
+        } => {
+            assert_eq!(device_id.as_str(), format!("native:{}", client.fingerprint));
+            assert_eq!(contacts.len(), 2);
+            assert_eq!(contacts[0].local_id, "a");
+            assert_eq!(contacts[1].local_id, "b");
+        }
+        event => panic!("expected complete snapshot, got {event:?}"),
+    }
+
+    send(
+        &mut peer,
+        serde_json::json!({"type":"contacts_chunk","protocol":1,
+        "generation":"incomplete","index":0,"done":false,"contacts":[{"local_id":"c","display_name":"Test"}]}),
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"contacts_error","protocol":1,
+        "generation":"incomplete","failure":"permission_denied"}),
+    );
+    assert!(matches!(
+        wait_contacts(&harness),
+        ContactsEvent::SyncFailed {
+            failure: ContactsSyncFailure::PermissionDenied,
+            ..
+        }
+    ));
+    send(
+        &mut peer,
+        serde_json::json!({"type":"contacts_chunk","protocol":1,
+        "generation":"incomplete","index":1,"done":true,"contacts":[]}),
+    );
+    assert!(matches!(
+        wait_contacts(&harness),
+        ContactsEvent::SyncFailed {
+            failure: ContactsSyncFailure::Rejected,
+            ..
+        }
+    ));
+
+    // Legacy truncation markers must not masquerade as successful empty syncs.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"contacts_sync","protocol":1,"complete":false,"contacts":[]}),
+    );
+    assert!(matches!(
+        wait_contacts(&harness),
+        ContactsEvent::SyncFailed {
+            failure: ContactsSyncFailure::TooLarge,
+            ..
+        }
+    ));
+    send(
+        &mut peer,
+        serde_json::json!({"type":"contacts_sync","protocol":1,"contacts":[]}),
+    );
+    assert!(
+        matches!(wait_contacts(&harness), ContactsEvent::Synced { contacts, .. } if contacts.is_empty())
+    );
+}

@@ -18,6 +18,8 @@ Singleton {
     property var mediaSessions: []
     property var calls: []
     property var contacts: []
+    property var contactsChunkBuffer: null
+    property string contactsSyncError: ""
     property var callAudio: null
     property string callNotice: ""
     function refreshCallAudio() {
@@ -33,6 +35,7 @@ Singleton {
             lastError = "native phone is unavailable";
             return false;
         }
+        contactsSyncError = "";
         return sendRequest("contacts.sync", { device_id: device.id });
     }
 
@@ -578,6 +581,7 @@ Singleton {
         mediaSessions = [];
         calls = [];
         contacts = [];
+        contactsChunkBuffer = null;
         callAudio = null;
         callNotice = "";
         lastReceivedShare = null;
@@ -724,17 +728,60 @@ Singleton {
             break;
         case "contacts":
             contacts = message.contacts || [];
+            contactsChunkBuffer = null;
+            break;
+        case "contacts_chunk":
+            {
+                const incoming = message.contacts || [];
+                const accumulated = contactsChunkBuffer === null
+                    ? incoming.slice() : contactsChunkBuffer.concat(incoming);
+                if (message.done === true) {
+                    contacts = accumulated;
+                    contactsChunkBuffer = null;
+                } else {
+                    contactsChunkBuffer = accumulated;
+                }
+            }
+            break;
+        case "contacts_synced":
+            contactsSyncError = "";
+            refreshContacts();
+            break;
+        case "contacts_removed":
+            contacts = contacts.filter(contact => contact.device_id !== message.device_id);
+            break;
+        case "contacts_sync_failed":
+            switch (message.failure) {
+            case "permission_denied":
+                contactsSyncError = "Contacts permission denied";
+                break;
+            case "too_large":
+                contactsSyncError = "Phone contact list is too large";
+                break;
+            case "interrupted":
+                contactsSyncError = "Contacts sync interrupted";
+                break;
+            case "rejected":
+                contactsSyncError = "Phone rejected contacts sync";
+                break;
+            default:
+                contactsSyncError = "Contacts sync failed";
+            }
             break;
         case "subscribed":
         case "snapshot":
             outgoingOperations = [];
             applySnapshot(message, false);
+            if (message.type === "snapshot")
+                refreshContacts();
             break;
         case "subscribed_chunk":
         case "snapshot_chunk":
             if (!snapshotBuffer)
                 outgoingOperations = [];
             applySnapshot(message, true);
+            if (message.type === "snapshot_chunk" && message.done === true)
+                refreshContacts();
             break;
         case "conversations_chunk":
             for (const conversation of message.conversations || [])

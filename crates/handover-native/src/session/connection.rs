@@ -305,7 +305,14 @@ impl NativeBackend {
         let mut last_ping = Instant::now();
         let session_started = Instant::now();
         let mut snapshot_retry_sent = false;
+        let mut contact_chunks = crate::contacts::ContactChunks::default();
         loop {
+            if contact_chunks.expire(Instant::now()) {
+                event(StateEvent::Contacts(ContactsEvent::SyncFailed {
+                    device_id: DeviceId::new(format!("native:{id}")),
+                    failure: handover_core::ContactsSyncFailure::Interrupted,
+                }));
+            }
             if last_received.elapsed() > SESSION_IDLE_TIMEOUT {
                 break;
             }
@@ -997,9 +1004,18 @@ impl NativeBackend {
                 Ok(Message::ContactsSync {
                     protocol: WIRE_VERSION,
                     contacts,
+                    complete,
                 }) => {
+                    contact_chunks = crate::contacts::ContactChunks::default();
                     last_received = Instant::now();
                     let device_id = DeviceId::new(format!("native:{id}"));
+                    if !complete {
+                        event(StateEvent::Contacts(ContactsEvent::SyncFailed {
+                            device_id,
+                            failure: handover_core::ContactsSyncFailure::TooLarge,
+                        }));
+                        continue;
+                    }
                     let contacts = contacts
                         .into_iter()
                         .map(|contact| Contact {
@@ -1014,6 +1030,52 @@ impl NativeBackend {
                     event(StateEvent::Contacts(ContactsEvent::Synced {
                         device_id,
                         contacts,
+                    }));
+                }
+                Ok(Message::ContactsChunk {
+                    protocol: WIRE_VERSION,
+                    generation,
+                    index,
+                    done,
+                    contacts,
+                }) => {
+                    last_received = Instant::now();
+                    let device_id = DeviceId::new(format!("native:{id}"));
+                    match contact_chunks.push(generation, index, done, contacts, Instant::now()) {
+                        Ok(Some(contacts)) => {
+                            let contacts = contacts
+                                .into_iter()
+                                .map(|contact| Contact {
+                                    device_id: device_id.clone(),
+                                    local_id: contact.local_id,
+                                    display_name: contact.display_name,
+                                    phones: contact.phones,
+                                    emails: contact.emails,
+                                    photo: contact.photo,
+                                })
+                                .collect();
+                            event(StateEvent::Contacts(ContactsEvent::Synced {
+                                device_id,
+                                contacts,
+                            }));
+                        }
+                        Ok(None) => {}
+                        Err(failure) => event(StateEvent::Contacts(ContactsEvent::SyncFailed {
+                            device_id,
+                            failure,
+                        })),
+                    }
+                }
+                Ok(Message::ContactsError {
+                    protocol: WIRE_VERSION,
+                    generation,
+                    failure,
+                }) => {
+                    last_received = Instant::now();
+                    contact_chunks.abort(&generation);
+                    event(StateEvent::Contacts(ContactsEvent::SyncFailed {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        failure,
                     }));
                 }
                 Ok(Message::ClipboardPost {
@@ -1224,6 +1286,12 @@ impl NativeBackend {
                 }
                 _ => break,
             }
+        }
+        if contact_chunks.interrupt() {
+            event(StateEvent::Contacts(ContactsEvent::SyncFailed {
+                device_id: DeviceId::new(format!("native:{id}")),
+                failure: handover_core::ContactsSyncFailure::Interrupted,
+            }));
         }
         Ok(())
     }

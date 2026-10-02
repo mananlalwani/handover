@@ -349,6 +349,16 @@ fn apply_backend_event(
         log_change(change);
     }
     if outcome.changed {
+        let event = match event {
+            StateEvent::Contacts(handover_core::ContactsEvent::Synced {
+                device_id,
+                contacts,
+            }) => StateEvent::Contacts(handover_core::ContactsEvent::Changed {
+                device_id,
+                count: contacts.len(),
+            }),
+            event => event,
+        };
         let _subscriber_count = events.send(event);
         if outgoing_event {
             outgoing::schedule_persist(state);

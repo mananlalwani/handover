@@ -42,6 +42,14 @@ Rectangle {
             }
         }
 
+        Text {
+            Layout.fillWidth: true
+            visible: HandoverService.contactsSyncError.length > 0
+            text: HandoverService.contactsSyncError
+            color: "#ffb4ab"
+            wrapMode: Text.Wrap
+        }
+
         ListView {
             Layout.fillWidth: true
             Layout.fillHeight: true

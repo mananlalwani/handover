@@ -176,10 +176,26 @@ pub(crate) enum Message {
     },
     ContactsRequest {
         protocol: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        chunked: bool,
     },
     ContactsSync {
         protocol: u32,
         contacts: Vec<WireContact>,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        complete: bool,
+    },
+    ContactsChunk {
+        protocol: u32,
+        generation: String,
+        index: u32,
+        done: bool,
+        contacts: Vec<WireContact>,
+    },
+    ContactsError {
+        protocol: u32,
+        generation: String,
+        failure: handover_core::ContactsSyncFailure,
     },
     ClipboardPost {
         protocol: u32,
@@ -458,6 +474,13 @@ pub(crate) fn is_false(value: &bool) -> bool {
     !value
 }
 
+fn default_true() -> bool {
+    true
+}
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 impl Message {
     pub(crate) fn version(&self) -> u32 {
         match self {
@@ -471,8 +494,10 @@ impl Message {
             | Self::NotificationRemoved { protocol, .. }
             | Self::NotificationsSync { protocol, .. }
             | Self::NotificationsRequest { protocol }
-            | Self::ContactsRequest { protocol }
+            | Self::ContactsRequest { protocol, .. }
             | Self::ContactsSync { protocol, .. }
+            | Self::ContactsChunk { protocol, .. }
+            | Self::ContactsError { protocol, .. }
             | Self::ClipboardPost { protocol, .. }
             | Self::ClipboardSet { protocol, .. }
             | Self::ClipboardFile { protocol, .. }

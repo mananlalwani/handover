@@ -569,9 +569,10 @@ where
                 message: "could not read the Wayland clipboard".into(),
             },
         },
-        Method::ContactsList => ServerPayload::Contacts {
-            contacts: snapshot(state).contacts,
-        },
+        Method::ContactsList => {
+            write_contacts_response(writer, snapshot(state).contacts).await?;
+            return Ok(true);
+        }
         Method::ContactsSync { device_id } => {
             let peer_id = device_id
                 .as_str()
