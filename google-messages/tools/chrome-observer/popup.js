@@ -1,4 +1,5 @@
 const status = document.querySelector('#status');
+const nativeStatus = document.querySelector('#native-status');
 const duration = document.querySelector('#duration');
 const download = document.querySelector('#download');
 let exportUrl = null;
@@ -21,6 +22,17 @@ async function refresh() {
   status.textContent = state.active
     ? `Observing this tab. ${state.count} sanitized records so far.`
     : `Stopped. ${state.count} sanitized records available.`;
+  const probe = state.nativeProbe;
+  if (probe?.state === 'complete') {
+    const result = probe.result ?? {};
+    nativeStatus.textContent = result.ok
+      ? `Native authentication check complete. ${Number.isInteger(result.sources) ? `${result.sources} source(s) found.` : ''}`
+      : 'Native authentication check complete.';
+  } else if (probe?.state === 'failed') {
+    const result = probe.result ?? {};
+    const statusCode = result.error === 'http_error' && Number.isInteger(result.http_status) ? `, HTTP ${result.http_status}` : '';
+    nativeStatus.textContent = `Native authentication probe failed (${result.error ?? 'invalid_response'}${statusCode}).`;
+  } else nativeStatus.textContent = `Native authentication probe: ${probe?.state ?? 'idle'}.`;
 }
 
 document.querySelector('#start').addEventListener('click', async () => {
@@ -32,6 +44,14 @@ document.querySelector('#start').addEventListener('click', async () => {
   if (result?.error) { status.textContent = result.error; return; }
   status.textContent = result?.error ?? 'Observer started.';
   clearExport();
+  await refresh();
+});
+
+document.querySelector('#auth-probe').addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab || !Number.isInteger(tab.id) || !tab.url) { nativeStatus.textContent = 'Could not inspect the active tab.'; return; }
+  const result = await message({ type: 'auth-probe' });
+  nativeStatus.textContent = result?.error ?? 'Probe started. Refresh the current tab to trigger SignInGaia.';
   await refresh();
 });
 

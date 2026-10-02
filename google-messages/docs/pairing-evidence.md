@@ -125,3 +125,30 @@ This trace establishes the authenticated transport format and useful structural
 checks for future original-client work. It does not establish cookie-based
 authentication construction, protobuf field semantics, pairing cryptography,
 session restoration, or conversation/history decoding by Handover's own client.
+
+## Original read-only authentication probe
+
+The source indexed in the normal-browser follow-up provides a small first
+request that can be implemented without the adapter. `Z4a` at character offset
+1068677 builds SignInGaia; `$4a` at 1068864 calls it with mode 1 to list registered
+sources. The account provider's registration path uses mode 0 instead. The
+probe implements only mode 1.
+
+The request header uses a fresh request identifier in field 1 and the observed
+client label in field 3. The device wrapper's field 1 contains a type-3 device
+identifier. The device class and factory are at 694800, the wrapper setter at
+695172, and the web identifier constructor at 1071318. All identifiers in the
+probe are newly generated. Optional client-version metadata is omitted until
+its contract has been verified.
+
+The response class `mPa` at 771914 exposes field 3 as a `YC` container. `$4a`
+reads its repeated field 3 as registered sources and defaults absent fields to
+an empty list. The probe validates this bounded array structure and discards
+source records after counting them. It does not expose their identifiers.
+
+The original HTTP transport uses JSON+protobuf and the public transport label
+`grpc-web-javascript/0.1`, as shown by `J_a` near 948933. The native probe receives
+a one-use observed authorization proof through Chrome Native Messaging and
+makes its own request. It never receives cookies, replays captured bodies,
+imports adapter state, or executes Google's bundle in Rust. Whether this
+cookie-free request authenticates remains a live-test question.

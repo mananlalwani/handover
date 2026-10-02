@@ -3,9 +3,15 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_NODES = 512;
 const MAX_DEPTH = 6;
 const MAX_ARRAY = 128;
+const GAIA_PROBE_HOSTS = new Set([
+  'instantmessaging-pa.googleapis.com',
+  'instantmessaging-pa.clients6.google.com',
+  'instantmessaging-pa-jms-us.clients6.google.com',
+]);
 
 export function matchRpcUrl(input) {
   try {
+    if (typeof input !== 'string' || input.length > 8192) return null;
     const url = new URL(input);
     if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
     const host = url.hostname.toLowerCase();
@@ -17,10 +23,22 @@ export function matchRpcUrl(input) {
 
 export function eligibleTabUrl(input) {
   try {
+    if (typeof input !== 'string' || input.length > 8192) return false;
     const url = new URL(input);
     return url.protocol === 'https:' && url.hostname.toLowerCase() === 'messages.google.com' &&
       !url.username && !url.password && !url.port;
   } catch { return false; }
+}
+
+export function matchGaiaProbeUrl(input) {
+  try {
+    if (typeof input !== 'string' || input.length > 8192) return null;
+    const url = new URL(input);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+        !GAIA_PROBE_HOSTS.has(url.hostname.toLowerCase()) ||
+        url.pathname !== '/$rpc/google.internal.communications.instantmessaging.v1.Registration/SignInGaia') return null;
+    return url.origin;
+  } catch { return null; }
 }
 
 function typeName(value) {

@@ -5,6 +5,7 @@ members = [
     "crates/handover-kdeconnect",
     "crates/handover-native",
     "crates/handover-gmessages",
+    "crates/handover-google-messages",
     "crates/handover-ipc",
     "handoverd",
     "handoverctl",

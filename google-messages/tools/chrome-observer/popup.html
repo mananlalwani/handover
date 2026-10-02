@@ -19,6 +19,9 @@
     <input id="duration" type="number" min="1" max="300" value="60">
   </label>
   <button id="start">Start on this tab</button>
+  <button id="auth-probe">Test native authentication</button>
+  <p>For the one-time test, start this probe, then refresh the current Google Messages tab to trigger its SignInGaia request.</p>
+  <p id="native-status" role="status">Native authentication probe: idle.</p>
   <button id="stop">Stop</button>
   <button id="save">Prepare JSON export</button>
   <a id="download" hidden>Save sanitized JSON</a>

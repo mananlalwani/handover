@@ -4,10 +4,12 @@ An independent Google Messages protocol client for Handover, developed without
 mautrix-gmessages. The target is Google Messages companion access, including RCS;
 it still requires Google Messages on the phone and Google's service.
 
-This directory currently contains bootstrap evidence tools and a read-only
-network observer.
-It does not yet authenticate, pair, read conversations, or send messages. The
-existing adapter remains in use while this implementation is developed.
+This directory contains bootstrap evidence tools and a read-only network
+observer. The original Rust client starts in
+[`crates/handover-google-messages`](../crates/handover-google-messages). Its first
+probe requests a registered-source count using a short-lived browser proof.
+Live authentication remains unverified. It does not yet pair, read conversations,
+or send messages. The existing adapter remains in use during development.
 
 This code is part of Handover and covered by the root MIT license.
 

@@ -1,0 +1,17 @@
+[package]
+name = "handover-google-messages"
+version = "0.3.4"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "handover-google-messages-auth-probe"
+path = "src/bin/auth_probe.rs"
+
+[dependencies]
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+uuid = { version = "1.23", features = ["v4"] }

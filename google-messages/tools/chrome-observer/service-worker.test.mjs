@@ -17,13 +17,22 @@ function deferred() {
   return { promise, resolve };
 }
 
-test('worker validates the active tab, uses only Network CDP calls, and isolates stale body replies', async () => {
+test('worker validates the active tab, uses only Network CDP calls, and isolates stale body replies', async t => {
   const calls = [];
   const debuggerCommands = [];
   const bodyWait = deferred();
+  const nativeWait = deferred();
+  const nativeCalls = [];
   const bodyPayload = text => ({ body: btoa(text), base64Encoded: true });
   const chrome = {
-    runtime: { id: 'observer-test', onMessage: eventHook(), sendMessage: async () => {} },
+    runtime: {
+      id: 'observer-test', onMessage: eventHook(), sendMessage: async () => {},
+      sendNativeMessage: async (host, payload) => {
+        nativeCalls.push({ host, payload: structuredClone(payload) });
+        if (nativeCalls.length === 1) return nativeWait.promise;
+        return { ok: true, sources: 3, token: 'native-secret' };
+      },
+    },
     tabs: {
       active: { id: 17, url: 'https://evil.test/' },
       query: async () => [chrome.tabs.active],
@@ -48,11 +57,11 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   };
   globalThis.chrome = chrome;
   const manifest = JSON.parse(await readFile(new URL('./manifest.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.permissions.sort(), ['activeTab', 'alarms', 'debugger']);
-  for (const forbidden of ['host_permissions', 'tabs', 'scripting', 'cookies', 'storage', 'downloads', 'nativeMessaging']) {
+  assert.deepEqual(manifest.permissions.sort(), ['activeTab', 'alarms', 'debugger', 'nativeMessaging']);
+  for (const forbidden of ['host_permissions', 'tabs', 'scripting', 'cookies', 'storage', 'downloads']) {
     assert.equal(Object.hasOwn(manifest, forbidden), false);
   }
-  await import(`./service-worker.js?test=${Date.now()}`);
+  const worker = await import(`./service-worker.js?test=${Date.now()}`);
 
   async function send(payload, sender = { id: 'observer-test' }) {
     return new Promise(resolve => {
@@ -60,6 +69,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
       if (asyncReply !== true) resolve(undefined);
     });
   }
+  t.after(async () => { await send({ type: 'stop' }); });
   async function waitFor(predicate) {
     for (let i = 0; i < 100; i += 1) {
       if (await predicate()) return;
@@ -119,4 +129,67 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   chrome.tabs.onUpdated.fire(17, { url: 'https://example.test/' });
   await waitFor(async () => !(await send({ type: 'snapshot' })).active);
   await waitFor(() => calls.filter(call => call[0] === 'detach').length >= 3);
+
+  const previousRecordCount = (await send({ type: 'snapshot' })).records.length;
+  const bodyCallsBeforeAuth = debuggerCommands.filter(name => name === 'Network.getResponseBody').length;
+  chrome.tabs.active = { id: 17, url: 'https://messages.google.com/' };
+  assert.match((await send({ type: 'auth-probe' })).message, /waiting/);
+  assert.equal(calls.filter(call => call[0] === 'Network.enable').at(-1)[2].maxPostDataSize, 0);
+  const authPath = '/$rpc/google.internal.communications.instantmessaging.v1.Registration/SignInGaia';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: 'wrong-host', request: {
+    url: `https://sub.instantmessaging-pa.googleapis.com${authPath}`, method: 'POST', headers: { Authorization: 'WRONG_HOST_SECRET' },
+  } });
+  const firstProbeId = 'matching-auth-request';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', { requestId: firstProbeId, headers: {
+    authorization: 'Bearer EXTRA_AUTH_SECRET', 'x-goog-api-key': 'EXTRA_API_SECRET',
+    'x-goog-authuser': '5', origin: 'https://messages.google.com', cookie: 'COOKIE_SECRET',
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: firstProbeId, hasExtraInfo: true, request: {
+    url: `https://instantmessaging-pa.googleapis.com${authPath}?query=AUTH_URL_SECRET`, method: 'POST',
+    headers: { Authorization: 'Bearer BASE_AUTH_SECRET', 'X-Goog-Api-Key': 'BASE_API_SECRET', Cookie: 'COOKIE_SECRET' },
+    postData: 'AUTH_BODY_SECRET',
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: firstProbeId, response: { status: 200, headers: { Cookie: 'RESPONSE_COOKIE_SECRET' } } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.loadingFinished', { requestId: firstProbeId });
+  await waitFor(() => nativeCalls.length === 1);
+  assert.equal(nativeCalls[0].host, 'com.handover.google_messages.auth_probe');
+  assert.deepEqual(Object.keys(nativeCalls[0].payload).sort(), ['api_key', 'auth_user', 'authorization', 'endpoint', 'origin', 'type']);
+  assert.deepEqual(nativeCalls[0].payload, {
+    type: 'gaia_lookup', endpoint: 'https://instantmessaging-pa.googleapis.com',
+    origin: 'https://messages.google.com', authorization: 'Bearer EXTRA_AUTH_SECRET',
+    api_key: 'EXTRA_API_SECRET', auth_user: '5',
+  });
+  assert.equal((await send({ type: 'snapshot' })).records.length, previousRecordCount);
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.state, 'running');
+
+  await send({ type: 'auth-probe' });
+  nativeWait.resolve({ ok: true, sources: 999, http_status: 999, error: 'NATIVE_ERROR_SECRET', authorization: 'NATIVE_AUTH_SECRET' });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.state, 'waiting', 'old native reply must not update a new probe');
+  const secondId = 'second-auth-request';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: secondId, hasExtraInfo: false, request: {
+    url: `https://instantmessaging-pa-jms-us.clients6.google.com${authPath}`, method: 'POST',
+    headers: { Authorization: 'Bearer SECOND_AUTH_SECRET', 'X-Goog-Api-Key': 'SECOND_API_SECRET' },
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: secondId, hasExtraInfo: false, response: { status: 204 } });
+  await waitFor(() => nativeCalls.length === 2);
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  const finalSnapshot = await send({ type: 'snapshot' });
+  assert.deepEqual(finalSnapshot.nativeProbe, { state: 'complete', result: { ok: true, sources: 3 } });
+  const safeState = JSON.stringify({ records: finalSnapshot.records, nativeProbe: finalSnapshot.nativeProbe });
+  for (const secret of ['EXTRA_AUTH_SECRET', 'EXTRA_API_SECRET', 'COOKIE_SECRET', 'RESPONSE_COOKIE_SECRET', 'AUTH_URL_SECRET', 'AUTH_BODY_SECRET', 'WRONG_HOST_SECRET', 'NATIVE_ERROR_SECRET', 'NATIVE_AUTH_SECRET', 'SECOND_AUTH_SECRET', 'SECOND_API_SECRET', 'native-secret']) {
+    assert.equal(safeState.includes(secret), false, `snapshot leaked ${secret}`);
+  }
+  assert.equal(debuggerCommands.filter(name => name === 'Network.getResponseBody').length, bodyCallsBeforeAuth, 'auth mode must not fetch response bodies');
+
+  await send({ type: 'auth-probe' });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', { requestId: 'stopped-secret', headers: { Authorization: 'STOP_SECRET' } });
+  await send({ type: 'stop' });
+  assert.deepEqual((await send({ type: 'snapshot' })).nativeProbe, { state: 'failed', result: { error: 'stopped' } });
+  await assert.rejects(worker.withTimeout(new Promise(() => {}), 5, 'native_timeout'), /native_timeout/);
+  assert.deepEqual(await worker.nativeReplyWithTimeout(new Promise(() => {}), 5), { error: 'timeout' });
+  assert.deepEqual(worker.sanitizeNativeReply({ ok: true, sources: 4, http_status: 204 }), { state: 'failed', result: { error: 'invalid_response' } });
+  assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 401, message: 'secret' }), {
+    state: 'failed', result: { ok: false, error: 'http_error', http_status: 401 },
+  });
 });

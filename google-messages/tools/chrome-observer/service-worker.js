@@ -1,10 +1,14 @@
-import { eligibleTabUrl, makeRecord, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
+import { eligibleTabUrl, makeRecord, matchGaiaProbeUrl, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
 import { protobufShape } from './wire-shape.mjs';
 
 const MAX_REQUESTS = 256;
 const MAX_RECORDS = 512;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_BODY_CALLS = 8;
+const MAX_AUTH_CANDIDATES = 8;
+const MAX_AUTH_HEADERS = 8;
+const AUTH_PROBE_HOST = 'com.handover.google_messages.auth_probe';
+const MAX_NATIVE_WAIT = 20_000;
 const BODY_TYPES = new Set(['application/x-protobuf', 'application/protobuf']);
 const JSON_TYPES = new Set(['application/json', 'application/json+protobuf']);
 
@@ -16,7 +20,13 @@ let durationTimer = null;
 let bodyCalls = 0;
 let generation = 0;
 let commandQueue = Promise.resolve();
+let captureMode = null;
+let nativeProbe = { state: 'idle' };
+let authForwarded = false;
+let probeId = 0;
 const requests = new Map();
+const authCandidates = new Map();
+const authHeaderMaps = new Map();
 
 function notify() {
   try { void chrome.runtime.sendMessage({ type: 'state-changed' }).catch(() => {}); } catch { /* popup may be closed */ }
@@ -99,10 +109,12 @@ function responseBodyShape(result, contentType) {
   return { type: 'opaque', bytes: size };
 }
 
-async function stop(reason = 'Stopped.') {
+async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   const oldTabId = tabId;
+  const oldMode = captureMode;
   active = false;
   tabId = null;
+  captureMode = null;
   generation += 1;
   if (durationTimer !== null) {
     clearTimeout(durationTimer);
@@ -110,53 +122,233 @@ async function stop(reason = 'Stopped.') {
   }
   durationTimer = null;
   requests.clear();
+  authCandidates.clear();
+  authHeaderMaps.clear();
+  if (!preserveNativeProbe && oldMode === 'auth' && nativeProbe.state === 'waiting') {
+    const error = reason === 'Duration ended.' ? 'timeout'
+      : reason === 'Stopped after the tab navigated away.' ? 'tab_changed'
+        : reason === 'Stopped because the tab closed.' ? 'tab_closed' : 'stopped';
+    nativeProbe = { state: 'failed', result: { error } };
+  }
   if (oldTabId !== null) {
-    try { await chrome.debugger.detach({ tabId: oldTabId }); } catch { /* already detached */ }
+    try { await withTimeout(chrome.debugger.detach({ tabId: oldTabId }), 5000); } catch { /* already detached or timed out */ }
   }
   notify();
   return { message: reason };
 }
 
-async function start(duration) {
-  if (!Number.isInteger(duration) || duration < 1 || duration > 300) return { error: 'Choose a duration from 1 to 300 seconds.' };
+async function start(duration, mode = 'observe') {
+  const maximum = mode === 'auth' ? 120 : 300;
+  if (!Number.isInteger(duration) || duration < 1 || duration > maximum) return { error: `Choose a duration from 1 to ${maximum} seconds.` };
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab || !Number.isInteger(tab.id) || !eligibleTabUrl(tab.url ?? '')) return { error: 'The active tab must be messages.google.com over HTTPS.' };
   if (active) await stop('Previous observation stopped.');
   generation += 1;
+  if (mode === 'auth') {
+    probeId += 1;
+    authForwarded = false;
+    nativeProbe = { state: 'waiting' };
+  }
   records = [];
   dropped = 0;
   tabId = tab.id;
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
     active = true;
+    captureMode = mode;
     const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!currentTab || currentTab.id !== tab.id || !eligibleTabUrl(currentTab.url ?? '')) throw new Error('tab_changed');
     await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
       maxTotalBufferSize: 2 * 1024 * 1024,
       maxResourceBufferSize: 1024 * 1024,
-      maxPostDataSize: 1024 * 1024,
+      maxPostDataSize: mode === 'auth' ? 0 : 1024 * 1024,
     }), 5000);
     durationTimer = setTimeout(() => { void enqueueCommand(() => stop('Duration ended.')); }, duration * 1000);
     chrome.alarms.create('observer-duration', { when: Date.now() + duration * 1000 });
     notify();
-    return { message: `Observing for up to ${duration} seconds.` };
+    return { message: mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
   } catch {
     await stop('Could not attach the observer.');
     return { error: 'Could not attach the observer.' };
   }
 }
 
-function withTimeout(promise, milliseconds) {
+export function withTimeout(promise, milliseconds, errorCode = 'command_timeout') {
   let timeout;
   return Promise.race([
     promise,
-    new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('command_timeout')), milliseconds); }),
+    new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error(errorCode)), milliseconds); }),
   ]).finally(() => clearTimeout(timeout));
+}
+
+function selectedAuthHeaders(headers) {
+  const selected = {};
+  if (!headers || typeof headers !== 'object') return selected;
+  let count = 0;
+  const read = (rawName, rawValue) => {
+    count += 1;
+    const name = String(rawName).toLowerCase();
+    if (!['authorization', 'x-goog-api-key', 'x-goog-authuser', 'origin'].includes(name)) return;
+    if (typeof rawValue !== 'string') { selected[name] = null; return; }
+    if (name === 'authorization' || name === 'x-goog-api-key') {
+      const max = name === 'authorization' ? 8192 : 4096;
+      selected[name] = rawValue.length > 0 && rawValue.length <= max && /^[\x20-\x7e]+$/.test(rawValue) ? rawValue : null;
+    } else if (name === 'x-goog-authuser') {
+      selected[name] = /^\d{1,2}$/.test(rawValue) && Number(rawValue) <= 99 ? rawValue : null;
+    } else {
+      try {
+        if (rawValue.length > 256 || !/^[\x21-\x7e]+$/.test(rawValue)) { selected[name] = null; return; }
+        const origin = new URL(rawValue);
+        selected[name] = origin.protocol === 'https:' && origin.hostname.toLowerCase() === 'messages.google.com' &&
+          !origin.username && !origin.password && !origin.port && origin.pathname === '/' && !origin.search && !origin.hash
+          ? 'https://messages.google.com' : null;
+      } catch { selected[name] = null; }
+    }
+  };
+  if (Array.isArray(headers)) {
+    for (let i = 0; i < headers.length && count < 2048; i += 1) read(headers[i]?.name, headers[i]?.value);
+  } else {
+    for (const name in headers) {
+      if (count >= 2048) break;
+      if (Object.hasOwn(headers, name)) read(name, headers[name]);
+    }
+  }
+  return selected;
+}
+
+function clearAuthRequest(requestId) {
+  authCandidates.delete(requestId);
+  authHeaderMaps.delete(requestId);
+}
+
+async function processAuthCandidate(requestId, candidate) {
+  if (!active || captureMode !== 'auth' || authForwarded || !candidate || !candidate.ready) return;
+  const headers = { ...candidate.requestHeaders, ...(candidate.extraHeaders ?? {}) };
+  let authorization = headers.authorization;
+  let apiKey = headers['x-goog-api-key'];
+  let authUser = headers['x-goog-authuser'];
+  let origin = headers.origin;
+  if (typeof authorization !== 'string' || typeof apiKey !== 'string' ||
+      Object.hasOwn(headers, 'origin') && origin !== 'https://messages.google.com' ||
+      Object.hasOwn(headers, 'x-goog-authuser') && typeof authUser !== 'string') {
+    clearAuthRequest(requestId);
+    return;
+  }
+  const payload = {
+    type: 'gaia_lookup',
+    endpoint: candidate.endpoint,
+    origin: origin ?? 'https://messages.google.com',
+    authorization,
+    api_key: apiKey,
+    ...(authUser === undefined ? {} : { auth_user: authUser }),
+  };
+  authForwarded = true;
+  nativeProbe = { state: 'running' };
+  const currentProbe = probeId;
+  authCandidates.clear();
+  authHeaderMaps.clear();
+  candidate.requestHeaders = {};
+  candidate.extraHeaders = {};
+  for (const name of Object.keys(headers)) headers[name] = null;
+  authorization = null;
+  apiKey = null;
+  authUser = null;
+  origin = null;
+  await enqueueCommand(() => stop('Authentication request captured.', { preserveNativeProbe: true }));
+  if (currentProbe !== probeId) { clearNativePayload(payload); return; }
+
+  try {
+    let nativeCall;
+    try { nativeCall = chrome.runtime.sendNativeMessage(AUTH_PROBE_HOST, payload); }
+    finally { clearNativePayload(payload); }
+    const outcome = await nativeReplyWithTimeout(Promise.resolve(nativeCall));
+    if (currentProbe !== probeId) return;
+    nativeProbe = outcome.reply ? sanitizeNativeReply(outcome.reply) : { state: 'failed', result: { error: outcome.error } };
+  } catch {
+    if (currentProbe === probeId) nativeProbe = { state: 'failed', result: { error: 'native_error' } };
+  } finally { notify(); }
+}
+
+function clearNativePayload(payload) {
+  payload.authorization = '';
+  payload.api_key = '';
+  if (Object.hasOwn(payload, 'auth_user')) delete payload.auth_user;
+}
+
+export async function nativeReplyWithTimeout(nativeCall, milliseconds = MAX_NATIVE_WAIT) {
+  try { return { reply: await withTimeout(Promise.resolve(nativeCall), milliseconds, 'native_timeout') }; }
+  catch (error) { return { error: error?.message === 'native_timeout' ? 'timeout' : 'native_error' }; }
+}
+
+export function sanitizeNativeReply(value) {
+  const errors = new Set(['invalid_origin', 'invalid_frame', 'invalid_bootstrap', 'invalid_endpoint', 'invalid_credentials', 'network', 'http_error', 'unexpected_response', 'response_too_large', 'timeout', 'rpc_error', 'native_error']);
+  if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') {
+    return { state: 'failed', result: { error: 'invalid_response' } };
+  }
+  if (value.ok) {
+    if (!Number.isInteger(value.sources) || value.sources < 0 || value.sources > 128 ||
+        value.error !== undefined || value.http_status !== undefined) return { state: 'failed', result: { error: 'invalid_response' } };
+    return { state: 'complete', result: { ok: true, sources: value.sources } };
+  }
+  if (typeof value.error !== 'string' || !errors.has(value.error)) return { state: 'failed', result: { error: 'invalid_response' } };
+  const result = { ok: false, error: value.error };
+  if (value.http_status !== undefined) {
+    if (value.error !== 'http_error' || !Number.isInteger(value.http_status) || value.http_status < 100 || value.http_status > 599) {
+      return { state: 'failed', result: { error: 'invalid_response' } };
+    }
+    result.http_status = value.http_status;
+  }
+  return { state: 'failed', result };
+}
+
+function authRequest(requestId, request) {
+  const endpoint = matchGaiaProbeUrl(request.url);
+  if (!endpoint || request.method !== 'POST' || authForwarded) {
+    authHeaderMaps.delete(requestId);
+    return;
+  }
+  if (authCandidates.size >= MAX_AUTH_CANDIDATES && !authCandidates.has(requestId)) {
+    authHeaderMaps.delete(requestId);
+    return;
+  }
+  const candidate = { endpoint, requestHeaders: selectedAuthHeaders(request.headers) };
+  const prior = authHeaderMaps.get(requestId);
+  if (prior) {
+    candidate.extraHeaders = prior;
+    candidate.ready = true;
+    authHeaderMaps.delete(requestId);
+  }
+  authCandidates.set(requestId, candidate);
+  if (candidate.ready) void processAuthCandidate(requestId, candidate);
+}
+
+function authExtraInfo(requestId, headers) {
+  const selected = selectedAuthHeaders(headers);
+  const candidate = authCandidates.get(requestId);
+  if (candidate) {
+    candidate.extraHeaders = selected;
+    candidate.ready = true;
+    void processAuthCandidate(requestId, candidate);
+  } else {
+    if (authHeaderMaps.size >= MAX_AUTH_HEADERS && !authHeaderMaps.has(requestId)) authHeaderMaps.delete(authHeaderMaps.keys().next().value);
+    authHeaderMaps.set(requestId, selected);
+  }
 }
 
 chrome.debugger.onEvent.addListener((source, method, params = {}) => {
   if (!active || source.tabId !== tabId || method !== 'Network.requestWillBeSent' &&
-      method !== 'Network.responseReceived' && method !== 'Network.loadingFinished' && method !== 'Network.loadingFailed') return;
+      method !== 'Network.requestWillBeSentExtraInfo' && method !== 'Network.responseReceived' &&
+      method !== 'Network.loadingFinished' && method !== 'Network.loadingFailed') return;
+  if (captureMode === 'auth') {
+    if (method === 'Network.requestWillBeSent') authRequest(params.requestId, params.request ?? {});
+    else if (method === 'Network.requestWillBeSentExtraInfo') authExtraInfo(params.requestId, params.headers);
+    else if (method === 'Network.responseReceived' && params.hasExtraInfo === false) {
+      const candidate = authCandidates.get(params.requestId);
+      if (candidate) { candidate.ready = true; void processAuthCandidate(params.requestId, candidate); }
+    }
+    else if (method === 'Network.loadingFailed') clearAuthRequest(params.requestId);
+    return;
+  }
   if (method === 'Network.requestWillBeSent') {
     const request = params.request ?? {};
     const rpc = matchRpcUrl(request.url);
@@ -210,6 +402,7 @@ chrome.debugger.onEvent.addListener((source, method, params = {}) => {
 
 chrome.debugger.onDetach.addListener(source => {
   if (source.tabId !== tabId) return;
+  if (captureMode === 'auth' && nativeProbe.state === 'waiting') nativeProbe = { state: 'failed', result: { error: 'detached' } };
   active = false;
   generation += 1;
   tabId = null;
@@ -217,6 +410,8 @@ chrome.debugger.onDetach.addListener(source => {
   if (durationTimer !== null) void chrome.alarms.clear('observer-duration');
   durationTimer = null;
   requests.clear();
+  authCandidates.clear();
+  authHeaderMaps.clear();
   notify();
 });
 
@@ -244,10 +439,11 @@ function enqueueCommand(operation) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id || sender.tab) return false;
   if (message?.type === 'snapshot') {
-    sendResponse({ active, count: records.length, dropped, records: records.slice() });
+    sendResponse({ active, mode: captureMode, count: records.length, dropped, records: records.slice(), nativeProbe: structuredClone(nativeProbe) });
     return false;
   }
   if (message?.type === 'start') { enqueueCommand(() => start(message.duration)).then(sendResponse, () => sendResponse({ error: 'Could not start the observer.' })); return true; }
+  if (message?.type === 'auth-probe') { enqueueCommand(() => start(120, 'auth')).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'stop') { enqueueCommand(() => stop()).then(sendResponse, () => sendResponse({ error: 'Could not stop the observer.' })); return true; }
   return false;
 });

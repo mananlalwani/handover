@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eligibleTabUrl, makeRecord, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
+import { eligibleTabUrl, makeRecord, matchGaiaProbeUrl, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
 
 test('RPC and active tab URL validation reject deceptive origins and ports', () => {
   assert.deepEqual(matchRpcUrl('https://messages.google.com/$rpc/google.internal.communications.instantmessaging.v1.Chat/Send?secret=1'), { service: 'Chat', method: 'Send' });
@@ -37,4 +37,19 @@ test('content type and records keep an explicit safe allowlist', () => {
   const record = makeRecord({ phase: 'request', rpc: { service: 'Chat', method: 'Send' }, httpMethod: 'DELETE', contentType: 'text/plain' });
   assert.equal(JSON.stringify(record).includes('DELETE'), false);
   assert.equal(JSON.stringify(record).includes('text/plain'), false);
+});
+
+test('Gaia probe accepts only the three exact HTTPS service origins and registration path', () => {
+  const path = '/$rpc/google.internal.communications.instantmessaging.v1.Registration/SignInGaia';
+  for (const host of ['instantmessaging-pa.googleapis.com', 'instantmessaging-pa.clients6.google.com', 'instantmessaging-pa-jms-us.clients6.google.com']) {
+    assert.equal(matchGaiaProbeUrl(`https://${host}${path}?token=SECRET`), `https://${host}`);
+  }
+  for (const url of [
+    `https://evil.instantmessaging-pa.googleapis.com${path}`,
+    `https://instantmessaging-pa.googleapis.com.evil.test${path}`,
+    `https://instantmessaging-pa.googleapis.com:444${path}`,
+    `http://instantmessaging-pa.googleapis.com${path}`,
+    `https://instantmessaging-pa.googleapis.com${path}/extra`,
+    `https://user:pass@instantmessaging-pa.googleapis.com${path}`,
+  ]) assert.equal(matchGaiaProbeUrl(url), null);
 });
