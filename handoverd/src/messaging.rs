@@ -176,12 +176,10 @@ impl MessagingStore {
             .collect();
         let next = if start > 0 {
             page.first().map(|message| message.id.local_id.clone())
-        } else if limit == 100 {
+        } else {
             self.conversations
                 .get(conversation_id)
                 .and_then(|conversation| conversation.cursor.clone())
-        } else {
-            None
         };
         Ok((page, next))
     }
@@ -757,6 +755,34 @@ mod tests {
         assert_eq!(oldest.len(), 1);
         assert_eq!(oldest[0].id.local_id, "m0");
         assert_eq!(next.as_deref(), Some("m0"));
+    }
+
+    #[test]
+    fn small_history_pages_preserve_provider_cursor() {
+        let mut store = live_store();
+        store.apply(MessagingEvent::Message(MessageEvent::Added(message(
+            "m1",
+            "peer",
+            10,
+            "first cached message",
+        ))));
+        store
+            .conversations
+            .get_mut(&conversation_id())
+            .expect("conversation")
+            .cursor = Some("m1".into());
+
+        for limit in [1, 25, 100] {
+            let (page, next) = store
+                .history(&conversation_id(), limit, None)
+                .expect("page");
+            assert_eq!(page.len(), 1);
+            assert_eq!(next.as_deref(), Some("m1"));
+            assert_eq!(
+                store.history(&conversation_id(), limit, next.as_deref()),
+                Err(HistoryGap::CursorOutsideWindow)
+            );
+        }
     }
 
     #[test]
