@@ -48,9 +48,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: mananlalwani/handover-gmessages
+          ref: ${{ (github.head_ref || github.ref_name) == 'dev' && 'dev' || 'main' }}
           path: sibling
-      # The vendored copy must match the adapter's checked-in
-      # fixture. (Works once both repositories are public.)
+      # Compare dev with the adapter's dev branch; other refs use main.
       - run: diff crates/handover-gmessages/tests/fixtures/helper-events.jsonl sibling/adapter/testdata/helper-events.jsonl
 
   rust:
