@@ -380,3 +380,17 @@ pairing transcript and persisted registration representation are unchanged.
 Mock-phone tests cover both initial and confirmation sends, rejection,
 cancellation, and acknowledgement failure. Live acceptance remains unverified;
 no automatic retry was added.
+
+
+The first live attempt after switching sends to JSON-protobuf completed account
+binding, then failed with `receive_failed` before any emoji prompt. The owner
+again reported no new phone request or device. This does not establish send
+acceptance: the login loop discarded the receive future's detailed error, and
+the receive failure can race the initial send. The relay was restored.
+
+The loop now preserves bounded receive HTTP diagnostics, fixed RPC status
+categories, and framing error names. It also emits a separate progress prompt
+only after the initial send receives HTTP acceptance. A mock rejection test
+reproduced HTTP 401 being collapsed into `receive_failed`; it now retains
+`UNAUTHENTICATED` and verifies no initial send occurs. These diagnostics await
+live verification. No new phone request was issued during their implementation.

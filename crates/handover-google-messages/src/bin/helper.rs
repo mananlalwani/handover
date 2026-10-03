@@ -131,6 +131,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 let prompt = match progress {
                     LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
                     LoginProgress::RegistrationVerified => "Native registration matches the signed-in account. Opening pairing channel.".to_owned(),
+                    LoginProgress::InitialSendAccepted => "Initial pairing request received HTTP acceptance. Waiting for the phone response.".to_owned(),
                     LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
                 };
                 publish(writer, HelperEvent::Pairing { account, prompt }).await?;
@@ -145,6 +146,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     let prompt = match progress {
                         LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
                         LoginProgress::RegistrationVerified => "Native registration matches the signed-in account. Opening pairing channel.".to_owned(),
+                        LoginProgress::InitialSendAccepted => "Initial pairing request received HTTP acceptance. Waiting for the phone response.".to_owned(),
                         LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
                     };
                     publish(writer, HelperEvent::Pairing { account: account.clone(), prompt }).await?;
@@ -188,6 +190,9 @@ fn login_failure_prompt(error: &handover_google_messages::ProbeError) -> String 
     }
     if let Some(reason) = error.rpc_reason() {
         diagnostic.push_str(&format!(", reason {reason:?}"));
+    }
+    if let handover_google_messages::ProbeError::ReceiveProtocol(cause) = error {
+        diagnostic.push_str(&format!(", framing {cause:?}"));
     }
     format!("Native login failed ({diagnostic}). Check phone pairing state before retrying.")
 }
@@ -467,6 +472,18 @@ mod tests {
         assert!(prompt.contains("http_error, HTTP 400, RPC InvalidArgument"));
         let invalid = login_failure_prompt(&handover_google_messages::ProbeError::HttpError(0));
         assert!(!invalid.contains("HTTP 0"));
+        assert!(
+            login_failure_prompt(&handover_google_messages::ProbeError::RpcErrorWithStatus(
+                handover_google_messages::RpcStatus::Unauthenticated,
+            ))
+            .contains("rpc_error, RPC Unauthenticated")
+        );
+        assert!(
+            login_failure_prompt(&handover_google_messages::ProbeError::ReceiveProtocol(
+                handover_google_messages::receive::ReceiveError::Malformed,
+            ))
+            .contains("receive_failed, framing Malformed")
+        );
     }
 
     fn account_ids(events: &[HelperEvent]) -> Vec<&str> {

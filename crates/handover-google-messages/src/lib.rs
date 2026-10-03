@@ -173,6 +173,7 @@ pub enum ProbeError {
     DaemonUnavailable,
     SessionExpired,
     ReceiveFailed,
+    ReceiveProtocol(receive::ReceiveError),
     NoEligiblePhone,
     AmbiguousPhone,
     PairingFailed,
@@ -185,6 +186,7 @@ pub enum ProbeError {
     ResponseTooLarge,
     Timeout,
     RpcError,
+    RpcErrorWithStatus(RpcStatus),
     NativeError,
 }
 
@@ -213,7 +215,7 @@ impl ProbeError {
             Self::AmbiguousRegistration => "ambiguous_registration",
             Self::DaemonUnavailable => "daemon_unavailable",
             Self::SessionExpired => "session_expired",
-            Self::ReceiveFailed => "receive_failed",
+            Self::ReceiveFailed | Self::ReceiveProtocol(_) => "receive_failed",
             Self::NoEligiblePhone => "no_eligible_phone",
             Self::AmbiguousPhone => "ambiguous_phone",
             Self::PairingFailed => "pairing_failed",
@@ -225,7 +227,7 @@ impl ProbeError {
             Self::UnexpectedResponse => "unexpected_response",
             Self::ResponseTooLarge => "response_too_large",
             Self::Timeout => "timeout",
-            Self::RpcError => "rpc_error",
+            Self::RpcError | Self::RpcErrorWithStatus(_) => "rpc_error",
             Self::NativeError => "native_error",
         }
     }
@@ -246,9 +248,9 @@ impl ProbeError {
 
     pub fn rpc_status(&self) -> Option<RpcStatus> {
         match self {
-            Self::HttpErrorWithStatus(_, status) | Self::HttpErrorWithReason(_, status, _) => {
-                Some(*status)
-            }
+            Self::HttpErrorWithStatus(_, status)
+            | Self::HttpErrorWithReason(_, status, _)
+            | Self::RpcErrorWithStatus(status) => Some(*status),
             Self::HttpErrorForLocalInspection(_, status, _, _) => *status,
             _ => None,
         }
@@ -950,12 +952,22 @@ async fn receive_stream_when_ready(
     }
     ready();
     let mut stream = receive::ReceiveStream::default();
+    let mut terminal_status = None;
     while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
         stream
-            .feed(&chunk, &mut emit)
-            .map_err(|_| ProbeError::ReceiveFailed)?;
+            .feed(&chunk, &mut |event| {
+                if let receive::ReceiveEvent::Status(code) = &event {
+                    terminal_status = RpcStatus::from_code(u64::from(*code));
+                }
+                emit(event)
+            })
+            .map_err(|error| {
+                terminal_status
+                    .map(ProbeError::RpcErrorWithStatus)
+                    .unwrap_or(ProbeError::ReceiveProtocol(error))
+            })?;
     }
-    stream.finish().map_err(|_| ProbeError::ReceiveFailed)
+    stream.finish().map_err(ProbeError::ReceiveProtocol)
 }
 
 async fn query(
@@ -1673,6 +1685,50 @@ mod tests {
             format!("{registered:?}"),
             "UnpairedRegistration { redacted }"
         );
+    }
+
+    #[tokio::test]
+    async fn receive_failures_preserve_fixed_rpc_and_framing_categories() {
+        for (body, expected) in [
+            (
+                b"[[],[16]]".as_slice(),
+                ProbeError::RpcErrorWithStatus(RpcStatus::Unauthenticated),
+            ),
+            (
+                b"not-json".as_slice(),
+                ProbeError::ReceiveProtocol(receive::ReceiveError::Malformed),
+            ),
+        ] {
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let (endpoint, server) = mock_server([header.as_bytes(), body].concat()).await;
+            let registration = registration::RegistrationAttempt::prepare()
+                .unwrap()
+                .accept_response(
+                    br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                    Duration::from_secs(3600),
+                )
+                .unwrap();
+            let request = registration.prepare_receive().unwrap();
+            let result = receive_stream(
+                &client(false).unwrap(),
+                &endpoint,
+                registration_proof().validate_messaging().unwrap(),
+                &request,
+                |event| {
+                    if matches!(event, receive::ReceiveEvent::Status(code) if code != 0) {
+                        Err(receive::ReceiveError::Failed)
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .await;
+            assert_eq!(result.unwrap_err(), expected);
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

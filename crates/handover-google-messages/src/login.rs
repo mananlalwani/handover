@@ -158,6 +158,7 @@ pub enum LoginOutcome {
 pub enum LoginProgress {
     Ready,
     RegistrationVerified,
+    InitialSendAccepted,
     Verification(String),
 }
 
@@ -306,13 +307,14 @@ impl LoginBootstrap {
         );
         tokio::pin!(receive);
         tokio::select! {
-            _ = &mut receive => return Err(ProbeError::ReceiveFailed),
-            ready = ready_rx => { ready.map_err(|_| ProbeError::ReceiveFailed)?; }
+            result = &mut receive => return Err(receive_failure(result)),
+            ready = ready_rx => { if ready.is_err() { return Err(receive_failure(receive.await)); } }
         }
         tokio::select! {
-            _ = &mut receive => return Err(ProbeError::ReceiveFailed),
+            result = &mut receive => return Err(receive_failure(result)),
             sent = http.send(&proof, prepared.envelope()) => { sent?; }
         }
+        progress(LoginProgress::InitialSendAccepted)?;
         let first = wait_reply(receive.as_mut(), &mut replies, |reply| {
             prepared.matches_reply(reply)
         })
@@ -333,11 +335,11 @@ impl LoginBootstrap {
             )
             .map_err(|_| ProbeError::PairingFailed)?;
         tokio::select! {
-            _ = &mut receive => return Err(ProbeError::ReceiveFailed),
+            result = &mut receive => return Err(receive_failure(result)),
             acked = http.ack(&proof, &registration, ack) => { acked?; }
         }
         tokio::select! {
-            _ = &mut receive => return Err(ProbeError::ReceiveFailed),
+            result = &mut receive => return Err(receive_failure(result)),
             sent = http.send(&proof, &final_envelope) => { sent?; }
         }
         let final_reply = wait_reply(receive.as_mut(), &mut replies, |reply| {
@@ -365,6 +367,10 @@ impl LoginBootstrap {
     }
 }
 
+fn receive_failure(result: Result<u8, ProbeError>) -> ProbeError {
+    result.err().unwrap_or(ProbeError::ReceiveFailed)
+}
+
 async fn wait_reply(
     mut receive: std::pin::Pin<&mut impl std::future::Future<Output = Result<u8, ProbeError>>>,
     replies: &mut mpsc::Receiver<PairingReply>,
@@ -372,7 +378,7 @@ async fn wait_reply(
 ) -> Result<PairingReply, ProbeError> {
     loop {
         tokio::select! {
-            _ = &mut receive => return Err(ProbeError::ReceiveFailed),
+            result = &mut receive => return Err(receive_failure(result)),
             reply = replies.recv() => {
                 let reply = reply.ok_or(ProbeError::ReceiveFailed)?;
                 if matches(&reply) { return Ok(reply); }

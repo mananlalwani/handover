@@ -81,6 +81,7 @@ enum Scenario {
     WrongAccount,
     RejectFinal,
     RejectSend,
+    RejectReceive,
     EndReceive,
     RejectFinalAck,
     CancelOnPrompt,
@@ -255,6 +256,16 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             crate::RECEIVE_MESSAGES_PATH,
             "receive must open before sending"
         );
+        if matches!(scenario, Scenario::RejectReceive) {
+            receive_socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json+protobuf\r\nContent-Length: 26\r\nConnection: close\r\n\r\n[16,\"PRIVATE_SERVER_TEXT\"]").await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "a rejected receive channel must prevent the initial send"
+            );
+            return None;
+        }
         receive_socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
         if matches!(scenario, Scenario::EndReceive) {
             chunk(&mut receive_socket, b"[[],[16]]").await;
@@ -533,6 +544,7 @@ async fn pairing_runs_over_http_with_a_mock_phone_and_only_validated_acknowledge
         progress,
         [
             LoginProgress::RegistrationVerified,
+            LoginProgress::InitialSendAccepted,
             LoginProgress::Verification(expected.unwrap())
         ]
     );
@@ -571,7 +583,7 @@ async fn rejection_and_stream_failure_never_create_confirmed_state_or_retry() {
         if matches!(scenario, Scenario::EndReceive) {
             // This peer closes the receive stream and its listener together.
             // Either receive EOF or the concurrent send connection can fail first.
-            assert!(matches!(code, "receive_failed" | "network"));
+            assert!(matches!(code, "receive_failed" | "rpc_error" | "network"));
         } else {
             assert_eq!(code, expected);
         }
@@ -587,12 +599,21 @@ async fn final_ack_failure_keeps_confirmed_keys_and_prevents_repairing() {
             ..
         })
     ));
-    assert_eq!(progress.len(), 2);
+    assert_eq!(progress.len(), 3);
 }
 
 #[tokio::test]
 async fn canceled_prompt_closes_receive_before_ack_or_final_send() {
     let (result, progress, _) = exercise(Scenario::CancelOnPrompt, true).await;
     assert!(matches!(result, Err(ProbeError::NativeError)));
-    assert_eq!(progress.len(), 2);
+    assert_eq!(progress.len(), 3);
+}
+
+#[tokio::test]
+async fn rejected_receive_preserves_http_status_and_prevents_send() {
+    let (result, _, _) = exercise(Scenario::RejectReceive, true).await;
+    assert_eq!(
+        result.unwrap_err(),
+        ProbeError::HttpErrorWithStatus(401, crate::RpcStatus::Unauthenticated)
+    );
 }
