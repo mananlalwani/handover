@@ -23,6 +23,7 @@ pub enum PairingError {
     Rejected,
     ConfirmationRequired,
     UnsupportedRevision,
+    InvalidRouting,
     Handshake(HandshakeError),
 }
 
@@ -88,6 +89,25 @@ impl InitialPairing {
     pub fn request_bytes(&self) -> Result<&[u8], PairingError> {
         self.handshake.client_init()?;
         Ok(&self.request)
+    }
+
+    /// Build the observed outer type-44 routing envelope. It remains an
+    /// unsigned protobuf payload until the authenticated Tachyon transport adds
+    /// its current request header.
+    pub fn send_envelope(
+        &self,
+        account_id: &str,
+        session_id: &str,
+    ) -> Result<PairingSendEnvelope, PairingError> {
+        self.handshake.client_init()?;
+        PairingSendEnvelope::build(
+            account_id,
+            session_id,
+            &self.request_id,
+            &self.peer,
+            44,
+            &self.request,
+        )
     }
 
     /// The eventual receive dispatcher supplies the outer request correlation
@@ -185,6 +205,25 @@ impl AwaitingPhoneConfirmation {
         Ok(&self.request)
     }
 
+    /// Build the observed outer type-45 routing envelope. It remains an
+    /// unsigned protobuf payload until the authenticated Tachyon transport adds
+    /// its current request header.
+    pub fn send_envelope(
+        &self,
+        account_id: &str,
+        session_id: &str,
+    ) -> Result<PairingSendEnvelope, PairingError> {
+        self.pending.client_finish()?;
+        PairingSendEnvelope::build(
+            account_id,
+            session_id,
+            &self.request_id,
+            &self.peer,
+            45,
+            &self.request,
+        )
+    }
+
     /// A correlated phone response confirms only this pairing exchange. It
     /// does not prove a working receive channel or restore a messaging account.
     pub fn accept_response(
@@ -217,6 +256,148 @@ impl AwaitingPhoneConfirmation {
             _pairing_id: self.pairing_id,
             _encrypted_user_data: Zeroizing::new(std::mem::take(&mut response.encrypted_user_data)),
         })
+    }
+}
+
+/// Redacted protobuf payload for Messaging/SendMessage. It is not authenticated
+/// or sent, and callers must not treat construction as pairing progress.
+pub struct PairingSendEnvelope(Zeroizing<Vec<u8>>);
+
+impl fmt::Debug for PairingSendEnvelope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PairingSendEnvelope { redacted }")
+    }
+}
+
+impl PairingSendEnvelope {
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    fn build(
+        account_id: &str,
+        session_id: &str,
+        request_id: &str,
+        peer: &[u8],
+        request_type: i32,
+        request: &[u8],
+    ) -> Result<Self, PairingError> {
+        if account_id.is_empty()
+            || account_id.len() > 320
+            || account_id.chars().any(char::is_control)
+            || Uuid::parse_str(session_id).is_err()
+            || Uuid::parse_str(request_id).is_err()
+            || peer.is_empty()
+            || peer.len() > 1024
+            || request.is_empty()
+            || request.len() > RESPONSE_LIMIT
+        {
+            return Err(PairingError::InvalidRouting);
+        }
+        let wrapper = PairingRequestWrapper {
+            request_id: request_id.to_owned(),
+            request_type,
+            request: request.to_vec(),
+            session_id: session_id.to_owned(),
+        }
+        .encode_to_vec();
+        let vc = SendMessage {
+            request_id: request_id.to_owned(),
+            kind: 19,
+            payload: wrapper,
+            routing: Some(RoutingMetadata {
+                delivery_class: if request_type == 44 { 20 } else { 2 },
+            }),
+        };
+        let outer = MessagingSend {
+            destination: Some(AccountDestination {
+                kind: 16,
+                id: account_id.to_owned(),
+                client: "GDitto".to_owned(),
+            }),
+            message: Some(vc),
+            maximum_lifetime_micros: 300_000_000,
+            recipient_identities: vec![peer.to_vec()],
+        };
+        Ok(Self(Zeroizing::new(outer.encode_to_vec())))
+    }
+}
+
+#[derive(Message)]
+struct AccountDestination {
+    #[prost(int32, tag = "1")]
+    kind: i32,
+    #[prost(string, tag = "2")]
+    id: String,
+    #[prost(string, tag = "3")]
+    client: String,
+}
+
+impl Drop for AccountDestination {
+    fn drop(&mut self) {
+        self.id.zeroize();
+    }
+}
+
+#[derive(Message)]
+struct RoutingMetadata {
+    #[prost(int32, tag = "2")]
+    delivery_class: i32,
+}
+
+#[derive(Message)]
+struct PairingRequestWrapper {
+    #[prost(string, tag = "1")]
+    request_id: String,
+    #[prost(int32, tag = "2")]
+    request_type: i32,
+    #[prost(bytes = "vec", tag = "3")]
+    request: Vec<u8>,
+    #[prost(string, tag = "6")]
+    session_id: String,
+}
+
+impl Drop for PairingRequestWrapper {
+    fn drop(&mut self) {
+        self.request.zeroize();
+    }
+}
+
+#[derive(Message)]
+struct SendMessage {
+    #[prost(string, tag = "1")]
+    request_id: String,
+    #[prost(int32, tag = "2")]
+    kind: i32,
+    #[prost(bytes = "vec", tag = "12")]
+    payload: Vec<u8>,
+    #[prost(message, optional, tag = "23")]
+    routing: Option<RoutingMetadata>,
+}
+
+impl Drop for SendMessage {
+    fn drop(&mut self) {
+        self.payload.zeroize();
+    }
+}
+
+#[derive(Message)]
+struct MessagingSend {
+    #[prost(message, optional, tag = "1")]
+    destination: Option<AccountDestination>,
+    #[prost(message, optional, tag = "2")]
+    message: Option<SendMessage>,
+    #[prost(int64, tag = "5")]
+    maximum_lifetime_micros: i64,
+    #[prost(bytes = "vec", repeated, tag = "9")]
+    recipient_identities: Vec<Vec<u8>>,
+}
+
+impl Drop for MessagingSend {
+    fn drop(&mut self) {
+        self.recipient_identities
+            .iter_mut()
+            .for_each(Zeroize::zeroize);
     }
 }
 
@@ -450,6 +631,69 @@ mod tests {
         assert_eq!(
             format!("{pending:?}"),
             "AwaitingPhoneConfirmation { redacted }"
+        );
+    }
+
+    #[test]
+    fn outer_pairing_envelopes_route_only_to_the_selected_phone() {
+        let session_id = Uuid::new_v4().to_string();
+        let attempt = attempt();
+        let request_id = attempt.request_id().to_owned();
+        let initial_bytes = attempt.request_bytes().unwrap().to_vec();
+        let envelope = attempt
+            .send_envelope("person@example.test", &session_id)
+            .unwrap();
+        let sent = MessagingSend::decode(envelope.as_bytes()).unwrap();
+        let destination = sent.destination.as_ref().unwrap();
+        assert_eq!(destination.kind, 16);
+        assert_eq!(destination.id, "person@example.test");
+        assert_eq!(destination.client, "GDitto");
+        assert_eq!(sent.recipient_identities, [b"phone".to_vec()]);
+        assert_eq!(sent.maximum_lifetime_micros, 300_000_000);
+        let message = sent.message.as_ref().unwrap();
+        assert_eq!(message.request_id, request_id);
+        assert_eq!(message.kind, 19);
+        assert_eq!(message.routing.as_ref().unwrap().delivery_class, 20);
+        let wrapper = PairingRequestWrapper::decode(message.payload.as_slice()).unwrap();
+        assert_eq!(wrapper.request_id, request_id);
+        assert_eq!(wrapper.request_type, 44);
+        assert_eq!(wrapper.request, initial_bytes);
+        assert_eq!(wrapper.session_id, session_id);
+        assert_eq!(format!("{envelope:?}"), "PairingSendEnvelope { redacted }");
+
+        let (response, _) = exchange(&attempt);
+        let pending = attempt
+            .accept_response(&request_id, b"phone", &response.encode_to_vec())
+            .unwrap();
+        let finish_id = pending.request_id().to_owned();
+        let finish_bytes = pending.request_bytes().unwrap().to_vec();
+        let envelope = pending
+            .send_envelope("person@example.test", &session_id)
+            .unwrap();
+        let sent = MessagingSend::decode(envelope.as_bytes()).unwrap();
+        let message = sent.message.as_ref().unwrap();
+        assert_eq!(message.request_id, finish_id);
+        assert_eq!(message.routing.as_ref().unwrap().delivery_class, 2);
+        let wrapper = PairingRequestWrapper::decode(message.payload.as_slice()).unwrap();
+        assert_eq!(wrapper.request_type, 45);
+        assert_eq!(wrapper.request, finish_bytes);
+    }
+
+    #[test]
+    fn outer_pairing_envelope_rejects_bad_account_and_session_routes() {
+        let attempt = attempt();
+        let session_id = Uuid::new_v4().to_string();
+        for account in ["", "name\nprivate", &"x".repeat(321)] {
+            assert_eq!(
+                attempt.send_envelope(account, &session_id).unwrap_err(),
+                PairingError::InvalidRouting
+            );
+        }
+        assert_eq!(
+            attempt
+                .send_envelope("person@example.test", "invalid")
+                .unwrap_err(),
+            PairingError::InvalidRouting
         );
     }
 

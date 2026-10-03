@@ -17,7 +17,9 @@ adapter remains in use during development.
 The native crate now includes a restricted local session-record store. It is
 not yet connected to a restorable confirmed account session. An explicit mode-0
 registration transport is implemented and mock-tested, but has not been run
-against Google's service or connected to the login extension.
+against Google's service or connected to the login extension. Type-44/45
+pairing routing envelopes are built locally, but the authenticated
+Messaging/SendMessage transport is still missing.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.

@@ -201,8 +201,10 @@ following `G5a` at 1076135. It keeps the original pairing ID and timestamp, uses
 a fresh outer request ID, and omits the initial revision fields. It exposes raw
 verification bytes, with the existing five-minute expiry, but cannot produce
 an online account. It now accepts a correlated final phone response as described
-below. UI integration, routing envelopes, runtime receive dispatch and
-acknowledgements, and registration transport remain unfinished.
+below. Type-44/45 routing envelope builders now bind the inner requests to the
+account, selected phone identity, and client session ID. They omit authenticated
+Tachyon metadata and do not send requests. UI integration, authenticated send
+transport, runtime receive dispatch, and ACK transport remain unfinished.
 
 Synthetic tests complete the embedded handshake with an upstream peer and compare
 verification material. They also cover correlation, rejected status, required
