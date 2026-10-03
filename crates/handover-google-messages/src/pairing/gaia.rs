@@ -308,6 +308,84 @@ impl PairingSendEnvelope {
         Ok(())
     }
 
+    /// JSON-protobuf outer transport used by Google's Messaging client. The
+    /// embedded Ditto wrapper and UKEY2 payload remain binary base64 fields.
+    pub(crate) fn json_request(&self) -> Result<Zeroizing<Vec<u8>>, PairingError> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use serde_json::{Value, json};
+
+        self.ensure_valid()?;
+        let outer = MessagingSend::decode(self.bytes.as_slice())
+            .map_err(|_| PairingError::InvalidRouting)?;
+        let destination = outer
+            .destination
+            .as_ref()
+            .ok_or(PairingError::InvalidRouting)?;
+        let message = outer.message.as_ref().ok_or(PairingError::InvalidRouting)?;
+        let routing = message
+            .routing
+            .as_ref()
+            .ok_or(PairingError::InvalidRouting)?;
+        let header = outer
+            .authentication
+            .as_ref()
+            .ok_or(PairingError::InvalidRouting)?;
+        let client = header
+            .client_info
+            .as_ref()
+            .ok_or(PairingError::InvalidRouting)?;
+        let mut wire_message = vec![Value::Null; 23];
+        wire_message[0] = json!(message.request_id);
+        wire_message[1] = json!(message.kind);
+        wire_message[11] = json!(STANDARD.encode(&message.payload));
+        wire_message[22] = json!([null, routing.delivery_class]);
+        let mut body = json!([
+            [destination.kind, destination.id, destination.client],
+            wire_message,
+            [
+                header.request_id,
+                null,
+                header.application,
+                null,
+                null,
+                STANDARD.encode(&header.registration_token),
+                [
+                    null,
+                    null,
+                    client.wire_year,
+                    client.wire_major,
+                    client.wire_minor,
+                    null,
+                    client.client_type,
+                    null,
+                    client.platform_type
+                ]
+            ],
+            null,
+            outer.maximum_lifetime_micros.to_string(),
+            null,
+            null,
+            null,
+            outer
+                .recipient_identities
+                .iter()
+                .map(|id| STANDARD.encode(id))
+                .collect::<Vec<_>>()
+        ]);
+        let encoded = serde_json::to_vec(&body)
+            .map(Zeroizing::new)
+            .map_err(|_| PairingError::InvalidRouting);
+        fn erase_strings(value: &mut Value) {
+            match value {
+                Value::String(text) => text.zeroize(),
+                Value::Array(values) => values.iter_mut().for_each(erase_strings),
+                _ => {}
+            }
+        }
+        erase_strings(&mut body);
+        encoded
+    }
+
     fn build(
         account_id: &str,
         session_id: &str,
@@ -914,7 +992,7 @@ mod tests {
                     }
                 }
             }
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]").await.unwrap();
             request
         });
 
@@ -955,11 +1033,30 @@ mod tests {
             "post {} http/1.1",
             crate::SEND_MESSAGE_PATH.to_ascii_lowercase()
         )));
-        assert!(headers.contains("content-type: application/x-protobuf"));
+        assert!(headers.contains("content-type: application/json+protobuf"));
         assert!(headers.contains("authorization: synthetic-auth"));
         assert!(headers.contains("cookie: sid=synthetic-cookie"));
-        let sent = MessagingSend::decode(&request[offset + 4..]).unwrap();
-        assert_eq!(sent.destination.as_ref().unwrap().id, "person@example.test");
+        let sent: serde_json::Value = serde_json::from_slice(&request[offset + 4..]).unwrap();
+        assert_eq!(sent[0], json!([16, "person@example.test", "GDitto"]));
+        assert_eq!(sent[1][0], attempt.request_id());
+        assert_eq!(sent[1][1], 19);
+        assert_eq!(sent[1][22], json!([null, 20]));
+        assert_eq!(sent[2][0], attempt.request_id());
+        assert_eq!(sent[2][2], "GDitto");
+        assert_eq!(
+            STANDARD.decode(sent[2][5].as_str().unwrap()).unwrap(),
+            b"synthetic-token"
+        );
+        assert_eq!(sent[4], "300000000");
+        assert_eq!(sent[8], json!([STANDARD.encode("phone")]));
+        let wrapper = PairingRequestWrapper::decode(
+            STANDARD
+                .decode(sent[1][11].as_str().unwrap())
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        assert_eq!(wrapper.request_type, 44);
         assert_eq!(
             format!("{result:?}"),
             "SendMessageAccepted { http_status: 200 }"

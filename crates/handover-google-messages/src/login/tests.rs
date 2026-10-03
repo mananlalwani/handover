@@ -118,16 +118,6 @@ fn source_body(wrong_account: bool) -> Vec<u8> {
 
 // Independent test projections of only the fields needed by the mock phone.
 #[derive(Message)]
-struct Send {
-    #[prost(message, optional, tag = "2")]
-    message: Option<Outer>,
-}
-#[derive(Message)]
-struct Outer {
-    #[prost(bytes = "vec", tag = "12")]
-    payload: Vec<u8>,
-}
-#[derive(Message)]
 struct Wrapper {
     #[prost(string, tag = "1")]
     id: String,
@@ -286,11 +276,13 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             return None;
         }
         let wrapper = Wrapper::decode(
-            Send::decode(body.as_slice())
+            general_purpose::STANDARD
+                .decode(
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap()[1][11]
+                        .as_str()
+                        .unwrap(),
+                )
                 .unwrap()
-                .message
-                .unwrap()
-                .payload
                 .as_slice(),
         )
         .unwrap();
@@ -303,7 +295,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
         )
         .advance_state(&mut rng, &init.bytes)
         .unwrap();
-        response(&mut socket, "application/x-protobuf", b"").await;
+        response(&mut socket, "application/json+protobuf", b"[]").await;
         // A stale reply must not consume this attempt or become an ACK.
         let stale = record(
             "stale-inbox",
@@ -359,11 +351,13 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
         let (path, body) = request(&mut socket).await;
         assert_eq!(path, crate::SEND_MESSAGE_PATH);
         let wrapper = Wrapper::decode(
-            Send::decode(body.as_slice())
+            general_purpose::STANDARD
+                .decode(
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap()[1][11]
+                        .as_str()
+                        .unwrap(),
+                )
                 .unwrap()
-                .message
-                .unwrap()
-                .payload
                 .as_slice(),
         )
         .unwrap();
@@ -379,7 +373,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
         let expected_symbol = crate::pairing::verification::revision_one(&auth)
             .as_str()
             .to_owned();
-        response(&mut socket, "application/x-protobuf", b"").await;
+        response(&mut socket, "application/json+protobuf", b"[]").await;
         chunk(&mut receive_socket, b",").await;
         chunk(
             &mut receive_socket,

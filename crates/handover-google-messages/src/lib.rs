@@ -822,13 +822,20 @@ async fn post_registration(
 async fn post_pairing_envelope(
     http: &Client,
     endpoint: &str,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     envelope: &pairing::gaia::PairingSendEnvelope,
 ) -> Result<SendMessageAccepted, ProbeError> {
+    let body = envelope
+        .json_request()
+        .map_err(|_| ProbeError::PairingFailed)?;
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json+protobuf"),
+    );
     let mut response = http
         .post(endpoint)
         .headers(headers)
-        .body(envelope.as_bytes().to_vec())
+        .body(body.to_vec())
         .send()
         .await
         .map_err(transport_error)?;
@@ -840,7 +847,7 @@ async fn post_pairing_envelope(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if content_type.split(';').next().map(str::trim) != Some("application/x-protobuf") {
+    if content_type.split(';').next().map(str::trim) != Some("application/json+protobuf") {
         return Err(ProbeError::UnexpectedResponse);
     }
     if response

@@ -357,3 +357,26 @@ credential acquisition, refresh, pairing, or conversation access. The production
 relay was restored and its account reported online; the test tab was closed.
 The next implementation checkpoint is source selection and the pairing/session
 contract, derived from first-party evidence before any registration request.
+
+
+## Native initial-send rejection
+
+The live attempts on 2026-10-03 completed source lookup and matched the saved
+native registration to the signed-in account. The initial pairing SendMessage
+RPC returned HTTP 400. No verification emoji reached Handover, and the owner
+reported no new phone request or paired device. The production relay was restored.
+
+The captured first-party `mw_web_only.js` constructs its Gaia messaging client
+through `A4a`, `CH`, and `BH` with binary mode disabled. `J_a` selects
+`application/json+protobuf`, and the SendMessage descriptor serializes the outer
+request as JSON. Its Ditto message field 12 remains a base64 binary payload.
+Handover previously sent that outer request as binary protobuf. This is a
+transport difference, not proof of the HTTP 400 cause.
+
+The pairing send transport now uses the observed JSON-protobuf format. It
+preserves destination field 1, message field 2, authentication field 3, lifetime
+field 5 as an int64 string, and recipient identities field 9. The internal
+pairing transcript and persisted registration representation are unchanged.
+Mock-phone tests cover both initial and confirmation sends, rejection,
+cancellation, and acknowledgement failure. Live acceptance remains unverified;
+no automatic retry was added.

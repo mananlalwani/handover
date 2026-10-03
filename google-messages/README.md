@@ -9,20 +9,15 @@ It has independently authored source lookup, registration preparation,
 correlated UKEY2 pairing, receive framing, pairing-reply validation, payload
 encryption, and acknowledgement payload construction. A live read-only
 authentication test returned four registered sources using matched browser
-service cookies and a request constructed by Rust. Registration, pairing,
-authenticated receiving, and acknowledgement transport have only local mock
-coverage and remain unverified against Google. It does not yet read conversations
+service cookies and a request constructed by Rust. The user completed one live unpaired registration. Pairing remains unverified: live attempts matched that registration to the signed-in account, but the initial SendMessage RPC returned HTTP 400 before any phone prompt. Authenticated receiving and acknowledgement transport retain local mock coverage. It does not yet read conversations
 or send user messages. The existing adapter remains in use during development.
 
-The native crate now includes a restricted local session-record store. It is
-not yet connected to a restorable confirmed account session. An explicit,
+The native crate includes a restricted local session-record store for pending registrations and confirmed pairing keys. Confirmed-session restore has mock coverage; messaging startup remains unimplemented. An explicit,
 opt-in mode-0 registration action uses the observer's matched browser
 credentials and saves its unpaired credential in that store. The user ran that
 registration once by hand on 2026-10-03, so the unpaired credential is real and
-saved locally; no phone pairing, receive session, or message send has followed
-from it. Type-44/45 pairing envelopes include the registration token and
-observed Tachyon header. An explicit authenticated HTTP send path is covered by a
-local mock only. It reports HTTP acceptance and has not sent a request to Google.
+saved locally. No phone pairing or user-message send has been confirmed. Type-44/45 pairing envelopes include the registration token and
+observed Tachyon header. The initial live pairing send was rejected with HTTP 400. Its transport now uses the JSON-protobuf outer request observed in Google’s web client, while the embedded Ditto and UKEY2 payloads stay binary. This format change passes mock tests and awaits live verification. HTTP acceptance does not establish phone confirmation.
 
 The crate also builds `handover-google-messages-helper`, the daemon-supervised
 process for this client. It speaks the existing normalized helper contract,
