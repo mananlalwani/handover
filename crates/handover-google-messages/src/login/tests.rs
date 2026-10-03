@@ -463,8 +463,9 @@ async fn exercise(
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         login.run_with_transport(transport, |event| {
+            let verification = matches!(event, LoginProgress::Verification(_));
             progress.push(event);
-            if matches!(scenario, Scenario::CancelOnPrompt) {
+            if matches!(scenario, Scenario::CancelOnPrompt) && verification {
                 return Err(ProbeError::NativeError);
             }
             Ok(())
@@ -534,7 +535,13 @@ async fn pairing_runs_over_http_with_a_mock_phone_and_only_validated_acknowledge
     else {
         panic!("phone did not confirm");
     };
-    assert_eq!(progress, [LoginProgress::Verification(expected.unwrap())]);
+    assert_eq!(
+        progress,
+        [
+            LoginProgress::RegistrationVerified,
+            LoginProgress::Verification(expected.unwrap())
+        ]
+    );
     assert!(
         !confirmed
             .encrypt(b"synthetic offline payload")
@@ -566,7 +573,14 @@ async fn rejection_and_stream_failure_never_create_confirmed_state_or_retry() {
         (Scenario::EndReceive, "receive_failed"),
     ] {
         let (result, _, _) = exercise(scenario, true).await;
-        assert_eq!(result.unwrap_err().code(), expected);
+        let code = result.unwrap_err().code();
+        if matches!(scenario, Scenario::EndReceive) {
+            // This peer closes the receive stream and its listener together.
+            // Either receive EOF or the concurrent send connection can fail first.
+            assert!(matches!(code, "receive_failed" | "network"));
+        } else {
+            assert_eq!(code, expected);
+        }
     }
 }
 #[tokio::test]
@@ -579,12 +593,12 @@ async fn final_ack_failure_keeps_confirmed_keys_and_prevents_repairing() {
             ..
         })
     ));
-    assert_eq!(progress.len(), 1);
+    assert_eq!(progress.len(), 2);
 }
 
 #[tokio::test]
 async fn canceled_prompt_closes_receive_before_ack_or_final_send() {
     let (result, progress, _) = exercise(Scenario::CancelOnPrompt, true).await;
     assert!(matches!(result, Err(ProbeError::NativeError)));
-    assert_eq!(progress.len(), 1);
+    assert_eq!(progress.len(), 2);
 }

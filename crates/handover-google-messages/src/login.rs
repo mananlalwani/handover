@@ -157,6 +157,7 @@ pub enum LoginOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoginProgress {
     Ready,
+    RegistrationVerified,
     Verification(String),
 }
 
@@ -271,6 +272,7 @@ impl LoginBootstrap {
             progress(LoginProgress::Ready)?;
             return Ok(LoginOutcome::Ready);
         }
+        progress(LoginProgress::RegistrationVerified)?;
         let request = registration
             .prepare_receive()
             .map_err(|_| ProbeError::SessionExpired)?;
