@@ -5,7 +5,7 @@ use std::{future::Future, io, time::Duration};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{BrowserProof, ProbeError, ProbeResult, RpcStatus, probe};
+use crate::{BrowserProof, ProbeError, ProbeResult, RpcReason, RpcStatus, probe};
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024;
@@ -27,6 +27,8 @@ enum HostResponse {
         http_status: Option<u16>,
         #[serde(skip_serializing_if = "Option::is_none")]
         rpc_status: Option<RpcStatus>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rpc_reason: Option<RpcReason>,
     },
 }
 
@@ -86,6 +88,7 @@ where
                     error: error.code(),
                     http_status: error.http_status(),
                     rpc_status: error.rpc_status(),
+                    rpc_reason: error.rpc_reason(),
                 },
                 Ok(Ok(result)) => HostResponse::Success {
                     ok: true,
@@ -145,6 +148,7 @@ fn failure(code: &'static str, http_status: Option<u16>) -> HostResponse {
         error: code,
         http_status,
         rpc_status: None,
+        rpc_reason: None,
     }
 }
 
@@ -191,9 +195,10 @@ mod tests {
     }
 
     async fn rejected_probe(_: BrowserProof) -> Result<ProbeResult, ProbeError> {
-        Err(ProbeError::HttpErrorWithStatus(
+        Err(ProbeError::HttpErrorWithReason(
             400,
             RpcStatus::InvalidArgument,
+            RpcReason::ApiKeyInvalid,
         ))
     }
 
@@ -325,7 +330,7 @@ mod tests {
         ));
         assert_eq!(
             response(&mut client_reader).await,
-            serde_json::json!({"ok":false,"error":"http_error","http_status":400,"rpc_status":"INVALID_ARGUMENT"})
+            serde_json::json!({"ok":false,"error":"http_error","http_status":400,"rpc_status":"INVALID_ARGUMENT","rpc_reason":"API_KEY_INVALID"})
         );
         task.await.unwrap().unwrap();
     }

@@ -32,7 +32,8 @@ async function refresh() {
     const result = probe.result ?? {};
     const statusCode = result.error === 'http_error' && Number.isInteger(result.http_status) ? `, HTTP ${result.http_status}` : '';
     const rpcStatus = typeof result.rpc_status === 'string' ? `, RPC ${result.rpc_status}` : '';
-    nativeStatus.textContent = `Native authentication probe failed (${result.error ?? 'invalid_response'}${statusCode}${rpcStatus}).`;
+    const rpcReason = typeof result.rpc_reason === 'string' ? `, reason ${result.rpc_reason}` : '';
+    nativeStatus.textContent = `Native authentication probe failed (${result.error ?? 'invalid_response'}${statusCode}${rpcStatus}${rpcReason}).`;
   } else nativeStatus.textContent = `Native authentication probe: ${probe?.state ?? 'idle'}.`;
 }
 

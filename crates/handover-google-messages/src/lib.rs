@@ -72,6 +72,20 @@ impl RpcStatus {
     }
 }
 
+/// Recognized Google API infrastructure reasons, without server metadata.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RpcReason {
+    ApiKeyInvalid,
+    ApiKeyServiceBlocked,
+    ApiKeyHttpReferrerBlocked,
+    ApiKeyIpAddressBlocked,
+    ApiKeyAndroidAppBlocked,
+    ApiKeyIosAppBlocked,
+    ConsumerInvalid,
+    ServiceDisabled,
+}
+
 /// A one-use browser proof. Debug deliberately excludes all supplied values.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +122,7 @@ pub enum ProbeError {
     Network,
     HttpError(u16),
     HttpErrorWithStatus(u16, RpcStatus),
+    HttpErrorWithReason(u16, RpcStatus, RpcReason),
     UnexpectedResponse,
     ResponseTooLarge,
     Timeout,
@@ -124,7 +139,9 @@ impl ProbeError {
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidCredentials => "invalid_credentials",
             Self::Network => "network",
-            Self::HttpError(_) | Self::HttpErrorWithStatus(_, _) => "http_error",
+            Self::HttpError(_)
+            | Self::HttpErrorWithStatus(_, _)
+            | Self::HttpErrorWithReason(_, _, _) => "http_error",
             Self::UnexpectedResponse => "unexpected_response",
             Self::ResponseTooLarge => "response_too_large",
             Self::Timeout => "timeout",
@@ -135,7 +152,9 @@ impl ProbeError {
 
     pub fn http_status(&self) -> Option<u16> {
         match self {
-            Self::HttpError(status) | Self::HttpErrorWithStatus(status, _)
+            Self::HttpError(status)
+            | Self::HttpErrorWithStatus(status, _)
+            | Self::HttpErrorWithReason(status, _, _)
                 if (100..=599).contains(status) =>
             {
                 Some(*status)
@@ -146,7 +165,16 @@ impl ProbeError {
 
     pub fn rpc_status(&self) -> Option<RpcStatus> {
         match self {
-            Self::HttpErrorWithStatus(_, status) => Some(*status),
+            Self::HttpErrorWithStatus(_, status) | Self::HttpErrorWithReason(_, status, _) => {
+                Some(*status)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn rpc_reason(&self) -> Option<RpcReason> {
+        match self {
+            Self::HttpErrorWithReason(_, _, reason) => Some(*reason),
             _ => None,
         }
     }
@@ -337,12 +365,13 @@ async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
     .ok()
     .flatten();
     match category {
-        Some(category) => ProbeError::HttpErrorWithStatus(status, category),
+        Some((category, Some(reason))) => ProbeError::HttpErrorWithReason(status, category, reason),
+        Some((category, None)) => ProbeError::HttpErrorWithStatus(status, category),
         None => ProbeError::HttpError(status),
     }
 }
 
-fn error_category(body: &[u8]) -> Option<RpcStatus> {
+fn error_category(body: &[u8]) -> Option<(RpcStatus, Option<RpcReason>)> {
     let value: Value = serde_json::from_slice(body).ok()?;
     if let Some(fields) = value.as_array() {
         // Google's public RPC transport decodes a JSPB RpcStatus: code field 1,
@@ -367,10 +396,41 @@ fn error_category(body: &[u8]) -> Option<RpcStatus> {
             }
             _ => return None,
         };
-        return RpcStatus::from_code(code);
+        return Some((RpcStatus::from_code(code)?, error_reason(fields.get(2))));
     }
     // The public AIP-193 JSON object representation is also supported.
-    serde_json::from_value::<RpcStatus>(value.get("error")?.get("status")?.clone()).ok()
+    let error = value.get("error")?;
+    Some((
+        serde_json::from_value::<RpcStatus>(error.get("status")?.clone()).ok()?,
+        error_reason(error.get("details")),
+    ))
+}
+
+fn error_reason(details: Option<&Value>) -> Option<RpcReason> {
+    let details = details?.as_array()?;
+    if details.len() > 16 {
+        return None;
+    }
+    let mut recognized = None;
+    for detail in details {
+        if detail.get("@type").and_then(Value::as_str)
+            != Some("type.googleapis.com/google.rpc.ErrorInfo")
+            || detail.get("domain").and_then(Value::as_str) != Some("googleapis.com")
+        {
+            continue;
+        }
+        let Some(reason) = detail
+            .get("reason")
+            .and_then(|v| serde_json::from_value::<RpcReason>(v.clone()).ok())
+        else {
+            continue;
+        };
+        if recognized.is_some_and(|previous| previous != reason) {
+            return None;
+        }
+        recognized = Some(reason);
+    }
+    recognized
 }
 
 fn parse_response(body: &[u8]) -> Result<ProbeResult, ProbeError> {
@@ -661,6 +721,14 @@ mod tests {
     async fn http_error_diagnostics_accept_only_fixed_rpc_categories() {
         for (body, expected) in [
             (
+                json!([3,"PRIVATE_SERVER_TEXT", [{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"googleapis.com","reason":"API_KEY_HTTP_REFERRER_BLOCKED","metadata":{"key":"PRIVATE_KEY"}}]]),
+                ProbeError::HttpErrorWithReason(
+                    400,
+                    RpcStatus::InvalidArgument,
+                    RpcReason::ApiKeyHttpReferrerBlocked,
+                ),
+            ),
+            (
                 json!([3,"PRIVATE_SERVER_TEXT", [{"payload":"PRIVATE_COOKIE"}]]),
                 ProbeError::HttpErrorWithStatus(400, RpcStatus::InvalidArgument),
             ),
@@ -710,5 +778,39 @@ mod tests {
             assert!(!format!("{result:?}").contains("PRIVATE_"));
             server.await.unwrap();
         }
+    }
+
+    #[test]
+    fn structured_reasons_discard_unknown_values_and_private_metadata() {
+        let info = json!({
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "domain": "googleapis.com",
+            "reason": "API_KEY_INVALID",
+            "metadata": {"key": "PRIVATE_KEY", "account": "PRIVATE_ACCOUNT"}
+        });
+        for body in [
+            json!([3, "PRIVATE_MESSAGE", [info.clone()]]),
+            json!({"error":{"status":"INVALID_ARGUMENT","details":[info.clone()]}}),
+        ] {
+            let projected = error_category(&serde_json::to_vec(&body).unwrap()).unwrap();
+            assert_eq!(
+                projected,
+                (RpcStatus::InvalidArgument, Some(RpcReason::ApiKeyInvalid))
+            );
+            assert!(!format!("{projected:?}").contains("PRIVATE_"));
+        }
+        let mut invalid = info.clone();
+        invalid["reason"] = json!("PRIVATE_MESSAGE");
+        assert_eq!(error_reason(Some(&json!([invalid]))), None);
+        let mut wrong_domain = info.clone();
+        wrong_domain["domain"] = json!("untrusted.test");
+        assert_eq!(error_reason(Some(&json!([wrong_domain]))), None);
+        let mut wrong_type = info.clone();
+        wrong_type["@type"] = json!("type.googleapis.com/unrecognized.ErrorInfo");
+        assert_eq!(error_reason(Some(&json!([wrong_type]))), None);
+        assert_eq!(error_reason(Some(&json!(vec![info.clone(); 17]))), None);
+        let mut conflict = info.clone();
+        conflict["reason"] = json!("SERVICE_DISABLED");
+        assert_eq!(error_reason(Some(&json!([info, conflict]))), None);
     }
 }

@@ -82,3 +82,8 @@ node --test google-messages/tools/chrome-observer/*.test.mjs
 ```
 
 Offline checks do not establish that Chrome installation or a live authenticated capture works.
+
+The popup can also show an allowlisted Google API infrastructure reason from
+structured ErrorInfo details. This never includes server messages or metadata.
+Unknown or opaque details are discarded. Its availability on the live Google
+Messages endpoint remains unverified.

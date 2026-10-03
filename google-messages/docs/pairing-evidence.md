@@ -235,3 +235,21 @@ fallback, so the longer form has not been proven invalid. The experiment keeps
 the identifier fresh rather than borrowing the browser's device identity.
 Request mode, headers, client metadata, and request-ID format stay unchanged.
 The shorter form has not yet been live-tested.
+
+The compact-device-ID comparison also returned HTTP 400 / INVALID_ARGUMENT,
+reported by the user. Matching the working identifier length did not resolve
+the failure; the experiment does not identify its cause. The test page closed
+and the restored production account reported online.
+
+The next diagnostic projects eight recognized infrastructure reasons from a
+structured google.rpc.ErrorInfo object with domain googleapis.com. Google's
+[public ErrorReason definitions](https://docs.cloud.google.com/php/docs/reference/common-protos/latest/Api.ErrorReason)
+distinguish invalid API keys, API restrictions, HTTP referrer restrictions,
+IP restrictions, Android or iOS restrictions, invalid consumers, and disabled
+services. Only those fixed enum strings can leave the probe. Free-form messages,
+metadata, unknown types, domains, and reasons remain discarded. More than 16
+details and conflicting recognized reasons produce no reason. This supports
+structured JSON ErrorInfo objects in either supported status representation;
+opaque protobuf Any payloads are not decoded. Neither this service's use of
+ErrorInfo nor any particular infrastructure rejection is established yet.
+Request bytes are unchanged for this diagnostic.

@@ -232,7 +232,13 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT', message: 'PRIVATE_ERROR_MESSAGE' }), {
     state: 'failed', result: { ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT' },
   });
+  assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT', rpc_reason: 'API_KEY_INVALID', metadata: { key: 'PRIVATE_KEY' } }), {
+    state: 'failed', result: { ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT', rpc_reason: 'API_KEY_INVALID' },
+  });
   for (const reply of [
+    { ok: false, error: 'http_error', rpc_reason: 'API_KEY_INVALID' },
+    { ok: false, error: 'http_error', rpc_status: 'INVALID_ARGUMENT', rpc_reason: 'PRIVATE_ERROR_MESSAGE' },
+    { ok: true, sources: 4, rpc_reason: 'API_KEY_INVALID' },
     { ok: false, error: 'http_error', http_status: 400, rpc_status: 'PRIVATE_ERROR_MESSAGE' },
     { ok: false, error: 'network', rpc_status: 'INVALID_ARGUMENT' },
     { ok: true, sources: 4, rpc_status: 'INVALID_ARGUMENT' },
