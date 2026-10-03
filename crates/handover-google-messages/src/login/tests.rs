@@ -86,6 +86,7 @@ enum Scenario {
     RejectFinalAck,
     CancelOnPrompt,
     MatchedPreemption,
+    MatchedInvalidPayload,
 }
 
 fn source_body(wrong_account: bool) -> Vec<u8> {
@@ -165,6 +166,8 @@ struct Response {
     body: Vec<u8>,
     #[prost(bool, tag = "9")]
     inactive: bool,
+    #[prost(bool, tag = "6")]
+    streaming: bool,
 }
 #[derive(Message)]
 struct Ack {
@@ -318,6 +321,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
                 id: "unrelated-request".into(),
                 kind: 44,
                 inactive: true,
+                streaming: true,
                 body: vec![1],
             },
         );
@@ -331,6 +335,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
                     id: wrapper.id,
                     kind: 44,
                     inactive: matches!(scenario, Scenario::MatchedPreemption),
+                    streaming: matches!(scenario, Scenario::MatchedInvalidPayload),
                     body: InitialResponse {
                         confirmation: true,
                         pairing_id: init.pairing_id.clone(),
@@ -343,7 +348,10 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             ),
         )
         .await;
-        if matches!(scenario, Scenario::MatchedPreemption) {
+        if matches!(
+            scenario,
+            Scenario::MatchedPreemption | Scenario::MatchedInvalidPayload
+        ) {
             let mut byte = [0];
             assert_eq!(receive_socket.read(&mut byte).await.unwrap(), 0);
             assert!(
@@ -411,6 +419,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
                     id: wrapper.id,
                     kind: 45,
                     inactive: false,
+                    streaming: false,
                     body: FinalResponse {
                         status: i32::from(matches!(scenario, Scenario::RejectFinal)),
                         pairing_id: finish.pairing_id,
@@ -642,5 +651,14 @@ async fn only_correlated_preemption_aborts_pairing_without_acknowledgement() {
     assert_eq!(
         result.unwrap_err(),
         ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted)
+    );
+}
+
+#[tokio::test]
+async fn correlated_invalid_payload_aborts_without_acknowledgement() {
+    let (result, _, _) = exercise(Scenario::MatchedInvalidPayload, true).await;
+    assert_eq!(
+        result.unwrap_err(),
+        ProbeError::ReceiveProtocol(ReceiveError::InvalidPairingPayload)
     );
 }

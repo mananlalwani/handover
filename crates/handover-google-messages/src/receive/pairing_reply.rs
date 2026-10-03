@@ -142,6 +142,7 @@ pub struct PairingReply {
     sender: Zeroizing<Vec<u8>>,
     kind: i32,
     inactive: bool,
+    payload_valid: bool,
     body: Zeroizing<Vec<u8>>,
 }
 
@@ -161,6 +162,14 @@ impl fmt::Debug for PairingReply {
 impl PairingReply {
     pub(crate) fn is_inactive(&self) -> bool {
         self.inactive
+    }
+
+    pub(crate) fn validate_payload(&self) -> Result<(), ReceiveError> {
+        if self.payload_valid {
+            Ok(())
+        } else {
+            Err(ReceiveError::InvalidPairingPayload)
+        }
     }
 
     pub(crate) fn matches_initial(&self, attempt: &InitialPairing) -> bool {
@@ -203,6 +212,8 @@ impl PairingReply {
         if self.inactive {
             return Err(PairingError::Rejected);
         }
+        self.validate_payload()
+            .map_err(|_| PairingError::InvalidResponse)?;
         pending.accept_response(&self.request_id, &self.sender, &self.body)
     }
 
@@ -216,6 +227,8 @@ impl PairingReply {
         if self.inactive {
             return Err(PairingError::Rejected);
         }
+        self.validate_payload()
+            .map_err(|_| PairingError::InvalidResponse)?;
         attempt.accept_response(&self.request_id, &self.sender, &self.body)
     }
 }
@@ -316,16 +329,12 @@ impl ReceiveRecord {
         }
         let response = PairingResponse::decode(bytes.as_slice())
             .map_err(|_| ReceiveError::InvalidPairingPayload)?;
-        if response.streaming
-            || response.sequence < 0
-            || response.sequence > 1
-            || !response.encrypted.is_empty()
-            || !response.additional_payload.is_empty()
-            || (!response.inactive && response.body.is_empty())
-            || response.body.len() > PAYLOAD_LIMIT
-        {
-            return Err(ReceiveError::InvalidPairingPayload);
-        }
+        let payload_valid = !response.streaming
+            && (0..=1).contains(&response.sequence)
+            && response.encrypted.is_empty()
+            && response.additional_payload.is_empty()
+            && !response.body.is_empty()
+            && response.body.len() <= PAYLOAD_LIMIT;
         let message_id =
             bounded_id(message.first()).map_err(|_| ReceiveError::InvalidIdentifiers)?;
         if response.request_id.is_empty()
@@ -345,7 +354,12 @@ impl ReceiveRecord {
             sender,
             kind: response.kind,
             inactive: response.inactive,
-            body: Zeroizing::new(response.body.clone()),
+            payload_valid,
+            body: Zeroizing::new(if payload_valid {
+                response.body.clone()
+            } else {
+                Vec::new()
+            }),
         }))
     }
 }
@@ -460,7 +474,14 @@ mod tests {
                 3 => response.additional_payload = vec![1],
                 _ => response.body = vec![0; PAYLOAD_LIMIT + 1],
             }
-            assert!(record(&response).pairing_reply().is_err());
+            let reply = record(&response)
+                .pairing_reply()
+                .expect("correlation precedes payload checks")
+                .unwrap();
+            assert_eq!(
+                reply.validate_payload(),
+                Err(ReceiveError::InvalidPairingPayload)
+            );
         }
     }
 

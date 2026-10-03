@@ -383,6 +383,7 @@ async fn wait_reply(
                 let reply = reply.ok_or(ProbeError::ReceiveFailed)?;
                 if matches(&reply) {
                     if reply.is_inactive() { return Err(ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted)); }
+                    reply.validate_payload().map_err(ProbeError::ReceiveProtocol)?;
                     return Ok(reply);
                 }
             }

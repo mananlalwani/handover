@@ -426,3 +426,18 @@ pairing payload, and identifiers using fixed error names. It emits no field
 values or message contents. Mock ceremonies include an eventless record and a
 stale inactive reply before the valid phone response. These fixes pass offline
 checks and await live verification; the last send outcome is still uncertain.
+
+
+The next attempt failed with `InvalidPairingPayload` before initial-send
+acceptance was reported. The relay was restored. Review found that although
+preemption had moved after correlation, payload-shape checks still ran before
+correlation. A queued stale response could therefore abort the new attempt if it
+was streaming, encrypted, empty, or otherwise unsupported for pairing.
+
+Projection now retains bounded correlation metadata and a private validity flag.
+Unsupported payload contents are discarded. The dispatcher checks request type,
+request ID, and selected sender before acting on preemption or payload validity.
+Direct reply-acceptance methods apply the same order. Mock tests reproduce a
+stale streaming inactive reply and complete the following valid ceremony. A
+matching unsupported payload still aborts with no acknowledgement or
+confirmation send. The change awaits live verification.
