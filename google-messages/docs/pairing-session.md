@@ -195,10 +195,10 @@ There is no silent fallback.
 `AwaitingPhoneConfirmation` prepares the inner type-45 client-finish request,
 following `G5a` at 1076135. It keeps the original pairing ID and timestamp, uses
 a fresh outer request ID, and omits the initial revision fields. It exposes raw
-verification bytes, with the existing five-minute expiry, but cannot accept final
-success or produce an online account. Emoji display, routing envelopes, receive
-dispatch and acknowledgements, registration transport, and final confirmation
-handling remain unfinished.
+verification bytes, with the existing five-minute expiry, but cannot produce
+an online account. It now accepts a correlated final phone response as described
+below. Emoji display, routing envelopes, runtime receive dispatch and
+acknowledgements, and registration transport remain unfinished.
 
 Synthetic tests complete the embedded handshake with an upstream peer and compare
 verification material. They also cover correlation, rejected status, required
@@ -242,3 +242,48 @@ reply extraction and preemption, and a complete chunked stream-to-UKEY2 pending
 confirmation exchange. The receive response body was not captured during the
 earlier live trace, so this framing remains verified offline against first-party
 source, rather than a live receive connection.
+
+## Correlated final phone response
+
+The pending exchange now consumes a type-45 reply with matching outer request ID,
+sender identity, and pairing ID. `G5a` at 1076135 supplies the observed status and
+pairing-ID checks. The native decoder requires status 0, applies the existing
+five-minute expiry and 16 KiB response bound, and retains optional encrypted user
+data from field 8 privately, bounded to 8 KiB. It does not decrypt that data yet.
+
+`PhoneConfirmedPairing` records only the acknowledged exchange. It has redacted
+Debug output and no session-key export, persistence, or online-account conversion.
+Tests cover success, correlation mismatches, rejection, encrypted-data bounds,
+and expiry. Live phone confirmation remains unverified.
+
+After a valid final response, the client now derives private revision-1 keys
+using RustCrypto HKDF-SHA256 and SHA-256. `Ona` at 190393 derives the client and
+server values from UKEY2's next-protocol material with the fixed D2D salt and
+`client`/`server` info strings. `Xna/Vna` at 191459 orders those values using
+signed-byte hashes with wrapping 32-bit arithmetic, then hashes their
+concatenation with the D2D salt. `q5a` at 1074393 applies the observed Ditto salts
+and info strings. Equal hashes preserve Google's server-first ordering.
+
+Three synthetic vectors generated independently with Node WebCrypto match the
+Rust implementation, including both hash orderings and negative hash values.
+Keys remain private in zeroizing storage with no export or serialization. This
+does not establish live channel encryption, native refresh, or session recovery.
+
+## Login bootstrap direction
+
+The user selected minimal friction. The supported-login direction is a dedicated
+login-only browser extension in this repository, using the normal signed-in
+browser to pass one transient authentication bootstrap to Handover's native host.
+Users should not need to copy cookies or prepare credential files. The existing
+diagnostic observer remains a development tool until the login component exists.
+
+Rust will own fresh registration, phone pairing, and messaging. Browser cookies
+will not be persisted. Confirmed native session storage and refresh still need
+implementation and verification; the intended setup flow is browser sign-in,
+phone confirmation, then session management by Handover. This direction does not
+claim that unattended refresh or restart recovery already works.
+
+Google's [computer pairing guide](https://support.google.com/messages/answer/7611075?hl=en)
+describes Google-account sign-in and phone confirmation. The existing normal
+browser is the bootstrap target; Handover will not require a separate test-browser
+profile in the supported login flow.

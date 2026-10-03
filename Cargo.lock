@@ -882,11 +882,13 @@ version = "0.3.4"
 dependencies = [
  "base64 0.22.1",
  "crypto_provider_rustcrypto",
+ "hkdf",
  "prost",
  "rand 0.8.8",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "ukey2_proto",
  "ukey2_rs",

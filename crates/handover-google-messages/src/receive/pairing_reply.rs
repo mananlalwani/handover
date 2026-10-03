@@ -5,7 +5,9 @@ use std::fmt;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{ReceiveError, ReceiveRecord};
-use crate::pairing::gaia::{AwaitingPhoneConfirmation, InitialPairing, PairingError};
+use crate::pairing::gaia::{
+    AwaitingPhoneConfirmation, InitialPairing, PairingError, PhoneConfirmedPairing,
+};
 
 const ID_LIMIT: usize = 1024;
 const ENVELOPE_LIMIT: usize = 32 * 1024;
@@ -27,6 +29,16 @@ impl fmt::Debug for PairingReply {
 }
 
 impl PairingReply {
+    pub fn accept_confirmation(
+        self,
+        pending: AwaitingPhoneConfirmation,
+    ) -> Result<PhoneConfirmedPairing, PairingError> {
+        if self.kind != 45 {
+            return Err(PairingError::InvalidResponse);
+        }
+        pending.accept_response(&self.request_id, &self.sender, &self.body)
+    }
+
     pub fn accept_initial(
         self,
         attempt: InitialPairing,

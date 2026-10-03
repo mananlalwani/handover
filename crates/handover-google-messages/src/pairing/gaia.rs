@@ -1,5 +1,5 @@
-//! Offline Gaia pairing envelopes. Transport, emoji display, and final response
-//! handling are deliberately absent; these types cannot create an online account.
+//! Offline Gaia pairing envelopes and correlated phone confirmation.
+//! Transport and emoji display remain absent; no type creates an online account.
 
 use prost::Message;
 use std::{
@@ -7,6 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{HandshakeError, PairingHandshake, PendingPhoneConfirmation};
 use crate::sources::RegisteredPhone;
@@ -133,8 +134,8 @@ impl InitialPairing {
         );
         Ok(AwaitingPhoneConfirmation {
             pending,
-            _peer: self.peer,
-            _pairing_id: self.pairing_id,
+            peer: self.peer,
+            pairing_id: self.pairing_id,
             request_id: Uuid::new_v4().to_string(),
             request,
         })
@@ -142,11 +143,11 @@ impl InitialPairing {
 }
 
 /// Valid initial response only. Phone confirmation has not completed.
-/// No API accepts a final success response or releases session keys yet.
+/// Session keys remain private until the full channel contract is implemented.
 pub struct AwaitingPhoneConfirmation {
     pending: PendingPhoneConfirmation,
-    _peer: Vec<u8>,
-    _pairing_id: String,
+    peer: Vec<u8>,
+    pairing_id: String,
     request_id: String,
     request: Vec<u8>,
 }
@@ -172,6 +173,70 @@ impl AwaitingPhoneConfirmation {
     pub fn request_bytes(&self) -> Result<&[u8], PairingError> {
         self.pending.client_finish()?;
         Ok(&self.request)
+    }
+
+    /// A correlated phone response confirms only this pairing exchange. It
+    /// does not prove a working receive channel or restore a messaging account.
+    pub fn accept_response(
+        self,
+        request_id: &str,
+        sender: &[u8],
+        body: &[u8],
+    ) -> Result<PhoneConfirmedPairing, PairingError> {
+        self.pending.client_finish()?;
+        if request_id != self.request_id || sender != self.peer {
+            return Err(PairingError::Correlation);
+        }
+        if body.is_empty() || body.len() > RESPONSE_LIMIT {
+            return Err(PairingError::InvalidResponse);
+        }
+        let mut response =
+            FinalResponse::decode(body).map_err(|_| PairingError::InvalidResponse)?;
+        if response.pairing_id != self.pairing_id {
+            return Err(PairingError::Correlation);
+        }
+        if response.status != 0 {
+            return Err(PairingError::Rejected);
+        }
+        if response.encrypted_user_data.len() > 8192 {
+            return Err(PairingError::InvalidResponse);
+        }
+        Ok(PhoneConfirmedPairing {
+            _keys: super::keys::GaiaKeys::derive(&self.pending._next_protocol_secret)?,
+            _peer: self.peer,
+            _pairing_id: self.pairing_id,
+            _encrypted_user_data: Zeroizing::new(std::mem::take(&mut response.encrypted_user_data)),
+        })
+    }
+}
+
+/// Acknowledged phone exchange, with no online state, persistence, or key export.
+pub struct PhoneConfirmedPairing {
+    _keys: super::keys::GaiaKeys,
+    _peer: Vec<u8>,
+    _pairing_id: String,
+    _encrypted_user_data: Zeroizing<Vec<u8>>,
+}
+
+impl fmt::Debug for PhoneConfirmedPairing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PhoneConfirmedPairing { redacted }")
+    }
+}
+
+#[derive(Message)]
+struct FinalResponse {
+    #[prost(int32, tag = "1")]
+    status: i32,
+    #[prost(string, tag = "4")]
+    pairing_id: String,
+    #[prost(bytes = "vec", tag = "8")]
+    encrypted_user_data: Vec<u8>,
+}
+
+impl Drop for FinalResponse {
+    fn drop(&mut self) {
+        self.encrypted_user_data.zeroize();
     }
 }
 
@@ -482,5 +547,45 @@ mod tests {
             pending.auth_string().unwrap_err(),
             PairingError::Handshake(HandshakeError::Expired)
         );
+    }
+
+    #[test]
+    fn final_response_requires_correlated_success_and_retains_opaque_data() {
+        for invalid in 0..7 {
+            let attempt = attempt();
+            let response = response(&attempt).encode_to_vec();
+            let id = attempt.request_id().to_owned();
+            let mut pending = attempt.accept_response(&id, b"phone", &response).unwrap();
+            let mut final_response = FinalResponse {
+                status: 0,
+                pairing_id: pending.pairing_id.clone(),
+                encrypted_user_data: vec![1, 2, 3],
+            };
+            let mut id = pending.request_id().to_owned();
+            let mut sender = b"phone".to_vec();
+            match invalid {
+                1 => id.push('x'),
+                2 => sender.push(0),
+                3 => final_response.pairing_id.push('x'),
+                4 => final_response.status = 1,
+                5 => final_response.encrypted_user_data = vec![0; 8193],
+                6 => {
+                    pending.pending.started =
+                        std::time::Instant::now() - super::super::HANDSHAKE_LIFETIME
+                }
+                _ => {}
+            }
+            let result = pending.accept_response(&id, &sender, &final_response.encode_to_vec());
+            if invalid == 0 {
+                let confirmed = result.unwrap();
+                assert!(confirmed._encrypted_user_data.as_slice() == [1, 2, 3]);
+                assert_eq!(
+                    format!("{confirmed:?}"),
+                    "PhoneConfirmedPairing { redacted }"
+                );
+            } else {
+                assert!(result.is_err());
+            }
+        }
     }
 }
