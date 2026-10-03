@@ -196,3 +196,20 @@ Error bodies are bounded to 16 KiB with a one-second read limit. Unknown status
 strings, messages, and details are discarded. This diagnostic does not expose
 Google's free-form error text or establish that this particular service follows
 the documented representation. The metadata change is not yet live-tested.
+
+The metadata comparison still returned HTTP 400 with no projected RPC category.
+This did not resolve the rejection. Reviewing the public transport shows that
+its JSON-protobuf error decoder reads RpcStatus as an array: code in field 1,
+message in field 2, repeated details in field 3. In the normal-browser source,
+`r_a` at 933437 invokes `xKa`, which decodes the `wKa` class at 692543. The native
+probe initially supported only the AIP-193 object representation. It now also
+accepts bounded JSON-protobuf error arrays and projects only canonical numeric
+error codes 1 through 16. Code 0, unknown codes, malformed message/detail shapes,
+and free-form values never become diagnostics. Matching the public transport,
+this error decoding does not depend on the response media type. Successful RPC
+responses still require their expected JSON-protobuf media type and shape.
+
+Google's fresh-device fallback uses a hyphenated UUID, so the probe's fresh
+device-ID length remains supported by the observed source. No device-ID change
+was made based only on the shorter stored identifier in the sanitized capture.
+The next test changes only error decoding, without changing the request body.

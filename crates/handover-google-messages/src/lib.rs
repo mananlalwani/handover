@@ -48,6 +48,30 @@ pub enum RpcStatus {
     DataLoss,
 }
 
+impl RpcStatus {
+    fn from_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Cancelled),
+            2 => Some(Self::Unknown),
+            3 => Some(Self::InvalidArgument),
+            4 => Some(Self::DeadlineExceeded),
+            5 => Some(Self::NotFound),
+            6 => Some(Self::AlreadyExists),
+            7 => Some(Self::PermissionDenied),
+            8 => Some(Self::ResourceExhausted),
+            9 => Some(Self::FailedPrecondition),
+            10 => Some(Self::Aborted),
+            11 => Some(Self::OutOfRange),
+            12 => Some(Self::Unimplemented),
+            13 => Some(Self::Internal),
+            14 => Some(Self::Unavailable),
+            15 => Some(Self::DataLoss),
+            16 => Some(Self::Unauthenticated),
+            _ => None,
+        }
+    }
+}
+
 /// A one-use browser proof. Debug deliberately excludes all supplied values.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -288,20 +312,10 @@ async fn query(
 
 async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
     let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim();
     const ERROR_LIMIT: usize = 16 * 1024;
-    if !matches!(
-        content_type,
-        "application/json" | "application/json+protobuf"
-    ) || response
+    // The first-party error decoder accepts JSON-protobuf independently of
+    // the media type. Only the bounded error schema below can yield a category.
+    if response
         .content_length()
         .is_some_and(|n| n > ERROR_LIMIT as u64)
     {
@@ -315,9 +329,7 @@ async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
             }
             body.extend_from_slice(&chunk);
         }
-        // AIP-193 status is a fixed enum. Never retain or return message/details.
-        let value: Value = serde_json::from_slice(&body).ok()?;
-        serde_json::from_value::<RpcStatus>(value.get("error")?.get("status")?.clone()).ok()
+        error_category(&body)
     })
     .await
     .ok()
@@ -326,6 +338,37 @@ async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
         Some(category) => ProbeError::HttpErrorWithStatus(status, category),
         None => ProbeError::HttpError(status),
     }
+}
+
+fn error_category(body: &[u8]) -> Option<RpcStatus> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    if let Some(fields) = value.as_array() {
+        // Google's public RPC transport decodes a JSPB RpcStatus: code field 1,
+        // message field 2, repeated details field 3. Never return the latter two.
+        if fields.is_empty()
+            || fields.len() > 3
+            || fields
+                .get(1)
+                .is_some_and(|v| !v.is_null() && !v.is_string())
+            || fields.get(2).is_some_and(|v| !v.is_null() && !v.is_array())
+        {
+            return None;
+        }
+        let code = match &fields[0] {
+            Value::Number(number) => number.as_u64()?,
+            Value::String(text)
+                if !text.is_empty()
+                    && text.len() <= 2
+                    && text.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                text.parse().ok()?
+            }
+            _ => return None,
+        };
+        return RpcStatus::from_code(code);
+    }
+    // The public AIP-193 JSON object representation is also supported.
+    serde_json::from_value::<RpcStatus>(value.get("error")?.get("status")?.clone()).ok()
 }
 
 fn parse_response(body: &[u8]) -> Result<ProbeResult, ProbeError> {
@@ -602,6 +645,19 @@ mod tests {
     async fn http_error_diagnostics_accept_only_fixed_rpc_categories() {
         for (body, expected) in [
             (
+                json!([3,"PRIVATE_SERVER_TEXT", [{"payload":"PRIVATE_COOKIE"}]]),
+                ProbeError::HttpErrorWithStatus(400, RpcStatus::InvalidArgument),
+            ),
+            (
+                json!(["16", "PRIVATE_SERVER_TEXT"]),
+                ProbeError::HttpErrorWithStatus(400, RpcStatus::Unauthenticated),
+            ),
+            (json!([3, {}, []]), ProbeError::HttpError(400)),
+            (
+                json!([99, "PRIVATE_SERVER_TEXT"]),
+                ProbeError::HttpError(400),
+            ),
+            (
                 json!({"error":{"status":"INVALID_ARGUMENT","message":"PRIVATE_SERVER_TEXT","details":{"cookie":"PRIVATE_COOKIE"}}}),
                 ProbeError::HttpErrorWithStatus(400, RpcStatus::InvalidArgument),
             ),
@@ -615,9 +671,14 @@ mod tests {
                 ProbeError::HttpError(400),
             ),
         ] {
+            let media = if body.is_array() {
+                "text/plain"
+            } else {
+                "application/json"
+            };
             let body = serde_json::to_vec(&body).unwrap();
             let header = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let (endpoint, server) = mock_server([header.as_bytes(), &body].concat()).await;
