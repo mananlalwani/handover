@@ -284,35 +284,38 @@ impl ReceiveRecord {
     pub fn pairing_reply(&self) -> Result<Option<PairingReply>, ReceiveError> {
         let fields = self.fields();
         if fields.len() > 7 {
-            return Err(ReceiveError::Malformed);
+            return Err(ReceiveError::InvalidEvents);
         }
         let mut events = fields
             .iter()
             .enumerate()
             .skip(1)
             .filter(|(_, v)| !v.is_null());
-        let (index, event) = events.next().ok_or(ReceiveError::Malformed)?;
+        let Some((index, event)) = events.next() else {
+            return Ok(None);
+        };
         if events.next().is_some() || !event.is_array() {
-            return Err(ReceiveError::Malformed);
+            return Err(ReceiveError::InvalidEvents);
         }
         if index != 1 {
             return Ok(None);
         }
-        let message = event.as_array().ok_or(ReceiveError::Malformed)?;
+        let message = event.as_array().ok_or(ReceiveError::InvalidEvents)?;
         if message.len() > 128 {
-            return Err(ReceiveError::Malformed);
+            return Err(ReceiveError::InvalidEvents);
         }
         if message.get(1).and_then(Value::as_i64) != Some(19) {
             return Ok(None);
         }
-        let bytes = decode(message.get(11), ENVELOPE_LIMIT)?;
+        let bytes =
+            decode(message.get(11), ENVELOPE_LIMIT).map_err(|_| ReceiveError::InvalidEnvelope)?;
         let header =
-            ResponseHeader::decode(bytes.as_slice()).map_err(|_| ReceiveError::Malformed)?;
+            ResponseHeader::decode(bytes.as_slice()).map_err(|_| ReceiveError::InvalidEnvelope)?;
         if !matches!(header.kind, 44 | 45) {
             return Ok(None);
         }
-        let response =
-            PairingResponse::decode(bytes.as_slice()).map_err(|_| ReceiveError::Malformed)?;
+        let response = PairingResponse::decode(bytes.as_slice())
+            .map_err(|_| ReceiveError::InvalidPairingPayload)?;
         if response.streaming
             || response.sequence < 0
             || response.sequence > 1
@@ -321,18 +324,20 @@ impl ReceiveRecord {
             || (!response.inactive && response.body.is_empty())
             || response.body.len() > PAYLOAD_LIMIT
         {
-            return Err(ReceiveError::Malformed);
+            return Err(ReceiveError::InvalidPairingPayload);
         }
-        let message_id = bounded_id(message.first())?;
+        let message_id =
+            bounded_id(message.first()).map_err(|_| ReceiveError::InvalidIdentifiers)?;
         if response.request_id.is_empty()
             || response.request_id.len() > ID_LIMIT
             || response.request_id.chars().any(char::is_control)
         {
-            return Err(ReceiveError::Malformed);
+            return Err(ReceiveError::InvalidIdentifiers);
         }
-        let sender = decode(message.get(16), ID_LIMIT)?;
+        let sender =
+            decode(message.get(16), ID_LIMIT).map_err(|_| ReceiveError::InvalidIdentifiers)?;
         if sender.is_empty() {
-            return Err(ReceiveError::Malformed);
+            return Err(ReceiveError::InvalidIdentifiers);
         }
         Ok(Some(PairingReply {
             _message_id: message_id.to_owned(),
@@ -615,6 +620,18 @@ mod tests {
     }
 
     #[test]
+    fn eventless_receive_records_are_noops() {
+        for fields in [json!([]), json!([[]]), json!([[], null, null])] {
+            assert!(
+                ReceiveRecord(fields)
+                    .pairing_reply()
+                    .expect("absent oneof is not a pairing event")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn inactive_unrelated_responses_do_not_preempt_pairing() {
         for kind in [16, 44] {
             let mut response = response();
@@ -660,7 +677,12 @@ mod tests {
                 2 => input.0[1][11] = json!("not base64!"),
                 _ => input.0[1][11] = json!(general_purpose::STANDARD.encode([0xff])),
             }
-            assert!(input.pairing_reply().is_err());
+            let expected = match invalid {
+                0 => ReceiveError::InvalidEvents,
+                1 => ReceiveError::InvalidIdentifiers,
+                _ => ReceiveError::InvalidEnvelope,
+            };
+            assert_eq!(input.pairing_reply().unwrap_err(), expected);
         }
     }
 

@@ -411,3 +411,18 @@ Mock tests replay a stale inactive reply before a successful ceremony and verify
 that matching preemption causes neither acknowledgement nor confirmation send.
 The change awaits another live test; the previous attempt's send outcome remains
 uncertain because receive failure can race transport completion.
+
+
+The following live attempt failed with `Malformed` before initial-send acceptance
+was reported. No verification emoji reached Handover, and the relay was restored.
+That category did not identify whether stream framing or pairing projection
+rejected the data. Offline review found that the projection rejected eventless
+records, while the first-party dispatcher treats an absent oneof as a no-op.
+An added regression reproduced this rejection; empty and header-only records
+now produce no pairing reply and no acknowledgement.
+
+The projection also now distinguishes invalid event layout, binary envelope,
+pairing payload, and identifiers using fixed error names. It emits no field
+values or message contents. Mock ceremonies include an eventless record and a
+stale inactive reply before the valid phone response. These fixes pass offline
+checks and await live verification; the last send outcome is still uncertain.

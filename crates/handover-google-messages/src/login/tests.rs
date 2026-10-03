@@ -275,7 +275,8 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             receive_socket.write_all(b"0\r\n\r\n").await.unwrap();
             return None;
         }
-        chunk(&mut receive_socket, b"[[").await;
+        // A receive record with no selected event is a no-op, not failure.
+        chunk(&mut receive_socket, b"[[[],").await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let (path, body) = request(&mut socket).await;
         assert_eq!(path, crate::SEND_MESSAGE_PATH);

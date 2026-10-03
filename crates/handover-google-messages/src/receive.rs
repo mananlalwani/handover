@@ -13,6 +13,10 @@ const DEPTH_LIMIT: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveError {
     Malformed,
+    InvalidEvents,
+    InvalidEnvelope,
+    InvalidPairingPayload,
+    InvalidIdentifiers,
     TooLarge,
     TooDeep,
     Truncated,
