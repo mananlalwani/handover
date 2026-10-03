@@ -7,11 +7,14 @@ separate process. The in-tree `handover-gmessages-helper` is a loopback helper
 for development and tests.
 
 Handover's independently authored replacement lives in
-[`google-messages/`](../google-messages/README.md) in this repository. It currently
-contains first-party bootstrap evidence tools, not a working protocol client.
-It must not import or copy the AGPL adapter or mautrix implementation. Its Google
-wire formats and authentication remain below the normalized helper contract;
-public daemon, IPC, CLI, and Quickshell models stay backend-independent.
+[`google-messages/`](../google-messages/README.md) and
+[`crates/handover-google-messages`](../crates/handover-google-messages/src/lib.rs)
+in this repository. It has offline registration, pairing, receive, encryption,
+and acknowledgement components, but no working online phone-pairing or
+conversation client yet. It must not import or copy the AGPL adapter or mautrix
+implementation. Its Google wire formats and authentication remain below the
+normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
+backend-independent.
 
 ## Layout
 

@@ -4,14 +4,15 @@ An independent Google Messages protocol client for Handover, developed without
 mautrix-gmessages. The target is Google Messages companion access, including RCS;
 it still requires Google Messages on the phone and Google's service.
 
-This directory contains bootstrap evidence tools and a read-only network
-observer. The original Rust client starts in
-[`crates/handover-google-messages`](../crates/handover-google-messages). Its first
-probe requests a registered-source count using a short-lived browser proof.
-A live read-only authentication test succeeded with matched browser service
-cookies and a request constructed by Rust, returning four registered sources.
-Browser-independent credential acquisition and refresh remain unverified.
-It does not yet pair, read conversations, or send messages. The existing adapter remains in use during development.
+The Rust client lives in [`crates/handover-google-messages`](../crates/handover-google-messages).
+It has independently authored source lookup, registration preparation,
+correlated UKEY2 pairing, receive framing, pairing-reply validation, payload
+encryption, and acknowledgement payload construction. A live read-only
+authentication test returned four registered sources using matched browser
+service cookies and a request constructed by Rust. Registration, pairing,
+authenticated receiving, and acknowledgement transport remain offline or
+unverified. It does not yet read conversations or send messages. The existing
+adapter remains in use during development.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.
@@ -78,9 +79,8 @@ python3 google-messages/tools/summarize_observation.py /path/to/google-messages-
 The summarizer rejects unexpected fields and emits RPC counts, HTTP facts, and
 top-level shape counts. It does not print complete nested shapes or values.
 
-The [source-selection and session contract](docs/pairing-session.md) records the
-next pairing requirements. The bounded Rust source decoder is tested with
-synthetic records; it is not yet connected to a live pairing flow.
+The [source-selection and session contract](docs/pairing-session.md) records
+protocol evidence and separates offline checks from live verification.
 
 ## Integration target
 
