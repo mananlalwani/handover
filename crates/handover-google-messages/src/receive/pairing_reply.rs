@@ -675,7 +675,11 @@ mod tests {
             "post {} http/1.1",
             crate::ACK_MESSAGES_PATH.to_ascii_lowercase()
         )));
-        assert!(headers.contains("content-type: application/json+protobuf"));
+        let content_types: Vec<_> = headers
+            .lines()
+            .filter(|line| line.starts_with("content-type:"))
+            .collect();
+        assert_eq!(content_types, ["content-type: application/json+protobuf"]);
         let decoded: Value = serde_json::from_slice(&received[offset + 4..]).unwrap();
         assert_eq!(decoded[1], serde_json::json!(["processed-reply"]));
         assert_eq!(

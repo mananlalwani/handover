@@ -439,11 +439,7 @@ impl PairingHttp {
         let request = registration
             .acknowledgement_request(&batch)
             .map_err(|_| ProbeError::SessionExpired)?;
-        let mut headers = proof.validate_messaging()?;
-        headers.insert(
-            reqwest::header::CONTENT_TYPE,
-            reqwest::header::HeaderValue::from_static("application/x-protobuf"),
-        );
+        let headers = proof.validate_messaging()?;
         crate::post_acknowledgements(
             &self.short,
             &self.url(crate::ACK_MESSAGES_PATH),

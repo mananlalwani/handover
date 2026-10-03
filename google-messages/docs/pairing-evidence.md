@@ -591,3 +591,20 @@ fixed popup hint to refresh once more. A subsequent correctly ordered request
 works in the same observer session. A matched request without cookies still
 fails closed. Tests verify no reversed-event cookie enters snapshots or native
 requests. This extension change requires a manual reload and is not live-tested.
+
+
+The next live attempt validated server-init and derived an emoji again, but
+failed with HTTP 400 before the new acknowledgement-accepted progress event.
+The final pairing request was never submitted. Production relay restoration
+was verified. Offline investigation reproduced an implementation error in the
+previous transport fix: RequestBuilder appended the JSON-protobuf Content-Type
+after the caller supplied a binary Content-Type. The wire request contained both
+conflicting values. The earlier transport test checked only for presence of the
+new value and missed the duplicate.
+
+The strengthened wire regression requires exactly one JSON-protobuf Content-Type
+even when the caller supplies an old value. The acknowledgement transport now
+replaces the header through HeaderMap insertion, and obsolete caller overrides
+are removed. The payload structure matches Google's repeated-string field-2
+acknowledgement constructor; no libgm payload shape was copied. This fix remains
+unverified against the live service.

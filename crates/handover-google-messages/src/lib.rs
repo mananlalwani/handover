@@ -774,11 +774,7 @@ pub async fn acknowledge_messages(
     request
         .ensure_valid()
         .map_err(|_| ProbeError::SessionExpired)?;
-    let mut headers = proof.validate_messaging()?;
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/x-protobuf"),
-    );
+    let headers = proof.validate_messaging()?;
     let endpoint = format!("{}{}", proof.endpoint, ACK_MESSAGES_PATH);
     post_acknowledgements(&client(true)?, &endpoint, headers, request).await
 }
@@ -877,16 +873,19 @@ async fn post_pairing_envelope(
 async fn post_acknowledgements(
     http: &Client,
     endpoint: &str,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     request: &receive::AckRequest,
 ) -> Result<AcknowledgementHttpAccepted, ProbeError> {
     request
         .ensure_valid()
         .map_err(|_| ProbeError::SessionExpired)?;
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json+protobuf"),
+    );
     let mut response = http
         .post(endpoint)
         .headers(headers)
-        .header(CONTENT_TYPE, "application/json+protobuf")
         .body(
             request
                 .json_request()
