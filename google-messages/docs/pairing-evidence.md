@@ -297,3 +297,18 @@ HTTP context and captured proof handling remain candidates. The Google browser
 request is not replayed unless it passes both read-only validators. If no such
 request appears within the existing 120-second window, the comparison times out
 without issuing a native request.
+
+The validated browser-body comparison also returned HTTP 400 / INVALID_ARGUMENT,
+reported by the user. This makes the independent request-body differences a
+less likely explanation, but is not a proof of body acceptance or successful
+authentication. The relay was restored and the test tab closed.
+
+The next single-header experiment adds Referer: https://messages.google.com/
+only to the browser-body comparison. The Rust transport formerly sent no
+Referer. Google's [API-key documentation](https://docs.cloud.google.com/docs/authentication/api-keys)
+describes HTTP-referrer restrictions. This motivates the experiment but does
+not establish that the Messages key has such restrictions, nor that the exact
+browser referrer was observed by our sanitized capture. Only the fixed Messages
+origin is sent, with no conversation path or query. Request body, cookies,
+authorization, user-agent behavior, and query handling stay unchanged. Other
+probe actions remain unchanged. This header change is not yet live-tested.

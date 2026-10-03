@@ -237,6 +237,12 @@ impl BrowserProof {
             headers.insert("x-goog-authuser", sensitive_header(user, 2)?);
         }
         headers.insert(ORIGIN, HeaderValue::from_static(ORIGIN_VALUE));
+        if self.kind == "gaia_lookup_browser_request" {
+            headers.insert(
+                reqwest::header::REFERER,
+                HeaderValue::from_static("https://messages.google.com/"),
+            );
+        }
         headers.insert(
             CONTENT_TYPE,
             HeaderValue::from_static("application/json+protobuf"),
@@ -661,7 +667,16 @@ mod tests {
         p.kind = "gaia_lookup_browser_request".into();
         assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidCredentials);
         p.service_cookie = Some("SID=synthetic".into());
-        p.validate().unwrap();
+        assert_eq!(
+            p.validate().unwrap()[reqwest::header::REFERER],
+            "https://messages.google.com/"
+        );
+        assert!(
+            !proof()
+                .validate()
+                .unwrap()
+                .contains_key(reqwest::header::REFERER)
+        );
         for (pointer, value) in [
             ("/2", json!(0)),
             ("/0/5", json!("PRIVATE_TOKEN")),
@@ -702,6 +717,11 @@ mod tests {
         .unwrap();
         let request = server.await.unwrap();
         let offset = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        assert!(
+            std::str::from_utf8(&request)
+                .unwrap()
+                .contains("referer: https://messages.google.com/\r\n")
+        );
         assert_eq!(
             serde_json::from_slice::<Value>(&request[offset..]).unwrap(),
             body
