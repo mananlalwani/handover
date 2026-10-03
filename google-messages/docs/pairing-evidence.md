@@ -441,3 +441,23 @@ Direct reply-acceptance methods apply the same order. Mock tests reproduce a
 stale streaming inactive reply and complete the following valid ceremony. A
 matching unsupported payload still aborts with no acknowledgement or
 confirmation send. The change awaits live verification.
+
+
+The next live attempt received HTTP acceptance for the initial pairing send,
+then stopped on a correlated inactive-session flag. No emoji was produced.
+The production relay was restored. HTTP acceptance is not phone confirmation.
+
+First-party review found that the Gaia pairing backend overrides `Vx()` to
+connect with mode `bo:3`. That mode opens receive and resolves readiness without
+activating a browser session. Its initial session ID remains empty. The generic
+dispatcher treats the inactive flag as preemption only when its active-client
+state is already true. The earlier unconditional preemption assumption above
+was therefore incorrect for bootstrap pairing.
+
+Native bootstrap now sends an empty session ID for both pairing phases and
+validates correlated replies despite the inactive flag. Request type, fresh
+request ID, selected sender, payload bounds, and UKEY2 validation remain required
+before acknowledgement or confirmation. A mock-phone regression first failed
+with the previous behavior and now completes an authenticated ceremony with an
+inactive initial reply. Both outgoing envelopes must have empty session IDs.
+This fix has not yet been tested against the physical phone.

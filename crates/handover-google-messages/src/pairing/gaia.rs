@@ -402,7 +402,7 @@ impl PairingSendEnvelope {
         if account_id.is_empty()
             || account_id.len() > 320
             || account_id.chars().any(char::is_control)
-            || Uuid::parse_str(session_id).is_err()
+            || (!session_id.is_empty() && Uuid::parse_str(session_id).is_err())
             || Uuid::parse_str(request_id).is_err()
             || peer.is_empty()
             || peer.len() > 1024
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn outer_pairing_envelopes_route_only_to_the_selected_phone() {
-        let session_id = Uuid::new_v4().to_string();
+        let session_id = String::new();
         let attempt = attempt();
         let registration = registration();
         let request_id = attempt.request_id().to_owned();

@@ -85,7 +85,7 @@ enum Scenario {
     EndReceive,
     RejectFinalAck,
     CancelOnPrompt,
-    MatchedPreemption,
+    InactiveBootstrapReply,
     MatchedInvalidPayload,
 }
 
@@ -128,6 +128,8 @@ struct Wrapper {
     kind: i32,
     #[prost(bytes = "vec", tag = "3")]
     body: Vec<u8>,
+    #[prost(string, tag = "6")]
+    session_id: String,
 }
 #[derive(Message)]
 struct Handshake {
@@ -305,6 +307,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
         )
         .unwrap();
         assert_eq!(wrapper.kind, 44);
+        assert!(wrapper.session_id.is_empty());
         let init = Handshake::decode(wrapper.body.as_slice()).unwrap();
         let mut rng = StdRng::from_entropy();
         let peer = Ukey2ServerStage1::<RustCryptoImpl<StdRng>>::from(
@@ -334,7 +337,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
                 Response {
                     id: wrapper.id,
                     kind: 44,
-                    inactive: matches!(scenario, Scenario::MatchedPreemption),
+                    inactive: matches!(scenario, Scenario::InactiveBootstrapReply),
                     streaming: matches!(scenario, Scenario::MatchedInvalidPayload),
                     body: InitialResponse {
                         confirmation: true,
@@ -348,10 +351,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             ),
         )
         .await;
-        if matches!(
-            scenario,
-            Scenario::MatchedPreemption | Scenario::MatchedInvalidPayload
-        ) {
+        if matches!(scenario, Scenario::MatchedInvalidPayload) {
             let mut byte = [0];
             assert_eq!(receive_socket.read(&mut byte).await.unwrap(), 0);
             assert!(
@@ -398,6 +398,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
         )
         .unwrap();
         assert_eq!(wrapper.kind, 45);
+        assert!(wrapper.session_id.is_empty());
         let finish = Handshake::decode(wrapper.body.as_slice()).unwrap();
         assert_eq!(finish.pairing_id, init.pairing_id);
         let peer = peer.advance_state(&mut rng, &finish.bytes).unwrap();
@@ -646,12 +647,9 @@ async fn rejected_receive_preserves_http_status_and_prevents_send() {
 }
 
 #[tokio::test]
-async fn only_correlated_preemption_aborts_pairing_without_acknowledgement() {
-    let (result, _, _) = exercise(Scenario::MatchedPreemption, true).await;
-    assert_eq!(
-        result.unwrap_err(),
-        ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted)
-    );
+async fn unpaired_inactive_reply_still_completes_authenticated_pairing() {
+    let (result, _, _) = exercise(Scenario::InactiveBootstrapReply, true).await;
+    assert!(result.is_ok(), "bootstrap has no active session to preempt");
 }
 
 #[tokio::test]

@@ -141,7 +141,9 @@ pub struct PairingReply {
     request_id: String,
     sender: Zeroizing<Vec<u8>>,
     kind: i32,
-    inactive: bool,
+    // Gaia bootstrap never activates a browser session. This flag alone
+    // cannot preempt it; correlated payload and handshake validation still apply.
+    _inactive: bool,
     payload_valid: bool,
     body: Zeroizing<Vec<u8>>,
 }
@@ -160,8 +162,9 @@ impl fmt::Debug for PairingReply {
 }
 
 impl PairingReply {
+    #[cfg(test)]
     pub(crate) fn is_inactive(&self) -> bool {
-        self.inactive
+        self._inactive
     }
 
     pub(crate) fn validate_payload(&self) -> Result<(), ReceiveError> {
@@ -209,9 +212,6 @@ impl PairingReply {
         if !self.matches_confirmation(&pending) {
             return Err(PairingError::Correlation);
         }
-        if self.inactive {
-            return Err(PairingError::Rejected);
-        }
         self.validate_payload()
             .map_err(|_| PairingError::InvalidResponse)?;
         pending.accept_response(&self.request_id, &self.sender, &self.body)
@@ -223,9 +223,6 @@ impl PairingReply {
     ) -> Result<AwaitingPhoneConfirmation, PairingError> {
         if !self.matches_initial(&attempt) {
             return Err(PairingError::Correlation);
-        }
-        if self.inactive {
-            return Err(PairingError::Rejected);
         }
         self.validate_payload()
             .map_err(|_| PairingError::InvalidResponse)?;
@@ -353,7 +350,7 @@ impl ReceiveRecord {
             request_id: response.request_id.clone(),
             sender,
             kind: response.kind,
-            inactive: response.inactive,
+            _inactive: response.inactive,
             payload_valid,
             body: Zeroizing::new(if payload_valid {
                 response.body.clone()

@@ -7,7 +7,6 @@ use handover_core::messaging::check_account_id;
 use handover_gmessages::contract::MAX_BUNDLE_BYTES;
 use prost::Message;
 use tokio::sync::{mpsc, oneshot};
-use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
@@ -249,7 +248,8 @@ impl LoginBootstrap {
             start_pairing,
             store,
         } = self;
-        let session_id = Uuid::new_v4().to_string();
+        // Gaia pairing opens receive without activating a browser session.
+        let session_id = "";
         let sources = crate::query_response(
             &http.short,
             &http.url(crate::SIGN_IN_PATH),
@@ -266,7 +266,7 @@ impl LoginBootstrap {
                 .as_deref()
                 .ok_or(ProbeError::InvalidCredentials)?,
             &registration,
-            &session_id,
+            session_id,
             &sources,
         )?;
         if !start_pairing {
@@ -331,7 +331,7 @@ impl LoginBootstrap {
                     .account_email
                     .as_deref()
                     .ok_or(ProbeError::InvalidCredentials)?,
-                &session_id,
+                session_id,
             )
             .map_err(|_| ProbeError::PairingFailed)?;
         tokio::select! {
@@ -382,7 +382,6 @@ async fn wait_reply(
             reply = replies.recv() => {
                 let reply = reply.ok_or(ProbeError::ReceiveFailed)?;
                 if matches(&reply) {
-                    if reply.is_inactive() { return Err(ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted)); }
                     reply.validate_payload().map_err(ProbeError::ReceiveProtocol)?;
                     return Ok(reply);
                 }
