@@ -1,0 +1,745 @@
+//! `handover-google-messages-helper`: the daemon-supervised helper process for
+//! Handover's independently authored native Google Messages client.
+//!
+//! License boundary: this binary is MIT and first-party. It contains no
+//! AGPL source, no `mautrix-gmessages` code, and no generated Google protobuf
+//! definitions. It speaks the coarse normalized contract from
+//! [`handover_gmessages::contract`] on stdin/stdout and keeps its own secrets
+//! below that boundary. See `docs/gmessages-sidecar.md`.
+//!
+//! Scope: this is the process seam, not a finished client. It owns the
+//! restricted session store, restores pending unpaired registrations, and
+//! gates every capability it cannot yet serve. It performs no network I/O and
+//! sends nothing. Pairing ceremony, receive streaming, and message sends are
+//! deliberately absent rather than stubbed with invented results.
+//!
+//! It never logs bundles, tokens, keys, account email, message bodies, or
+//! media bytes.
+
+use std::collections::BTreeSet;
+use std::io::{BufRead, Read, Write};
+
+use base64::Engine as _;
+use handover_core::messaging::check_account_id;
+use handover_gmessages::contract::{
+    HELPER_PROTOCOL, HelperCommand, HelperEvent, MAX_BUNDLE_BYTES, MAX_HELPER_LINE_BYTES,
+};
+use handover_google_messages::registration::UnpairedRegistration;
+use handover_google_messages::session_store::SessionStore;
+use zeroize::Zeroizing;
+
+/// Reported in `Hello`. The daemon logs the OS process name separately; this
+/// identifies the implementation, not the account.
+const HELPER_NAME: &str = "handover-google-messages-helper/native";
+
+/// Shown next to every account this helper announces.
+///
+/// Both account sources are unpaired. A restored pending registration has no
+/// phone behind it, and an accepted login has no session at all, so the label
+/// says so rather than letting a disconnected account read as paired.
+const ACCOUNT_LABEL: &str = "Google Messages (not paired)";
+
+/// Stable reason for any command this helper cannot serve. Deliberately a
+/// constant: per-command prose would leak account and message material into
+/// the daemon's error path.
+const UNAVAILABLE: &str = "capability not available in the native helper";
+
+fn main() {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let _ = serve(&mut NativeHelper::new(), &mut stdin.lock(), &mut stdout);
+}
+
+/// One read is capped just past the contract's line limit, plus room for the
+/// newline and a byte of overshoot that proves the line was too long.
+const MAX_LINE_READ: u64 = (MAX_HELPER_LINE_BYTES + 2) as u64;
+
+/// The helper is passed in rather than built here so tests can drive the real
+/// read path against a temporary store. Building it internally would make
+/// every test read the developer's own session directory.
+fn serve<R: BufRead, W: Write>(
+    helper: &mut NativeHelper,
+    reader: &mut R,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    loop {
+        // `BufRead::lines` would allocate the whole line before any size check,
+        // which would leave the contract's 1 MiB bound meaningless. `take`
+        // caps the buffer instead.
+        let mut line = Vec::new();
+        if Read::take(&mut *reader, MAX_LINE_READ).read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
+        }
+        let terminated = line.last() == Some(&b'\n');
+        if terminated {
+            line.pop();
+        }
+        if !line.is_empty() && !line.iter().all(|byte| byte.is_ascii_whitespace()) {
+            for response in helper.handle_line(&line) {
+                writer.write_all(response.as_bytes())?;
+                writer.write_all(b"\n")?;
+            }
+            writer.flush()?;
+        }
+        if helper.shutdown_requested() {
+            return Ok(());
+        }
+        if !terminated {
+            // The line ran past the cap. Its bytes are dropped without being
+            // echoed, and the remainder of that line is left unread, so the
+            // next commands on this pipe are fragments and are rejected as
+            // malformed. The daemon restarts a helper that stops making
+            // progress, which is the intended recovery.
+            return Ok(());
+        }
+    }
+}
+
+fn encode(event: &HelperEvent) -> String {
+    serde_json::to_string(event).unwrap_or_else(|_| {
+        // Unreachable for the fixed event set, but never emit an empty line:
+        // the daemon reads newline-delimited JSON and treats a blank line as
+        // end of input for that read.
+        r#"{"type":"error","message":"event encoding failed"}"#.to_string()
+    })
+}
+
+/// Decode one bounded bundle. The encoded length is already capped by the
+/// caller, so the decode allocation is bounded too. The returned bytes are
+/// erased on drop.
+fn decode_bundle(bundle_b64: &str) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    if bundle_b64.is_empty() {
+        return Err("empty bundle");
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(bundle_b64)
+        .map_err(|_| "bad encoding")?;
+    if decoded.is_empty() || decoded.len() > MAX_BUNDLE_BYTES {
+        return Err("bad bundle");
+    }
+    Ok(Zeroizing::new(decoded))
+}
+
+/// Build the announcement for one account this helper knows about.
+///
+/// Every account is `connected: false` and `authenticated: false`. This helper
+/// has no paired phone and re-attests nothing with Google, so an announcement
+/// must never imply a live session, a paired device, or a verified login.
+///
+/// Deliberately the single definition: every announcement this helper emits
+/// goes through here, so the invariant has one place to hold.
+fn announcement(account: &str) -> HelperEvent {
+    HelperEvent::Account {
+        account: account.to_string(),
+        label: ACCOUNT_LABEL.into(),
+        connected: false,
+        authenticated: false,
+    }
+}
+
+struct NativeHelper {
+    /// `None` when no absolute state directory is configured. The helper
+    /// still answers `Hello` in that case; it simply has nothing to restore.
+    store: Option<SessionStore>,
+    /// Accounts this helper has announced, so `Logout` removes exactly what
+    /// `Login` and `Hello` created.
+    accounts: BTreeSet<String>,
+    shutdown: bool,
+}
+
+impl NativeHelper {
+    fn new() -> Self {
+        Self {
+            store: SessionStore::default_store().ok(),
+            accounts: BTreeSet::new(),
+            shutdown: false,
+        }
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        self.shutdown
+    }
+
+    fn handle_line(&mut self, line: &[u8]) -> Vec<String> {
+        // Bound before parsing so an oversized line costs nothing beyond the
+        // read. The message names no content.
+        if line.len() > MAX_HELPER_LINE_BYTES {
+            return vec![encode(&HelperEvent::Error {
+                message: "helper line too large".into(),
+            })];
+        }
+        let command: HelperCommand = match serde_json::from_slice(line) {
+            Ok(command) => command,
+            Err(_) => {
+                return vec![encode(&HelperEvent::Error {
+                    message: "malformed command".into(),
+                })];
+            }
+        };
+        // Bundle size is enforced before decode cost grows.
+        if let HelperCommand::Login { bundle_b64, .. } = &command {
+            if bundle_b64.len() > MAX_BUNDLE_BYTES {
+                return vec![encode(&HelperEvent::Error {
+                    message: "credential bundle too large".into(),
+                })];
+            }
+        }
+        self.dispatch(command).iter().map(encode).collect()
+    }
+
+    fn dispatch(&mut self, command: HelperCommand) -> Vec<HelperEvent> {
+        match command {
+            HelperCommand::Hello => self.hello(),
+            HelperCommand::Login {
+                account,
+                bundle_b64,
+            } => self.login(&account, &bundle_b64),
+            HelperCommand::Logout { account } => self.logout(&account),
+            HelperCommand::Shutdown => {
+                self.shutdown = true;
+                Vec::new()
+            }
+            // These carry no waiter and no request id. Silence is the honest
+            // answer: this helper has no authoritative list, window, or read
+            // state to publish, and an empty `Conversations` or `Messages`
+            // window would claim the account is empty.
+            HelperCommand::ListConversations { .. }
+            | HelperCommand::Sync { .. }
+            | HelperCommand::MarkRead { .. }
+            | HelperCommand::Typing { .. } => Vec::new(),
+            // A history request has a waiter the daemon would otherwise hold
+            // until timeout, so fail it instead.
+            HelperCommand::FetchHistory { .. } => vec![HelperEvent::Error {
+                message: UNAVAILABLE.into(),
+            }],
+            HelperCommand::SendText { request_id, .. }
+            | HelperCommand::SendMedia { request_id, .. }
+            | HelperCommand::React { request_id, .. }
+            | HelperCommand::DeleteMessage { request_id, .. }
+            | HelperCommand::OpenConversation { request_id, .. } => {
+                vec![HelperEvent::CommandResult {
+                    request_id,
+                    // Rejection, not acceptance: nothing was submitted, so no
+                    // outgoing operation may be recorded as sent.
+                    ok: false,
+                    error: Some(UNAVAILABLE.into()),
+                }]
+            }
+        }
+    }
+
+    fn hello(&mut self) -> Vec<HelperEvent> {
+        let mut events = vec![HelperEvent::Hello {
+            helper_protocol: HELPER_PROTOCOL,
+            name: HELPER_NAME.into(),
+        }];
+        let Some(store) = &self.store else {
+            events.push(HelperEvent::Error {
+                message: "native session store unavailable".into(),
+            });
+            return events;
+        };
+        // A saved pending registration is announced so a restarted daemon shows
+        // the account without asking the user to register again. It is not
+        // authenticated: no phone is paired and nothing has been re-attested
+        // with Google. Announcing the store key discloses no account
+        // identifier, and it is a valid account id for the daemon's gate.
+        match UnpairedRegistration::restore_all_pending_with_keys(store) {
+            Ok(pending) => {
+                for (key, _registration) in pending {
+                    self.accounts.insert(key.clone());
+                    events.push(announcement(&key));
+                }
+            }
+            // Fail closed: a record this build cannot validate must not be
+            // announced as a usable account.
+            Err(_) => events.push(HelperEvent::Error {
+                message: "native session store is unreadable".into(),
+            }),
+        }
+        events
+    }
+
+    fn login(&mut self, account: &str, bundle_b64: &str) -> Vec<HelperEvent> {
+        if check_account_id(account).is_err() {
+            return vec![HelperEvent::Error {
+                message: "login rejected: invalid account name".into(),
+            }];
+        }
+        let bundle = match decode_bundle(bundle_b64) {
+            Ok(bundle) => bundle,
+            Err(reason) => {
+                return vec![HelperEvent::Error {
+                    message: format!("login rejected: {reason}"),
+                }];
+            }
+        };
+        // The bundle carries browser-derived material. This helper has no
+        // registration or pairing path yet, so nothing is derived from it and
+        // nothing is written to disk: it is erased here rather than stored for
+        // a later step that does not exist.
+        drop(bundle);
+        // The account is announced as unpaired so the daemon shows what the
+        // user asked for and can log it out again. This claims no session and
+        // no Google-side state.
+        self.accounts.insert(account.to_string());
+        vec![announcement(account)]
+    }
+
+    fn logout(&mut self, account: &str) -> Vec<HelperEvent> {
+        // No session exists to revoke remotely and no browser credential was
+        // retained, so removal is purely local bookkeeping.
+        if self.accounts.remove(account) {
+            vec![HelperEvent::AccountRemoved {
+                account: account.to_string(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account_ids(events: &[HelperEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                HelperEvent::Account { account, .. } => Some(account.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn line(helper: &mut NativeHelper, command: &HelperCommand) -> Vec<HelperEvent> {
+        let encoded = serde_json::to_vec(command).unwrap();
+        helper
+            .handle_line(&encoded)
+            .iter()
+            .map(|raw| serde_json::from_str(raw).expect("helper emits valid JSON"))
+            .collect()
+    }
+
+    fn helper_with_store(directory: &std::path::Path) -> NativeHelper {
+        let mut helper = NativeHelper::new();
+        helper.store = Some(SessionStore::new(directory.join("sessions")));
+        helper
+    }
+
+    fn hello_events(helper: &mut NativeHelper) -> Vec<HelperEvent> {
+        line(helper, &HelperCommand::Hello)
+    }
+
+    #[test]
+    fn hello_reports_the_contract_version_and_nothing_else_when_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        assert_eq!(
+            hello_events(&mut helper),
+            vec![HelperEvent::Hello {
+                helper_protocol: HELPER_PROTOCOL,
+                name: HELPER_NAME.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn hello_fails_closed_when_the_store_holds_an_unrecognized_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path().join("sessions"));
+        store
+            .store(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                &handover_google_messages::session_store::SessionRecord::new(
+                    b"not a registration".to_vec(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut helper = NativeHelper::new();
+        helper.store = Some(store);
+        let events = hello_events(&mut helper);
+        assert!(account_ids(&events).is_empty(), "no account is announced");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, HelperEvent::Error { .. })),
+            "the unreadable store is reported"
+        );
+    }
+
+    #[test]
+    fn login_bounds_the_bundle_and_leaves_the_store_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let store = helper.store.clone().expect("helper has a store");
+        // Seed one record so "nothing was written" is a real observation about
+        // a populated store rather than an absent directory.
+        store
+            .store(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                &handover_google_messages::session_store::SessionRecord::new(
+                    b"preexisting".to_vec(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = store.load_all().unwrap();
+        let bundle = base64::engine::general_purpose::STANDARD.encode(b"opaque bytes");
+
+        let events = line(
+            &mut helper,
+            &HelperCommand::Login {
+                account: "work".into(),
+                bundle_b64: bundle.clone(),
+            },
+        );
+        assert_eq!(account_ids(&events), vec!["work"]);
+
+        // Nothing browser-derived may reach disk, and the pre-existing record
+        // must survive untouched. Count the directory itself rather than
+        // `load_all`: that view skips records whose key is not a 64-character
+        // digest, so it would miss a badly named write.
+        let sessions = directory.path().join("sessions");
+        let files = |path: &std::path::Path| {
+            let mut names: Vec<String> = std::fs::read_dir(path)
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+        let before_files = files(&sessions);
+        let after_files = files(&sessions);
+        assert_eq!(
+            after_files, before_files,
+            "a login writes, deletes, or renames no session record"
+        );
+        assert_eq!(
+            before_files.len(),
+            1,
+            "the store was seeded with one record"
+        );
+        let after = store.load_all().unwrap();
+        assert_eq!(before[0].0, after[0].0);
+        assert_eq!(before[0].1.as_bytes(), after[0].1.as_bytes());
+
+        for bad in ["", "not base64!!", &"A".repeat(MAX_BUNDLE_BYTES + 1)] {
+            let rejected = line(
+                &mut helper,
+                &HelperCommand::Login {
+                    account: "work".into(),
+                    bundle_b64: bad.to_string(),
+                },
+            );
+            assert!(
+                rejected
+                    .iter()
+                    .all(|event| matches!(event, HelperEvent::Error { .. })),
+                "bundle {bad:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            files(&sessions),
+            before_files,
+            "a rejected login writes nothing either"
+        );
+    }
+
+    #[test]
+    fn no_account_is_ever_announced_as_connected_or_authenticated() {
+        // A pending registration has no paired phone and nothing has been
+        // re-attested with Google. Announcing it as live would let a client
+        // believe the account is usable.
+        assert_eq!(
+            announcement(&"a".repeat(64)),
+            HelperEvent::Account {
+                account: "a".repeat(64),
+                label: ACCOUNT_LABEL.into(),
+                connected: false,
+                authenticated: false,
+            }
+        );
+        // The same shape must come out of both account sources, not just the
+        // helper that builds the event.
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let announced = line(
+            &mut helper,
+            &HelperCommand::Login {
+                account: "work".into(),
+                bundle_b64: base64::engine::general_purpose::STANDARD.encode(b"x"),
+            },
+        );
+        assert_eq!(announced, vec![announcement("work")]);
+    }
+
+    #[test]
+    fn login_rejects_account_names_the_daemon_would_refuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        for account in ["", "a/b", "a.b", ".."] {
+            let events = line(
+                &mut helper,
+                &HelperCommand::Login {
+                    account: account.to_string(),
+                    bundle_b64: base64::engine::general_purpose::STANDARD.encode(b"x"),
+                },
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, HelperEvent::Error { .. })),
+                "account {account:?} must be rejected"
+            );
+        }
+        assert!(
+            helper.accounts.is_empty(),
+            "a rejected login announces no account"
+        );
+    }
+
+    #[test]
+    fn logout_removes_only_announced_accounts() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        assert!(
+            line(
+                &mut helper,
+                &HelperCommand::Logout {
+                    account: "ghost".into()
+                }
+            )
+            .is_empty(),
+            "an account this helper never announced is not removed"
+        );
+        line(
+            &mut helper,
+            &HelperCommand::Login {
+                account: "work".into(),
+                bundle_b64: base64::engine::general_purpose::STANDARD.encode(b"x"),
+            },
+        );
+        assert_eq!(
+            line(
+                &mut helper,
+                &HelperCommand::Logout {
+                    account: "work".into()
+                }
+            ),
+            vec![HelperEvent::AccountRemoved {
+                account: "work".into(),
+            }]
+        );
+        assert!(
+            line(
+                &mut helper,
+                &HelperCommand::Logout {
+                    account: "work".into()
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn unserved_commands_reject_rather_than_claim_success() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+
+        // A send must never look accepted: an accepted command would let the
+        // daemon journal an outgoing operation that was never submitted.
+        for (request_id, command) in [
+            (
+                "r1",
+                HelperCommand::SendText {
+                    request_id: "r1".into(),
+                    account: "work".into(),
+                    conversation: "c1".into(),
+                    text: "hi".into(),
+                    reply_to: None,
+                },
+            ),
+            (
+                "r2",
+                HelperCommand::DeleteMessage {
+                    request_id: "r2".into(),
+                    account: "work".into(),
+                    conversation: "c1".into(),
+                    message: "m1".into(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                line(&mut helper, &command),
+                vec![HelperEvent::CommandResult {
+                    request_id: request_id.into(),
+                    ok: false,
+                    error: Some(UNAVAILABLE.into()),
+                }]
+            );
+        }
+
+        // No conversation list, window, or read state may be published: an
+        // empty authoritative list would read as "this account is empty".
+        for command in [
+            HelperCommand::ListConversations {
+                account: "work".into(),
+            },
+            HelperCommand::Sync {
+                account: "work".into(),
+            },
+            HelperCommand::MarkRead {
+                account: "work".into(),
+                conversation: "c1".into(),
+                message: None,
+            },
+            HelperCommand::Typing {
+                account: "work".into(),
+                conversation: "c1".into(),
+            },
+        ] {
+            assert!(
+                line(&mut helper, &command).is_empty(),
+                "{command:?} must publish nothing"
+            );
+        }
+
+        // A pending history request must fail its waiter rather than hang.
+        assert!(matches!(
+            line(
+                &mut helper,
+                &HelperCommand::FetchHistory {
+                    account: "work".into(),
+                    conversation: "c1".into(),
+                    limit: 20,
+                    cursor: None,
+                    fetch_id: Some(7),
+                }
+            )[0],
+            HelperEvent::Error { .. }
+        ));
+    }
+
+    #[test]
+    fn shutdown_is_terminal_and_malformed_input_is_dropped_without_echo() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        assert_eq!(
+            helper.handle_line(b"{\"type\":\"unknown\"}"),
+            vec![encode(&HelperEvent::Error {
+                message: "malformed command".into(),
+            })]
+        );
+        assert!(!helper.shutdown_requested());
+        assert_eq!(
+            line(&mut helper, &HelperCommand::Shutdown),
+            Vec::<HelperEvent>::new()
+        );
+        assert!(helper.shutdown_requested());
+    }
+
+    #[test]
+    fn oversized_lines_are_dropped_before_parsing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let oversized = vec![b'x'; MAX_HELPER_LINE_BYTES + 1];
+        assert_eq!(
+            helper.handle_line(&oversized),
+            vec![encode(&HelperEvent::Error {
+                message: "helper line too large".into(),
+            })]
+        );
+        assert!(!helper.shutdown_requested());
+    }
+
+    /// Drive the real read path. `handle_line` alone would not catch an
+    /// unbounded read, which is the failure this guards against.
+    #[test]
+    fn serve_bounds_each_read_and_answers_pipelined_commands() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let mut input: Vec<u8> = Vec::new();
+        input.extend_from_slice(b"{\"type\":\"hello\"}\n");
+        input.extend_from_slice(b"\n");
+        input.extend_from_slice(b"   \n");
+        input.extend_from_slice(b"{\"type\":\"nonsense\"}\n");
+        input.extend_from_slice(b"{\"type\":\"shutdown\"}\n");
+        input.extend_from_slice(b"{\"type\":\"hello\"}\n");
+        let mut output: Vec<u8> = Vec::new();
+        serve(&mut helper, &mut input.as_slice(), &mut output).expect("serve");
+        let stdout = String::from_utf8(output).expect("helper emits UTF-8");
+
+        let events: Vec<HelperEvent> = stdout
+            .lines()
+            .map(|raw| serde_json::from_str(raw).expect("helper emits valid JSON"))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                HelperEvent::Hello {
+                    helper_protocol: HELPER_PROTOCOL,
+                    name: HELPER_NAME.into(),
+                },
+                HelperEvent::Error {
+                    message: "malformed command".into(),
+                },
+            ],
+            "blank and whitespace lines are skipped, and shutdown is terminal: \
+             neither it nor any command after it produces output"
+        );
+    }
+
+    #[test]
+    fn serve_stops_at_an_oversized_line_without_buffering_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        // Sized independently of MAX_LINE_READ so the assertion still means
+        // something if that cap changes.
+        let mut input: Vec<u8> = vec![b'x'; MAX_HELPER_LINE_BYTES + 4096];
+        input.push(b'\n');
+        input.extend_from_slice(b"{\"type\":\"hello\"}\n");
+        let mut output: Vec<u8> = Vec::new();
+        serve(&mut helper, &mut input.as_slice(), &mut output).expect("serve");
+        let stdout = String::from_utf8(output).expect("helper emits UTF-8");
+        let events: Vec<HelperEvent> = stdout
+            .lines()
+            .map(|raw| serde_json::from_str(raw).expect("helper emits valid JSON"))
+            .collect();
+        assert_eq!(
+            events,
+            vec![HelperEvent::Error {
+                message: "helper line too large".into(),
+            }],
+            "the read stops at the cap, so the oversized line is never echoed and \
+             the command after it is never reached"
+        );
+        assert!(!stdout.contains('x'));
+    }
+
+    #[test]
+    fn serve_answers_a_final_command_that_has_no_trailing_newline() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let input: Vec<u8> = b"{\"type\":\"hello\"}".to_vec();
+        let mut output: Vec<u8> = Vec::new();
+        serve(&mut helper, &mut input.as_slice(), &mut output).expect("serve");
+        assert_eq!(
+            String::from_utf8(output)
+                .expect("helper emits UTF-8")
+                .lines()
+                .map(|raw| serde_json::from_str::<HelperEvent>(raw).unwrap())
+                .collect::<Vec<HelperEvent>>(),
+            vec![HelperEvent::Hello {
+                helper_protocol: HELPER_PROTOCOL,
+                name: HELPER_NAME.into(),
+            }]
+        );
+    }
+}

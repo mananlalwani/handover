@@ -885,6 +885,8 @@ dependencies = [
  "base64 0.22.1",
  "crypto_provider_rustcrypto",
  "ctr",
+ "handover-core",
+ "handover-gmessages",
  "hkdf",
  "hmac",
  "libc",

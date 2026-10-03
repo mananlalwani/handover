@@ -16,12 +16,20 @@ or send user messages. The existing adapter remains in use during development.
 
 The native crate now includes a restricted local session-record store. It is
 not yet connected to a restorable confirmed account session. An explicit,
-opt-in mode-0 registration action now uses the observer's matched browser
-credentials and saves its unpaired credential in that store. This path is
-mock-tested but has not been run against Google's service. Type-44/45
-pairing envelopes include the registration token and observed Tachyon header.
-An explicit authenticated HTTP send path is covered by a local mock only. It
-reports HTTP acceptance and has not sent a request to Google.
+opt-in mode-0 registration action uses the observer's matched browser
+credentials and saves its unpaired credential in that store. The user ran that
+registration once by hand on 2026-10-03, so the unpaired credential is real and
+saved locally; no phone pairing, receive session, or message send has followed
+from it. Type-44/45 pairing envelopes include the registration token and
+observed Tachyon header. An explicit authenticated HTTP send path is covered by a
+local mock only. It reports HTTP acceptance and has not sent a request to Google.
+
+The crate also builds `handover-google-messages-helper`, the daemon-supervised
+process for this client. It speaks the existing normalized helper contract,
+restores locally saved pending registrations, and rejects every capability it
+cannot yet serve. It performs no network I/O. See
+[`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for how it relates to
+the loopback helper and the production adapter.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.
@@ -93,9 +101,11 @@ protocol evidence and separates offline checks from live verification.
 
 ## Integration target
 
-Implement the existing Handover helper IPC v1, documented in
-[`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md). Handoverd remains authoritative for normalized
-runtime state; credentials and Google protocol details remain inside this client.
+The client implements the existing Handover helper IPC v1, documented in
+[`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md). The process boundary
+and contract handling exist; the protocol work behind it does not.
+Handoverd remains authoritative for normalized runtime state; credentials and
+Google protocol details remain inside this client.
 Do not copy or import the AGPL adapter, its upstream code, or generated protocol
 definitions. Derive protocol behavior from first-party observations and verified
 specifications, using established cryptographic libraries.

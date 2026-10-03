@@ -3,8 +3,10 @@
 The legacy production Google Messages adapter lives in
 [handover-gmessages](https://github.com/mananlalwani/handover-gmessages) and is
 licensed under AGPL-3.0-only. This MIT repository communicates with it as a
-separate process. The in-tree `handover-gmessages-helper` is a loopback helper
-for development and tests.
+separate process. Two helpers live in this repository:
+`handover-gmessages-helper` is a loopback helper for development and tests, and
+`handover-google-messages-helper` is the in-tree helper for the independent
+client.
 
 Handover's independently authored replacement lives in
 [`google-messages/`](../google-messages/README.md) and
@@ -144,6 +146,41 @@ sync. These simulated results support daemon, CLI, UI, and contract tests.
 The production adapter uses the same contract against the real relay. Point
 `HANDOVER_GMESSAGES_HELPER` at its binary and follow the adapter's
 [pairing runbook](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/pairing-runbook.md).
+
+## Native helper
+
+`handover-google-messages-helper` is the in-tree helper for the independent
+client. It is MIT and first-party, carries no AGPL source and no generated
+Google protobuf definitions, and speaks the same contract v1.
+
+```sh
+cargo build -p handover-google-messages --bin handover-google-messages-helper
+HANDOVER_GMESSAGES_HELPER=target/debug/handover-google-messages-helper handoverd
+```
+
+It is a process seam, not a working client. It opens no network connection and
+sends nothing. Today it:
+
+- answers `hello` with the contract version;
+- announces one account per locally saved pending unpaired registration, as
+  `connected: false` and `authenticated: false`. Nothing is re-attested with
+  Google. The announced account id is the session store's filename digest, so it
+  discloses no account identifier, at the cost of an unreadable id in clients;
+- accepts `login` after bounding and base64-decoding the bundle, then discards
+  it. The bundle carries browser-derived material and this helper has no
+  registration or pairing path yet, so nothing reaches disk;
+- rejects every send, media, reaction, delete, and open with `ok: false`, so the
+  daemon cannot journal an operation that was never submitted;
+- publishes no conversation list, message window, or read state. Silence is the
+  honest answer, because an empty authoritative list would read as an empty
+  account;
+- reports a pending history request as an error, so its waiter fails instead of
+  timing out.
+
+`logout` removes only an account this helper announced. A session record that
+fails validation is reported as an error, and no account is announced for it.
+Because no account is ever announced as authenticated,
+`handoverctl messages login` reports only that the request was queued.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,
 SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,

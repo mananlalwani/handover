@@ -14,6 +14,9 @@ repository because it has a different license.
 - `crates/handover-kdeconnect/` contains the KDE Connect adapter.
 - `crates/handover-gmessages/` contains the helper contract, normalization,
   staging, and supervision code. It does not contain Google protocol code.
+- `crates/handover-google-messages/` contains the independent Google Messages
+  protocol client and its daemon-supervised helper process. It depends on the
+  helper contract, never the reverse.
 - `android/` contains the Android companion.
 - `quickshell/` contains the reference client.
 

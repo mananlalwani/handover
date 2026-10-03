@@ -380,3 +380,59 @@ This store follows the existing adapter's local permission model. It does not
 encrypt records against another process running as the same user. A typed,
 versioned confirmed-session record still has to be designed and connected to
 registration and pairing before the client can restore an account.
+
+`restore_all_pending_with_keys` returns each restored registration together with
+the file digest it was stored under. A caller that owns a separate,
+daemon-visible account namespace needs that mapping, and re-decoding the record
+format in a second place would risk the two copies disagreeing about what is a
+valid record. The digest is a filename, not a credential, and it carries no
+account identifier. It is also a valid `handover-core` account id, which is what
+lets the helper announce a restored registration without inventing a name.
+
+### Helper process seam
+
+`handover-google-messages-helper` is the daemon-supervised process that will own
+this client's long-lived pairing and session state. It speaks the existing
+normalized helper contract v1, so no Google type and no new public Handover model
+is needed to reach it. It lives in this crate rather than in
+`handover-gmessages`, which stays framing, normalization, staging, and
+supervision only.
+
+The helper is a process seam today, not a client. It answers `hello`, announces
+each locally saved pending unpaired registration as `connected: false` and
+`authenticated: false`, bounds and decodes a `login` bundle before discarding
+it, and rejects every command it cannot serve. It opens no network connection
+and sends nothing.
+
+Three choices in that binary are worth stating because they constrain later work:
+
+- No account is ever announced as connected or authenticated. A restored pending
+  registration has no paired phone, and nothing has been re-attested with Google,
+  so an announcement claiming otherwise would be invented state.
+- A rejected send returns `ok: false`, never acceptance. The daemon journals an
+  outgoing operation when a send is accepted, so an accepted reply for a
+  submission that never happened would leave a false record.
+- An unservable command with no waiter publishes nothing. An empty
+  authoritative conversation list or message window would read as "this account
+  is empty", which is a claim the helper cannot support.
+
+Each read is capped just past the contract's 1 MiB line limit rather than using
+`BufRead::lines`, which would allocate a whole line before any size check. A
+line that runs past the cap is dropped without being echoed, and the helper
+stops instead of trying to resynchronize mid-line, so the daemon's restart
+handles recovery.
+
+The announced account id is the store's filename digest. That discloses no
+account identifier, but it also means a restored registration appears in clients
+under an unreadable id. A later slice should give accounts a chosen name once
+login can produce a real session; the digest is a placeholder, not a design
+choice.
+
+Verified offline: contract framing, the bounded read, both size bounds, base64
+handling, account-name validation against the daemon's own gate, store
+round-tripping, fail-closed restore, and the announcement invariants above.
+Verified live: nothing. The helper has never been run under `handoverd`, and it
+has never contacted Google. An earlier test run read the operator's real state
+directory by mistake, which confirmed that a saved pending registration is
+restorable and is announced as offline and unauthenticated, but that run was a
+test defect rather than a designed check.

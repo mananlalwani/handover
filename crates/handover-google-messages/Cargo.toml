@@ -9,8 +9,14 @@ rust-version.workspace = true
 name = "handover-google-messages-auth-probe"
 path = "src/bin/auth_probe.rs"
 
+[[bin]]
+name = "handover-google-messages-helper"
+path = "src/bin/helper.rs"
+
 [dependencies]
 base64 = "0.22.1"
+handover-core.workspace = true
+handover-gmessages.workspace = true
 prost = "0.14.1"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
 serde.workspace = true

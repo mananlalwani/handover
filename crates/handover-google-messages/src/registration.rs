@@ -216,6 +216,22 @@ impl UnpairedRegistration {
     pub fn restore_all_pending(
         store: &crate::session_store::SessionStore,
     ) -> Result<Vec<Self>, RegistrationError> {
+        Ok(Self::restore_all_pending_with_keys(store)?
+            .into_iter()
+            .map(|(_, registration)| registration)
+            .collect())
+    }
+
+    /// Restore all valid pending registrations alongside the opaque store key
+    /// each one was filed under.
+    ///
+    /// A caller that owns a separate, daemon-visible account namespace needs
+    /// this to map a stored record back to a name without decoding the record
+    /// format a second time. The key is a filename digest, not a credential,
+    /// and carries no account identifier of its own.
+    pub fn restore_all_pending_with_keys(
+        store: &crate::session_store::SessionStore,
+    ) -> Result<Vec<(String, Self)>, RegistrationError> {
         let mut restored = Vec::new();
         for (key, record) in store.load_all().map_err(RegistrationError::SessionStore)? {
             let mut saved = StoredUnpairedRegistration::decode(record.as_bytes())
@@ -234,7 +250,7 @@ impl UnpairedRegistration {
                 continue;
             }
             let identity = Zeroizing::new(saved.identity.clone());
-            restored.push(restore_stored_registration(&mut saved, &identity)?);
+            restored.push((key, restore_stored_registration(&mut saved, &identity)?));
         }
         Ok(restored)
     }
@@ -517,6 +533,60 @@ mod tests {
         let all = UnpairedRegistration::restore_all_pending(&store).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(format!("{:?}", all[0]), "UnpairedRegistration { redacted }");
+    }
+
+    #[test]
+    fn keyed_restore_exposes_the_filename_digest_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::session_store::SessionStore::new(directory.path().join("sessions"));
+        assert!(
+            UnpairedRegistration::restore_all_pending_with_keys(&store)
+                .unwrap()
+                .is_empty(),
+            "an absent store restores nothing"
+        );
+        let registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(3600))
+            .unwrap();
+        let expected =
+            crate::session_store::account_key_for_identity(&registration._identity).unwrap();
+        registration.persist_pending(&store).unwrap();
+        drop(registration);
+
+        let keyed = UnpairedRegistration::restore_all_pending_with_keys(&store).unwrap();
+        assert_eq!(keyed.len(), 1);
+        assert_eq!(keyed[0].0, expected);
+        // The key is a digest of the server identity, so it discloses nothing
+        // about it and stays distinct from any other identity.
+        assert!(!keyed[0].0.contains("synthetic-id"));
+        assert_ne!(
+            keyed[0].0,
+            crate::session_store::account_key_for_identity(b"other").unwrap()
+        );
+        assert_eq!(
+            UnpairedRegistration::restore_all_pending(&store)
+                .unwrap()
+                .len(),
+            keyed.len(),
+            "both restore paths agree on the record count"
+        );
+    }
+
+    #[test]
+    fn keyed_restore_fails_closed_on_an_unrecognized_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::session_store::SessionStore::new(directory.path().join("sessions"));
+        store
+            .store(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                &crate::session_store::SessionRecord::new(b"not a registration".to_vec()).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            UnpairedRegistration::restore_all_pending_with_keys(&store),
+            Err(RegistrationError::InvalidStoredRegistration)
+        ));
     }
 
     #[test]
