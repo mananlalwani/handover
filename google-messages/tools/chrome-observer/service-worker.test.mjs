@@ -201,11 +201,14 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', {
     requestId: 'reverse-cookie', request: { url: `https://instantmessaging-pa.clients6.google.com${authPath}`, method: 'POST', headers: {} },
   });
-  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'failed');
-  assert.equal((await send({ type: 'snapshot' })).nativeProbe.result.error, 'cookie_unavailable');
+  const reversedSnapshot = await send({ type: 'snapshot' });
+  assert.equal(reversedSnapshot.active, true);
+  assert.equal(reversedSnapshot.nativeProbe.state, 'waiting');
+  assert.equal(reversedSnapshot.nativeProbe.retryReason, 'cookie_event_order');
+  assert.equal(JSON.stringify(reversedSnapshot).includes('REVERSE_COOKIE_SECRET'), false);
   assert.equal(nativeCalls.length, 2);
 
-  await send({ type: 'auth-probe-with-cookies' });
+  // The same observer must accept a later correctly ordered request.
   chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', {
     requestId: 'unmatched-cookie', headers: { Cookie: 'SID=UNRELATED_COOKIE_SECRET' },
   });
@@ -426,6 +429,21 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal(nativeCalls.length, callsBeforeSwitch);
   const switchedSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
   for (const secret of ['another@example.org', 'SWITCH_AUTH', 'SWITCH_API', 'SWITCH_COOKIE']) assert.equal(switchedSnapshot.includes(secret), false);
+
+  // A correctly ordered request genuinely missing a cookie still fails closed.
+  await send({ type: 'auth-probe-with-cookies' });
+  const callsBeforeMissingCookie = nativeCalls.length;
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', {
+    requestId: 'missing-cookie', request: {
+      url: `https://instantmessaging-pa.googleapis.com${authPath}`, method: 'POST', headers: {},
+    },
+  });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', {
+    requestId: 'missing-cookie', headers: { Authorization: 'Bearer MISSING_COOKIE_AUTH', 'X-Goog-Api-Key': 'MISSING_COOKIE_API' },
+  });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'failed');
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.result.error, 'cookie_unavailable');
+  assert.equal(nativeCalls.length, callsBeforeMissingCookie);
 
 });
 

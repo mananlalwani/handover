@@ -293,6 +293,16 @@ async function processAuthCandidate(requestId, candidate) {
     clearAuthRequest(requestId);
     return;
   }
+  if (candidate.withServiceCookies && typeof headers.cookie !== 'string' && candidate.extraInfoPrecededUrl) {
+    // Earlier ExtraInfo was deliberately stripped of cookies before URL matching.
+    // Skip this request without forwarding credentials or ending the observer.
+    for (const name of Object.keys(headers)) headers[name] = null;
+    candidate.requestHeaders = {};
+    candidate.extraHeaders = {};
+    clearAuthRequest(requestId);
+    nativeProbe = { ...nativeProbe, retryReason: 'cookie_event_order' };
+    return;
+  }
   if (candidate.withServiceCookies && typeof headers.cookie !== 'string') {
     authForwarded = true;
     nativeProbe = { state: 'failed', result: { error: 'cookie_unavailable' } };
@@ -449,6 +459,7 @@ function authRequest(requestId, request) {
   };
   const prior = authHeaderMaps.get(requestId);
   if (prior) {
+    candidate.extraInfoPrecededUrl = true;
     candidate.extraHeaders = prior;
     candidate.ready = true;
     authHeaderMaps.delete(requestId);

@@ -64,9 +64,10 @@ The separate **Compare with service cookies** button adds the bounded Cookie
 header attached to that same matched SignInGaia request. The user approved this
 one-time comparison after the cookie-free probe returned HTTP 401. The extension
 never reads the profile cookie store. Cookie headers from events that arrive
-before their request URL are discarded. If the matched request has no available
-cookie header, the comparison stops with `cookie_unavailable` and makes no native
-request. There is no automatic retry or switch between the two modes.
+before their request URL are discarded, and that request is skipped with a
+popup hint to refresh again. If a correctly ordered matched request has no
+available cookie header, the comparison stops with `cookie_unavailable` and
+makes no native request. There is no automatic retry or switch between the two modes.
 
 Cookies remain in the local native pipe and transient process memory, and Rust
 returns them only to the exact observed Google origin. Redirects remain disabled.
@@ -172,3 +173,9 @@ of a useful description remains unverified.
 
 Fixed native replies retain their 1-KiB frame limit. The opt-in description reply
 has a 16-KiB frame limit to allow JSON escaping of its 2-KiB description.
+
+If Chrome delivers cookie headers before their request URL, the observer discards
+the cookies, skips that request, and stays active. The popup asks for one more
+refresh. A later correctly ordered request can proceed without restarting the
+observer. A matched request genuinely lacking a cookie still fails with
+`cookie_unavailable`; no native request is sent.

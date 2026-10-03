@@ -580,3 +580,14 @@ request contents. Mock ceremonies exercise both JSON acknowledgements and final
 confirmation; rejected final acknowledgements still retain confirmed pairing
 evidence without retrying the ceremony. The acknowledgement correction has
 not yet been verified against Google's live service.
+
+
+The next attempt failed in the observer with `cookie_unavailable`, before any
+native pairing progress. The relay was restored. An event-order regression
+reproduced a premature failure when ExtraInfo preceded URL matching. The worker
+correctly discarded unmatched cookies but then treated their absence as a fatal
+error once the URL arrived. It now skips that candidate and stays active, with a
+fixed popup hint to refresh once more. A subsequent correctly ordered request
+works in the same observer session. A matched request without cookies still
+fails closed. Tests verify no reversed-event cookie enters snapshots or native
+requests. This extension change requires a manual reload and is not live-tested.

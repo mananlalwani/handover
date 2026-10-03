@@ -37,6 +37,8 @@ async function refresh() {
       : result.ok
       ? `Native authentication check complete. ${Number.isInteger(result.sources) ? `${result.sources} source(s) found.` : ''}`
       : 'Native authentication check complete.';
+  } else if (probe?.state === 'waiting' && probe.retryReason === 'cookie_event_order') {
+    nativeStatus.textContent = 'Chrome delivered cookie headers before the request URL. No native request was sent. Refresh Messages once more; the observer is still running.';
   } else if (probe?.state === 'failed') {
     const result = probe.result ?? {};
     if (result.error === 'account_unavailable') {
