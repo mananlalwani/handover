@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fmt, time::Duration};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const ORIGIN_VALUE: &str = "https://messages.google.com";
 const SIGN_IN_PATH: &str =
@@ -125,6 +126,7 @@ pub enum ProbeError {
     InvalidBootstrap,
     InvalidEndpoint,
     InvalidCredentials,
+    RegistrationFailed,
     Network,
     HttpError(u16),
     HttpErrorWithStatus(u16, RpcStatus),
@@ -155,6 +157,7 @@ impl ProbeError {
             Self::InvalidBootstrap => "invalid_bootstrap",
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidCredentials => "invalid_credentials",
+            Self::RegistrationFailed => "registration_failed",
             Self::Network => "network",
             Self::HttpError(_)
             | Self::HttpErrorWithStatus(_, _)
@@ -228,13 +231,26 @@ fn sensitive_header(value: &str, limit: usize) -> Result<HeaderValue, ProbeError
 
 impl BrowserProof {
     fn validate(&self) -> Result<HeaderMap, ProbeError> {
-        if !matches!(
-            self.kind.as_str(),
-            "gaia_lookup"
-                | "gaia_lookup_with_cookies"
-                | "gaia_lookup_browser_request"
-                | "gaia_lookup_inspect"
-        ) {
+        self.validate_mode(false)
+    }
+
+    fn validate_registration(&self) -> Result<HeaderMap, ProbeError> {
+        self.validate_mode(true)
+    }
+
+    fn validate_mode(&self, registration: bool) -> Result<HeaderMap, ProbeError> {
+        let kind_allowed = if registration {
+            self.kind == "gaia_register"
+        } else {
+            matches!(
+                self.kind.as_str(),
+                "gaia_lookup"
+                    | "gaia_lookup_with_cookies"
+                    | "gaia_lookup_browser_request"
+                    | "gaia_lookup_inspect"
+            )
+        };
+        if !kind_allowed {
             return Err(ProbeError::InvalidBootstrap);
         }
         match (self.kind.as_str(), self.browser_request.as_ref()) {
@@ -258,7 +274,10 @@ impl BrowserProof {
         match (self.kind.as_str(), self.service_cookie.as_deref()) {
             ("gaia_lookup", None) => {}
             (
-                "gaia_lookup_with_cookies" | "gaia_lookup_browser_request" | "gaia_lookup_inspect",
+                "gaia_lookup_with_cookies"
+                | "gaia_lookup_browser_request"
+                | "gaia_lookup_inspect"
+                | "gaia_register",
                 Some(cookie),
             ) => {
                 headers.insert(COOKIE, sensitive_header(cookie, 16384)?);
@@ -411,6 +430,74 @@ pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
     } else {
         query(&http, &endpoint, headers).await
     }
+}
+
+/// Register one fresh web device with SignInGaia mode 0. Calling this function
+/// changes Google's registered-device state. It is separate from the read-only
+/// probe and is not invoked automatically by the authentication host.
+pub async fn register_device(
+    proof: BrowserProof,
+    maximum_lifetime: Duration,
+) -> Result<registration::UnpairedRegistration, ProbeError> {
+    let headers = proof.validate_registration()?;
+    if maximum_lifetime.is_zero() {
+        return Err(ProbeError::InvalidBootstrap);
+    }
+    let endpoint = format!("{}{SIGN_IN_PATH}", proof.endpoint);
+    let attempt =
+        registration::RegistrationAttempt::prepare().map_err(|_| ProbeError::RegistrationFailed)?;
+    post_registration(
+        &client(true)?,
+        &endpoint,
+        headers,
+        attempt,
+        maximum_lifetime,
+    )
+    .await
+}
+
+async fn post_registration(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    attempt: registration::RegistrationAttempt,
+    maximum_lifetime: Duration,
+) -> Result<registration::UnpairedRegistration, ProbeError> {
+    let request_body = Zeroizing::new(attempt.request_bytes().to_vec());
+    let mut response = http
+        .post(endpoint)
+        .headers(headers)
+        .body(request_body.to_vec())
+        .send()
+        .await
+        .map_err(transport_error)?;
+    if !response.status().is_success() {
+        return Err(http_error_details(response, false).await);
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if content_type.split(';').next().map(str::trim) != Some("application/json+protobuf") {
+        return Err(ProbeError::UnexpectedResponse);
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > RESPONSE_LIMIT as u64)
+    {
+        return Err(ProbeError::ResponseTooLarge);
+    }
+    let mut response_body = Zeroizing::new(Vec::new());
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+        if chunk.len() > RESPONSE_LIMIT - response_body.len() {
+            return Err(ProbeError::ResponseTooLarge);
+        }
+        response_body.extend_from_slice(&chunk);
+    }
+    attempt
+        .accept_response(&response_body, maximum_lifetime)
+        .map_err(|_| ProbeError::RegistrationFailed)
 }
 
 async fn query(
@@ -698,6 +785,13 @@ mod tests {
         }
     }
 
+    fn registration_proof() -> BrowserProof {
+        let mut proof = proof();
+        proof.kind = "gaia_register".into();
+        proof.service_cookie = Some("SID=synthetic-cookie".into());
+        proof
+    }
+
     #[test]
     fn credentials_are_redacted_and_headers_are_sensitive() {
         let proof = proof();
@@ -848,6 +942,27 @@ mod tests {
     }
 
     #[test]
+    fn registration_requires_explicit_cookie_backed_mode_and_never_lookup_body() {
+        let proof = registration_proof();
+        let headers = proof.validate_registration().unwrap();
+        assert!(headers[COOKIE].is_sensitive());
+        assert!(proof.validate().is_err());
+        let mut missing_cookie = registration_proof();
+        missing_cookie.service_cookie = None;
+        assert_eq!(
+            missing_cookie.validate_registration().unwrap_err(),
+            ProbeError::InvalidCredentials
+        );
+        let mut browser_body = registration_proof();
+        browser_body.browser_request = Some(json!(["ignored"]));
+        assert_eq!(
+            browser_body.validate_registration().unwrap_err(),
+            ProbeError::InvalidBootstrap
+        );
+        assert!(!format!("{proof:?} {headers:?}").contains("synthetic-cookie"));
+    }
+
+    #[test]
     fn response_returns_only_count_and_rejects_unknown_shapes() {
         // The browser capture includes YC field 4 alongside its source list.
         // Neither the adjacent identity records nor that extra field is exposed.
@@ -952,6 +1067,48 @@ mod tests {
         assert!(!headers.contains("cookie:"));
         let body: Value = serde_json::from_slice(&request[offset + 4..]).unwrap();
         assert_eq!(body[2], 1);
+    }
+
+    #[tokio::test]
+    async fn registration_transport_posts_only_its_native_mode_zero_attempt() {
+        use base64::{Engine, engine::general_purpose};
+        let body = serde_json::to_vec(&json!([
+            [],
+            general_purpose::STANDARD.encode("synthetic-registration-id"),
+            null,
+            [
+                general_purpose::STANDARD.encode("synthetic-token"),
+                "3600000000"
+            ]
+        ]))
+        .unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let (endpoint, server) = mock_server([response.as_bytes(), &body].concat()).await;
+        let attempt = registration::RegistrationAttempt::prepare().unwrap();
+        let registered = post_registration(
+            &client(false).unwrap(),
+            &endpoint,
+            registration_proof().validate_registration().unwrap(),
+            attempt,
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+        assert!(registered.remaining_lifetime().unwrap() <= Duration::from_secs(3600));
+        let request = server.await.unwrap();
+        let offset = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let sent: Value = serde_json::from_slice(&request[offset..]).unwrap();
+        assert_eq!(sent[2], Value::Null);
+        assert_eq!(sent[1].as_array().unwrap().len(), 36);
+        assert!(sent[1][35].as_str().is_some());
+        assert_eq!(sent[3], "GDitto");
+        assert_eq!(
+            format!("{registered:?}"),
+            "UnpairedRegistration { redacted }"
+        );
     }
 
     #[tokio::test]

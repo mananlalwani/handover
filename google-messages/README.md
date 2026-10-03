@@ -15,7 +15,9 @@ unverified. It does not yet read conversations or send messages. The existing
 adapter remains in use during development.
 
 The native crate now includes a restricted local session-record store. It is
-not yet connected to a restorable confirmed account session.
+not yet connected to a restorable confirmed account session. An explicit mode-0
+registration transport is implemented and mock-tested, but has not been run
+against Google's service or connected to the login extension.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.

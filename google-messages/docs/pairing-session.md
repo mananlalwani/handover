@@ -64,9 +64,12 @@ A future client must keep these outcomes distinct:
 - An interrupted registration or confirmation has an unknown remote outcome.
   Do not automatically register again.
 
-No registration RPC, receive acknowledgement, or chat-send request is implemented
-by this work. Automatic browser SendMessage traffic includes protocol envelopes;
-it must not be interpreted as permission to send user messages.
+The explicit `register_device` transport now sends the independently constructed
+mode-0 SignInGaia request. Calling it changes Google's registered-device state.
+Only its local HTTP mock has been exercised; it has not been invoked against
+Google. Receive and acknowledgement transports and chat sends remain absent.
+Automatic browser SendMessage traffic includes protocol envelopes; it must not
+be interpreted as permission to send user messages.
 
 `registration::RegistrationAttempt` now prepares the mode-0 body offline with a
 fresh web-device ID and an OS-generated 32-byte transport key. Its consuming
@@ -81,8 +84,8 @@ conversion. Owned request bytes, keys, and decoded credentials use zeroizing
 storage. The caller owns the response buffer; this does not promise erasure of
 every parsing or encoding temporary. Synthetic tests cover the request fields,
 fresh IDs and keys, response bounds, invalid lifetimes, and expiry. Registration
-has not been tested against Google's service, and the browser probe still permits
-only read-only lookup.
+has not been tested against Google's service. The read-only probe remains
+separate and rejects the explicit registration proof mode.
 
 ## Session ownership and storage
 
@@ -92,10 +95,10 @@ normalized runtime account view through the existing helper contract. Google
 cookies, identities, tokens, and keys do not enter daemon snapshots or client IPC.
 The AGPL adapter's stored sessions will not be imported.
 
-Browser service cookies remain transient under the current test authorization.
-Persistent credential acquisition and refresh need a separate implementation
-contract. Until that exists, tests may use one-use browser proofs but cannot claim
-unattended login or restart recovery. No session store is added at this stage.
+Browser service cookies remain transient in the current login flow. The restricted
+session-record store exists, but no account state is written to it yet.
+Persistent credential acquisition, typed session records, and refresh still need
+implementation before unattended login or restart recovery can be claimed.
 
 Google's restore path requires a complete set of registration and pairing data
 and applies a configuration-dependent pairing-age limit. A partial record must
