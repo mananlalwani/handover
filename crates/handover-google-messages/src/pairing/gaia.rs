@@ -159,6 +159,16 @@ impl fmt::Debug for AwaitingPhoneConfirmation {
 }
 
 impl AwaitingPhoneConfirmation {
+    /// The observed revision-1 symbol for display while the phone asks for a
+    /// match. Producing a symbol does not confirm that the user selected it.
+    pub fn verification_emoji(
+        &self,
+    ) -> Result<super::verification::VerificationEmoji, PairingError> {
+        Ok(super::verification::revision_one(
+            self.pending.auth_string()?,
+        ))
+    }
+
     /// Raw verification bytes. Human-readable emoji mapping remains unfinished.
     pub fn auth_string(&self) -> Result<&[u8; 32], PairingError> {
         Ok(self.pending.auth_string()?)
@@ -202,7 +212,7 @@ impl AwaitingPhoneConfirmation {
             return Err(PairingError::InvalidResponse);
         }
         Ok(PhoneConfirmedPairing {
-            _keys: super::keys::GaiaKeys::derive(&self.pending._next_protocol_secret)?,
+            keys: super::keys::GaiaKeys::derive(&self.pending._next_protocol_secret)?,
             _peer: self.peer,
             _pairing_id: self.pairing_id,
             _encrypted_user_data: Zeroizing::new(std::mem::take(&mut response.encrypted_user_data)),
@@ -212,7 +222,7 @@ impl AwaitingPhoneConfirmation {
 
 /// Acknowledged phone exchange, with no online state, persistence, or key export.
 pub struct PhoneConfirmedPairing {
-    _keys: super::keys::GaiaKeys,
+    keys: super::keys::GaiaKeys,
     _peer: Vec<u8>,
     _pairing_id: String,
     _encrypted_user_data: Zeroizing<Vec<u8>>,
@@ -221,6 +231,24 @@ pub struct PhoneConfirmedPairing {
 impl fmt::Debug for PhoneConfirmedPairing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PhoneConfirmedPairing { redacted }")
+    }
+}
+
+impl PhoneConfirmedPairing {
+    /// Offline encryption only; it makes no messaging request and advertises
+    /// no send capability. Keys never leave the confirmed pairing object.
+    pub fn encrypt_payload(
+        &self,
+        plaintext: &[u8],
+    ) -> Result<super::cipher::EncryptedPayload, super::cipher::CipherError> {
+        self.keys.encrypt(plaintext)
+    }
+
+    pub fn decrypt_payload(
+        &self,
+        ciphertext: &[u8],
+    ) -> Result<super::cipher::Plaintext, super::cipher::CipherError> {
+        self.keys.decrypt(ciphertext)
     }
 }
 
@@ -547,6 +575,10 @@ mod tests {
             pending.auth_string().unwrap_err(),
             PairingError::Handshake(HandshakeError::Expired)
         );
+        assert_eq!(
+            pending.verification_emoji().unwrap_err(),
+            PairingError::Handshake(HandshakeError::Expired)
+        );
     }
 
     #[test]
@@ -582,6 +614,16 @@ mod tests {
                 assert_eq!(
                     format!("{confirmed:?}"),
                     "PhoneConfirmedPairing { redacted }"
+                );
+                let ciphertext = confirmed
+                    .encrypt_payload(b"synthetic protocol bytes")
+                    .unwrap();
+                assert!(
+                    confirmed
+                        .decrypt_payload(ciphertext.as_bytes())
+                        .unwrap()
+                        .as_bytes()
+                        == b"synthetic protocol bytes"
                 );
             } else {
                 assert!(result.is_err());

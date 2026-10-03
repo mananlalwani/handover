@@ -26,6 +26,20 @@ impl fmt::Debug for GaiaKeys {
 }
 
 impl GaiaKeys {
+    pub(super) fn encrypt(
+        &self,
+        plaintext: &[u8],
+    ) -> Result<super::cipher::EncryptedPayload, super::cipher::CipherError> {
+        super::cipher::encrypt(&self._first, &self._second, plaintext)
+    }
+
+    pub(super) fn decrypt(
+        &self,
+        ciphertext: &[u8],
+    ) -> Result<super::cipher::Plaintext, super::cipher::CipherError> {
+        super::cipher::decrypt(&self._first, &self._second, ciphertext)
+    }
+
     pub(super) fn derive(next: &[u8; 32]) -> Result<Self, HandshakeError> {
         let client = expand(next, &D2D_SALT, b"client")?;
         let server = expand(next, &D2D_SALT, b"server")?;

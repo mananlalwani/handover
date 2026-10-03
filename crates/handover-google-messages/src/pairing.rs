@@ -1,7 +1,9 @@
 //! UKEY2 preparation only. No registration, network traffic, or paired session.
 
+pub mod cipher;
 pub mod gaia;
 mod keys;
+pub mod verification;
 
 use crypto_provider_rustcrypto::RustCryptoImpl;
 use rand::{SeedableRng, rngs::StdRng};

@@ -149,7 +149,8 @@ The Handover wrapper offers P-256 with public-key-in-protobuf encoding and
 `AES_256_CBC-HMAC_SHA256` as the next-protocol label observed in `Kna` at 753115.
 Google's `Ona` derives 32-byte UKEY2 authentication and next-protocol material.
 The wrapper derives those values through the upstream library; it does not yet
-implement Messages' subsequent channel keys, emoji mapping, or confirmation.
+open a live Messages channel. Offline channel keys, emoji mapping, and final
+confirmation checks are described below.
 
 Peer input is limited to 4 KiB. A local five-minute lifetime covers preparation
 and pending confirmation. This is a local safety bound matching the browser's
@@ -197,7 +198,7 @@ following `G5a` at 1076135. It keeps the original pairing ID and timestamp, uses
 a fresh outer request ID, and omits the initial revision fields. It exposes raw
 verification bytes, with the existing five-minute expiry, but cannot produce
 an online account. It now accepts a correlated final phone response as described
-below. Emoji display, routing envelopes, runtime receive dispatch and
+below. UI integration, routing envelopes, runtime receive dispatch and
 acknowledgements, and registration transport remain unfinished.
 
 Synthetic tests complete the embedded handshake with an upstream peer and compare
@@ -287,3 +288,41 @@ Google's [computer pairing guide](https://support.google.com/messages/answer/761
 describes Google-account sign-in and phone confirmation. The existing normal
 browser is the bootstrap target; Handover will not require a separate test-browser
 profile in the supported login flow.
+
+## Offline payload cipher and verification symbol
+
+`PhoneConfirmedPairing` now encrypts and decrypts protocol bytes offline through
+RustCrypto AES-256-CTR and HMAC-SHA256. Google's `l4a/k4a` at 1057912 defines
+ciphertext followed by a random 16-byte counter and a 32-byte tag. `hpa` at
+203222 and `SUa/TUa` at 826735 establish HMAC-SHA256 over the ciphertext and
+counter. The native implementation verifies the tag with the library's constant
+time verification before allocating plaintext. It bounds plaintext to 512 KiB,
+checks ciphertext size before cryptographic work, and uses OS randomness for each
+encryption counter. No API exports keys or sends a message. Protocol empty-body
+omission remains a transport concern; the cipher can authenticate an empty body.
+
+Four independently generated Node WebCrypto vectors cover empty, one-byte,
+block-aligned, and multi-block payloads. Tests also corrupt every byte across
+ciphertext, counter, and tag; verify fresh counters and redacted results; and
+exercise bounds. Plaintext and owned keys use zeroizing storage. AES expanded
+keys use the library's zeroize feature. This does not promise erasure of all
+temporary cryptographic state or caller buffers.
+
+The revision-1 verification symbol follows Google's public PairContainer, at
+2332737 in an anonymous route-module capture with SHA-256
+`2ba936ed75d767e7fa4788383445d923a33933ef5d1c401e62bb88be87446389`.
+That capture remains outside Git in
+`/tmp/handover-native-pairing-evidence-20261003/route-modules.js`; its manifest
+records the public gstatic URL. The client reads the first four authentication
+bytes as an unsigned big-endian word and selects from the observed ordered
+revision-1 alphabet of 308 symbols. The original list contains a duplicate bread
+symbol; Google's insertion-ordered Set removes it before revision changes. The
+native alphabet preserves that behavior and joined Unicode code points. Only
+functional symbol-to-index data is retained, not Google's UI implementation.
+
+`AwaitingPhoneConfirmation::verification_emoji` checks handshake expiry and
+returns a display value with redacted Debug output. It does not confirm that the
+user chose the matching symbol. Independent DataView/Set vectors cover byte
+order, unsigned high-bit values, and revision changes. Native UI display and
+physical-phone compatibility still need testing. These additions do not enable
+live registration, messaging, restoration, or browser-free credential acquisition.
