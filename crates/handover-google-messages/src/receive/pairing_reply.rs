@@ -12,6 +12,57 @@ use crate::pairing::gaia::{
 const ID_LIMIT: usize = 1024;
 const ENVELOPE_LIMIT: usize = 32 * 1024;
 const PAYLOAD_LIMIT: usize = 16 * 1024;
+const ACK_LIMIT: usize = 50;
+
+/// An inbox identifier that can only be created after a pairing reply passes
+/// its request, peer, and response validation.
+pub struct Acknowledgement(String);
+
+impl fmt::Debug for Acknowledgement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Acknowledgement { redacted }")
+    }
+}
+
+/// Bounded projection of the first-party ACK RPC payload. The caller owns
+/// transport timing and must only submit IDs returned after successful handling.
+#[derive(Default)]
+pub struct AckBatch {
+    ids: Vec<String>,
+}
+
+impl fmt::Debug for AckBatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AckBatch { redacted }")
+    }
+}
+
+impl AckBatch {
+    pub fn push(&mut self, acknowledgement: Acknowledgement) -> Result<(), ReceiveError> {
+        if self.ids.len() >= ACK_LIMIT {
+            return Err(ReceiveError::TooLarge);
+        }
+        if !self.ids.contains(&acknowledgement.0) {
+            self.ids.push(acknowledgement.0);
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// kLa field 2 contains the acknowledged message IDs. This is only the
+    /// protobuf payload, not an authenticated or sent HTTP request.
+    pub fn payload_bytes(&self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(
+            AckPayload {
+                message_ids: self.ids.clone(),
+            }
+            .encode_to_vec(),
+        )
+    }
+}
 
 /// Opaque Google reply. Parsing does not acknowledge or consume a remote inbox.
 pub struct PairingReply {
@@ -29,6 +80,24 @@ impl fmt::Debug for PairingReply {
 }
 
 impl PairingReply {
+    pub fn accept_confirmation_and_ack(
+        self,
+        pending: AwaitingPhoneConfirmation,
+    ) -> Result<(PhoneConfirmedPairing, Acknowledgement), PairingError> {
+        let ack = Acknowledgement(self._message_id.clone());
+        let pairing = self.accept_confirmation(pending)?;
+        Ok((pairing, ack))
+    }
+
+    pub fn accept_initial_and_ack(
+        self,
+        attempt: InitialPairing,
+    ) -> Result<(AwaitingPhoneConfirmation, Acknowledgement), PairingError> {
+        let ack = Acknowledgement(self._message_id.clone());
+        let pairing = self.accept_initial(attempt)?;
+        Ok((pairing, ack))
+    }
+
     pub fn accept_confirmation(
         self,
         pending: AwaitingPhoneConfirmation,
@@ -48,6 +117,12 @@ impl PairingReply {
         }
         attempt.accept_response(&self.request_id, &self.sender, &self.body)
     }
+}
+
+#[derive(Message)]
+struct AckPayload {
+    #[prost(string, repeated, tag = "2")]
+    message_ids: Vec<String>,
 }
 
 impl ReceiveRecord {
@@ -232,6 +307,31 @@ mod tests {
     }
 
     #[test]
+    fn acknowledgement_batch_is_bounded_deduplicated_and_uses_observed_field() {
+        let mut batch = AckBatch::default();
+        batch.push(Acknowledgement("first".to_owned())).unwrap();
+        batch.push(Acknowledgement("first".to_owned())).unwrap();
+        assert!(!batch.is_empty());
+        let decoded = AckPayload::decode(batch.payload_bytes().as_slice()).unwrap();
+        assert_eq!(decoded.message_ids, ["first"]);
+
+        for i in 1..ACK_LIMIT {
+            batch.push(Acknowledgement(format!("id-{i}"))).unwrap();
+        }
+        assert_eq!(
+            AckPayload::decode(batch.payload_bytes().as_slice())
+                .unwrap()
+                .message_ids
+                .len(),
+            ACK_LIMIT
+        );
+        assert_eq!(
+            batch.push(Acknowledgement("overflow".to_owned())),
+            Err(ReceiveError::TooLarge)
+        );
+    }
+
+    #[test]
     fn heartbeat_unrelated_replies_and_preemption_do_not_become_pairing() {
         assert!(
             ReceiveRecord(json!([[], null, []]))
@@ -326,19 +426,18 @@ mod tests {
         let wire = serde_json::to_vec(&json!([[record.0.clone()], [0]])).unwrap();
         let mut attempt = Some(attempt);
         let mut pending = None;
+        let mut acknowledgement = None;
         let mut stream = ReceiveStream::default();
         for chunk in wire.chunks(7) {
             stream
                 .feed(chunk, |event| {
                     if let ReceiveEvent::Record(record) = event {
-                        pending = Some(
-                            record
-                                .pairing_reply()
-                                .unwrap()
-                                .unwrap()
-                                .accept_initial(attempt.take().unwrap())
-                                .unwrap(),
-                        );
+                        let reply = record.pairing_reply().unwrap().unwrap();
+                        let (accepted, ack) = reply
+                            .accept_initial_and_ack(attempt.take().unwrap())
+                            .unwrap();
+                        pending = Some(accepted);
+                        acknowledgement = Some(ack);
                     }
                     Ok(())
                 })
@@ -347,5 +446,13 @@ mod tests {
         assert_eq!(stream.finish(), Ok(0));
         assert!(attempt.is_none());
         assert!(pending.unwrap().request_bytes().is_ok());
+        let mut ack_batch = AckBatch::default();
+        ack_batch.push(acknowledgement.unwrap()).unwrap();
+        assert_eq!(
+            AckPayload::decode(ack_batch.payload_bytes().as_slice())
+                .unwrap()
+                .message_ids,
+            ["synthetic-inbox-id"]
+        );
     }
 }

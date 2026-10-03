@@ -343,3 +343,13 @@ alone must not be treated as evidence that the HTTP request is authenticated.
 The sending destination comes from `GA_EMAIL`, supplied through the page's
 account bootstrap model. The login extension must bind that identity to the
 same account used for authorization rather than infer it from a display label.
+
+### Pairing reply acknowledgements
+
+The native receive projection creates an acknowledgement handle only after an
+initial or final pairing reply passes correlation and response validation.
+`AckBatch` encodes the observed ACK protobuf field 2 and caps each batch at 50
+unique IDs. It only prepares the payload. No ACK HTTP transport or retry policy
+exists yet, so this code does not claim that Google accepted an acknowledgement.
+Unknown messages and unprocessed pairing replies do not produce acknowledgement
+handles.
