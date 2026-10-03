@@ -186,6 +186,47 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', { requestId: 'stopped-secret', headers: { Authorization: 'STOP_SECRET' } });
   await send({ type: 'stop' });
   assert.deepEqual((await send({ type: 'snapshot' })).nativeProbe, { state: 'failed', result: { error: 'stopped' } });
+  // Cookies are discarded while ExtraInfo has no matched request URL.
+  await send({ type: 'auth-probe-with-cookies' });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', {
+    requestId: 'reverse-cookie', headers: {
+      Authorization: 'Bearer REVERSE_AUTH', 'X-Goog-Api-Key': 'REVERSE_KEY', Cookie: 'SID=REVERSE_COOKIE_SECRET',
+    },
+  });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', {
+    requestId: 'reverse-cookie', request: { url: `https://instantmessaging-pa.clients6.google.com${authPath}`, method: 'POST', headers: {} },
+  });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'failed');
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.result.error, 'cookie_unavailable');
+  assert.equal(nativeCalls.length, 2);
+
+  await send({ type: 'auth-probe-with-cookies' });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', {
+    requestId: 'unmatched-cookie', headers: { Cookie: 'SID=UNRELATED_COOKIE_SECRET' },
+  });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', {
+    requestId: 'cookie-target', request: {
+      url: `https://instantmessaging-pa.clients6.google.com${authPath}`, method: 'POST', headers: {},
+    },
+  });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSentExtraInfo', {
+    requestId: 'cookie-target', headers: {
+      Authorization: 'Bearer COOKIE_MODE_AUTH', 'X-Goog-Api-Key': 'COOKIE_MODE_KEY',
+      Cookie: 'SID=APPROVED_SERVICE_COOKIE_SECRET', Origin: 'https://messages.google.com',
+    },
+  });
+  await waitFor(() => nativeCalls.length === 3);
+  assert.equal(nativeCalls[2].payload.type, 'gaia_lookup_with_cookies');
+  assert.equal(nativeCalls[2].payload.service_cookie, 'SID=APPROVED_SERVICE_COOKIE_SECRET');
+  assert.equal(nativeCalls[2].payload.endpoint, 'https://instantmessaging-pa.clients6.google.com');
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  const cookieSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
+  for (const secret of ['APPROVED_SERVICE_COOKIE_SECRET', 'UNRELATED_COOKIE_SECRET', 'REVERSE_COOKIE_SECRET', 'COOKIE_MODE_AUTH', 'COOKIE_MODE_KEY']) {
+    assert.equal(cookieSnapshot.includes(secret), false);
+  }
+  const lastEnable = calls.filter(call => call[0] === 'Network.enable').at(-1);
+  assert.equal(lastEnable[2].maxPostDataSize, 0);
+  assert.equal(debuggerCommands.filter(name => name === 'Network.getResponseBody').length, bodyCallsBeforeAuth);
   await assert.rejects(worker.withTimeout(new Promise(() => {}), 5, 'native_timeout'), /native_timeout/);
   assert.deepEqual(await worker.nativeReplyWithTimeout(new Promise(() => {}), 5), { error: 'timeout' });
   assert.deepEqual(worker.sanitizeNativeReply({ ok: true, sources: 4, http_status: 204 }), { state: 'failed', result: { error: 'invalid_response' } });

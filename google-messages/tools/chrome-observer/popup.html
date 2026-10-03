@@ -20,6 +20,8 @@
   </label>
   <button id="start">Start on this tab</button>
   <button id="auth-probe">Test native authentication</button>
+  <button id="cookie-probe">Compare with service cookies</button>
+  <p>The comparison passes the matched SignInGaia request's service cookies to the local Rust probe once. Nothing is saved.</p>
   <p>For the one-time test, start this probe, then refresh the current Google Messages tab to trigger its SignInGaia request.</p>
   <p id="native-status" role="status">Native authentication probe: idle.</p>
   <button id="stop">Stop</button>

@@ -6,7 +6,7 @@ pub mod native;
 
 use reqwest::{
     Client,
-    header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, ORIGIN},
+    header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, ORIGIN},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,6 +35,7 @@ pub struct BrowserProof {
     pub authorization: String,
     pub api_key: String,
     pub auth_user: Option<String>,
+    pub service_cookie: Option<String>,
 }
 
 impl fmt::Debug for BrowserProof {
@@ -111,7 +112,10 @@ fn sensitive_header(value: &str, limit: usize) -> Result<HeaderValue, ProbeError
 
 impl BrowserProof {
     fn validate(&self) -> Result<HeaderMap, ProbeError> {
-        if self.kind != "gaia_lookup" {
+        if !matches!(
+            self.kind.as_str(),
+            "gaia_lookup" | "gaia_lookup_with_cookies"
+        ) {
             return Err(ProbeError::InvalidBootstrap);
         }
         if self.origin != ORIGIN_VALUE {
@@ -123,6 +127,13 @@ impl BrowserProof {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, sensitive_header(&self.authorization, 8192)?);
         headers.insert("x-goog-api-key", sensitive_header(&self.api_key, 4096)?);
+        match (self.kind.as_str(), self.service_cookie.as_deref()) {
+            ("gaia_lookup", None) => {}
+            ("gaia_lookup_with_cookies", Some(cookie)) => {
+                headers.insert(COOKIE, sensitive_header(cookie, 16384)?);
+            }
+            _ => return Err(ProbeError::InvalidCredentials),
+        }
         if let Some(user) = &self.auth_user {
             if user.is_empty() || user.len() > 2 || !user.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(ProbeError::InvalidCredentials);
@@ -172,7 +183,8 @@ fn transport_error(error: reqwest::Error) -> ProbeError {
     }
 }
 
-/// Query registered source count with SignInGaia mode 1, once, without cookies.
+/// Query registered source count with SignInGaia mode 1, once.
+/// Cookies require the separate explicit comparison request type.
 /// This does not attest pairing or expose any returned source identifiers.
 pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
     let headers = proof.validate()?;
@@ -258,6 +270,7 @@ mod tests {
             authorization: "sensitive-auth".into(),
             api_key: "sensitive-key".into(),
             auth_user: Some("0".into()),
+            service_cookie: None,
         }
     }
 
@@ -305,6 +318,30 @@ mod tests {
         assert_ne!(first[0][0], second[0][0]);
         assert_ne!(first[1][0][1], second[1][0][1]);
         assert_eq!(first[0].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn service_cookies_require_explicit_mode_and_remain_redacted() {
+        let mut p = proof();
+        p.service_cookie = Some("SID=synthetic-private-cookie".into());
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidCredentials);
+        p.kind = "gaia_lookup_with_cookies".into();
+        let headers = p.validate().unwrap();
+        assert!(headers[COOKIE].is_sensitive());
+        assert!(!format!("{p:?} {headers:?}").contains("synthetic-private-cookie"));
+        p.service_cookie = None;
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidCredentials);
+        for invalid in [
+            "".to_owned(),
+            "SID=x\r\nX-Injected: y".into(),
+            "x".repeat(16385),
+        ] {
+            p.service_cookie = Some(invalid);
+            assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidCredentials);
+        }
+        p.service_cookie = Some("SID=synthetic".into());
+        p.endpoint = "https://unapproved.test".into();
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidEndpoint);
     }
 
     #[test]
@@ -432,5 +469,32 @@ mod tests {
             );
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn cookie_comparison_forwards_only_the_explicit_sensitive_header() {
+        let (endpoint, server) = mock_server(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: 4\r\nConnection: close\r\n\r\n[[]]".to_vec()).await;
+        let mut p = proof();
+        p.kind = "gaia_lookup_with_cookies".into();
+        p.service_cookie = Some("SID=synthetic-comparison".into());
+        assert_eq!(
+            query(
+                &client(false).unwrap(),
+                &endpoint,
+                p.validate().unwrap(),
+                None
+            )
+            .await
+            .unwrap()
+            .sources,
+            0
+        );
+        let request = server.await.unwrap();
+        let request = std::str::from_utf8(&request).unwrap();
+        assert!(request.contains("cookie: SID=synthetic-comparison\r\n"));
+        let offset = request.find("\r\n\r\n").unwrap();
+        let body: Value = serde_json::from_str(&request[offset + 4..]).unwrap();
+        assert_eq!(body[2], 1);
+        assert!(!request[offset + 4..].contains("synthetic-comparison"));
     }
 }

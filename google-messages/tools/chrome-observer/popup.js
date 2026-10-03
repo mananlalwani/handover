@@ -61,6 +61,12 @@ document.querySelector('#stop').addEventListener('click', async () => {
   await refresh();
 });
 
+document.querySelector('#cookie-probe').addEventListener('click', async () => {
+  const result = await message({ type: 'auth-probe-with-cookies' });
+  nativeStatus.textContent = result?.error ?? 'Cookie comparison started. Refresh Google Messages, then reopen this popup.';
+  await refresh();
+});
+
 document.querySelector('#save').addEventListener('click', async () => {
   const state = await message({ type: 'snapshot' });
   if (!state || state.error) { status.textContent = state?.error ?? 'Observer is unavailable.'; return; }

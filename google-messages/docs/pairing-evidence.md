@@ -90,7 +90,7 @@ independent-client pairing remain unverified.
 ## Authenticated normal-Chrome trace
 
 The local Chrome observer was loaded and exercised by the user. After the
-existing helper was paused, the user refreshed the signed-in Google Messages
+existing helper was requested to pause, the user refreshed the signed-in Google Messages
 page, exported 215 sanitized records, stopped the observer, and closed the test
 page. The original helper was restored and its account reported online.
 
@@ -149,6 +149,21 @@ source records after counting them. It does not expose their identifiers.
 The original HTTP transport uses JSON+protobuf and the public transport label
 `grpc-web-javascript/0.1`, as shown by `J_a` near 948933. The native probe receives
 a one-use observed authorization proof through Chrome Native Messaging and
-makes its own request. It never receives cookies, replays captured bodies,
+makes its own request. This initial cookie-free mode never receives cookies or replays captured bodies,
 imports adapter state, or executes Google's bundle in Rust. Whether this
 cookie-free request authenticates remains a live-test question.
+
+The first native live test returned `http_error`, HTTP 401, reported by the user.
+The request reached Google but its authorization was rejected. This does not
+isolate the cause. The user approved a separate one-time comparison including
+only the Cookie header attached to the matched SignInGaia request. Those values
+must remain in transient process memory and never become fixtures or account
+storage. This comparison is not yet live-tested.
+
+The test-control check found that the runtime drop-in named
+`90-protocol-readonly-test.conf` sorted before the user's existing
+`override.conf`; its helper setting was overridden. Renaming it to
+`zz-protocol-readonly-test.conf` and checking the effective systemd environment
+and zero production helper processes verified the corrected pause. Earlier
+pause claims without those checks are unverified. The test overrides were
+removed and the production account reported online after the native result.

@@ -21,6 +21,7 @@ let bodyCalls = 0;
 let generation = 0;
 let commandQueue = Promise.resolve();
 let captureMode = null;
+let captureServiceCookies = false;
 let nativeProbe = { state: 'idle' };
 let authForwarded = false;
 let probeId = 0;
@@ -115,6 +116,7 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   active = false;
   tabId = null;
   captureMode = null;
+  captureServiceCookies = false;
   generation += 1;
   if (durationTimer !== null) {
     clearTimeout(durationTimer);
@@ -137,7 +139,7 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   return { message: reason };
 }
 
-async function start(duration, mode = 'observe') {
+async function start(duration, mode = 'observe', withServiceCookies = false) {
   const maximum = mode === 'auth' ? 120 : 300;
   if (!Number.isInteger(duration) || duration < 1 || duration > maximum) return { error: `Choose a duration from 1 to ${maximum} seconds.` };
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -156,6 +158,7 @@ async function start(duration, mode = 'observe') {
     await chrome.debugger.attach({ tabId }, '1.3');
     active = true;
     captureMode = mode;
+    captureServiceCookies = mode === 'auth' && withServiceCookies === true;
     const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!currentTab || currentTab.id !== tab.id || !eligibleTabUrl(currentTab.url ?? '')) throw new Error('tab_changed');
     await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
@@ -181,17 +184,18 @@ export function withTimeout(promise, milliseconds, errorCode = 'command_timeout'
   ]).finally(() => clearTimeout(timeout));
 }
 
-function selectedAuthHeaders(headers) {
+function selectedAuthHeaders(headers, includeServiceCookie = false) {
   const selected = {};
   if (!headers || typeof headers !== 'object') return selected;
   let count = 0;
   const read = (rawName, rawValue) => {
     count += 1;
     const name = String(rawName).toLowerCase();
-    if (!['authorization', 'x-goog-api-key', 'x-goog-authuser', 'origin'].includes(name)) return;
+    if (name === 'cookie' && !includeServiceCookie) return;
+    if (!['authorization', 'x-goog-api-key', 'x-goog-authuser', 'origin', 'cookie'].includes(name)) return;
     if (typeof rawValue !== 'string') { selected[name] = null; return; }
-    if (name === 'authorization' || name === 'x-goog-api-key') {
-      const max = name === 'authorization' ? 8192 : 4096;
+    if (name === 'authorization' || name === 'x-goog-api-key' || name === 'cookie') {
+      const max = name === 'cookie' ? 16384 : name === 'authorization' ? 8192 : 4096;
       selected[name] = rawValue.length > 0 && rawValue.length <= max && /^[\x20-\x7e]+$/.test(rawValue) ? rawValue : null;
     } else if (name === 'x-goog-authuser') {
       selected[name] = /^\d{1,2}$/.test(rawValue) && Number(rawValue) <= 99 ? rawValue : null;
@@ -234,13 +238,23 @@ async function processAuthCandidate(requestId, candidate) {
     clearAuthRequest(requestId);
     return;
   }
+  if (candidate.withServiceCookies && typeof headers.cookie !== 'string') {
+    authForwarded = true;
+    nativeProbe = { state: 'failed', result: { error: 'cookie_unavailable' } };
+    for (const name of Object.keys(headers)) headers[name] = null;
+    candidate.requestHeaders = {};
+    candidate.extraHeaders = {};
+    await enqueueCommand(() => stop('Service cookie unavailable.', { preserveNativeProbe: true }));
+    return;
+  }
   const payload = {
-    type: 'gaia_lookup',
+    type: candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
     endpoint: candidate.endpoint,
     origin: origin ?? 'https://messages.google.com',
     authorization,
     api_key: apiKey,
     ...(authUser === undefined ? {} : { auth_user: authUser }),
+    ...(candidate.withServiceCookies ? { service_cookie: headers.cookie } : {}),
   };
   authForwarded = true;
   nativeProbe = { state: 'running' };
@@ -272,6 +286,7 @@ async function processAuthCandidate(requestId, candidate) {
 function clearNativePayload(payload) {
   payload.authorization = '';
   payload.api_key = '';
+  if (Object.hasOwn(payload, 'service_cookie')) delete payload.service_cookie;
   if (Object.hasOwn(payload, 'auth_user')) delete payload.auth_user;
 }
 
@@ -311,7 +326,10 @@ function authRequest(requestId, request) {
     authHeaderMaps.delete(requestId);
     return;
   }
-  const candidate = { endpoint, requestHeaders: selectedAuthHeaders(request.headers) };
+  const candidate = {
+    endpoint, withServiceCookies: captureServiceCookies,
+    requestHeaders: selectedAuthHeaders(request.headers, captureServiceCookies),
+  };
   const prior = authHeaderMaps.get(requestId);
   if (prior) {
     candidate.extraHeaders = prior;
@@ -323,8 +341,10 @@ function authRequest(requestId, request) {
 }
 
 function authExtraInfo(requestId, headers) {
-  const selected = selectedAuthHeaders(headers);
   const candidate = authCandidates.get(requestId);
+  // ExtraInfo can precede the URL event. Never retain cookies until the exact
+  // service URL has been matched, even when the user enabled the comparison.
+  const selected = selectedAuthHeaders(headers, candidate?.withServiceCookies === true);
   if (candidate) {
     candidate.extraHeaders = selected;
     candidate.ready = true;
@@ -412,6 +432,7 @@ chrome.debugger.onDetach.addListener(source => {
   requests.clear();
   authCandidates.clear();
   authHeaderMaps.clear();
+  captureServiceCookies = false;
   notify();
 });
 
@@ -444,6 +465,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'start') { enqueueCommand(() => start(message.duration)).then(sendResponse, () => sendResponse({ error: 'Could not start the observer.' })); return true; }
   if (message?.type === 'auth-probe') { enqueueCommand(() => start(120, 'auth')).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
+  if (message?.type === 'auth-probe-with-cookies') { enqueueCommand(() => start(120, 'auth', true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'stop') { enqueueCommand(() => stop()).then(sendResponse, () => sendResponse({ error: 'Could not stop the observer.' })); return true; }
   return false;
 });

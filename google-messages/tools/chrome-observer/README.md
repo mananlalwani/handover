@@ -60,6 +60,19 @@ only a source count or fixed error. An HTTP error is not proof of account
 authentication. A source-list result does not establish independent pairing,
 session restoration, conversation decoding, or sending.
 
+The separate **Compare with service cookies** button adds the bounded Cookie
+header attached to that same matched SignInGaia request. The user approved this
+one-time comparison after the cookie-free probe returned HTTP 401. The extension
+never reads the profile cookie store. Cookie headers from events that arrive
+before their request URL are discarded. If the matched request has no available
+cookie header, the comparison stops with `cookie_unavailable` and makes no native
+request. There is no automatic retry or switch between the two modes.
+
+Cookies remain in the local native pipe and transient process memory, and Rust
+returns them only to the exact observed Google origin. Redirects remain disabled.
+They do not enter observer snapshots, exports, logs, daemon IPC, or files. The
+cookie-free button still rejects cookies. The comparison result is unverified.
+
 ## Offline checks
 
 ```sh
