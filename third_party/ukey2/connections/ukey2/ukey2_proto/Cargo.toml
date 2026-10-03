@@ -1,0 +1,12 @@
+# Modified by Handover: minimal in-repository dependency packaging. See third_party/ukey2/README.md.
+[package]
+build = false
+name = "ukey2_proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+protobuf.workspace = true

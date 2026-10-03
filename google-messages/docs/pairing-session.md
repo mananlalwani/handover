@@ -100,8 +100,8 @@ Prefer an upstream UKEY2 implementation behind a private protocol boundary.
 Before adding it, verify the dependency build, revision pin, license notices,
 cryptographic provider, Messages-specific next-protocol value, transcript
 encoding, and confirmation derivation. Do not substitute a custom handshake or
-assume Nearby's subsequent channel format matches Messages. No cryptographic
-implementation or dependency has been added yet.
+assume Nearby's subsequent channel format matches Messages. The user approved including the pinned upstream Rust dependency in the main
+repository. See the implementation status below.
 
 An isolated build tested upstream revision
 `479289ef072b0880c0347d36937265e44f00f4ee`. Its published workspace could not
@@ -120,5 +120,37 @@ notices, a minimal standalone Cargo workspace, and a private Handover wrapper.
 The main workspace would depend only on the handshake and RustCrypto provider;
 Google Messages wire messages remain independently authored. The alternative
 is the upstream C++ implementation through FFI, which adds a native build and
-unsafe boundary. No third-party subtree is committed pending this architecture
-choice.
+unsafe boundary. The user subsequently selected the Rust dependency and authorized including
+it in the main repository.
+
+## In-repository handshake preparation
+
+The UKEY2 dependency now lives in `third_party/ukey2` with its upstream license,
+revision, source hashes, and documented changes. It builds from the main Cargo
+workspace with no sibling checkout, submodule, or protobuf compiler.
+
+The Handover wrapper offers P-256 with public-key-in-protobuf encoding and
+`AES_256_CBC-HMAC_SHA256` as the next-protocol label observed in `Kna` at 753115.
+Google's `Ona` derives 32-byte UKEY2 authentication and next-protocol material.
+The wrapper derives those values through the upstream library; it does not yet
+implement Messages' subsequent channel keys, emoji mapping, or confirmation.
+
+Peer input is limited to 4 KiB. A local five-minute lifetime covers preparation
+and pending confirmation. This is a local safety bound matching the browser's
+observed pairing wait, not a session-token lifetime. Failed server responses
+consume the handshake. State has redacted Debug output and no serialization.
+Derived buffers are erased on drop; the upstream shared-secret buffer is also
+erased. No keys are persisted or released as authenticated session keys.
+
+Tests verify the P-256-only offer, agreement with an upstream peer, matching
+verification and next-protocol material, malformed input, rejected Curve25519
+selection, and expiry. They do not establish compatibility with a physical
+phone. The successful source-count lookup remains the only live-tested native
+Google operation. Registration, pairing confirmation, session restoration, and
+conversation access remain open.
+
+The dependency review also found that upstream mapped an explicitly unknown
+selected next-protocol label to the default. A wrapper regression failed before
+rejecting that label and passed afterward. Omitted labels retain the upstream
+legacy default. The same regression verifies that an invalid P-256 point is
+rejected. All 14 upstream handshake tests continue to pass.

@@ -135,4 +135,5 @@ Report bugs through [GitHub Issues](https://github.com/mananlalwani/handover/iss
 For security vulnerabilities, follow [SECURITY.md](SECURITY.md) and use private
 reporting.
 
-This repository is licensed under [MIT](LICENSE).
+Handover's original code is licensed under [MIT](LICENSE). Included UKEY2 code
+retains Apache-2.0 licensing; see [third-party notices](THIRD_PARTY_NOTICES.md).

@@ -13,7 +13,9 @@ cookies and a request constructed by Rust, returning four registered sources.
 Browser-independent credential acquisition and refresh remain unverified.
 It does not yet pair, read conversations, or send messages. The existing adapter remains in use during development.
 
-This code is part of Handover and covered by the root MIT license.
+Handover's client code is covered by the root MIT license. The included
+[UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.
+It builds inside this repository and requires no separate checkout.
 
 ## Collect first-party evidence
 

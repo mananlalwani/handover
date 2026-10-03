@@ -1,0 +1,392 @@
+{
+  "repository": "https://beto-core.googlesource.com/beto-core",
+  "revision": "479289ef072b0880c0347d36937265e44f00f4ee",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "connections/ukey2/ukey2/Cargo.toml",
+      "upstream_path": "nearby/connections/ukey2/ukey2/Cargo.toml",
+      "upstream_sha256": "d0ae3d811c6602084a98d5c4faacb3215a1145a540d545cfe1d97d73ecacd929",
+      "included_sha256": "c95ff74e47e752097a51a75cda604d2fb067ed1ecdd35c8aedcb5cd3d114f68f",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2/src/lib.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2/src/lib.rs",
+      "upstream_sha256": "e7d28031de5608484dc1f3064b03b52ddf78930c9cfecc0fb373296d32c6cdc3",
+      "included_sha256": "e7d28031de5608484dc1f3064b03b52ddf78930c9cfecc0fb373296d32c6cdc3",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2/src/proto_adapter.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2/src/proto_adapter.rs",
+      "upstream_sha256": "b5a5ff3ecf009abfdb1e3f014f9d0b3aa70fadae4a19a810ff459bbba0ff31a8",
+      "included_sha256": "da2cc58762e6810aa834286cfbeaf21dcf562a1b9adfd40badfaf69f317175da",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2/src/state_machine.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2/src/state_machine.rs",
+      "upstream_sha256": "df3d09afbb65610cffbbf92cce4017cacf8f8af8cf5d103a27e63768824a898c",
+      "included_sha256": "dc6bc5f39627713bc435d92f8719fadc7668966d1fc03e99023c57915c5a5259",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2/src/tests.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2/src/tests.rs",
+      "upstream_sha256": "9d46a356e5b38d9b49bd23f701e0d0f411ffcd876722f2a3f63e63cdd08af9d7",
+      "included_sha256": "f5dfa841e3d7d84edc62d963e6e0c233aa29a6fdf38a63b067ea1b07c1ae432a",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2/src/ukey2_handshake.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2/src/ukey2_handshake.rs",
+      "upstream_sha256": "073cec096345eae9b48ea6a2c0c8aaebe0e057f6d00cb8f6ff29eba081de0272",
+      "included_sha256": "c7a7e87250f38fbb8fef8937738600006fc4ecc2068523289e43b448d63525a7",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2/tests/tests.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2/tests/tests.rs",
+      "upstream_sha256": "0368e607601fa2a66e84cd1582e8f77dc158320faaf47058fb3c84468a258780",
+      "included_sha256": "20c89366c9475f1dfe6a7fc57b6e6866d44754d37332b32facc1c6bd9d26a477",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/Cargo.toml",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/Cargo.toml",
+      "upstream_sha256": "3ae5958c043c70cd3b31e59465ab17919a324708161c6d1ab887d9246545973d",
+      "included_sha256": "f8414d7d6aa15441d2d81a6ebce5e3be1d03e999ce05137494caccb7121ae0b4",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/build.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/build.rs",
+      "upstream_sha256": "f31ae3632d2993042cd717b153afe31d185980fa34054868edf8b5a873bc798f",
+      "included_sha256": "f31ae3632d2993042cd717b153afe31d185980fa34054868edf8b5a873bc798f",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/proto/device_to_device_messages.proto",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/proto/device_to_device_messages.proto",
+      "upstream_sha256": "b9e94a97db693bc87a2b14ed75eba7a002bbaf3aef5012f681a03e3c294d5610",
+      "included_sha256": "b9e94a97db693bc87a2b14ed75eba7a002bbaf3aef5012f681a03e3c294d5610",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/proto/securegcm.proto",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/proto/securegcm.proto",
+      "upstream_sha256": "f33b7a49768e6b61b75769553358cc20d8fa63e985b74a37c9a2dba0f604ceb5",
+      "included_sha256": "f33b7a49768e6b61b75769553358cc20d8fa63e985b74a37c9a2dba0f604ceb5",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/proto/securemessage.proto",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/proto/securemessage.proto",
+      "upstream_sha256": "18d6819d14a887fa20509b72f795075eb8528605caf30b117bfdb1854c8c536a",
+      "included_sha256": "18d6819d14a887fa20509b72f795075eb8528605caf30b117bfdb1854c8c536a",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/proto/ukey.proto",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/proto/ukey.proto",
+      "upstream_sha256": "8a0d484a345132472b07d88166d514843d53fcfb179046b08d1450dabd44d46d",
+      "included_sha256": "8a0d484a345132472b07d88166d514843d53fcfb179046b08d1450dabd44d46d",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/src/lib.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/src/lib.rs",
+      "upstream_sha256": "6e4de2cc8ae5e8b70ce1be5b3810d6af55c42d411a2124cc73d7442f9ef67167",
+      "included_sha256": "e598909c1734c559a27f954b83043ed374581233bf038a79b3accd13e6fa8611",
+      "modified": true
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/src/ukey2_all_proto/device_to_device_messages.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/src/ukey2_all_proto/device_to_device_messages.rs",
+      "upstream_sha256": "e08f171512c3c6eecf45ca8e0e10d788348247582b96090f9883fd6b28a8e0e4",
+      "included_sha256": "e08f171512c3c6eecf45ca8e0e10d788348247582b96090f9883fd6b28a8e0e4",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/src/ukey2_all_proto/securegcm.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/src/ukey2_all_proto/securegcm.rs",
+      "upstream_sha256": "d3f6d3c7772f46713d7300a85ca8e74c89e13e41634d3109a17947251b3a7e88",
+      "included_sha256": "d3f6d3c7772f46713d7300a85ca8e74c89e13e41634d3109a17947251b3a7e88",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/src/ukey2_all_proto/securemessage.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/src/ukey2_all_proto/securemessage.rs",
+      "upstream_sha256": "917483893663c4f25da3a7d188fe8b06d59a4642d9c0b77c965cf1d52bec0fdd",
+      "included_sha256": "917483893663c4f25da3a7d188fe8b06d59a4642d9c0b77c965cf1d52bec0fdd",
+      "modified": false
+    },
+    {
+      "path": "connections/ukey2/ukey2_proto/src/ukey2_all_proto/ukey.rs",
+      "upstream_path": "nearby/connections/ukey2/ukey2_proto/src/ukey2_all_proto/ukey.rs",
+      "upstream_sha256": "e71780c1b9c053cc0b16c86897f729fd6ffa92c629180a53cc6480c339b5fcda",
+      "included_sha256": "e71780c1b9c053cc0b16c86897f729fd6ffa92c629180a53cc6480c339b5fcda",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/Cargo.toml",
+      "upstream_path": "nearby/crypto/crypto_provider/Cargo.toml",
+      "upstream_sha256": "63fc44189f9d0a108d0da969ddc0b6aa68534bda1147ead4daab29b2aab43db7",
+      "included_sha256": "1c6a206542bccce7a6a4aaf9bb6eb9d639b057a9937a843b733bdab0e021b8dc",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider/benches/constant_time_eq_bench.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/benches/constant_time_eq_bench.rs",
+      "upstream_sha256": "9ac087cb14c07b74c683a49c8a689563a352d326fa9f6f84ce9607e1cf2526dd",
+      "included_sha256": "9ac087cb14c07b74c683a49c8a689563a352d326fa9f6f84ce9607e1cf2526dd",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/benches/hkdf_bench.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/benches/hkdf_bench.rs",
+      "upstream_sha256": "4936ebd264a35ededda61167be97fc7bc81679eaf61e7d6758d55c642c40571c",
+      "included_sha256": "0130b547659d5b12ae820793c7c6ef1c87ea9bd2e855075182b20fc44d358aa6",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider/benches/hmac_bench.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/benches/hmac_bench.rs",
+      "upstream_sha256": "7f7f6e69afbe47da35f1628b9c478ee08045d2829d0a71f6384aa77069005b96",
+      "included_sha256": "7f7f6e69afbe47da35f1628b9c478ee08045d2829d0a71f6384aa77069005b96",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/aead.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/aead.rs",
+      "upstream_sha256": "2e38bfc0d9b0429be24886d76fc20c42a8ce88a79a69e60f28e02b0d7269c0fc",
+      "included_sha256": "2e38bfc0d9b0429be24886d76fc20c42a8ce88a79a69e60f28e02b0d7269c0fc",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/aes/cbc.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/aes/cbc.rs",
+      "upstream_sha256": "7580c90b5ab04754151ca51cf4aa8781e75af8b538c508195844bdf4b1d85ebf",
+      "included_sha256": "7580c90b5ab04754151ca51cf4aa8781e75af8b538c508195844bdf4b1d85ebf",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/aes/ctr.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/aes/ctr.rs",
+      "upstream_sha256": "b884dd8577b3d4294beb2e7ed2d08acc197d67e0c1c9949a916ff73e83b13031",
+      "included_sha256": "b884dd8577b3d4294beb2e7ed2d08acc197d67e0c1c9949a916ff73e83b13031",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/aes/mod.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/aes/mod.rs",
+      "upstream_sha256": "5ba78a52e5646402295a37de42e5c7bb3d119aa3b8d3dad3724004379caf25c6",
+      "included_sha256": "5ba78a52e5646402295a37de42e5c7bb3d119aa3b8d3dad3724004379caf25c6",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/ecdsa.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/ecdsa.rs",
+      "upstream_sha256": "688ba20c4c3939e607bcad9fb3b9b1f77ddb87384b67ae6fd3673d6b8adb7f11",
+      "included_sha256": "688ba20c4c3939e607bcad9fb3b9b1f77ddb87384b67ae6fd3673d6b8adb7f11",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/ed25519.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/ed25519.rs",
+      "upstream_sha256": "c1f6867523d0567e15ec4e9a8d7a38933b5dfe3d7c673ab8ff2b07e7a7a2d053",
+      "included_sha256": "c1f6867523d0567e15ec4e9a8d7a38933b5dfe3d7c673ab8ff2b07e7a7a2d053",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/elliptic_curve.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/elliptic_curve.rs",
+      "upstream_sha256": "769d21be337c7646390e12fb49f64e19022a2037533199c913c071b48f04b14f",
+      "included_sha256": "769d21be337c7646390e12fb49f64e19022a2037533199c913c071b48f04b14f",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/hkdf.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/hkdf.rs",
+      "upstream_sha256": "562073f985cb1134f294be9d43cca36363c80241f2e4c998f835783299f15b59",
+      "included_sha256": "562073f985cb1134f294be9d43cca36363c80241f2e4c998f835783299f15b59",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/hmac.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/hmac.rs",
+      "upstream_sha256": "710bad3035611bb9a4edcc97fbfd7f6150addbe40c17403df3d922b890a26dd3",
+      "included_sha256": "710bad3035611bb9a4edcc97fbfd7f6150addbe40c17403df3d922b890a26dd3",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/lib.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/lib.rs",
+      "upstream_sha256": "ee88b6395604f6ff727ffee1ea8aab5d9fc5eb39303b66872d81f8a376f92211",
+      "included_sha256": "ee88b6395604f6ff727ffee1ea8aab5d9fc5eb39303b66872d81f8a376f92211",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/p256.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/p256.rs",
+      "upstream_sha256": "44f570271252e228da153e50a9a4aecbdffb31b9e31868f30f2c504e2cc6bac4",
+      "included_sha256": "44f570271252e228da153e50a9a4aecbdffb31b9e31868f30f2c504e2cc6bac4",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/sha2.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/sha2.rs",
+      "upstream_sha256": "3ea502054fec55b9ddab94236e956c2e9ea5354b637ea73b3ed41356106ded86",
+      "included_sha256": "3ea502054fec55b9ddab94236e956c2e9ea5354b637ea73b3ed41356106ded86",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider/src/x25519.rs",
+      "upstream_path": "nearby/crypto/crypto_provider/src/x25519.rs",
+      "upstream_sha256": "7a6990883713efc088efe4598126b0e772470c3c911fd79be7c2dc0d34a260e4",
+      "included_sha256": "7a6990883713efc088efe4598126b0e772470c3c911fd79be7c2dc0d34a260e4",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_default/Cargo.toml",
+      "upstream_path": "nearby/crypto/crypto_provider_default/Cargo.toml",
+      "upstream_sha256": "aa41450242816d0f26ae564f82b60e76fd76254dc5f6e29a045cf237fecdfa44",
+      "included_sha256": "1204d6468ef7fd51e1efe03723465de859500531db1329dc10f631302f51d45f",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_default/src/lib.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_default/src/lib.rs",
+      "upstream_sha256": "cf9e3f95eb0e5788487165c6d093b4fa221c32997c967bc0275d82b40b40671a",
+      "included_sha256": "b04d48d1c8ac2c31742f9178d7ee6e5f18b474d26e31a9f74be541820a6c56c1",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/Cargo.toml",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/Cargo.toml",
+      "upstream_sha256": "22e4815800c3eae25ed314c08e3aa9d63437142120853faff5d073bb0f1c6c97",
+      "included_sha256": "2bfa08aaf72254dc329c92518ce88b44408f4e6c9d68d5826bc65a1877516724",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/aead/aes_gcm.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/aead/aes_gcm.rs",
+      "upstream_sha256": "2b774c07a1bc48d86b6b9a18d42554c3c289a8491f4c2b5741443663a98ebd3e",
+      "included_sha256": "2b774c07a1bc48d86b6b9a18d42554c3c289a8491f4c2b5741443663a98ebd3e",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/aead/aes_gcm_siv.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/aead/aes_gcm_siv.rs",
+      "upstream_sha256": "a8c251a79a798aeb1cf782ee4af58d55403134b21fcf0bc3878061426b15e14c",
+      "included_sha256": "a8c251a79a798aeb1cf782ee4af58d55403134b21fcf0bc3878061426b15e14c",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/aead/mod.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/aead/mod.rs",
+      "upstream_sha256": "308c14c7e2560374334ef25cc5a9793458c65fd569acb75dfc94991fe444928b",
+      "included_sha256": "308c14c7e2560374334ef25cc5a9793458c65fd569acb75dfc94991fe444928b",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/aes_cp/cbc.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/aes_cp/cbc.rs",
+      "upstream_sha256": "2f7d72c6439fcf5a7b284724d8eff24116b0d8f0ca1890ec849e657a4ea79372",
+      "included_sha256": "2f7d72c6439fcf5a7b284724d8eff24116b0d8f0ca1890ec849e657a4ea79372",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/aes_cp/ctr.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/aes_cp/ctr.rs",
+      "upstream_sha256": "34daeef1a14cbb23c7cab1407e109ad5408fb50c28ddc10cfe034994a0bf0d53",
+      "included_sha256": "34daeef1a14cbb23c7cab1407e109ad5408fb50c28ddc10cfe034994a0bf0d53",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/aes_cp/mod.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/aes_cp/mod.rs",
+      "upstream_sha256": "572d086f35a7814a78a37219b85c9bac73b8554cd89106854eaf8255d996c205",
+      "included_sha256": "01067cc98b91a0fce5a6c0fce19fdddcedd78f4995631ce796b3480165a5fe77",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/ecdsa.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/ecdsa.rs",
+      "upstream_sha256": "8dbce205cde616cdc39b27616fba0067b0a331c2d5d77880eab89d1f93c14b27",
+      "included_sha256": "3b43e24ff29166381a068e91e35126b7b1da0953d5e3bc407f54faebfe4cb3d3",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/ed25519.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/ed25519.rs",
+      "upstream_sha256": "a218f29e6d439691ea0ee5142f55db3aee65315e6e4170258b1dfa7f86056014",
+      "included_sha256": "c4f0a803d45e27b6831c0b6cd4ec9f87886690b73d96ffb681e4a6179966cf6b",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/hkdf_cp.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/hkdf_cp.rs",
+      "upstream_sha256": "4243714e740e9e95e3aab11d32db45d73536af5d43fa5bd5e243c85422775555",
+      "included_sha256": "a7879c5be4e48ca4886fd55bdec6ad6d98c44f048158c8d6d595ef048da9b8d7",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/hmac_cp.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/hmac_cp.rs",
+      "upstream_sha256": "6f01d9dec7678f837ef8cf64ce62e136f0e30d43be280f0f28c21c433d8757d6",
+      "included_sha256": "f5d1316c2c21047f4d8d097bc2fe7487b01a9029067081000b3ead2f366dd2fa",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/lib.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/lib.rs",
+      "upstream_sha256": "9a7096ceb069f6acad4e3f0d3fbb893eba5ab5520ba16616993ea4366c7be83f",
+      "included_sha256": "e192dea3486011e3254fdf471deaca1d139ad53f0d29b96d5e474b2ecd056ea6",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/p256.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/p256.rs",
+      "upstream_sha256": "47887bd50f832115512e44579a88a9d688f0757aa98976378b1bd966c7533f69",
+      "included_sha256": "b8783805c72aeb5a9a73d5bcd3abd8f01b6fdccaf15ae4b1723d4cd2a2d515b5",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/sha2_cp.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/sha2_cp.rs",
+      "upstream_sha256": "8741571b26d9f135c59c674d555a74194667cd316aa1b2ac4bb267f06ab037c2",
+      "included_sha256": "8741571b26d9f135c59c674d555a74194667cd316aa1b2ac4bb267f06ab037c2",
+      "modified": false
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/testing.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/testing.rs",
+      "upstream_sha256": "59879632b743681e06dac743c9286a7c02bc86e6f3687f1f1f2c90f5064f41af",
+      "included_sha256": "cab92aca3e4f6ab2eb8d5e6ccd2cf7e7093dec27a8d6a398443c92376ceebb3c",
+      "modified": true
+    },
+    {
+      "path": "crypto/crypto_provider_rustcrypto/src/x25519.rs",
+      "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/x25519.rs",
+      "upstream_sha256": "9a9e77f25cd00bade6c730b368096a6df0d0b3d1bebb4333bb765b92d8d3c2e7",
+      "included_sha256": "9a9e77f25cd00bade6c730b368096a6df0d0b3d1bebb4333bb765b92d8d3c2e7",
+      "modified": false
+    },
+    {
+      "path": "Cargo.toml",
+      "upstream_path": "nearby/Cargo.toml",
+      "upstream_sha256": "831d1f2c5a08e5849ec64b86fe17b5df1578ae76d0386894617f19c0655f15f0",
+      "included_sha256": "e452876af47a4a2859ca4f732aea41cb5fed6cbed1254c3237a3299a3e2fe243",
+      "modified": true
+    },
+    {
+      "path": "LICENSE",
+      "upstream_path": "LICENSE",
+      "upstream_sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "included_sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "modified": false
+    }
+  ]
+}

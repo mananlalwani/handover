@@ -17,3 +17,10 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 uuid = { version = "1.23", features = ["v4"] }
+ukey2_rs = { path = "../../third_party/ukey2/connections/ukey2/ukey2" }
+crypto_provider_rustcrypto = { path = "../../third_party/ukey2/crypto/crypto_provider_rustcrypto" }
+rand = { version = "0.8.5", features = ["std_rng"] }
+zeroize = "1.8.1"
+
+[dev-dependencies]
+ukey2_proto = { path = "../../third_party/ukey2/connections/ukey2/ukey2_proto" }

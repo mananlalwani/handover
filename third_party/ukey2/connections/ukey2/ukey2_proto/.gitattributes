@@ -1,0 +1,2 @@
+# Preserve the upstream generated files, including their trailing blank line.
+src/ukey2_all_proto/*.rs whitespace=-blank-at-eof

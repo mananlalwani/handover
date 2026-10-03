@@ -1,0 +1,28 @@
+# Modified by Handover: minimal in-repository dependency packaging. See third_party/ukey2/README.md.
+[package]
+name = "ukey2_rs"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+test_rustcrypto = ["crypto_provider_default/rustcrypto"]
+
+[dependencies]
+crypto_provider.workspace = true
+rand.workspace = true
+ukey2_proto.workspace = true
+log.workspace = true
+
+num-bigint = "0.4.4"
+zeroize.workspace = true
+
+[dev-dependencies]
+rand = { workspace = true, features = ["std_rng", "getrandom"] }
+crypto_provider_default.workspace = true
+sha2.workspace = true

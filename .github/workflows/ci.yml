@@ -66,6 +66,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build -p handover-gmessages --features loopback-test --bin handover-gmessages-helper
       - run: cargo test --workspace
+      - run: cargo test --locked --manifest-path third_party/ukey2/Cargo.toml -p ukey2_rs --features test_rustcrypto
 
   cargo-deny:
     runs-on: ubuntu-latest

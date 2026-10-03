@@ -3,6 +3,7 @@
 //! This does not register a device, pair a phone, or provide a messaging backend.
 
 pub mod native;
+pub mod pairing;
 pub mod sources;
 
 use reqwest::{
