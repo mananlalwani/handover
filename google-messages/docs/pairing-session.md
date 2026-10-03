@@ -326,3 +326,20 @@ user chose the matching symbol. Independent DataView/Set vectors cover byte
 order, unsigned high-bit values, and revision changes. Native UI display and
 physical-phone compatibility still need testing. These additions do not enable
 live registration, messaging, restoration, or browser-free credential acquisition.
+
+### Authenticated receive preparation
+
+`UnpairedRegistration::prepare_receive` builds a fresh receive request with the
+registration token in header field 6 and an empty cursor in request field 4.
+The encoded request checks token expiry when its bytes are requested. It keeps
+credentials out of Debug output and erases its owned encoded buffer on drop.
+This remains offline preparation. It neither refreshes tokens nor starts a
+stream, and it does not acknowledge remote messages.
+
+The public bootstrap bundle identified above establishes these fields through
+`RC.Fi`, `LKa`, and the `dD` receive setup. Its Gaia authentication provider
+also supplies Google account authorization headers for receive calls. A token
+alone must not be treated as evidence that the HTTP request is authenticated.
+The sending destination comes from `GA_EMAIL`, supplied through the page's
+account bootstrap model. The login extension must bind that identity to the
+same account used for authorization rather than infer it from a display label.

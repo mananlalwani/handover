@@ -153,6 +153,23 @@ impl fmt::Debug for UnpairedRegistration {
 }
 
 impl UnpairedRegistration {
+    /// Prepare a fresh receive stream request using this unpaired credential.
+    /// This does not start a stream, refresh a token, or establish online state.
+    pub fn prepare_receive(&self) -> Result<ReceiveRequest, RegistrationError> {
+        self.remaining_lifetime()?;
+        let mut header = request_header();
+        header[5] = Value::String(general_purpose::STANDARD.encode(self._token.as_slice()));
+        // wLa field 4 is an empty uLa cursor for a fresh receive stream.
+        let mut body = json!([header, null, null, []]);
+        let encoded = serde_json::to_vec(&body).map_err(|_| RegistrationError::Encoding);
+        erase_strings(&mut body);
+        Ok(ReceiveRequest {
+            bytes: Zeroizing::new(encoded?),
+            started: self.started,
+            lifetime: self.lifetime,
+        })
+    }
+
     pub fn remaining_lifetime(&self) -> Result<Duration, RegistrationError> {
         let remaining = self.lifetime.saturating_sub(self.started.elapsed());
         if remaining.is_zero() {
@@ -160,6 +177,29 @@ impl UnpairedRegistration {
         } else {
             Ok(remaining)
         }
+    }
+}
+
+/// Encoded authenticated request, kept out of diagnostics and serialization.
+pub struct ReceiveRequest {
+    bytes: Zeroizing<Vec<u8>>,
+    started: Instant,
+    lifetime: Duration,
+}
+
+impl fmt::Debug for ReceiveRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ReceiveRequest { redacted }")
+    }
+}
+
+impl ReceiveRequest {
+    /// Check expiry immediately before handing bytes to the transport.
+    pub fn request_bytes(&self) -> Result<&[u8], RegistrationError> {
+        if self.started.elapsed() >= self.lifetime {
+            return Err(RegistrationError::Expired);
+        }
+        Ok(self.bytes.as_slice())
     }
 }
 
@@ -215,6 +255,47 @@ mod tests {
             ]
         ]))
         .unwrap()
+    }
+
+    #[test]
+    fn receive_uses_registered_token_and_fresh_request_ids() {
+        let registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(60))
+            .unwrap();
+        let first = registration.prepare_receive().unwrap();
+        let second = registration.prepare_receive().unwrap();
+        let first_body: Value = serde_json::from_slice(first.request_bytes().unwrap()).unwrap();
+        let second_body: Value = serde_json::from_slice(second.request_bytes().unwrap()).unwrap();
+        assert_eq!(first_body.as_array().unwrap().len(), 4);
+        assert_eq!(
+            first_body[0][5],
+            general_purpose::STANDARD.encode("synthetic-token")
+        );
+        assert_eq!(first_body[0][2], "GDitto");
+        assert_ne!(first_body[0][0], second_body[0][0]);
+        assert_eq!(first_body[3], json!([]));
+        assert!(first_body[1].is_null() && first_body[2].is_null());
+        assert_eq!(format!("{first:?}"), "ReceiveRequest { redacted }");
+    }
+
+    #[test]
+    fn expired_registration_cannot_prepare_receive() {
+        let mut registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(60))
+            .unwrap();
+        let mut prepared = registration.prepare_receive().unwrap();
+        prepared.started = Instant::now() - Duration::from_secs(61);
+        assert!(matches!(
+            prepared.request_bytes(),
+            Err(RegistrationError::Expired)
+        ));
+        registration.started = Instant::now() - Duration::from_secs(61);
+        assert!(matches!(
+            registration.prepare_receive(),
+            Err(RegistrationError::Expired)
+        ));
     }
 
     #[test]
