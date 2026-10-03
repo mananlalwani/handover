@@ -413,16 +413,7 @@ fn error_reason(details: Option<&Value>) -> Option<RpcReason> {
     }
     let mut recognized = None;
     for detail in details {
-        if detail.get("@type").and_then(Value::as_str)
-            != Some("type.googleapis.com/google.rpc.ErrorInfo")
-            || detail.get("domain").and_then(Value::as_str) != Some("googleapis.com")
-        {
-            continue;
-        }
-        let Some(reason) = detail
-            .get("reason")
-            .and_then(|v| serde_json::from_value::<RpcReason>(v.clone()).ok())
-        else {
+        let Some(reason) = detail_reason(detail) else {
             continue;
         };
         if recognized.is_some_and(|previous| previous != reason) {
@@ -431,6 +422,68 @@ fn error_reason(details: Option<&Value>) -> Option<RpcReason> {
         recognized = Some(reason);
     }
     recognized
+}
+
+// Independently described from Google's public google.rpc.ErrorInfo schema.
+// Metadata field 3 is intentionally absent so prost skips it without decoding.
+#[derive(prost::Message)]
+#[prost(skip_debug)]
+struct ErrorInfoProjection {
+    #[prost(string, tag = "1")]
+    reason: String,
+    #[prost(string, tag = "2")]
+    domain: String,
+}
+
+impl fmt::Debug for ErrorInfoProjection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ErrorInfoProjection { redacted }")
+    }
+}
+
+fn known_reason(reason: &str, domain: &str) -> Option<RpcReason> {
+    if domain != "googleapis.com" || reason.len() > 63 {
+        return None;
+    }
+    serde_json::from_value(Value::String(reason.to_owned())).ok()
+}
+
+fn detail_reason(detail: &Value) -> Option<RpcReason> {
+    const TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+    if let Some(fields) = detail.as_array() {
+        if fields.len() != 2 || fields[0].as_str()? != TYPE {
+            return None;
+        }
+        if let Some(info) = fields[1].as_array() {
+            if !(2..=3).contains(&info.len()) {
+                return None;
+            }
+            return known_reason(info[0].as_str()?, info[1].as_str()?);
+        }
+        use base64::{Engine, engine::general_purpose};
+        use prost::Message;
+        let encoded = fields[1].as_str()?;
+        if encoded.len() > 16 * 1024 {
+            return None;
+        }
+        let bytes = [
+            general_purpose::STANDARD,
+            general_purpose::STANDARD_NO_PAD,
+            general_purpose::URL_SAFE,
+            general_purpose::URL_SAFE_NO_PAD,
+        ]
+        .iter()
+        .find_map(|engine| engine.decode(encoded).ok())?;
+        let info = ErrorInfoProjection::decode(bytes.as_slice()).ok()?;
+        return known_reason(&info.reason, &info.domain);
+    }
+    if detail.get("@type").and_then(Value::as_str)? != TYPE {
+        return None;
+    }
+    known_reason(
+        detail.get("reason")?.as_str()?,
+        detail.get("domain")?.as_str()?,
+    )
 }
 
 fn parse_response(body: &[u8]) -> Result<ProbeResult, ProbeError> {
@@ -812,5 +865,66 @@ mod tests {
         let mut conflict = info.clone();
         conflict["reason"] = json!("SERVICE_DISABLED");
         assert_eq!(error_reason(Some(&json!([info, conflict]))), None);
+    }
+
+    #[test]
+    fn jspb_any_reasons_project_only_known_infrastructure_errors() {
+        use base64::Engine;
+        // Standard ErrorInfo wire fields 1 and 2. Field 3 remains opaque.
+        let mut bytes = b"\x0a\x0fAPI_KEY_INVALID\x12\x0egoogleapis.com".to_vec();
+        bytes.extend_from_slice(b"\x1a\x0bPRIVATE_KEY");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        for value in [
+            json!(encoded),
+            json!(base64::engine::general_purpose::STANDARD_NO_PAD.encode(&bytes)),
+            json!([
+                "API_KEY_INVALID",
+                "googleapis.com",
+                [["key", "PRIVATE_KEY"]]
+            ]),
+        ] {
+            let body = json!([
+                3,
+                "PRIVATE_MESSAGE",
+                [["type.googleapis.com/google.rpc.ErrorInfo", value]]
+            ]);
+            assert_eq!(
+                error_category(&serde_json::to_vec(&body).unwrap()),
+                Some((RpcStatus::InvalidArgument, Some(RpcReason::ApiKeyInvalid)))
+            );
+        }
+        for detail in [
+            json!(["unrecognized.Type", "PRIVATE_MESSAGE"]),
+            json!(["type.googleapis.com/google.rpc.ErrorInfo", "%%%"]),
+            json!([
+                "type.googleapis.com/google.rpc.ErrorInfo",
+                "A".repeat(16385)
+            ]),
+            json!([
+                "type.googleapis.com/google.rpc.ErrorInfo",
+                ["PRIVATE_REASON", "googleapis.com"]
+            ]),
+            json!([
+                "type.googleapis.com/google.rpc.ErrorInfo",
+                ["API_KEY_INVALID", "other.domain"]
+            ]),
+            json!([
+                "type.googleapis.com/google.rpc.ErrorInfo",
+                ["API_KEY_INVALID", "googleapis.com", null, "PRIVATE_EXTRA"]
+            ]),
+            json!(["type.googleapis.com/google.rpc.ErrorInfo", "CgVh"]),
+        ] {
+            assert_eq!(error_reason(Some(&json!([detail]))), None);
+        }
+        assert_eq!(
+            format!(
+                "{:?}",
+                ErrorInfoProjection {
+                    reason: "PRIVATE_REASON".into(),
+                    domain: "PRIVATE_DOMAIN".into()
+                }
+            ),
+            "ErrorInfoProjection { redacted }"
+        );
     }
 }

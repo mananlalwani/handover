@@ -253,3 +253,21 @@ structured JSON ErrorInfo objects in either supported status representation;
 opaque protobuf Any payloads are not decoded. Neither this service's use of
 ErrorInfo nor any particular infrastructure rejection is established yet.
 Request bytes are unchanged for this diagnostic.
+
+The structured-object diagnostic also returned HTTP 400 / INVALID_ARGUMENT
+without a recognized reason, reported by the user. This does not prove that
+Google omitted details: the reader did not yet decode JSPB Any representations.
+The production relay was restored online and the diagnostic tab closed.
+
+The public browser source defines its Any class at 290226, with type URL in
+field 1 and an embedded array or bytes in field 2. The diagnostic now accepts
+that bounded two-position representation for the exact ErrorInfo type URL.
+An embedded ErrorInfo array projects only positions 1 and 2; a base64 payload
+uses prost to decode only reason field 1 and domain field 2 from Google's
+[public ErrorInfo schema](https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto).
+The partial Rust message is independently authored; metadata field 3 is skipped
+by the library. Its Debug output is redacted. No AGPL adapter source or generated
+protocol files were used. Malformed encodings, oversized values, unknown reasons,
+and unrelated domains produce no reason. The synthetic JSPB regression failed
+before this change and passed afterward. Live coverage remains unverified.
+Neither the request nor the extension changed for this decoder correction.
