@@ -555,3 +555,28 @@ establish that such bodies should be accepted during Handover's unpaired
 bootstrap, where confirmed session keys do not yet exist. Those shapes remain
 explicit failures rather than silently bypassing validation. Libgm's early
 acknowledgement and content logging behavior was not adopted.
+
+
+The reply-count live test validated the correlated initial phone handshake and
+derived the verification emoji. A subsequent request failed with HTTP 400. The
+user saw no phone request or new linked device. Production relay restoration
+was verified. This establishes server-init and emoji derivation, not completed
+pairing. The old progress messages did not identify whether acknowledgement or
+final send failed.
+
+The next offline comparison found that native acknowledgement transport still
+sent binary protobuf and expected a binary response. Google's `e_a` AckMessages
+RPC uses the same JSON-protobuf serializer as its SendMessage RPC, and libgm's
+acknowledgement transport uses PBLite. Google's current `lLa` places processed
+message IDs in field 2; the older libgm acknowledgement shape is not adopted.
+A regression failed on the binary Content-Type. Native acknowledgements now use
+the first-party JSON array shape with header field 1 and message IDs field 2,
+base64 token encoding, bounded responses, and JSON-protobuf media types.
+Intermediate JSON strings are erased after encoding.
+
+The helper now reports initial-acknowledgement HTTP acceptance and final-send
+HTTP acceptance separately. This locates a future failure without recording
+request contents. Mock ceremonies exercise both JSON acknowledgements and final
+confirmation; rejected final acknowledgements still retain confirmed pairing
+evidence without retrying the ceremony. The acknowledgement correction has
+not yet been verified against Google's live service.

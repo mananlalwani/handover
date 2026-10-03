@@ -509,7 +509,7 @@ fn decode_bytes(value: &Value, limit: usize) -> Result<Zeroizing<Vec<u8>>, Regis
     Err(RegistrationError::InvalidResponse)
 }
 
-fn erase_strings(value: &mut Value) {
+pub(crate) fn erase_strings(value: &mut Value) {
     match value {
         Value::String(s) => s.zeroize(),
         Value::Array(values) => values.iter_mut().for_each(erase_strings),

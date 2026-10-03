@@ -886,19 +886,25 @@ async fn post_acknowledgements(
     let mut response = http
         .post(endpoint)
         .headers(headers)
-        .body(request.as_bytes().to_vec())
+        .header(CONTENT_TYPE, "application/json+protobuf")
+        .body(
+            request
+                .json_request()
+                .map_err(ProbeError::ReceiveProtocol)?
+                .to_vec(),
+        )
         .send()
         .await
         .map_err(transport_error)?;
     if response.status().as_u16() != 200 {
-        return Err(http_error_details(response, false).await);
+        return Err(http_error_details(response, true).await);
     }
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if content_type.split(';').next().map(str::trim) != Some("application/x-protobuf") {
+    if content_type.split(';').next().map(str::trim) != Some("application/json+protobuf") {
         return Err(ProbeError::UnexpectedResponse);
     }
     if response

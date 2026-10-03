@@ -58,6 +58,38 @@ impl AckRequest {
         self.bytes.as_slice()
     }
 
+    pub(crate) fn json_request(&self) -> Result<Zeroizing<Vec<u8>>, ReceiveError> {
+        let request = AckRequestMessage::decode(self.bytes.as_slice())
+            .map_err(|_| ReceiveError::Malformed)?;
+        let header = request.header.as_ref().ok_or(ReceiveError::Malformed)?;
+        let info = header.client_info.as_ref().ok_or(ReceiveError::Malformed)?;
+        let mut body = serde_json::json!([
+            [
+                header.request_id,
+                null,
+                header.application,
+                null,
+                null,
+                general_purpose::STANDARD.encode(&header.token),
+                [
+                    null,
+                    null,
+                    info.wire_year,
+                    info.wire_major,
+                    info.wire_minor,
+                    null,
+                    info.client_type,
+                    null,
+                    info.platform_type
+                ]
+            ],
+            request.message_ids
+        ]);
+        let encoded = serde_json::to_vec(&body).map_err(|_| ReceiveError::Malformed);
+        crate::registration::erase_strings(&mut body);
+        Ok(Zeroizing::new(encoded?))
+    }
+
     pub(crate) fn ensure_valid(&self) -> Result<(), ReceiveError> {
         if self.started.elapsed() >= self.lifetime {
             return Err(ReceiveError::Failed);
@@ -603,7 +635,7 @@ mod tests {
                     }
                 }
             }
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]").await.unwrap();
             received
         });
         let proof = crate::BrowserProof {
@@ -643,9 +675,13 @@ mod tests {
             "post {} http/1.1",
             crate::ACK_MESSAGES_PATH.to_ascii_lowercase()
         )));
-        let decoded = AckRequestMessage::decode(&received[offset + 4..]).unwrap();
-        assert_eq!(decoded.message_ids, ["processed-reply"]);
-        assert_eq!(decoded.header.as_ref().unwrap().token, b"synthetic-token");
+        assert!(headers.contains("content-type: application/json+protobuf"));
+        let decoded: Value = serde_json::from_slice(&received[offset + 4..]).unwrap();
+        assert_eq!(decoded[1], serde_json::json!(["processed-reply"]));
+        assert_eq!(
+            decoded[0][5],
+            general_purpose::STANDARD.encode("synthetic-token")
+        );
         assert_eq!(
             format!("{accepted:?}"),
             "AcknowledgementHttpAccepted { http_status: 200 }"

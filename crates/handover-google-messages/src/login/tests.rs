@@ -173,11 +173,6 @@ struct Response {
     #[prost(int32, tag = "7")]
     response_count: i32,
 }
-#[derive(Message)]
-struct Ack {
-    #[prost(string, repeated, tag = "2")]
-    ids: Vec<String>,
-}
 
 async fn request(socket: &mut TcpStream) -> (String, Vec<u8>) {
     let mut bytes = Vec::new();
@@ -410,8 +405,11 @@ async fn mock(
         let (mut socket, _) = listener.accept().await.unwrap();
         let (path, body) = request(&mut socket).await;
         assert_eq!(path, crate::ACK_MESSAGES_PATH);
-        assert_eq!(Ack::decode(body.as_slice()).unwrap().ids, ["initial-inbox"]);
-        response(&mut socket, "application/x-protobuf", b"").await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()[1],
+            json!(["initial-inbox"])
+        );
+        response(&mut socket, "application/json+protobuf", b"[]").await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let (path, body) = request(&mut socket).await;
         assert_eq!(path, crate::SEND_MESSAGE_PATH);
@@ -481,7 +479,10 @@ async fn mock(
             let (mut socket, _) = listener.accept().await.unwrap();
             let (path, body) = request(&mut socket).await;
             assert_eq!(path, crate::ACK_MESSAGES_PATH);
-            assert_eq!(Ack::decode(body.as_slice()).unwrap().ids, ["final-inbox"]);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap()[1],
+                json!(["final-inbox"])
+            );
             if matches!(scenario, Scenario::RejectFinalAck) {
                 socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
                 assert!(
@@ -491,7 +492,7 @@ async fn mock(
                     "failed ACKs are never retried automatically"
                 );
             } else {
-                response(&mut socket, "application/x-protobuf", b"").await;
+                response(&mut socket, "application/json+protobuf", b"[]").await;
             }
         }
         // Ending a ceremony cancels receive instead of leaving an orphan.
@@ -613,7 +614,9 @@ async fn pairing_runs_over_http_with_a_mock_phone_and_only_validated_acknowledge
         [
             LoginProgress::RegistrationVerified,
             LoginProgress::InitialSendAccepted,
-            LoginProgress::Verification(expected.unwrap())
+            LoginProgress::Verification(expected.unwrap()),
+            LoginProgress::InitialAcknowledgementAccepted,
+            LoginProgress::FinalSendAccepted
         ]
     );
     assert!(
@@ -667,7 +670,7 @@ async fn final_ack_failure_keeps_confirmed_keys_and_prevents_repairing() {
             ..
         })
     ));
-    assert_eq!(progress.len(), 3);
+    assert_eq!(progress.len(), 5);
 }
 
 #[tokio::test]

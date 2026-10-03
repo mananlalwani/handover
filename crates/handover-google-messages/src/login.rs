@@ -158,6 +158,8 @@ pub enum LoginProgress {
     Ready,
     RegistrationVerified,
     InitialSendAccepted,
+    InitialAcknowledgementAccepted,
+    FinalSendAccepted,
     Verification(String),
 }
 
@@ -338,10 +340,12 @@ impl LoginBootstrap {
             result = &mut receive => return Err(receive_failure(result)),
             acked = http.ack(&proof, &registration, ack) => { acked?; }
         }
+        progress(LoginProgress::InitialAcknowledgementAccepted)?;
         tokio::select! {
             result = &mut receive => return Err(receive_failure(result)),
             sent = http.send(&proof, &final_envelope) => { sent?; }
         }
+        progress(LoginProgress::FinalSendAccepted)?;
         let final_reply = wait_reply(receive.as_mut(), &mut replies, |reply| {
             reply.matches_confirmation(&pending)
         })

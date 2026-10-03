@@ -132,6 +132,8 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
                     LoginProgress::RegistrationVerified => "Native registration matches the signed-in account. Opening pairing channel.".to_owned(),
                     LoginProgress::InitialSendAccepted => "Initial pairing request received HTTP acceptance. Waiting for the phone response.".to_owned(),
+                    LoginProgress::InitialAcknowledgementAccepted => "Initial pairing reply acknowledged. Sending the final pairing request.".to_owned(),
+                    LoginProgress::FinalSendAccepted => "Final pairing request received HTTP acceptance. Waiting for phone confirmation.".to_owned(),
                     LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
                 };
                 publish(writer, HelperEvent::Pairing { account, prompt }).await?;
@@ -147,7 +149,9 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
                         LoginProgress::RegistrationVerified => "Native registration matches the signed-in account. Opening pairing channel.".to_owned(),
                         LoginProgress::InitialSendAccepted => "Initial pairing request received HTTP acceptance. Waiting for the phone response.".to_owned(),
-                        LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
+                        LoginProgress::InitialAcknowledgementAccepted => "Initial pairing reply acknowledged. Sending the final pairing request.".to_owned(),
+                    LoginProgress::FinalSendAccepted => "Final pairing request received HTTP acceptance. Waiting for phone confirmation.".to_owned(),
+                    LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
                     };
                     publish(writer, HelperEvent::Pairing { account: account.clone(), prompt }).await?;
                 }
