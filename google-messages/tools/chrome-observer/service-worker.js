@@ -12,7 +12,8 @@ const MAX_NATIVE_WAIT = 20_000;
 const PROOF_MODES = new Set(['auth', 'register', 'pairing_check', 'native_login', 'native_pair']);
 const BODY_TYPES = new Set(['application/x-protobuf', 'application/protobuf']);
 const JSON_TYPES = new Set(['application/json', 'application/json+protobuf']);
-const GA_EMAIL_EXPRESSION = '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string"||config.length>1048576||!app||typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return null;const account=app.T(app.oca(app.n,config),app.DPa,5);return account?.Ye()??null}catch{return null}})()';
+const ACCOUNT_READ_ERRORS = new Set(['account_config_unavailable', 'account_config_oversized', 'account_namespace_unavailable', 'account_parser_unavailable', 'account_field_unavailable', 'account_config_parse_failed']);
+const GA_EMAIL_EXPRESSION = '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string")return {error:"account_config_unavailable"};if(config.length>1048576)return {error:"account_config_oversized"};if(!app)return {error:"account_namespace_unavailable"};if(typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return {error:"account_parser_unavailable"};const account=app.T(app.oca(app.n,config),app.DPa,5);if(!account)return {error:"account_field_unavailable"};return {email:account.Ye()}}catch{return {error:"account_config_parse_failed"}}})()';
 
 let tabId = null;
 let active = false;
@@ -196,7 +197,7 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
     notify();
     return { message: mode === 'register' ? 'Registration is waiting for SignInGaia.' : mode === 'pairing_check' ? 'Read-only source lookup is waiting for SignInGaia.' : mode === 'native_pair' ? 'Native phone pairing is waiting for SignInGaia.' : mode === 'native_login' ? 'Native login is waiting for SignInGaia.' : mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
   } catch (error) {
-    const errorCode = ['account_unavailable', 'tab_changed', 'command_timeout'].includes(error?.message)
+    const errorCode = (['account_unavailable', 'tab_changed', 'command_timeout'].includes(error?.message) || ACCOUNT_READ_ERRORS.has(error?.message))
       ? error.message : 'observer_start_failed';
     if (PROOF_MODES.has(mode)) {
       nativeProbe = { ...nativeProbe, state: 'failed', result: { error: errorCode } };
@@ -222,15 +223,19 @@ function validAccountEmail(value) {
 
 // GA_EMAIL is ClientConfig field 5, account field 2. Use the page's own
 // protobuf JSON reader; Angular's injection accessor needs a DI context. The fixed
-// expression returns one string; it never enumerates page state or runs input.
+// expression returns the email or a fixed error code, never other page state.
 export async function readGoogleAccountEmail(id) {
   const result = await withTimeout(chrome.debugger.sendCommand(
     { tabId: id },
     'Runtime.evaluate',
     { expression: GA_EMAIL_EXPRESSION, returnByValue: true, awaitPromise: false, silent: true },
   ), 5000);
-  const email = result?.result?.value;
+  const value = result?.result?.value;
+  const email = value?.email;
+  const error = value?.error;
+  if (value && typeof value === 'object') value.email = null;
   if (result?.result) result.result.value = null;
+  if (ACCOUNT_READ_ERRORS.has(error)) throw new Error(error);
   return validAccountEmail(email) ? email : null;
 }
 

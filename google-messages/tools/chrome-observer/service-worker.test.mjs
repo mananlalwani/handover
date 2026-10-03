@@ -50,7 +50,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
       sendCommand: async (source, method, params) => {
         debuggerCommands.push(method);
         calls.push([method, source, params]);
-        if (method === 'Runtime.evaluate') return { result: { type: 'string', value: runtimeEmail } };
+        if (method === 'Runtime.evaluate') return { result: { type: 'object', value: { email: runtimeEmail } } };
         if (method === 'Network.getResponseBody') {
           return calls.filter(call => call[0] === method).length === 1
             ? bodyWait.promise
@@ -330,7 +330,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal(await worker.readGoogleAccountEmail(17), 'person@example.org');
   const emailCommand = calls.filter(call => call[0] === 'Runtime.evaluate').at(-1);
   assert.deepEqual(emailCommand[2], {
-    expression: '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string"||config.length>1048576||!app||typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return null;const account=app.T(app.oca(app.n,config),app.DPa,5);return account?.Ye()??null}catch{return null}})()',
+    expression: '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string")return {error:"account_config_unavailable"};if(config.length>1048576)return {error:"account_config_oversized"};if(!app)return {error:"account_namespace_unavailable"};if(typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return {error:"account_parser_unavailable"};const account=app.T(app.oca(app.n,config),app.DPa,5);if(!account)return {error:"account_field_unavailable"};return {email:account.Ye()}}catch{return {error:"account_config_parse_failed"}}})()',
     returnByValue: true, awaitPromise: false, silent: true,
   });
   runtimeEmail = 'unsafe value SECRET';
@@ -443,12 +443,21 @@ test('account expression reads bootstrap GA_EMAIL without Angular injection cont
       T(config, Type, field) { return new Type(config.fields[field - 1]); },
     },
   };
-  assert.equal(runInNewContext(expression, context), 'fixture@example.org');
+  assert.equal(runInNewContext(expression, context).email, 'fixture@example.org');
   context.MW_CONFIG = '{}';
-  assert.equal(runInNewContext(expression, context), null);
+  assert.equal(runInNewContext(expression, context).error, 'account_config_parse_failed');
   delete context.MW_CONFIG;
-  assert.equal(runInNewContext(expression, context), null);
+  assert.equal(runInNewContext(expression, context).error, 'account_config_unavailable');
   context.MW_CONFIG = 'x'.repeat(1048577);
-  context.default_mw.oca = () => { throw new Error('oversized config must not be parsed'); };
-  assert.equal(runInNewContext(expression, context), null);
+  let parsedOversized = false;
+  context.default_mw.oca = () => { parsedOversized = true; };
+  assert.equal(runInNewContext(expression, context).error, 'account_config_oversized');
+  assert.equal(parsedOversized, false);
+  context.MW_CONFIG = '[]';
+  context.default_mw.T = () => null;
+  assert.equal(runInNewContext(expression, context).error, 'account_field_unavailable');
+  delete context.default_mw.oca;
+  assert.equal(runInNewContext(expression, context).error, 'account_parser_unavailable');
+  delete context.default_mw;
+  assert.equal(runInNewContext(expression, context).error, 'account_namespace_unavailable');
 });
