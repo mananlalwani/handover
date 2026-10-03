@@ -144,7 +144,7 @@ pub struct PairingReply {
     // Gaia bootstrap never activates a browser session. This flag alone
     // cannot preempt it; correlated payload and handshake validation still apply.
     _inactive: bool,
-    payload_valid: bool,
+    payload_error: Option<ReceiveError>,
     body: Zeroizing<Vec<u8>>,
 }
 
@@ -168,11 +168,7 @@ impl PairingReply {
     }
 
     pub(crate) fn validate_payload(&self) -> Result<(), ReceiveError> {
-        if self.payload_valid {
-            Ok(())
-        } else {
-            Err(ReceiveError::InvalidPairingPayload)
-        }
+        self.payload_error.map_or(Ok(()), Err)
     }
 
     pub(crate) fn matches_initial(&self, attempt: &InitialPairing) -> bool {
@@ -326,12 +322,19 @@ impl ReceiveRecord {
         }
         let response = PairingResponse::decode(bytes.as_slice())
             .map_err(|_| ReceiveError::InvalidPairingPayload)?;
-        let payload_valid = !response.streaming
-            && (0..=1).contains(&response.sequence)
-            && response.encrypted.is_empty()
-            && response.additional_payload.is_empty()
-            && !response.body.is_empty()
-            && response.body.len() <= PAYLOAD_LIMIT;
+        // Fields 6 and 7 control generic response-count handling. Gaia's
+        // initial flow takes the first matching reply, not a count-limited stream.
+        let payload_error = if !response.encrypted.is_empty() {
+            Some(ReceiveError::EncryptedPairingBody)
+        } else if !response.additional_payload.is_empty() {
+            Some(ReceiveError::AuxiliaryPairingBody)
+        } else if response.body.is_empty() {
+            Some(ReceiveError::MissingPairingBody)
+        } else if response.body.len() > PAYLOAD_LIMIT {
+            Some(ReceiveError::PairingBodyTooLarge)
+        } else {
+            None
+        };
         let message_id =
             bounded_id(message.first()).map_err(|_| ReceiveError::InvalidIdentifiers)?;
         if response.request_id.is_empty()
@@ -351,8 +354,8 @@ impl ReceiveRecord {
             sender,
             kind: response.kind,
             _inactive: response.inactive,
-            payload_valid,
-            body: Zeroizing::new(if payload_valid {
+            payload_error,
+            body: Zeroizing::new(if payload_error.is_none() {
                 response.body.clone()
             } else {
                 Vec::new()
@@ -378,9 +381,9 @@ struct PairingResponse {
     #[prost(bytes = "vec", tag = "5")]
     body: Vec<u8>,
     #[prost(bool, tag = "6")]
-    streaming: bool,
+    counted_response: bool,
     #[prost(int32, tag = "7")]
-    sequence: i32,
+    response_count: i32,
     #[prost(bytes = "vec", tag = "8")]
     encrypted: Vec<u8>,
     #[prost(bool, tag = "9")]
@@ -445,8 +448,8 @@ mod tests {
             request_id: "synthetic-request".to_owned(),
             kind: 44,
             body: vec![1, 2],
-            streaming: false,
-            sequence: 0,
+            counted_response: false,
+            response_count: 0,
             encrypted: vec![],
             additional_payload: vec![],
             inactive: false,
@@ -462,24 +465,36 @@ mod tests {
         assert!(reply.sender.as_slice() == b"synthetic-phone");
         assert!(reply.body.as_slice() == [1, 2]);
         assert_eq!(format!("{reply:?}"), "PairingReply { redacted }");
-        for invalid in 0..5 {
+        for error in [
+            ReceiveError::EncryptedPairingBody,
+            ReceiveError::AuxiliaryPairingBody,
+            ReceiveError::MissingPairingBody,
+            ReceiveError::PairingBodyTooLarge,
+        ] {
             let mut response = response();
-            match invalid {
-                0 => response.streaming = true,
-                1 => response.sequence = 2,
-                2 => response.encrypted = vec![1],
-                3 => response.additional_payload = vec![1],
-                _ => response.body = vec![0; PAYLOAD_LIMIT + 1],
+            match error {
+                ReceiveError::EncryptedPairingBody => response.encrypted = vec![1],
+                ReceiveError::AuxiliaryPairingBody => response.additional_payload = vec![1],
+                ReceiveError::MissingPairingBody => response.body.clear(),
+                ReceiveError::PairingBodyTooLarge => response.body = vec![0; PAYLOAD_LIMIT + 1],
+                _ => unreachable!(),
             }
             let reply = record(&response)
                 .pairing_reply()
                 .expect("correlation precedes payload checks")
                 .unwrap();
-            assert_eq!(
-                reply.validate_payload(),
-                Err(ReceiveError::InvalidPairingPayload)
-            );
+            assert_eq!(reply.validate_payload(), Err(error));
+            assert!(reply.body.is_empty());
         }
+    }
+
+    #[test]
+    fn pairing_reply_count_metadata_does_not_reject_a_valid_payload() {
+        let mut response = response();
+        response.counted_response = true;
+        response.response_count = 2;
+        let reply = record(&response).pairing_reply().unwrap().unwrap();
+        assert_eq!(reply.validate_payload(), Ok(()));
     }
 
     #[test]

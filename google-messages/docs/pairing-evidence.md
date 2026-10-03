@@ -521,3 +521,37 @@ restores saved token payloads and their expiry. Saved-token use therefore is not
 by itself a demonstrated bug. No token refresh, re-registration, or remote-state
 mutation was performed during this review. The identity fix remains unverified
 on the physical phone and does not establish the cause of the missing prompt.
+
+
+The identity-bound live attempt received initial-send HTTP acceptance but failed
+on `InvalidPairingPayload`. The user observed no pairing request or new linked
+device. Production relay restoration was verified. No phone confirmation or
+verified UKEY2 server-init was obtained.
+
+Review found another unsupported restriction. Google's `B3a.jN` uses outer
+reply fields 6 and 7 for generic response-count handling. `H5a` then takes the
+first matching initial reply through `Tj(1)`. These fields do not require a Gaia
+reply to be non-streaming with a sequence between zero and one, as the native
+projection previously assumed. A red regression reproduced rejection of a valid
+payload with count metadata; the restriction is removed. Mock ceremonies now
+carry that metadata on the initial reply and still require a valid UKEY2
+exchange, correlated final confirmation, and validated acknowledgements.
+
+Remaining payload failures have fixed distinct categories for encrypted body,
+auxiliary body, missing body, and oversized body. Invalid contents are discarded
+before they enter the reply queue. Correlation still precedes these errors.
+The malformed protobuf category remains `InvalidPairingPayload`. No field values,
+body contents, or secret material are emitted. The live failure's exact condition
+was not retained, so this correction is not yet a proven explanation of it.
+
+
+A targeted follow-up review of libgm confirms that `SessionHandler.receiveResponse`
+delivers the first reply matching a waiting request without rejecting fields 6
+and 7. `sendGaiaPairingMessage` parses the unencrypted response body afterward.
+This supports the response-count correction independently of Google's current
+`B3a`/`H5a` flow. Libgm's generic receive handler also attempts session-key
+decryption for encrypted and auxiliary bodies before dispatch. That does not
+establish that such bodies should be accepted during Handover's unpaired
+bootstrap, where confirmed session keys do not yet exist. Those shapes remain
+explicit failures rather than silently bypassing validation. Libgm's early
+acknowledgement and content logging behavior was not adopted.

@@ -169,7 +169,9 @@ struct Response {
     #[prost(bool, tag = "9")]
     inactive: bool,
     #[prost(bool, tag = "6")]
-    streaming: bool,
+    counted_response: bool,
+    #[prost(int32, tag = "7")]
+    response_count: i32,
 }
 #[derive(Message)]
 struct Ack {
@@ -345,7 +347,8 @@ async fn mock(
                 id: "unrelated-request".into(),
                 kind: 44,
                 inactive: true,
-                streaming: true,
+                counted_response: true,
+                response_count: 2,
                 body: vec![1],
             },
         );
@@ -359,15 +362,20 @@ async fn mock(
                     id: wrapper.id,
                     kind: 44,
                     inactive: matches!(scenario, Scenario::InactiveBootstrapReply),
-                    streaming: matches!(scenario, Scenario::MatchedInvalidPayload),
-                    body: InitialResponse {
-                        confirmation: true,
-                        pairing_id: init.pairing_id.clone(),
-                        bytes: peer.server_init_msg().to_vec(),
-                        auth_revision: 1,
-                        key_revision: 1,
-                    }
-                    .encode_to_vec(),
+                    counted_response: true,
+                    response_count: 2,
+                    body: if matches!(scenario, Scenario::MatchedInvalidPayload) {
+                        Vec::new()
+                    } else {
+                        InitialResponse {
+                            confirmation: true,
+                            pairing_id: init.pairing_id.clone(),
+                            bytes: peer.server_init_msg().to_vec(),
+                            auth_revision: 1,
+                            key_revision: 1,
+                        }
+                        .encode_to_vec()
+                    },
                 },
             ),
         )
@@ -451,7 +459,8 @@ async fn mock(
                     id: wrapper.id,
                     kind: 45,
                     inactive: false,
-                    streaming: false,
+                    counted_response: false,
+                    response_count: 1,
                     body: FinalResponse {
                         status: i32::from(matches!(scenario, Scenario::RejectFinal)),
                         pairing_id: finish.pairing_id,
@@ -688,6 +697,6 @@ async fn correlated_invalid_payload_aborts_without_acknowledgement() {
     let (result, _, _) = exercise(Scenario::MatchedInvalidPayload, true).await;
     assert_eq!(
         result.unwrap_err(),
-        ProbeError::ReceiveProtocol(ReceiveError::InvalidPairingPayload)
+        ProbeError::ReceiveProtocol(ReceiveError::MissingPairingBody)
     );
 }
