@@ -271,3 +271,29 @@ protocol files were used. Malformed encodings, oversized values, unknown reasons
 and unrelated domains produce no reason. The synthetic JSPB regression failed
 before this change and passed afterward. Live coverage remains unverified.
 Neither the request nor the extension changed for this decoder correction.
+
+The JSPB Any diagnostic still returned HTTP 400 / INVALID_ARGUMENT without a
+recognized reason, reported by the user. This establishes neither the absence
+of server details nor a specific rejection cause. The relay was restored and
+its account reported online.
+
+An optional browser-lookup comparison now separates request construction from
+the Rust HTTP context. A new explicit popup action forwards one parsed browser
+SignInGaia mode-1 body, its matched proof, and service cookies transiently to
+the native host. Both extension and Rust validate the exact known four-field
+lookup shape, token-free seven-field header, nine-field client-info block, and
+type-3 device ID. Mode 0, tokens, other occupied fields, unknown client labels,
+and unsupported identifier shapes are rejected. Request bodies are bounded to
+2 KiB in the extension; the native frame remains bounded to 32 KiB. This mode
+never fetches response bodies from Chrome and returns only the existing source
+count or fixed errors. The browser's opaque device ID and request ID are not
+stored, exported, or passed into daemon IPC. Existing probe actions continue
+to create their own requests. This diagnostic is not a production protocol
+client or a pairing implementation. It has not yet been live-tested.
+
+If this comparison succeeds while the independently built request fails, the
+body differences become the next investigation target. If both fail, the Rust
+HTTP context and captured proof handling remain candidates. The Google browser
+request is not replayed unless it passes both read-only validators. If no such
+request appears within the existing 120-second window, the comparison times out
+without issuing a native request.

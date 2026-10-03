@@ -87,3 +87,15 @@ The popup can also show an allowlisted Google API infrastructure reason from
 structured ErrorInfo details. This never includes server messages or metadata.
 Unknown or opaque details are discarded. Its availability on the live Google
 Messages endpoint remains unverified.
+
+### Compare the browser lookup body
+
+“Compare browser lookup” is an optional read-only diagnostic. Start it on the
+current Messages tab, refresh, and reopen the popup. It passes one validated
+mode-1 SignInGaia body and its service cookies through the local Rust host to
+the same Google endpoint. This includes the browser's opaque device identifier
+and request identifier. Nothing is saved or exported. Both components reject
+registration, token-bearing requests, unexpected fields, and unsupported
+shapes. If the browser does not issue an accepted lookup, the 120-second window
+ends without a native request. The other two probe buttons keep building fresh
+independent request bodies. This comparison has not yet been live-tested.

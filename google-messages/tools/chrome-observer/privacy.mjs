@@ -41,6 +41,26 @@ export function matchGaiaProbeUrl(input) {
   } catch { return null; }
 }
 
+// This optional comparison may forward only a token-free mode-1 lookup.
+// Every occupied position has a known role; opaque identifiers stay transient.
+export function browserLookupRequest(text) {
+  if (typeof text !== 'string' || text.length > 2048) return null;
+  try {
+    const body = JSON.parse(text);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!Array.isArray(body) || body.length !== 4 || body[2] !== 1 || body[3] !== 'GDitto') return null;
+    const header = body[0];
+    if (!Array.isArray(header) || header.length !== 7 || typeof header[0] !== 'string' || !uuid.test(header[0]) || header[2] !== 'GDitto' || [1, 3, 4, 5].some(i => header[i] !== null)) return null;
+    const info = header[6];
+    if (!Array.isArray(info) || info.length !== 9 || [0, 1, 5, 7].some(i => info[i] !== null) || info[6] !== 4 || info[8] !== 6 || [2, 3, 4].some(i => !Number.isInteger(info[i]) || info[i] < 0 || info[i] > 0xffffffff)) return null;
+    const device = body[1];
+    if (!Array.isArray(device) || device.length !== 1 || !Array.isArray(device[0]) || device[0].length !== 2 || device[0][0] !== 3 || typeof device[0][1] !== 'string') return null;
+    const suffix = device[0][1].startsWith('messages-web-') ? device[0][1].slice(13) : '';
+    if (!/^[0-9a-f]{32}$/i.test(suffix) && !uuid.test(suffix)) return null;
+    return body;
+  } catch { return null; }
+}
+
 function typeName(value) {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';

@@ -1,4 +1,4 @@
-import { eligibleTabUrl, makeRecord, matchGaiaProbeUrl, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
+import { browserLookupRequest, eligibleTabUrl, makeRecord, matchGaiaProbeUrl, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
 import { protobufShape } from './wire-shape.mjs';
 
 const MAX_REQUESTS = 256;
@@ -22,6 +22,7 @@ let generation = 0;
 let commandQueue = Promise.resolve();
 let captureMode = null;
 let captureServiceCookies = false;
+let captureBrowserRequest = false;
 let nativeProbe = { state: 'idle' };
 let authForwarded = false;
 let probeId = 0;
@@ -117,6 +118,7 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   tabId = null;
   captureMode = null;
   captureServiceCookies = false;
+  captureBrowserRequest = false;
   generation += 1;
   if (durationTimer !== null) {
     clearTimeout(durationTimer);
@@ -139,7 +141,7 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   return { message: reason };
 }
 
-async function start(duration, mode = 'observe', withServiceCookies = false) {
+async function start(duration, mode = 'observe', withServiceCookies = false, withBrowserRequest = false) {
   const maximum = mode === 'auth' ? 120 : 300;
   if (!Number.isInteger(duration) || duration < 1 || duration > maximum) return { error: `Choose a duration from 1 to ${maximum} seconds.` };
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -159,12 +161,13 @@ async function start(duration, mode = 'observe', withServiceCookies = false) {
     active = true;
     captureMode = mode;
     captureServiceCookies = mode === 'auth' && withServiceCookies === true;
+    captureBrowserRequest = mode === 'auth' && withBrowserRequest === true;
     const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!currentTab || currentTab.id !== tab.id || !eligibleTabUrl(currentTab.url ?? '')) throw new Error('tab_changed');
     await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
       maxTotalBufferSize: 2 * 1024 * 1024,
       maxResourceBufferSize: 1024 * 1024,
-      maxPostDataSize: mode === 'auth' ? 0 : 1024 * 1024,
+      maxPostDataSize: mode === 'auth' ? (captureBrowserRequest ? 2048 : 0) : 1024 * 1024,
     }), 5000);
     durationTimer = setTimeout(() => { void enqueueCommand(() => stop('Duration ended.')); }, duration * 1000);
     chrome.alarms.create('observer-duration', { when: Date.now() + duration * 1000 });
@@ -248,13 +251,14 @@ async function processAuthCandidate(requestId, candidate) {
     return;
   }
   const payload = {
-    type: candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
+    type: candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
     endpoint: candidate.endpoint,
     origin: origin ?? 'https://messages.google.com',
     authorization,
     api_key: apiKey,
     ...(authUser === undefined ? {} : { auth_user: authUser }),
     ...(candidate.withServiceCookies ? { service_cookie: headers.cookie } : {}),
+    ...(candidate.browserRequest ? { browser_request: candidate.browserRequest } : {}),
   };
   authForwarded = true;
   nativeProbe = { state: 'running' };
@@ -263,6 +267,7 @@ async function processAuthCandidate(requestId, candidate) {
   authHeaderMaps.clear();
   candidate.requestHeaders = {};
   candidate.extraHeaders = {};
+  candidate.browserRequest = null;
   for (const name of Object.keys(headers)) headers[name] = null;
   authorization = null;
   apiKey = null;
@@ -288,6 +293,7 @@ function clearNativePayload(payload) {
   payload.api_key = '';
   if (Object.hasOwn(payload, 'service_cookie')) delete payload.service_cookie;
   if (Object.hasOwn(payload, 'auth_user')) delete payload.auth_user;
+  if (Object.hasOwn(payload, 'browser_request')) delete payload.browser_request;
 }
 
 export async function nativeReplyWithTimeout(nativeCall, milliseconds = MAX_NATIVE_WAIT) {
@@ -336,8 +342,14 @@ function authRequest(requestId, request) {
     authHeaderMaps.delete(requestId);
     return;
   }
+  const browserRequest = captureBrowserRequest ? browserLookupRequest(request.postData) : null;
+  if (captureBrowserRequest && !browserRequest) {
+    clearAuthRequest(requestId);
+    return;
+  }
   const candidate = {
     endpoint, withServiceCookies: captureServiceCookies,
+    browserRequest,
     requestHeaders: selectedAuthHeaders(request.headers, captureServiceCookies),
   };
   const prior = authHeaderMaps.get(requestId);
@@ -443,6 +455,7 @@ chrome.debugger.onDetach.addListener(source => {
   authCandidates.clear();
   authHeaderMaps.clear();
   captureServiceCookies = false;
+  captureBrowserRequest = false;
   notify();
 });
 
@@ -476,6 +489,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'start') { enqueueCommand(() => start(message.duration)).then(sendResponse, () => sendResponse({ error: 'Could not start the observer.' })); return true; }
   if (message?.type === 'auth-probe') { enqueueCommand(() => start(120, 'auth')).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-with-cookies') { enqueueCommand(() => start(120, 'auth', true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
+  if (message?.type === 'auth-probe-browser-request') { enqueueCommand(() => start(120, 'auth', true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'stop') { enqueueCommand(() => stop()).then(sendResponse, () => sendResponse({ error: 'Could not stop the observer.' })); return true; }
   return false;
 });

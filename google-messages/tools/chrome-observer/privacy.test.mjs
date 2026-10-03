@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eligibleTabUrl, makeRecord, matchGaiaProbeUrl, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
+import { browserLookupRequest, eligibleTabUrl, makeRecord, matchGaiaProbeUrl, matchRpcUrl, sanitizeContentType, shapeJsonText } from './privacy.mjs';
+
+test('browser comparison accepts only bounded token-free read-only lookup bodies', () => {
+  const body = [['12345678-1234-4234-8234-123456789abc', null, 'GDitto', null, null, null, [null, null, 20261001, 2, 0, null, 4, null, 6]], [[3, 'messages-web-0123456789abcdef0123456789abcdef']], 1, 'GDitto'];
+  assert.deepEqual(browserLookupRequest(JSON.stringify(body)), body);
+  for (const mutate of [
+    b => { b[2] = 0; },
+    b => { b[0][5] = 'PRIVATE_TOKEN'; },
+    b => { b[0][1] = 'PRIVATE_ACCOUNT'; },
+    b => { b[1][0][1] = 'PRIVATE_DEVICE'; },
+    b => { b[0][6][0] = 'PRIVATE_FIELD'; },
+    b => { b.push('PRIVATE_EXTRA'); },
+  ]) {
+    const invalid = structuredClone(body); mutate(invalid);
+    assert.equal(browserLookupRequest(JSON.stringify(invalid)), null);
+  }
+  assert.equal(browserLookupRequest('x'.repeat(2049)), null);
+  assert.equal(browserLookupRequest('{}'), null);
+});
 
 test('RPC and active tab URL validation reject deceptive origins and ports', () => {
   assert.deepEqual(matchRpcUrl('https://messages.google.com/$rpc/google.internal.communications.instantmessaging.v1.Chat/Send?secret=1'), { service: 'Chat', method: 'Send' });

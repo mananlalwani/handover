@@ -226,6 +226,23 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   }
   const lastEnable = calls.filter(call => call[0] === 'Network.enable').at(-1);
   assert.equal(lastEnable[2].maxPostDataSize, 0);
+  await send({ type: 'auth-probe-browser-request' });
+  const browserBody = [['12345678-1234-4234-8234-123456789abc', null, 'GDitto', null, null, null, [null, null, 20261001, 2, 0, null, 4, null, 6]], [[3, 'messages-web-0123456789abcdef0123456789abcdef']], 1, 'GDitto'];
+  const headers = { Authorization: 'Bearer BROWSER_AUTH', 'X-Goog-Api-Key': 'BROWSER_KEY', Cookie: 'SID=BROWSER_COOKIE' };
+  for (const [id, body] of [['registration', browserBody.with(2, 0)], ['lookup', browserBody]]) {
+    chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: id, request: {
+      url: `https://instantmessaging-pa.clients6.google.com${authPath}`, method: 'POST', headers, postData: JSON.stringify(body),
+    } });
+    chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: id, hasExtraInfo: false });
+    if (id === 'registration') assert.equal(nativeCalls.length, 3);
+  }
+  await waitFor(() => nativeCalls.length === 4);
+  assert.equal(nativeCalls[3].payload.type, 'gaia_lookup_browser_request');
+  assert.deepEqual(nativeCalls[3].payload.browser_request, browserBody);
+  assert.equal(nativeCalls[3].payload.service_cookie, 'SID=BROWSER_COOKIE');
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  const browserSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
+  for (const privateValue of ['12345678-1234-4234-8234-123456789abc', 'messages-web-0123456789abcdef0123456789abcdef', 'BROWSER_AUTH', 'BROWSER_COOKIE']) assert.equal(browserSnapshot.includes(privateValue), false);
   assert.equal(debuggerCommands.filter(name => name === 'Network.getResponseBody').length, bodyCallsBeforeAuth);
   await assert.rejects(worker.withTimeout(new Promise(() => {}), 5, 'native_timeout'), /native_timeout/);
   assert.deepEqual(await worker.nativeReplyWithTimeout(new Promise(() => {}), 5), { error: 'timeout' });

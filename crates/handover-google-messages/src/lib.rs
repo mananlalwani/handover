@@ -98,6 +98,7 @@ pub struct BrowserProof {
     pub api_key: String,
     pub auth_user: Option<String>,
     pub service_cookie: Option<String>,
+    pub browser_request: Option<Value>,
 }
 
 impl fmt::Debug for BrowserProof {
@@ -202,9 +203,16 @@ impl BrowserProof {
     fn validate(&self) -> Result<HeaderMap, ProbeError> {
         if !matches!(
             self.kind.as_str(),
-            "gaia_lookup" | "gaia_lookup_with_cookies"
+            "gaia_lookup" | "gaia_lookup_with_cookies" | "gaia_lookup_browser_request"
         ) {
             return Err(ProbeError::InvalidBootstrap);
+        }
+        match (self.kind.as_str(), self.browser_request.as_ref()) {
+            ("gaia_lookup_browser_request", Some(body)) => validate_browser_lookup(body)?,
+            ("gaia_lookup_browser_request", None) | (_, Some(_)) => {
+                return Err(ProbeError::InvalidBootstrap);
+            }
+            (_, None) => {}
         }
         if self.origin != ORIGIN_VALUE {
             return Err(ProbeError::InvalidOrigin);
@@ -217,7 +225,7 @@ impl BrowserProof {
         headers.insert("x-goog-api-key", sensitive_header(&self.api_key, 4096)?);
         match (self.kind.as_str(), self.service_cookie.as_deref()) {
             ("gaia_lookup", None) => {}
-            ("gaia_lookup_with_cookies", Some(cookie)) => {
+            ("gaia_lookup_with_cookies" | "gaia_lookup_browser_request", Some(cookie)) => {
                 headers.insert(COOKIE, sensitive_header(cookie, 16384)?);
             }
             _ => return Err(ProbeError::InvalidCredentials),
@@ -239,6 +247,53 @@ impl BrowserProof {
         );
         Ok(headers)
     }
+}
+
+fn validate_browser_lookup(body: &Value) -> Result<(), ProbeError> {
+    let valid = (|| {
+        let fields = body.as_array()?;
+        if fields.len() != 4 || fields[2] != 1 || fields[3] != "GDitto" {
+            return None;
+        }
+        let header = fields[0].as_array()?;
+        if header.len() != 7
+            || header[2] != "GDitto"
+            || [1, 3, 4, 5].iter().any(|i| !header[*i].is_null())
+        {
+            return None;
+        }
+        let request_id = header[0].as_str()?;
+        if request_id.len() != 36 || Uuid::parse_str(request_id).is_err() {
+            return None;
+        }
+        let info = header[6].as_array()?;
+        if info.len() != 9
+            || [0, 1, 5, 7].iter().any(|i| !info[*i].is_null())
+            || info[6] != 4
+            || info[8] != 6
+            || [2, 3, 4]
+                .iter()
+                .any(|i| info[*i].as_u64().is_none_or(|n| n > u32::MAX as u64))
+        {
+            return None;
+        }
+        let device = fields[1].as_array()?;
+        if device.len() != 1 {
+            return None;
+        }
+        let id = device[0].as_array()?;
+        if id.len() != 2 || id[0] != 3 {
+            return None;
+        }
+        let suffix = id[1].as_str()?.strip_prefix("messages-web-")?;
+        if !(suffix.len() == 32 && suffix.bytes().all(|b| b.is_ascii_hexdigit())
+            || suffix.len() == 36 && Uuid::parse_str(suffix).is_ok())
+        {
+            return None;
+        }
+        Some(())
+    })();
+    valid.ok_or(ProbeError::InvalidBootstrap)
 }
 
 fn lookup_request() -> Value {
@@ -298,7 +353,11 @@ pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
     let headers = proof.validate()?;
     let endpoint = format!("{}{SIGN_IN_PATH}", proof.endpoint);
     let http = client(true)?;
-    query(&http, &endpoint, headers, proof.auth_user.as_deref()).await
+    if let Some(body) = proof.browser_request {
+        query_with_body(&http, &endpoint, headers, proof.auth_user.as_deref(), &body).await
+    } else {
+        query(&http, &endpoint, headers, proof.auth_user.as_deref()).await
+    }
 }
 
 async fn query(
@@ -307,7 +366,17 @@ async fn query(
     headers: HeaderMap,
     auth_user: Option<&str>,
 ) -> Result<ProbeResult, ProbeError> {
-    let body = serde_json::to_vec(&lookup_request()).map_err(|_| ProbeError::NativeError)?;
+    query_with_body(http, endpoint, headers, auth_user, &lookup_request()).await
+}
+
+async fn query_with_body(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    auth_user: Option<&str>,
+    body: &Value,
+) -> Result<ProbeResult, ProbeError> {
+    let body = serde_json::to_vec(body).map_err(|_| ProbeError::NativeError)?;
     let mut request = http.post(endpoint).headers(headers).body(body);
     if let Some(user) = auth_user {
         request = request.query(&[("authuser", user)]);
@@ -525,6 +594,7 @@ mod tests {
             api_key: "sensitive-key".into(),
             auth_user: Some("0".into()),
             service_cookie: None,
+            browser_request: None,
         }
     }
 
@@ -579,6 +649,62 @@ mod tests {
         assert_eq!(
             first[0][6],
             json!([null, null, 20261001, 2, 0, null, 4, null, 6])
+        );
+    }
+
+    #[test]
+    fn browser_comparison_requires_explicit_mode_and_rejects_effectful_or_token_requests() {
+        let body = lookup_request();
+        let mut p = proof();
+        p.browser_request = Some(body.clone());
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidBootstrap);
+        p.kind = "gaia_lookup_browser_request".into();
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidCredentials);
+        p.service_cookie = Some("SID=synthetic".into());
+        p.validate().unwrap();
+        for (pointer, value) in [
+            ("/2", json!(0)),
+            ("/0/5", json!("PRIVATE_TOKEN")),
+            ("/0/1", json!("PRIVATE_ACCOUNT")),
+            ("/1/0/1", json!("PRIVATE_DEVICE_ID")),
+            ("/0/6/0", json!("PRIVATE_FIELD")),
+            ("/3", json!("other-client")),
+        ] {
+            let mut invalid = body.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            p.browser_request = Some(invalid);
+            assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidBootstrap);
+        }
+        let mut extra = body;
+        extra.as_array_mut().unwrap().push(json!("PRIVATE_EXTRA"));
+        p.browser_request = Some(extra);
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidBootstrap);
+        p.browser_request = None;
+        assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidBootstrap);
+    }
+
+    #[tokio::test]
+    async fn browser_comparison_preserves_the_validated_lookup_body() {
+        let body = lookup_request();
+        let (endpoint, server) = mock_server(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: 4\r\nConnection: close\r\n\r\n[[]]".to_vec()).await;
+        let mut p = proof();
+        p.kind = "gaia_lookup_browser_request".into();
+        p.service_cookie = Some("SID=synthetic".into());
+        p.browser_request = Some(body.clone());
+        query_with_body(
+            &client(false).unwrap(),
+            &endpoint,
+            p.validate().unwrap(),
+            None,
+            &body,
+        )
+        .await
+        .unwrap();
+        let request = server.await.unwrap();
+        let offset = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request[offset..]).unwrap(),
+            body
         );
     }
 
