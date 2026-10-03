@@ -1,7 +1,7 @@
 //! Bounded, incremental JSON+protobuf receive framing. No network or queue.
 
 mod pairing_reply;
-pub use pairing_reply::{AckBatch, Acknowledgement, PairingReply};
+pub use pairing_reply::{AckBatch, AckRequest, Acknowledgement, PairingReply};
 
 use serde_json::Value;
 use std::fmt;

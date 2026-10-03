@@ -56,6 +56,10 @@ impl PairingHandshake {
         Ok(self.state.client_init_msg())
     }
 
+    pub(crate) fn remaining_lifetime(&self) -> Result<Duration, HandshakeError> {
+        remaining_lifetime(self.started)
+    }
+
     /// Consume the handshake even when the peer message is rejected.
     pub fn accept_server_init(
         self,
@@ -111,6 +115,10 @@ impl fmt::Debug for PendingPhoneConfirmation {
 }
 
 impl PendingPhoneConfirmation {
+    pub(crate) fn remaining_lifetime(&self) -> Result<Duration, HandshakeError> {
+        remaining_lifetime(self.started)
+    }
+
     pub fn client_finish(&self) -> Result<&[u8], HandshakeError> {
         check_expiry(self.started)?;
         Ok(&self.client_finish)
@@ -124,10 +132,15 @@ impl PendingPhoneConfirmation {
 }
 
 fn check_expiry(started: Instant) -> Result<(), HandshakeError> {
-    if started.elapsed() >= HANDSHAKE_LIFETIME {
+    remaining_lifetime(started).map(|_| ())
+}
+
+fn remaining_lifetime(started: Instant) -> Result<Duration, HandshakeError> {
+    let remaining = HANDSHAKE_LIFETIME.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
         Err(HandshakeError::Expired)
     } else {
-        Ok(())
+        Ok(remaining)
     }
 }
 

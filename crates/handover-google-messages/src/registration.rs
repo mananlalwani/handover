@@ -11,6 +11,9 @@ use std::{
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::pairing::gaia::{
+    AwaitingPhoneConfirmation, InitialPairing, PairingError, PairingSendEnvelope,
+};
 use crate::{RESPONSE_LIMIT, request_header};
 const ID_LIMIT: usize = 1024;
 const TOKEN_LIMIT: usize = 8192;
@@ -22,6 +25,8 @@ pub enum RegistrationError {
     InvalidLifetime,
     Expired,
     Encoding,
+    Pairing(PairingError),
+    Acknowledgement(crate::receive::ReceiveError),
 }
 
 /// One fresh device identity and transport key, for one registration attempt.
@@ -170,6 +175,44 @@ impl UnpairedRegistration {
         })
     }
 
+    /// Build a fresh initial pairing envelope only while this registration
+    /// token remains valid. The token never leaves this registration object.
+    pub fn initial_pairing_envelope(
+        &self,
+        pairing: &InitialPairing,
+        account_id: &str,
+        session_id: &str,
+    ) -> Result<PairingSendEnvelope, RegistrationError> {
+        let lifetime = self.remaining_lifetime()?;
+        pairing
+            .send_envelope_with_lifetime(account_id, session_id, self._token.as_slice(), lifetime)
+            .map_err(RegistrationError::Pairing)
+    }
+
+    /// Build a fresh final pairing envelope only while this registration
+    /// token remains valid.
+    pub fn confirmation_envelope(
+        &self,
+        pairing: &AwaitingPhoneConfirmation,
+        account_id: &str,
+        session_id: &str,
+    ) -> Result<PairingSendEnvelope, RegistrationError> {
+        let lifetime = self.remaining_lifetime()?;
+        pairing
+            .send_envelope_with_lifetime(account_id, session_id, self._token.as_slice(), lifetime)
+            .map_err(RegistrationError::Pairing)
+    }
+
+    pub fn acknowledgement_request(
+        &self,
+        batch: &crate::receive::AckBatch,
+    ) -> Result<crate::receive::AckRequest, RegistrationError> {
+        let lifetime = self.remaining_lifetime()?;
+        batch
+            .request(self._token.as_slice(), lifetime)
+            .map_err(RegistrationError::Acknowledgement)
+    }
+
     pub fn remaining_lifetime(&self) -> Result<Duration, RegistrationError> {
         let remaining = self.lifetime.saturating_sub(self.started.elapsed());
         if remaining.is_zero() {
@@ -296,6 +339,46 @@ mod tests {
             registration.prepare_receive(),
             Err(RegistrationError::Expired)
         ));
+    }
+
+    #[test]
+    fn pairing_envelope_uses_private_registration_token_and_checks_expiry() {
+        let source = json!([
+            general_purpose::STANDARD.encode("synthetic-phone"),
+            null,
+            1,
+            null,
+            null,
+            null,
+            null,
+            general_purpose::STANDARD.encode([8, 1, 16, 1])
+        ]);
+        let lookup = serde_json::to_vec(&json!([[], null, [null, null, [source]]])).unwrap();
+        let sources = crate::sources::RegisteredSources::from_lookup_response(&lookup).unwrap();
+        let crate::sources::PhoneSelection::Selected(phone) = sources.select_phone() else {
+            panic!("synthetic source is eligible")
+        };
+        let pairing = crate::pairing::gaia::InitialPairing::prepare(phone).unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(60))
+            .unwrap();
+        let envelope = registration
+            .initial_pairing_envelope(&pairing, "person@example.test", &session_id)
+            .unwrap();
+        assert!(!envelope.as_bytes().is_empty());
+        assert_eq!(
+            format!("{registration:?}"),
+            "UnpairedRegistration { redacted }"
+        );
+        registration.started = Instant::now() - Duration::from_secs(61);
+        assert_eq!(
+            registration
+                .initial_pairing_envelope(&pairing, "person@example.test", &session_id)
+                .unwrap_err(),
+            RegistrationError::Expired
+        );
     }
 
     #[test]

@@ -1,7 +1,11 @@
 use base64::{Engine, engine::general_purpose};
 use prost::Message;
 use serde_json::Value;
-use std::fmt;
+use std::{
+    fmt,
+    time::{Duration, Instant},
+};
+use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{ReceiveError, ReceiveRecord};
@@ -16,7 +20,7 @@ const ACK_LIMIT: usize = 50;
 
 /// An inbox identifier that can only be created after a pairing reply passes
 /// its request, peer, and response validation.
-pub struct Acknowledgement(String);
+pub struct Acknowledgement(Zeroizing<String>);
 
 impl fmt::Debug for Acknowledgement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -31,6 +35,37 @@ pub struct AckBatch {
     ids: Vec<String>,
 }
 
+impl Drop for AckBatch {
+    fn drop(&mut self) {
+        self.ids.iter_mut().for_each(Zeroize::zeroize);
+    }
+}
+
+pub struct AckRequest {
+    bytes: Zeroizing<Vec<u8>>,
+    started: Instant,
+    lifetime: Duration,
+}
+
+impl fmt::Debug for AckRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AckRequest { redacted }")
+    }
+}
+
+impl AckRequest {
+    pub fn as_bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+
+    pub(crate) fn ensure_valid(&self) -> Result<(), ReceiveError> {
+        if self.started.elapsed() >= self.lifetime {
+            return Err(ReceiveError::Failed);
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Debug for AckBatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AckBatch { redacted }")
@@ -39,12 +74,13 @@ impl fmt::Debug for AckBatch {
 
 impl AckBatch {
     pub fn push(&mut self, acknowledgement: Acknowledgement) -> Result<(), ReceiveError> {
+        if self.ids.iter().any(|id| id == acknowledgement.0.as_str()) {
+            return Ok(());
+        }
         if self.ids.len() >= ACK_LIMIT {
             return Err(ReceiveError::TooLarge);
         }
-        if !self.ids.contains(&acknowledgement.0) {
-            self.ids.push(acknowledgement.0);
-        }
+        self.ids.push(acknowledgement.0.to_string());
         Ok(())
     }
 
@@ -62,6 +98,41 @@ impl AckBatch {
             .encode_to_vec(),
         )
     }
+
+    pub(crate) fn request(
+        &self,
+        token: &[u8],
+        lifetime: Duration,
+    ) -> Result<AckRequest, ReceiveError> {
+        if self.ids.is_empty()
+            || self.ids.len() > ACK_LIMIT
+            || token.is_empty()
+            || token.len() > 8192
+            || lifetime.is_zero()
+        {
+            return Err(ReceiveError::Malformed);
+        }
+        let request = AckRequestMessage {
+            header: Some(AckRequestHeader {
+                request_id: Uuid::new_v4().to_string(),
+                application: "GDitto".to_owned(),
+                token: token.to_vec(),
+                client_info: Some(AckClientInfo {
+                    wire_year: 20261001,
+                    wire_major: 2,
+                    wire_minor: 0,
+                    client_type: 4,
+                    platform_type: 6,
+                }),
+            }),
+            message_ids: self.ids.clone(),
+        };
+        Ok(AckRequest {
+            bytes: Zeroizing::new(request.encode_to_vec()),
+            started: Instant::now(),
+            lifetime,
+        })
+    }
 }
 
 /// Opaque Google reply. Parsing does not acknowledge or consume a remote inbox.
@@ -71,6 +142,13 @@ pub struct PairingReply {
     sender: Zeroizing<Vec<u8>>,
     kind: i32,
     body: Zeroizing<Vec<u8>>,
+}
+
+impl Drop for PairingReply {
+    fn drop(&mut self) {
+        self._message_id.zeroize();
+        self.request_id.zeroize();
+    }
 }
 
 impl fmt::Debug for PairingReply {
@@ -84,7 +162,7 @@ impl PairingReply {
         self,
         pending: AwaitingPhoneConfirmation,
     ) -> Result<(PhoneConfirmedPairing, Acknowledgement), PairingError> {
-        let ack = Acknowledgement(self._message_id.clone());
+        let ack = Acknowledgement(Zeroizing::new(self._message_id.clone()));
         let pairing = self.accept_confirmation(pending)?;
         Ok((pairing, ack))
     }
@@ -93,7 +171,7 @@ impl PairingReply {
         self,
         attempt: InitialPairing,
     ) -> Result<(AwaitingPhoneConfirmation, Acknowledgement), PairingError> {
-        let ack = Acknowledgement(self._message_id.clone());
+        let ack = Acknowledgement(Zeroizing::new(self._message_id.clone()));
         let pairing = self.accept_initial(attempt)?;
         Ok((pairing, ack))
     }
@@ -123,6 +201,58 @@ impl PairingReply {
 struct AckPayload {
     #[prost(string, repeated, tag = "2")]
     message_ids: Vec<String>,
+}
+
+impl Drop for AckPayload {
+    fn drop(&mut self) {
+        self.message_ids.iter_mut().for_each(Zeroize::zeroize);
+    }
+}
+
+#[derive(Message)]
+struct AckRequestMessage {
+    #[prost(message, optional, tag = "1")]
+    header: Option<AckRequestHeader>,
+    #[prost(string, repeated, tag = "2")]
+    message_ids: Vec<String>,
+}
+
+impl Drop for AckRequestMessage {
+    fn drop(&mut self) {
+        self.message_ids.iter_mut().for_each(Zeroize::zeroize);
+    }
+}
+
+#[derive(Message)]
+struct AckRequestHeader {
+    #[prost(string, tag = "1")]
+    request_id: String,
+    #[prost(string, tag = "3")]
+    application: String,
+    #[prost(bytes = "vec", tag = "6")]
+    token: Vec<u8>,
+    #[prost(message, optional, tag = "7")]
+    client_info: Option<AckClientInfo>,
+}
+
+impl Drop for AckRequestHeader {
+    fn drop(&mut self) {
+        self.token.zeroize();
+    }
+}
+
+#[derive(Message)]
+struct AckClientInfo {
+    #[prost(int32, tag = "3")]
+    wire_year: i32,
+    #[prost(int32, tag = "4")]
+    wire_major: i32,
+    #[prost(int32, tag = "5")]
+    wire_minor: i32,
+    #[prost(int32, tag = "7")]
+    client_type: i32,
+    #[prost(int32, tag = "9")]
+    platform_type: i32,
 }
 
 impl ReceiveRecord {
@@ -224,6 +354,7 @@ struct PairingResponse {
 
 impl Drop for PairingResponse {
     fn drop(&mut self) {
+        self.request_id.zeroize();
         self.body.zeroize();
         self.encrypted.zeroize();
         self.additional_payload.zeroize();
@@ -309,14 +440,20 @@ mod tests {
     #[test]
     fn acknowledgement_batch_is_bounded_deduplicated_and_uses_observed_field() {
         let mut batch = AckBatch::default();
-        batch.push(Acknowledgement("first".to_owned())).unwrap();
-        batch.push(Acknowledgement("first".to_owned())).unwrap();
+        batch
+            .push(Acknowledgement(Zeroizing::new("first".to_owned())))
+            .unwrap();
+        batch
+            .push(Acknowledgement(Zeroizing::new("first".to_owned())))
+            .unwrap();
         assert!(!batch.is_empty());
         let decoded = AckPayload::decode(batch.payload_bytes().as_slice()).unwrap();
         assert_eq!(decoded.message_ids, ["first"]);
 
         for i in 1..ACK_LIMIT {
-            batch.push(Acknowledgement(format!("id-{i}"))).unwrap();
+            batch
+                .push(Acknowledgement(Zeroizing::new(format!("id-{i}"))))
+                .unwrap();
         }
         assert_eq!(
             AckPayload::decode(batch.payload_bytes().as_slice())
@@ -326,8 +463,131 @@ mod tests {
             ACK_LIMIT
         );
         assert_eq!(
-            batch.push(Acknowledgement("overflow".to_owned())),
+            batch.push(Acknowledgement(Zeroizing::new("overflow".to_owned()))),
             Err(ReceiveError::TooLarge)
+        );
+        let request = batch
+            .request(b"synthetic-token", Duration::from_secs(30))
+            .unwrap();
+        let decoded = AckRequestMessage::decode(request.as_bytes()).unwrap();
+        let header = decoded.header.as_ref().unwrap();
+        assert!(!header.request_id.is_empty());
+        assert_eq!(header.application, "GDitto");
+        assert_eq!(header.token, b"synthetic-token");
+        assert_eq!(header.client_info.as_ref().unwrap().wire_year, 20261001);
+        assert_eq!(decoded.message_ids.len(), ACK_LIMIT);
+        assert_eq!(format!("{request:?}"), "AckRequest { redacted }");
+    }
+
+    #[test]
+    fn acknowledgement_request_checks_token_and_expiry() {
+        let mut batch = AckBatch::default();
+        batch
+            .push(Acknowledgement(Zeroizing::new("processed".to_owned())))
+            .unwrap();
+        assert_eq!(
+            batch.request(b"", Duration::from_secs(30)).unwrap_err(),
+            ReceiveError::Malformed
+        );
+        let mut request = batch.request(b"token", Duration::from_secs(30)).unwrap();
+        request.started = Instant::now() - Duration::from_secs(31);
+        assert_eq!(request.ensure_valid(), Err(ReceiveError::Failed));
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_transport_posts_only_processed_ids() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut batch = AckBatch::default();
+        batch
+            .push(Acknowledgement(Zeroizing::new(
+                "processed-reply".to_owned(),
+            )))
+            .unwrap();
+        let registration = crate::registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                std::time::Duration::from_secs(3600),
+            )
+            .unwrap();
+        let request = registration.acknowledgement_request(&batch).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "http://{}{}",
+            listener.local_addr().unwrap(),
+            crate::ACK_MESSAGES_PATH
+        );
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                received.extend_from_slice(&buffer[..count]);
+                if let Some(offset) = received.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&received[..offset]).unwrap();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .map(str::to_owned)
+                        })
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if received.len() >= offset + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            received
+        });
+        let proof = crate::BrowserProof {
+            kind: "gaia_register".into(),
+            endpoint: crate::ENDPOINTS[0].into(),
+            origin: crate::ORIGIN_VALUE.into(),
+            authorization: "synthetic-auth".into(),
+            api_key: "synthetic-api-key".into(),
+            auth_user: Some("0".into()),
+            service_cookie: Some("SID=synthetic-cookie".into()),
+            browser_request: None,
+        };
+        let mut headers = proof.validate_messaging().unwrap();
+        headers.insert(
+            crate::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/x-protobuf"),
+        );
+        let accepted = crate::post_acknowledgements(
+            &crate::client(false).unwrap(),
+            &endpoint,
+            headers,
+            &request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted.http_status, 200);
+        let received = server.await.unwrap();
+        let offset = received
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap();
+        let headers = std::str::from_utf8(&received[..offset])
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(headers.starts_with(&format!(
+            "post {} http/1.1",
+            crate::ACK_MESSAGES_PATH.to_ascii_lowercase()
+        )));
+        let decoded = AckRequestMessage::decode(&received[offset + 4..]).unwrap();
+        assert_eq!(decoded.message_ids, ["processed-reply"]);
+        assert_eq!(decoded.header.as_ref().unwrap().token, b"synthetic-token");
+        assert_eq!(
+            format!("{accepted:?}"),
+            "AcknowledgementHttpAccepted { http_status: 200 }"
         );
     }
 

@@ -10,16 +10,17 @@ correlated UKEY2 pairing, receive framing, pairing-reply validation, payload
 encryption, and acknowledgement payload construction. A live read-only
 authentication test returned four registered sources using matched browser
 service cookies and a request constructed by Rust. Registration, pairing,
-authenticated receiving, and acknowledgement transport remain offline or
-unverified. It does not yet read conversations or send messages. The existing
-adapter remains in use during development.
+authenticated receiving, and acknowledgement transport have only local mock
+coverage and remain unverified against Google. It does not yet read conversations
+or send user messages. The existing adapter remains in use during development.
 
 The native crate now includes a restricted local session-record store. It is
 not yet connected to a restorable confirmed account session. An explicit mode-0
 registration transport is implemented and mock-tested, but has not been run
 against Google's service or connected to the login extension. Type-44/45
-pairing routing envelopes are built locally, but the authenticated
-Messaging/SendMessage transport is still missing.
+pairing envelopes include the registration token and observed Tachyon header.
+An explicit authenticated HTTP send path is covered by a local mock only. It
+reports HTTP acceptance and has not sent a request to Google.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.

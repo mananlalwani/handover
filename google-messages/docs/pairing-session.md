@@ -67,9 +67,10 @@ A future client must keep these outcomes distinct:
 The explicit `register_device` transport now sends the independently constructed
 mode-0 SignInGaia request. Calling it changes Google's registered-device state.
 Only its local HTTP mock has been exercised; it has not been invoked against
-Google. Receive and acknowledgement transports and chat sends remain absent.
-Automatic browser SendMessage traffic includes protocol envelopes; it must not
-be interpreted as permission to send user messages.
+Google. Receive and acknowledgement transports have local mock coverage, but
+have not been tested against Google. Chat sends remain absent. Automatic browser
+SendMessage traffic includes protocol envelopes; it must not be interpreted as
+permission to send user messages.
 
 `registration::RegistrationAttempt` now prepares the mode-0 body offline with a
 fresh web-device ID and an OS-generated 32-byte transport key. Its consuming
@@ -201,10 +202,17 @@ following `G5a` at 1076135. It keeps the original pairing ID and timestamp, uses
 a fresh outer request ID, and omits the initial revision fields. It exposes raw
 verification bytes, with the existing five-minute expiry, but cannot produce
 an online account. It now accepts a correlated final phone response as described
-below. Type-44/45 routing envelope builders now bind the inner requests to the
-account, selected phone identity, and client session ID. They omit authenticated
-Tachyon metadata and do not send requests. UI integration, authenticated send
-transport, runtime receive dispatch, and ACK transport remain unfinished.
+below. Type-44/45 routing envelope builders bind the inner requests to the
+account, selected phone identity, client session ID, registration token, and
+observed Tachyon request header. HTTP authorization and authenticated transport
+are provided by the explicit `send_pairing_envelope` call using a separate
+cookie-backed browser proof. It reports HTTP acceptance only, never phone
+delivery or confirmation, and rechecks envelope expiry before sending. Receive
+and pairing-acknowledgement HTTP paths now use the same transient browser proof.
+Their stream parser emits records through a bounded callback, while ACK requests
+include only explicitly processed pairing replies. All three paths have local
+mock coverage; none has been tested against Google. UI integration, runtime
+receive dispatch, ordinary message decoding, and chat sends remain unfinished.
 
 Synthetic tests complete the embedded handshake with an upstream peer and compare
 verification material. They also cover correlation, rejected status, required
@@ -338,8 +346,9 @@ live registration, messaging, restoration, or browser-free credential acquisitio
 registration token in header field 6 and an empty cursor in request field 4.
 The encoded request checks token expiry when its bytes are requested. It keeps
 credentials out of Debug output and erases its owned encoded buffer on drop.
-This remains offline preparation. It neither refreshes tokens nor starts a
-stream, and it does not acknowledge remote messages.
+`receive_messages` now makes one authenticated HTTP request and streams records
+through the bounded parser. It does not reconnect, refresh tokens, or acknowledge
+remote messages by itself.
 
 The public bootstrap bundle identified above establishes these fields through
 `RC.Fi`, `LKa`, and the `dD` receive setup. Its Gaia authentication provider
@@ -354,10 +363,11 @@ same account used for authorization rather than infer it from a display label.
 The native receive projection creates an acknowledgement handle only after an
 initial or final pairing reply passes correlation and response validation.
 `AckBatch` encodes the observed ACK protobuf field 2 and caps each batch at 50
-unique IDs. It only prepares the payload. No ACK HTTP transport or retry policy
-exists yet, so this code does not claim that Google accepted an acknowledgement.
-Unknown messages and unprocessed pairing replies do not produce acknowledgement
-handles.
+unique IDs. `UnpairedRegistration::acknowledgement_request` adds a fresh
+Tachyon header and token, and the separate `AckMessages` transport reports HTTP
+acceptance only. Its path and body have local mock coverage. There is no
+automatic retry or live Google validation. Unknown messages and unprocessed
+pairing replies do not produce acknowledgement handles.
 
 ### Local session files
 

@@ -4,7 +4,7 @@
 use prost::Message;
 use std::{
     fmt,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -24,6 +24,7 @@ pub enum PairingError {
     ConfirmationRequired,
     UnsupportedRevision,
     InvalidRouting,
+    Expired,
     Handshake(HandshakeError),
 }
 
@@ -94,19 +95,26 @@ impl InitialPairing {
     /// Build the observed outer type-44 routing envelope. It remains an
     /// unsigned protobuf payload until the authenticated Tachyon transport adds
     /// its current request header.
-    pub fn send_envelope(
+    pub(crate) fn send_envelope_with_lifetime(
         &self,
         account_id: &str,
         session_id: &str,
+        registration_token: &[u8],
+        lifetime: Duration,
     ) -> Result<PairingSendEnvelope, PairingError> {
         self.handshake.client_init()?;
+        let lifetime = lifetime.min(self.handshake.remaining_lifetime()?);
         PairingSendEnvelope::build(
             account_id,
             session_id,
-            &self.request_id,
-            &self.peer,
-            44,
-            &self.request,
+            PairingSendDetails {
+                request_id: &self.request_id,
+                peer: &self.peer,
+                registration_token,
+                request_type: 44,
+                request: &self.request,
+                lifetime,
+            },
         )
     }
 
@@ -208,19 +216,26 @@ impl AwaitingPhoneConfirmation {
     /// Build the observed outer type-45 routing envelope. It remains an
     /// unsigned protobuf payload until the authenticated Tachyon transport adds
     /// its current request header.
-    pub fn send_envelope(
+    pub(crate) fn send_envelope_with_lifetime(
         &self,
         account_id: &str,
         session_id: &str,
+        registration_token: &[u8],
+        lifetime: Duration,
     ) -> Result<PairingSendEnvelope, PairingError> {
         self.pending.client_finish()?;
+        let lifetime = lifetime.min(self.pending.remaining_lifetime()?);
         PairingSendEnvelope::build(
             account_id,
             session_id,
-            &self.request_id,
-            &self.peer,
-            45,
-            &self.request,
+            PairingSendDetails {
+                request_id: &self.request_id,
+                peer: &self.peer,
+                registration_token,
+                request_type: 45,
+                request: &self.request,
+                lifetime,
+            },
         )
     }
 
@@ -261,7 +276,11 @@ impl AwaitingPhoneConfirmation {
 
 /// Redacted protobuf payload for Messaging/SendMessage. It is not authenticated
 /// or sent, and callers must not treat construction as pairing progress.
-pub struct PairingSendEnvelope(Zeroizing<Vec<u8>>);
+pub struct PairingSendEnvelope {
+    bytes: Zeroizing<Vec<u8>>,
+    started: Instant,
+    lifetime: Duration,
+}
 
 impl fmt::Debug for PairingSendEnvelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -271,17 +290,29 @@ impl fmt::Debug for PairingSendEnvelope {
 
 impl PairingSendEnvelope {
     pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_slice()
+        self.bytes.as_slice()
+    }
+
+    pub(crate) fn ensure_valid(&self) -> Result<(), PairingError> {
+        if self.started.elapsed() >= self.lifetime {
+            return Err(PairingError::Expired);
+        }
+        Ok(())
     }
 
     fn build(
         account_id: &str,
         session_id: &str,
-        request_id: &str,
-        peer: &[u8],
-        request_type: i32,
-        request: &[u8],
+        details: PairingSendDetails<'_>,
     ) -> Result<Self, PairingError> {
+        let PairingSendDetails {
+            request_id,
+            peer,
+            registration_token,
+            request_type,
+            request,
+            lifetime,
+        } = details;
         if account_id.is_empty()
             || account_id.len() > 320
             || account_id.chars().any(char::is_control)
@@ -289,8 +320,11 @@ impl PairingSendEnvelope {
             || Uuid::parse_str(request_id).is_err()
             || peer.is_empty()
             || peer.len() > 1024
+            || registration_token.is_empty()
+            || registration_token.len() > 8192
             || request.is_empty()
             || request.len() > RESPONSE_LIMIT
+            || lifetime.is_zero()
         {
             return Err(PairingError::InvalidRouting);
         }
@@ -318,9 +352,34 @@ impl PairingSendEnvelope {
             message: Some(vc),
             maximum_lifetime_micros: 300_000_000,
             recipient_identities: vec![peer.to_vec()],
+            authentication: Some(TachyonRequestHeader {
+                request_id: request_id.to_owned(),
+                application: "GDitto".to_owned(),
+                registration_token: registration_token.to_vec(),
+                client_info: Some(TachyonClientInfo {
+                    wire_year: 20261001,
+                    wire_major: 2,
+                    wire_minor: 0,
+                    client_type: 4,
+                    platform_type: 6,
+                }),
+            }),
         };
-        Ok(Self(Zeroizing::new(outer.encode_to_vec())))
+        Ok(Self {
+            bytes: Zeroizing::new(outer.encode_to_vec()),
+            started: Instant::now(),
+            lifetime,
+        })
     }
+}
+
+struct PairingSendDetails<'a> {
+    request_id: &'a str,
+    peer: &'a [u8],
+    registration_token: &'a [u8],
+    request_type: i32,
+    request: &'a [u8],
+    lifetime: Duration,
 }
 
 #[derive(Message)]
@@ -387,6 +446,8 @@ struct MessagingSend {
     destination: Option<AccountDestination>,
     #[prost(message, optional, tag = "2")]
     message: Option<SendMessage>,
+    #[prost(message, optional, tag = "3")]
+    authentication: Option<TachyonRequestHeader>,
     #[prost(int64, tag = "5")]
     maximum_lifetime_micros: i64,
     #[prost(bytes = "vec", repeated, tag = "9")]
@@ -399,6 +460,38 @@ impl Drop for MessagingSend {
             .iter_mut()
             .for_each(Zeroize::zeroize);
     }
+}
+
+#[derive(Message)]
+struct TachyonRequestHeader {
+    #[prost(string, tag = "1")]
+    request_id: String,
+    #[prost(string, tag = "3")]
+    application: String,
+    #[prost(bytes = "vec", tag = "6")]
+    registration_token: Vec<u8>,
+    #[prost(message, optional, tag = "7")]
+    client_info: Option<TachyonClientInfo>,
+}
+
+impl Drop for TachyonRequestHeader {
+    fn drop(&mut self) {
+        self.registration_token.zeroize();
+    }
+}
+
+#[derive(Message)]
+struct TachyonClientInfo {
+    #[prost(int32, tag = "3")]
+    wire_year: i32,
+    #[prost(int32, tag = "4")]
+    wire_major: i32,
+    #[prost(int32, tag = "5")]
+    wire_minor: i32,
+    #[prost(int32, tag = "7")]
+    client_type: i32,
+    #[prost(int32, tag = "9")]
+    platform_type: i32,
 }
 
 /// Acknowledged phone exchange, with no online state, persistence, or key export.
@@ -557,6 +650,16 @@ mod tests {
         InitialPairing::prepare(phone).unwrap()
     }
 
+    fn registration() -> crate::registration::UnpairedRegistration {
+        crate::registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"cGhvbmUtaWQ=",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                Duration::from_secs(3600),
+            )
+            .unwrap()
+    }
+
     fn exchange(
         attempt: &InitialPairing,
     ) -> (InitialResponse, Ukey2ServerStage2<RustCryptoImpl<StdRng>>) {
@@ -638,10 +741,11 @@ mod tests {
     fn outer_pairing_envelopes_route_only_to_the_selected_phone() {
         let session_id = Uuid::new_v4().to_string();
         let attempt = attempt();
+        let registration = registration();
         let request_id = attempt.request_id().to_owned();
         let initial_bytes = attempt.request_bytes().unwrap().to_vec();
-        let envelope = attempt
-            .send_envelope("person@example.test", &session_id)
+        let envelope = registration
+            .initial_pairing_envelope(&attempt, "person@example.test", &session_id)
             .unwrap();
         let sent = MessagingSend::decode(envelope.as_bytes()).unwrap();
         let destination = sent.destination.as_ref().unwrap();
@@ -650,6 +754,16 @@ mod tests {
         assert_eq!(destination.client, "GDitto");
         assert_eq!(sent.recipient_identities, [b"phone".to_vec()]);
         assert_eq!(sent.maximum_lifetime_micros, 300_000_000);
+        let auth = sent.authentication.as_ref().unwrap();
+        assert_eq!(auth.request_id, request_id);
+        assert_eq!(auth.application, "GDitto");
+        assert_eq!(auth.registration_token, b"synthetic-token");
+        let client_info = auth.client_info.as_ref().unwrap();
+        assert_eq!(client_info.wire_year, 20261001);
+        assert_eq!(client_info.wire_major, 2);
+        assert_eq!(client_info.wire_minor, 0);
+        assert_eq!(client_info.client_type, 4);
+        assert_eq!(client_info.platform_type, 6);
         let message = sent.message.as_ref().unwrap();
         assert_eq!(message.request_id, request_id);
         assert_eq!(message.kind, 19);
@@ -667,8 +781,8 @@ mod tests {
             .unwrap();
         let finish_id = pending.request_id().to_owned();
         let finish_bytes = pending.request_bytes().unwrap().to_vec();
-        let envelope = pending
-            .send_envelope("person@example.test", &session_id)
+        let envelope = registration
+            .confirmation_envelope(&pending, "person@example.test", &session_id)
             .unwrap();
         let sent = MessagingSend::decode(envelope.as_bytes()).unwrap();
         let message = sent.message.as_ref().unwrap();
@@ -682,18 +796,130 @@ mod tests {
     #[test]
     fn outer_pairing_envelope_rejects_bad_account_and_session_routes() {
         let attempt = attempt();
+        let registration = registration();
         let session_id = Uuid::new_v4().to_string();
         for account in ["", "name\nprivate", &"x".repeat(321)] {
             assert_eq!(
-                attempt.send_envelope(account, &session_id).unwrap_err(),
-                PairingError::InvalidRouting
+                registration
+                    .initial_pairing_envelope(&attempt, account, &session_id)
+                    .unwrap_err(),
+                crate::registration::RegistrationError::Pairing(PairingError::InvalidRouting)
             );
         }
         assert_eq!(
-            attempt
-                .send_envelope("person@example.test", "invalid")
+            registration
+                .initial_pairing_envelope(&attempt, "person@example.test", "invalid")
                 .unwrap_err(),
-            PairingError::InvalidRouting
+            crate::registration::RegistrationError::Pairing(PairingError::InvalidRouting)
+        );
+    }
+
+    #[test]
+    fn pairing_send_envelope_expires_before_transport() {
+        let attempt = attempt();
+        let registration = registration();
+        let mut envelope = registration
+            .initial_pairing_envelope(&attempt, "person@example.test", &Uuid::new_v4().to_string())
+            .unwrap();
+        envelope.started = Instant::now() - Duration::from_secs(301);
+        assert_eq!(envelope.ensure_valid(), Err(PairingError::Expired));
+    }
+
+    #[tokio::test]
+    async fn pairing_http_transport_reports_only_http_acceptance() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let attempt = attempt();
+        let session = Uuid::new_v4().to_string();
+        let registration = crate::registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"cGhvbmUtaWQ=",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                std::time::Duration::from_secs(60),
+            )
+            .unwrap();
+        let envelope = registration
+            .initial_pairing_envelope(&attempt, "person@example.test", &session)
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "http://{}{}",
+            listener.local_addr().unwrap(),
+            crate::SEND_MESSAGE_PATH
+        );
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 2048];
+            loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(offset) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..offset]).unwrap();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .map(str::to_owned)
+                        })
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if request.len() >= offset + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            request
+        });
+
+        let proof = crate::BrowserProof {
+            kind: "gaia_register".into(),
+            endpoint: crate::ENDPOINTS[0].into(),
+            origin: crate::ORIGIN_VALUE.into(),
+            authorization: "synthetic-auth".into(),
+            api_key: "synthetic-api-key".into(),
+            auth_user: Some("0".into()),
+            service_cookie: Some("SID=synthetic-cookie".into()),
+            browser_request: None,
+        };
+        let mut headers = proof.validate_messaging().unwrap();
+        headers.insert(
+            crate::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/x-protobuf"),
+        );
+        let result = crate::post_pairing_envelope(
+            &crate::client(false).unwrap(),
+            &endpoint,
+            headers,
+            &envelope,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.http_status, 200);
+        let request = server.await.unwrap();
+        let offset = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap();
+        let headers = std::str::from_utf8(&request[..offset])
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(headers.starts_with(&format!(
+            "post {} http/1.1",
+            crate::SEND_MESSAGE_PATH.to_ascii_lowercase()
+        )));
+        assert!(headers.contains("content-type: application/x-protobuf"));
+        assert!(headers.contains("authorization: synthetic-auth"));
+        assert!(headers.contains("cookie: sid=synthetic-cookie"));
+        let sent = MessagingSend::decode(&request[offset + 4..]).unwrap();
+        assert_eq!(sent.destination.as_ref().unwrap().id, "person@example.test");
+        assert_eq!(
+            format!("{result:?}"),
+            "SendMessageAccepted { http_status: 200 }"
         );
     }
 

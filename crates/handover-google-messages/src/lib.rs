@@ -17,17 +17,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fmt, time::Duration};
 use uuid::Uuid;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const ORIGIN_VALUE: &str = "https://messages.google.com";
 const SIGN_IN_PATH: &str =
     "/$rpc/google.internal.communications.instantmessaging.v1.Registration/SignInGaia";
+const SEND_MESSAGE_PATH: &str =
+    "/$rpc/google.internal.communications.instantmessaging.v1.Messaging/SendMessage";
+const RECEIVE_MESSAGES_PATH: &str =
+    "/$rpc/google.internal.communications.instantmessaging.v1.Messaging/ReceiveMessages";
+const ACK_MESSAGES_PATH: &str =
+    "/$rpc/google.internal.communications.instantmessaging.v1.Messaging/AckMessages";
 const ENDPOINTS: [&str; 3] = [
     "https://instantmessaging-pa.googleapis.com",
     "https://instantmessaging-pa.clients6.google.com",
     "https://instantmessaging-pa-jms-us.clients6.google.com",
 ];
 const RESPONSE_LIMIT: usize = 512 * 1024;
+const SEND_RESPONSE_LIMIT: usize = 64 * 1024;
 const SOURCE_LIMIT: usize = 128;
 // Public MW_CONFIG build label comms-messages.web-server_20261001.02_p0,
 // interpreted by OPa and GH in the independently captured Google source.
@@ -107,6 +114,31 @@ pub struct BrowserProof {
     pub browser_request: Option<Value>,
 }
 
+impl Drop for BrowserProof {
+    fn drop(&mut self) {
+        self.authorization.zeroize();
+        self.api_key.zeroize();
+        if let Some(auth_user) = &mut self.auth_user {
+            auth_user.zeroize();
+        }
+        if let Some(cookie) = &mut self.service_cookie {
+            cookie.zeroize();
+        }
+        if let Some(body) = &mut self.browser_request {
+            erase_json_strings(body);
+        }
+    }
+}
+
+fn erase_json_strings(value: &mut Value) {
+    match value {
+        Value::String(string) => string.zeroize(),
+        Value::Array(values) => values.iter_mut().for_each(erase_json_strings),
+        Value::Object(values) => values.values_mut().for_each(erase_json_strings),
+        _ => {}
+    }
+}
+
 impl fmt::Debug for BrowserProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("BrowserProof { redacted }")
@@ -127,6 +159,8 @@ pub enum ProbeError {
     InvalidEndpoint,
     InvalidCredentials,
     RegistrationFailed,
+    SessionExpired,
+    ReceiveFailed,
     Network,
     HttpError(u16),
     HttpErrorWithStatus(u16, RpcStatus),
@@ -158,6 +192,8 @@ impl ProbeError {
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidCredentials => "invalid_credentials",
             Self::RegistrationFailed => "registration_failed",
+            Self::SessionExpired => "session_expired",
+            Self::ReceiveFailed => "receive_failed",
             Self::Network => "network",
             Self::HttpError(_)
             | Self::HttpErrorWithStatus(_, _)
@@ -235,6 +271,13 @@ impl BrowserProof {
     }
 
     fn validate_registration(&self) -> Result<HeaderMap, ProbeError> {
+        self.validate_mode(true)
+    }
+
+    fn validate_messaging(&self) -> Result<HeaderMap, ProbeError> {
+        if self.kind != "gaia_register" || self.browser_request.is_some() {
+            return Err(ProbeError::InvalidBootstrap);
+        }
         self.validate_mode(true)
     }
 
@@ -403,6 +446,17 @@ fn client(https_only: bool) -> Result<Client, ProbeError> {
         .map_err(|_| ProbeError::Network)
 }
 
+fn streaming_client() -> Result<Client, ProbeError> {
+    Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|_| ProbeError::Network)
+}
+
 fn transport_error(error: reqwest::Error) -> ProbeError {
     if error.is_timeout() {
         ProbeError::Timeout
@@ -418,12 +472,12 @@ pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
     let headers = proof.validate()?;
     let endpoint = format!("{}{SIGN_IN_PATH}", proof.endpoint);
     let http = client(true)?;
-    if let Some(body) = proof.browser_request {
+    if let Some(body) = proof.browser_request.as_ref() {
         query_with_body_and_inspection(
             &http,
             &endpoint,
             headers,
-            &body,
+            body,
             proof.kind == "gaia_lookup_inspect",
         )
         .await
@@ -436,7 +490,7 @@ pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
 /// changes Google's registered-device state. It is separate from the read-only
 /// probe and is not invoked automatically by the authentication host.
 pub async fn register_device(
-    proof: BrowserProof,
+    proof: &BrowserProof,
     maximum_lifetime: Duration,
 ) -> Result<registration::UnpairedRegistration, ProbeError> {
     let headers = proof.validate_registration()?;
@@ -454,6 +508,69 @@ pub async fn register_device(
         maximum_lifetime,
     )
     .await
+}
+
+/// HTTP accepted the pairing envelope. This does not mean the phone received
+/// or confirmed the pairing request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendMessageAccepted {
+    pub http_status: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcknowledgementHttpAccepted {
+    pub http_status: u16,
+}
+
+/// Send one pairing envelope. Browser authorization remains separate from the
+/// registration token encoded inside the envelope.
+pub async fn send_pairing_envelope(
+    proof: &BrowserProof,
+    envelope: &pairing::gaia::PairingSendEnvelope,
+) -> Result<SendMessageAccepted, ProbeError> {
+    envelope
+        .ensure_valid()
+        .map_err(|_| ProbeError::SessionExpired)?;
+    let mut headers = proof.validate_messaging()?;
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/x-protobuf"),
+    );
+    let endpoint = format!("{}{}", proof.endpoint, SEND_MESSAGE_PATH);
+    envelope
+        .ensure_valid()
+        .map_err(|_| ProbeError::SessionExpired)?;
+    post_pairing_envelope(&client(true)?, &endpoint, headers, envelope).await
+}
+
+/// Run one authenticated receive stream until the server closes it. Caller
+/// cancellation stops the HTTP stream; this method does not reconnect or ACK.
+pub async fn receive_messages(
+    proof: &BrowserProof,
+    request: &registration::ReceiveRequest,
+    emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
+) -> Result<u8, ProbeError> {
+    let headers = proof.validate_messaging()?;
+    let endpoint = format!("{}{}", proof.endpoint, RECEIVE_MESSAGES_PATH);
+    receive_stream(&streaming_client()?, &endpoint, headers, request, emit).await
+}
+
+/// Submit a bounded batch of acknowledgements for already processed pairing
+/// replies. HTTP acceptance says nothing about phone delivery or other events.
+pub async fn acknowledge_messages(
+    proof: &BrowserProof,
+    request: &receive::AckRequest,
+) -> Result<AcknowledgementHttpAccepted, ProbeError> {
+    request
+        .ensure_valid()
+        .map_err(|_| ProbeError::SessionExpired)?;
+    let mut headers = proof.validate_messaging()?;
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/x-protobuf"),
+    );
+    let endpoint = format!("{}{}", proof.endpoint, ACK_MESSAGES_PATH);
+    post_acknowledgements(&client(true)?, &endpoint, headers, request).await
 }
 
 async fn post_registration(
@@ -498,6 +615,126 @@ async fn post_registration(
     attempt
         .accept_response(&response_body, maximum_lifetime)
         .map_err(|_| ProbeError::RegistrationFailed)
+}
+
+async fn post_pairing_envelope(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    envelope: &pairing::gaia::PairingSendEnvelope,
+) -> Result<SendMessageAccepted, ProbeError> {
+    let mut response = http
+        .post(endpoint)
+        .headers(headers)
+        .body(envelope.as_bytes().to_vec())
+        .send()
+        .await
+        .map_err(transport_error)?;
+    if response.status().as_u16() != 200 {
+        return Err(http_error_details(response, false).await);
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if content_type.split(';').next().map(str::trim) != Some("application/x-protobuf") {
+        return Err(ProbeError::UnexpectedResponse);
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > SEND_RESPONSE_LIMIT as u64)
+    {
+        return Err(ProbeError::ResponseTooLarge);
+    }
+    let mut received = 0usize;
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+        if chunk.len() > SEND_RESPONSE_LIMIT - received {
+            return Err(ProbeError::ResponseTooLarge);
+        }
+        received += chunk.len();
+    }
+    Ok(SendMessageAccepted { http_status: 200 })
+}
+
+async fn post_acknowledgements(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    request: &receive::AckRequest,
+) -> Result<AcknowledgementHttpAccepted, ProbeError> {
+    request
+        .ensure_valid()
+        .map_err(|_| ProbeError::SessionExpired)?;
+    let mut response = http
+        .post(endpoint)
+        .headers(headers)
+        .body(request.as_bytes().to_vec())
+        .send()
+        .await
+        .map_err(transport_error)?;
+    if response.status().as_u16() != 200 {
+        return Err(http_error_details(response, false).await);
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if content_type.split(';').next().map(str::trim) != Some("application/x-protobuf") {
+        return Err(ProbeError::UnexpectedResponse);
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > SEND_RESPONSE_LIMIT as u64)
+    {
+        return Err(ProbeError::ResponseTooLarge);
+    }
+    let mut received = 0usize;
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+        if chunk.len() > SEND_RESPONSE_LIMIT - received {
+            return Err(ProbeError::ResponseTooLarge);
+        }
+        received += chunk.len();
+    }
+    Ok(AcknowledgementHttpAccepted { http_status: 200 })
+}
+
+async fn receive_stream(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    request: &registration::ReceiveRequest,
+    mut emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
+) -> Result<u8, ProbeError> {
+    let body = request
+        .request_bytes()
+        .map_err(|_| ProbeError::SessionExpired)?;
+    let mut response = http
+        .post(endpoint)
+        .headers(headers)
+        .body(body.to_vec())
+        .send()
+        .await
+        .map_err(transport_error)?;
+    if !response.status().is_success() {
+        return Err(http_error_details(response, false).await);
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if content_type.split(';').next().map(str::trim) != Some("application/json+protobuf") {
+        return Err(ProbeError::UnexpectedResponse);
+    }
+    let mut stream = receive::ReceiveStream::default();
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+        stream
+            .feed(&chunk, &mut emit)
+            .map_err(|_| ProbeError::ReceiveFailed)?;
+    }
+    stream.finish().map_err(|_| ProbeError::ReceiveFailed)
 }
 
 async fn query(
@@ -1076,10 +1313,7 @@ mod tests {
             [],
             general_purpose::STANDARD.encode("synthetic-registration-id"),
             null,
-            [
-                general_purpose::STANDARD.encode("synthetic-token"),
-                "3600000000"
-            ]
+            ["c3ludGhldGljLXRva2Vu", "3600000000"]
         ]))
         .unwrap();
         let response = format!(
@@ -1109,6 +1343,55 @@ mod tests {
             format!("{registered:?}"),
             "UnpairedRegistration { redacted }"
         );
+    }
+
+    #[tokio::test]
+    async fn receive_transport_streams_records_with_a_validated_status() {
+        let body = b"[[],[0]]";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let (endpoint, server) = mock_server([response.as_bytes(), body].concat()).await;
+        let registration = registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+        let request = registration.prepare_receive().unwrap();
+        let proof = registration_proof();
+        let mut statuses = Vec::new();
+        let status = receive_stream(
+            &client(false).unwrap(),
+            &endpoint,
+            proof.validate_messaging().unwrap(),
+            &request,
+            |event| {
+                if let receive::ReceiveEvent::Status(value) = event {
+                    statuses.push(value);
+                }
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, 0);
+        assert_eq!(statuses, [0]);
+        let sent = server.await.unwrap();
+        let offset = sent
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap();
+        let headers = std::str::from_utf8(&sent[..offset])
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(headers.contains("content-type: application/json+protobuf"));
+        assert!(headers.contains("cookie: sid=synthetic-cookie"));
+        let sent_body: Value = serde_json::from_slice(&sent[offset + 4..]).unwrap();
+        assert_eq!(sent_body[0][5], "c3ludGhldGljLXRva2Vu");
+        assert_eq!(sent_body[3], json!([]));
     }
 
     #[tokio::test]
