@@ -339,3 +339,11 @@ the URL event; cookies are intentionally discarded until the exact service
 request is matched. The existing reverse-order test covers that fail-closed
 behavior. The relay was restored and the test tab closed. A manual retry uses
 the same capture rules and inspection request.
+
+The retry reached the live RPC. The owner reported that the local description
+identified an unknown `authuser` query parameter. The Rust transport had added
+that parameter alongside `X-Goog-AuthUser`. SignInGaia rejects the URL parameter
+before processing the lookup. The transport now leaves the endpoint URL unchanged
+and retains the account-selection header. A localhost HTTP regression failed
+before the fix and passed afterward, checking both the exact request target
+and the header. Live authentication with the corrected URL remains pending.

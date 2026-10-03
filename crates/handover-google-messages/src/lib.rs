@@ -397,13 +397,12 @@ pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
             &http,
             &endpoint,
             headers,
-            proof.auth_user.as_deref(),
             &body,
             proof.kind == "gaia_lookup_inspect",
         )
         .await
     } else {
-        query(&http, &endpoint, headers, proof.auth_user.as_deref()).await
+        query(&http, &endpoint, headers).await
     }
 }
 
@@ -411,34 +410,28 @@ async fn query(
     http: &Client,
     endpoint: &str,
     headers: HeaderMap,
-    auth_user: Option<&str>,
 ) -> Result<ProbeResult, ProbeError> {
-    query_with_body(http, endpoint, headers, auth_user, &lookup_request()).await
+    query_with_body(http, endpoint, headers, &lookup_request()).await
 }
 
 async fn query_with_body(
     http: &Client,
     endpoint: &str,
     headers: HeaderMap,
-    auth_user: Option<&str>,
     body: &Value,
 ) -> Result<ProbeResult, ProbeError> {
-    query_with_body_and_inspection(http, endpoint, headers, auth_user, body, false).await
+    query_with_body_and_inspection(http, endpoint, headers, body, false).await
 }
 
 async fn query_with_body_and_inspection(
     http: &Client,
     endpoint: &str,
     headers: HeaderMap,
-    auth_user: Option<&str>,
     body: &Value,
     inspect: bool,
 ) -> Result<ProbeResult, ProbeError> {
     let body = serde_json::to_vec(body).map_err(|_| ProbeError::NativeError)?;
-    let mut request = http.post(endpoint).headers(headers).body(body);
-    if let Some(user) = auth_user {
-        request = request.query(&[("authuser", user)]);
-    }
+    let request = http.post(endpoint).headers(headers).body(body);
     let mut response = request.send().await.map_err(transport_error)?;
     if !response.status().is_success() {
         return Err(http_error_details(response, inspect).await);
@@ -792,7 +785,6 @@ mod tests {
             &client(false).unwrap(),
             &endpoint,
             p.validate().unwrap(),
-            None,
             &body,
         )
         .await
@@ -922,8 +914,7 @@ mod tests {
             query(
                 &client(false).unwrap(),
                 &format!("{endpoint}{SIGN_IN_PATH}"),
-                proof().validate().unwrap(),
-                Some("0")
+                proof().validate().unwrap()
             )
             .await
             .unwrap(),
@@ -934,12 +925,9 @@ mod tests {
         let headers = std::str::from_utf8(&request[..offset])
             .unwrap()
             .to_ascii_lowercase();
-        assert!(
-            headers.starts_with(
-                &format!("post {SIGN_IN_PATH}?authuser=0 http/1.1").to_ascii_lowercase()
-            )
-        );
+        assert!(headers.starts_with(&format!("post {SIGN_IN_PATH} http/1.1").to_ascii_lowercase()));
         assert!(headers.contains("origin: https://messages.google.com"));
+        assert!(headers.contains("x-goog-authuser: 0\r\n"));
         assert!(!headers.contains("cookie:"));
         let body: Value = serde_json::from_slice(&request[offset + 4..]).unwrap();
         assert_eq!(body[2], 1);
@@ -960,8 +948,7 @@ mod tests {
                 query(
                     &client(false).unwrap(),
                     &endpoint,
-                    proof().validate().unwrap(),
-                    None
+                    proof().validate().unwrap()
                 )
                 .await
                 .unwrap_err(),
@@ -978,15 +965,10 @@ mod tests {
         p.kind = "gaia_lookup_with_cookies".into();
         p.service_cookie = Some("SID=synthetic-comparison".into());
         assert_eq!(
-            query(
-                &client(false).unwrap(),
-                &endpoint,
-                p.validate().unwrap(),
-                None
-            )
-            .await
-            .unwrap()
-            .sources,
+            query(&client(false).unwrap(), &endpoint, p.validate().unwrap())
+                .await
+                .unwrap()
+                .sources,
             0
         );
         let request = server.await.unwrap();
@@ -1051,7 +1033,6 @@ mod tests {
                 &client(false).unwrap(),
                 &endpoint,
                 proof().validate().unwrap(),
-                None,
             )
             .await
             .unwrap_err();
@@ -1074,7 +1055,6 @@ mod tests {
                 &client(false).unwrap(),
                 &endpoint,
                 proof().validate().unwrap(),
-                None,
                 &lookup_request(),
                 inspect,
             )
