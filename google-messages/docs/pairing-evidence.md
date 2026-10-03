@@ -213,3 +213,25 @@ Google's fresh-device fallback uses a hyphenated UUID, so the probe's fresh
 device-ID length remains supported by the observed source. No device-ID change
 was made based only on the shorter stored identifier in the sanitized capture.
 The next test changes only error decoding, without changing the request body.
+
+The array-error decoder was live-tested with the approved cookie comparison.
+The user reported HTTP 400 with RPC INVALID_ARGUMENT. This confirms that the
+fixed-category projection works against the live endpoint, but does not prove
+authentication succeeded or identify the rejected argument. The relay was
+restored and its account reported online.
+
+Reviewing the sanitized successful browser response also found that YC has four
+positions, including field 4 beside the source list in field 3. The success
+decoder's former three-position limit rejected this observed shape. A synthetic
+fixture preserving that topology failed before increasing the bound to four
+and passed afterward. Adjacent identity records and field 4 remain discarded.
+This fixes a separate decoding defect and does not resolve the live HTTP 400.
+
+The next controlled request test changes only the fresh device-ID suffix from
+a hyphenated UUID of length 36 to UUID hexadecimal of length 32. The resulting
+45-character identifier matches the working browser capture's length. Google's
+public builder supports both a stored 32-character suffix and a 36-character
+fallback, so the longer form has not been proven invalid. The experiment keeps
+the identifier fresh rather than borrowing the browser's device identity.
+Request mode, headers, client metadata, and request-ID format stay unchanged.
+The shorter form has not yet been live-tested.

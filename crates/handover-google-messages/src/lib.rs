@@ -236,7 +236,9 @@ fn lookup_request() -> Value {
                 6
             ]
         ],
-        [[3, format!("messages-web-{}", Uuid::new_v4())]],
+        // Match the working browser's 32-character opaque suffix while keeping
+        // the identifier fresh and independent of its stored device identity.
+        [[3, format!("messages-web-{}", Uuid::new_v4().simple())]],
         1,
         "GDitto"
     ])
@@ -383,7 +385,7 @@ fn parse_response(body: &[u8]) -> Result<ProbeResult, ProbeError> {
     // mPa field 3 is YC; YC repeated field 3 contains registered sources.
     let sources = match fields.get(2) {
         None | Some(Value::Null) => 0,
-        Some(Value::Array(list)) if list.len() <= 3 => match list.get(2) {
+        Some(Value::Array(list)) if list.len() <= 4 => match list.get(2) {
             None | Some(Value::Null) => 0,
             Some(Value::Array(sources))
                 if sources.len() <= SOURCE_LIMIT && sources.iter().all(Value::is_array) =>
@@ -456,6 +458,10 @@ mod tests {
         assert_eq!(first[3], "GDitto");
         assert_ne!(first[0][0], second[0][0]);
         assert_ne!(first[1][0][1], second[1][0][1]);
+        let device_id = first[1][0][1].as_str().unwrap();
+        let suffix = device_id.strip_prefix("messages-web-").unwrap();
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_eq!(first[0].as_array().unwrap().len(), 7);
         assert_eq!(
             first[0][6],
@@ -489,6 +495,15 @@ mod tests {
 
     #[test]
     fn response_returns_only_count_and_rejects_unknown_shapes() {
+        // The browser capture includes YC field 4 alongside its source list.
+        // Neither the adjacent identity records nor that extra field is exposed.
+        assert_eq!(
+            parse_response(
+                br#"[[],null,[[[3,"identity","GDitto"]],[["account"]],[["source"]],[null,[[],[]]]]]"#
+            )
+            .unwrap(),
+            ProbeResult { sources: 1 }
+        );
         assert_eq!(
             parse_response(br#"[[],null,[null,null,[["private-id"],["another-id"]]]]"#).unwrap(),
             ProbeResult { sources: 2 }
@@ -499,6 +514,7 @@ mod tests {
             b"[null]",
             b"[[],null,{}]",
             b"[[],null,[null,null,[42]]]",
+            b"[[],null,[null,null,[],null,null]]",
             b"secret",
         ] {
             assert_eq!(
