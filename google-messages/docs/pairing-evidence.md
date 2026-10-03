@@ -461,3 +461,41 @@ before acknowledgement or confirmation. A mock-phone regression first failed
 with the previous behavior and now completes an authenticated ceremony with an
 inactive initial reply. Both outgoing envelopes must have empty session IDs.
 This fix has not yet been tested against the physical phone.
+
+
+## Libgm comparison, 2026-10-03
+
+At the user's request, reviewed the installed production dependency
+`go.mau.fi/mautrix-gmessages` at `v0.2609.0`, specifically
+`pkg/libgm/pair_google.go`, `session_handler.go`, and `longpoll.go`. This was
+read-only inspection. No implementation or generated protocol files were copied,
+imported, or linked into Handover. These observations identify questions to check
+against Google's client, rather than implementation templates.
+
+- Libgm obtains its registration token immediately before pairing using a stable
+  browser device identifier and a refresh public key. It updates its browser and
+  destination identity from that response. Handover instead loads a previously
+  saved registration, checks its identity against a mode-1 source lookup, and
+  continues with its saved token. That lookup currently constructs a fresh
+  unrelated browser identifier. Google's client persists its registration device
+  identifier through `k5a`, passes it into authentication, and supports mode-1
+  lookups separately through `$4a`. Token freshness and lookup identity continuity
+  therefore need an explicit comparison. This is a discrepancy, not evidence
+  that the saved token caused the failure.
+- Libgm selects a primary destination registration and starts receive before
+  sending client-init. Handover also starts receive first, but uses the newer
+  first-party source inventory and byte-valued recipient identities. Libgm's
+  string UUID destination must not be substituted without first-party evidence.
+- Libgm's response waiter handles initial and final pairing replies by request
+  correlation and does not reject them merely because the session is inactive.
+  Google's active-state gate independently supports the preceding bootstrap fix.
+- Libgm explicitly ignores some unsolicited unencrypted responses while waiting
+  for cookie-backed replies. This reinforces the need to correlate before
+  validating a pairing payload, which Handover's mock regression already covers.
+- Libgm derives the emoji after server-init and only completes pairing after
+  client-finish receives a phone response. HTTP acceptance alone is not pairing
+  success. Handover retains this distinction.
+
+Next offline work should compare the complete registration-to-pairing identity
+chain and both wire envelopes against the first-party client. No further phone
+retry or registration mutation was performed for this comparison.
