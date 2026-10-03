@@ -205,3 +205,40 @@ verification material. They also cover correlation, rejected status, required
 confirmation, unsupported revisions, malformed and oversized responses, exact
 transcript preservation, and expiry. No phone or Google service was contacted
 for these tests. The production relay is unchanged.
+
+## Receive framing and pairing reply extraction
+
+The incremental receive parser follows the JSON+protobuf stream container in
+Google's `ys.prototype.parse` at 944533. The outer document contains a repeated
+data-record array followed by a single RPC status array. Records are emitted
+through a callback before stream completion. The implementation retains at most
+one incomplete record, bounded to 512 KiB and 64 nested containers. It keeps no
+completed-record queue. Invalid syntax, callback failure, and bounds violations
+terminate that parser. EOF requires a closed document and an explicit status
+array, including an empty status array representing protobuf's default code 0.
+Nonzero status codes remain nonzero; their descriptions and metadata are dropped.
+
+`ReceiveRecord::pairing_reply` follows the receive oneof at 704930 and the
+`h7` handler near 1051296. Transport messages of type 19 carry binary response
+envelopes in field 12 and sender identity bytes in field 17. The independently
+authored `hva/kva` projection reads request ID field 1, reply type field 4,
+unencrypted body field 5, multipart fields 6 and 7, encrypted field 8, inactive
+flag field 9, and additional payload field 11. Only types 44 and 45 become
+pairing replies. Inactive-session replies fail explicitly. Unsupported multipart
+or ambiguous encrypted/additional payloads are rejected. Identities are limited
+to 1 KiB, binary envelopes to 32 KiB, and pairing payloads to 16 KiB.
+
+Other receive events and reply types return no pairing reply. They are not
+acknowledged or treated as handled. An eventual runtime dispatcher still needs
+to route those events and implement bounded acknowledgements. This code opens no
+HTTP stream and makes no receive, pull, or acknowledgement request. Debug output
+redacts records and replies. Partial wire buffers and owned pairing payloads use
+zeroizing storage; parsed record string values are erased on drop. This does not
+guarantee erasure of every parser temporary or the caller's input buffer.
+
+Tests cover every split position in a synthetic stream, byte-at-a-time UTF-8 and
+escapes, immediate record delivery, terminal failures, EOF/status distinctions,
+reply extraction and preemption, and a complete chunked stream-to-UKEY2 pending
+confirmation exchange. The receive response body was not captured during the
+earlier live trace, so this framing remains verified offline against first-party
+source, rather than a live receive connection.
