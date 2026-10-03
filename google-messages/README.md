@@ -8,8 +8,10 @@ This directory contains bootstrap evidence tools and a read-only network
 observer. The original Rust client starts in
 [`crates/handover-google-messages`](../crates/handover-google-messages). Its first
 probe requests a registered-source count using a short-lived browser proof.
-Live authentication remains unverified. It does not yet pair, read conversations,
-or send messages. The existing adapter remains in use during development.
+A live read-only authentication test succeeded with matched browser service
+cookies and a request constructed by Rust, returning four registered sources.
+Browser-independent credential acquisition and refresh remain unverified.
+It does not yet pair, read conversations, or send messages. The existing adapter remains in use during development.
 
 This code is part of Handover and covered by the root MIT license.
 

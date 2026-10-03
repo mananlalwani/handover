@@ -347,3 +347,13 @@ before processing the lookup. The transport now leaves the endpoint URL unchange
 and retains the account-selection header. A localhost HTTP regression failed
 before the fix and passed afterward, checking both the exact request target
 and the header. Live authentication with the corrected URL remains pending.
+
+After the URL fix in ed0924f, the owner ran Compare with service cookies and
+reported a successful native authentication check with four sources. This action
+uses the independently constructed Rust lookup body, fresh request/device IDs,
+and no Referer or captured browser body. It confirms the live read-only lookup
+with transient matched browser credentials. It does not verify independent
+credential acquisition, refresh, pairing, or conversation access. The production
+relay was restored and its account reported online; the test tab was closed.
+The next implementation checkpoint is source selection and the pairing/session
+contract, derived from first-party evidence before any registration request.
