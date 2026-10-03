@@ -381,7 +381,10 @@ async fn wait_reply(
             result = &mut receive => return Err(receive_failure(result)),
             reply = replies.recv() => {
                 let reply = reply.ok_or(ProbeError::ReceiveFailed)?;
-                if matches(&reply) { return Ok(reply); }
+                if matches(&reply) {
+                    if reply.is_inactive() { return Err(ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted)); }
+                    return Ok(reply);
+                }
             }
         }
     }

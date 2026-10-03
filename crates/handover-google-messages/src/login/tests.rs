@@ -85,6 +85,7 @@ enum Scenario {
     EndReceive,
     RejectFinalAck,
     CancelOnPrompt,
+    MatchedPreemption,
 }
 
 fn source_body(wrong_account: bool) -> Vec<u8> {
@@ -162,6 +163,8 @@ struct Response {
     kind: i32,
     #[prost(bytes = "vec", tag = "5")]
     body: Vec<u8>,
+    #[prost(bool, tag = "9")]
+    inactive: bool,
 }
 #[derive(Message)]
 struct Ack {
@@ -313,6 +316,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             Response {
                 id: "unrelated-request".into(),
                 kind: 44,
+                inactive: true,
                 body: vec![1],
             },
         );
@@ -325,6 +329,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
                 Response {
                     id: wrapper.id,
                     kind: 44,
+                    inactive: matches!(scenario, Scenario::MatchedPreemption),
                     body: InitialResponse {
                         confirmation: true,
                         pairing_id: init.pairing_id.clone(),
@@ -337,6 +342,17 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             ),
         )
         .await;
+        if matches!(scenario, Scenario::MatchedPreemption) {
+            let mut byte = [0];
+            assert_eq!(receive_socket.read(&mut byte).await.unwrap(), 0);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "preemption must not be acknowledged or trigger confirmation"
+            );
+            return None;
+        }
         if matches!(scenario, Scenario::CancelOnPrompt) {
             let mut byte = [0];
             assert_eq!(
@@ -393,6 +409,7 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
                 Response {
                     id: wrapper.id,
                     kind: 45,
+                    inactive: false,
                     body: FinalResponse {
                         status: i32::from(matches!(scenario, Scenario::RejectFinal)),
                         pairing_id: finish.pairing_id,
@@ -615,5 +632,14 @@ async fn rejected_receive_preserves_http_status_and_prevents_send() {
     assert_eq!(
         result.unwrap_err(),
         ProbeError::HttpErrorWithStatus(401, crate::RpcStatus::Unauthenticated)
+    );
+}
+
+#[tokio::test]
+async fn only_correlated_preemption_aborts_pairing_without_acknowledgement() {
+    let (result, _, _) = exercise(Scenario::MatchedPreemption, true).await;
+    assert_eq!(
+        result.unwrap_err(),
+        ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted)
     );
 }

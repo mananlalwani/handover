@@ -141,6 +141,7 @@ pub struct PairingReply {
     request_id: String,
     sender: Zeroizing<Vec<u8>>,
     kind: i32,
+    inactive: bool,
     body: Zeroizing<Vec<u8>>,
 }
 
@@ -158,6 +159,10 @@ impl fmt::Debug for PairingReply {
 }
 
 impl PairingReply {
+    pub(crate) fn is_inactive(&self) -> bool {
+        self.inactive
+    }
+
     pub(crate) fn matches_initial(&self, attempt: &InitialPairing) -> bool {
         self.kind == 44
             && self.request_id == attempt.request_id()
@@ -192,8 +197,11 @@ impl PairingReply {
         self,
         pending: AwaitingPhoneConfirmation,
     ) -> Result<PhoneConfirmedPairing, PairingError> {
-        if self.kind != 45 {
-            return Err(PairingError::InvalidResponse);
+        if !self.matches_confirmation(&pending) {
+            return Err(PairingError::Correlation);
+        }
+        if self.inactive {
+            return Err(PairingError::Rejected);
         }
         pending.accept_response(&self.request_id, &self.sender, &self.body)
     }
@@ -202,8 +210,11 @@ impl PairingReply {
         self,
         attempt: InitialPairing,
     ) -> Result<AwaitingPhoneConfirmation, PairingError> {
-        if self.kind != 44 {
-            return Err(PairingError::InvalidResponse);
+        if !self.matches_initial(&attempt) {
+            return Err(PairingError::Correlation);
+        }
+        if self.inactive {
+            return Err(PairingError::Rejected);
         }
         attempt.accept_response(&self.request_id, &self.sender, &self.body)
     }
@@ -297,9 +308,6 @@ impl ReceiveRecord {
         let bytes = decode(message.get(11), ENVELOPE_LIMIT)?;
         let header =
             ResponseHeader::decode(bytes.as_slice()).map_err(|_| ReceiveError::Malformed)?;
-        if header.inactive {
-            return Err(ReceiveError::SessionPreempted);
-        }
         if !matches!(header.kind, 44 | 45) {
             return Ok(None);
         }
@@ -310,7 +318,7 @@ impl ReceiveRecord {
             || response.sequence > 1
             || !response.encrypted.is_empty()
             || !response.additional_payload.is_empty()
-            || response.body.is_empty()
+            || (!response.inactive && response.body.is_empty())
             || response.body.len() > PAYLOAD_LIMIT
         {
             return Err(ReceiveError::Malformed);
@@ -331,6 +339,7 @@ impl ReceiveRecord {
             request_id: response.request_id.clone(),
             sender,
             kind: response.kind,
+            inactive: response.inactive,
             body: Zeroizing::new(response.body.clone()),
         }))
     }
@@ -342,8 +351,6 @@ impl ReceiveRecord {
 struct ResponseHeader {
     #[prost(int32, tag = "4")]
     kind: i32,
-    #[prost(bool, tag = "9")]
-    inactive: bool,
 }
 
 #[derive(Message)]
@@ -360,6 +367,8 @@ struct PairingResponse {
     sequence: i32,
     #[prost(bytes = "vec", tag = "8")]
     encrypted: Vec<u8>,
+    #[prost(bool, tag = "9")]
+    inactive: bool,
     #[prost(bytes = "vec", tag = "11")]
     additional_payload: Vec<u8>,
 }
@@ -424,6 +433,7 @@ mod tests {
             sequence: 0,
             encrypted: vec![],
             additional_payload: vec![],
+            inactive: false,
         }
     }
 
@@ -605,6 +615,22 @@ mod tests {
     }
 
     #[test]
+    fn inactive_unrelated_responses_do_not_preempt_pairing() {
+        for kind in [16, 44] {
+            let mut response = response();
+            response.kind = kind;
+            let mut bytes = response.encode_to_vec();
+            bytes.extend_from_slice(&[72, 1]); // response field 9: inactive
+            let mut input = record(&response);
+            input.0[1][11] = json!(general_purpose::STANDARD.encode(bytes));
+            let reply = input
+                .pairing_reply()
+                .expect("preemption requires request correlation");
+            assert_eq!(reply.is_some(), kind == 44);
+        }
+    }
+
+    #[test]
     fn heartbeat_unrelated_replies_and_preemption_do_not_become_pairing() {
         assert!(
             ReceiveRecord(json!([[], null, []]))
@@ -617,16 +643,11 @@ mod tests {
         response.body = vec![0xff];
         assert!(record(&response).pairing_reply().unwrap().is_none());
         let mut input = record(&response);
-        let bytes = ResponseHeader {
-            kind: 44,
-            inactive: true,
-        }
-        .encode_to_vec();
+        response.kind = 44;
+        response.inactive = true;
+        let bytes = response.encode_to_vec();
         input.0[1][11] = json!(general_purpose::STANDARD.encode(bytes));
-        assert!(matches!(
-            input.pairing_reply(),
-            Err(ReceiveError::SessionPreempted)
-        ));
+        assert!(input.pairing_reply().unwrap().unwrap().is_inactive());
     }
 
     #[test]

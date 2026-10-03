@@ -394,3 +394,20 @@ only after the initial send receives HTTP acceptance. A mock rejection test
 reproduced HTTP 401 being collapsed into `receive_failed`; it now retains
 `UNAUTHENTICATED` and verifies no initial send occurs. These diagnostics await
 live verification. No new phone request was issued during their implementation.
+
+
+The next live attempt reached account binding and failed with the newly retained
+framing category `SessionPreempted`, before initial-send acceptance was reported.
+The relay was restored. Inspection found that Handover treated the inactive flag
+on every queued RPC response as preemption before checking its kind or request
+correlation. Google's `dJ` handling scopes that flag to a current request and
+session. This was an overly broad Handover interpretation, not evidence of a
+confirmed competing native session.
+
+Pairing projection now ignores unrelated response kinds and carries the inactive
+flag privately until the request type, fresh request ID, and selected sender
+match the pending pairing phase. Only a matching inactive reply aborts pairing.
+Mock tests replay a stale inactive reply before a successful ceremony and verify
+that matching preemption causes neither acknowledgement nor confirmation send.
+The change awaits another live test; the previous attempt's send outcome remains
+uncertain because receive failure can race transport completion.
