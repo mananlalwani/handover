@@ -236,13 +236,19 @@ fn record(id: &str, response: Response) -> Vec<u8> {
     serde_json::to_vec(&json!([[], message])).unwrap()
 }
 
-async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Option<String>>) {
+async fn mock(
+    scenario: Scenario,
+    expected_device: Value,
+) -> (PairingHttp, tokio::task::JoinHandle<Option<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
-        let (path, _) = request(&mut socket).await;
+        let (path, body) = request(&mut socket).await;
         assert_eq!(path, crate::SIGN_IN_PATH);
+        let lookup: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(lookup[1], expected_device);
+        assert_eq!(lookup[2], 1);
         response(
             &mut socket,
             "application/json+protobuf",
@@ -258,7 +264,12 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             return None;
         }
         let (mut receive_socket, _) = listener.accept().await.unwrap();
-        let (path, _) = request(&mut receive_socket).await;
+        let (path, receive_body) = request(&mut receive_socket).await;
+        let receive_request: Value = serde_json::from_slice(&receive_body).unwrap();
+        assert_eq!(
+            receive_request[0][5],
+            general_purpose::STANDARD.encode("synthetic-token")
+        );
         assert_eq!(
             path,
             crate::RECEIVE_MESSAGES_PATH,
@@ -295,6 +306,16 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
             );
             return None;
         }
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            sent[2][5],
+            general_purpose::STANDARD.encode("synthetic-token")
+        );
+        assert_eq!(sent[0], json!([16, "person@example.test", "GDitto"]));
+        assert_eq!(
+            sent[8],
+            json!([general_purpose::STANDARD.encode("synthetic-phone")])
+        );
         let wrapper = Wrapper::decode(
             general_purpose::STANDARD
                 .decode(
@@ -386,6 +407,16 @@ async fn mock(scenario: Scenario) -> (PairingHttp, tokio::task::JoinHandle<Optio
         let (mut socket, _) = listener.accept().await.unwrap();
         let (path, body) = request(&mut socket).await;
         assert_eq!(path, crate::SEND_MESSAGE_PATH);
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            sent[2][5],
+            general_purpose::STANDARD.encode("synthetic-token")
+        );
+        assert_eq!(sent[0], json!([16, "person@example.test", "GDitto"]));
+        assert_eq!(
+            sent[8],
+            json!([general_purpose::STANDARD.encode("synthetic-phone")])
+        );
         let wrapper = Wrapper::decode(
             general_purpose::STANDARD
                 .decode(
@@ -481,11 +512,11 @@ async fn exercise(
     Vec<LoginProgress>,
     Option<String>,
 ) {
-    let (transport, server) = mock(scenario).await;
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path().join("sessions"));
     let registration = registration();
     registration.persist_pending(&store).unwrap();
+    let (transport, server) = mock(scenario, registration.lookup_request()[1].clone()).await;
     let login = LoginBootstrap {
         proof: proof("gaia_pairing"),
         registration,

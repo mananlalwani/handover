@@ -551,14 +551,13 @@ fn request_header() -> Value {
 }
 
 fn lookup_request() -> Value {
-    // Google's public web source: Z4a mode 1, BC field 1, RKa device type 3.
-    // All identifiers are fresh. Mode 0 device registration is never requested.
-    json!([
-        request_header(),
-        [[3, format!("messages-web-{}", Uuid::new_v4().simple())]],
-        1,
-        "GDitto"
-    ])
+    lookup_request_for_device(&format!("messages-web-{}", Uuid::new_v4().simple()))
+}
+
+fn lookup_request_for_device(device_id: &str) -> Value {
+    // Google's Z4a mode 1 is read-only. Account binding uses k5a's saved
+    // device ID; an independent inventory probe may use j5a's fresh ID.
+    json!([request_header(), [[3, device_id]], 1, "GDitto"])
 }
 
 fn client(https_only: bool) -> Result<Client, ProbeError> {
@@ -699,7 +698,14 @@ pub async fn prepare_initial_pairing(
         .as_deref()
         .ok_or(ProbeError::InvalidCredentials)?;
     let endpoint = format!("{}{}", proof.endpoint, SIGN_IN_PATH);
-    let body = query_response(&client(true)?, &endpoint, headers, &lookup_request(), false).await?;
+    let body = query_response(
+        &client(true)?,
+        &endpoint,
+        headers,
+        &registration.lookup_request(),
+        false,
+    )
+    .await?;
     prepare_pairing_from_sources(email, registration, session_id, &body)
 }
 

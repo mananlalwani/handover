@@ -499,3 +499,25 @@ against Google's client, rather than implementation templates.
 Next offline work should compare the complete registration-to-pairing identity
 chain and both wire envelopes against the first-party client. No further phone
 retry or registration mutation was performed for this comparison.
+
+
+The identity-chain review found a first-party-supported mismatch. `rJ.Qa` gets
+the persisted device ID through `k5a` and passes it, with the saved registration
+identity, to `a5a` for its mode-1 binding lookup. Handover used the generic
+inventory request, which generates a fresh unrelated device ID. Both native
+account-binding paths now use the registration's saved device ID. Independent
+inventory probes still use fresh IDs, matching Google's separate `l5a` path.
+
+A regression first failed on the mismatched ID. It now verifies the same device
+ID before and after persisted-record restoration, fresh per-request IDs, mode 1,
+and omission of registration key/token fields. Mock HTTP ceremonies verify the
+binding lookup identity, the saved token on receive and both sends, and the
+selected destination on both sends.
+
+The refresh-public-key mechanism in libgm should not be transplanted into this
+client. The current first-party `rJ.Xr` registers random 32-byte metadata in field
+36; Handover already implements that observed path. Google's initialization also
+restores saved token payloads and their expiry. Saved-token use therefore is not
+by itself a demonstrated bug. No token refresh, re-registration, or remote-state
+mutation was performed during this review. The identity fix remains unverified
+on the physical phone and does not establish the cause of the missing prompt.

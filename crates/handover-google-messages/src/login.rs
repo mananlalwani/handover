@@ -254,7 +254,7 @@ impl LoginBootstrap {
             &http.short,
             &http.url(crate::SIGN_IN_PATH),
             proof.validate_pairing()?,
-            &crate::lookup_request(),
+            &registration.lookup_request(),
             false,
         )
         .await?;

@@ -165,6 +165,11 @@ impl fmt::Debug for UnpairedRegistration {
 }
 
 impl UnpairedRegistration {
+    /// Mode-1 account lookup for this registration, without token or key fields.
+    pub(crate) fn lookup_request(&self) -> Value {
+        crate::lookup_request_for_device(&self._device_id)
+    }
+
     /// Persist this incomplete registration in the restricted local session
     /// store so an interrupted pairing does not discard its server token.
     pub fn persist_pending(
@@ -808,6 +813,25 @@ mod tests {
                 .unwrap_err(),
             RegistrationError::Expired
         );
+    }
+
+    #[test]
+    fn account_lookup_keeps_registration_device_identity_after_restore() {
+        let attempt = RegistrationAttempt::prepare().unwrap();
+        let device_id = attempt.device_id.clone();
+        let pending = attempt
+            .accept_response(&response(), Duration::from_secs(120))
+            .unwrap();
+        let stored = pending.stored_record().unwrap();
+        let restored = UnpairedRegistration::restore_confirmed_registration(&stored).unwrap();
+        let first = pending.lookup_request();
+        let second = restored.lookup_request();
+        assert_eq!(first[1][0][1], device_id);
+        assert_eq!(second[1][0][1], device_id);
+        assert_ne!(first[0][0], second[0][0]);
+        assert_eq!(first[2], 1);
+        assert_eq!(first[1].as_array().unwrap().len(), 1);
+        assert!(first[0][5].is_null());
     }
 
     #[test]
