@@ -68,6 +68,22 @@ No registration RPC, receive acknowledgement, or chat-send request is implemente
 by this work. Automatic browser SendMessage traffic includes protocol envelopes;
 it must not be interpreted as permission to send user messages.
 
+`registration::RegistrationAttempt` now prepares the mode-0 body offline with a
+fresh web-device ID and an OS-generated 32-byte transport key. Its consuming
+response decoder requires the separate registration shape, bounded nonempty
+identity and token bytes, and a positive signed-64-bit microsecond lifetime.
+The caller supplies a local lifetime cap. Expiry starts at request preparation,
+so delayed responses cannot extend that cap.
+
+The returned `UnpairedRegistration` keeps credentials private, redacts Debug,
+and exposes only remaining lifetime. It has no persistence or connected-account
+conversion. Owned request bytes, keys, and decoded credentials use zeroizing
+storage. The caller owns the response buffer; this does not promise erasure of
+every parsing or encoding temporary. Synthetic tests cover the request fields,
+fresh IDs and keys, response bounds, invalid lifetimes, and expiry. Registration
+has not been tested against Google's service, and the browser probe still permits
+only read-only lookup.
+
 ## Session ownership and storage
 
 The new client owns its newly generated device identity, registration identity,

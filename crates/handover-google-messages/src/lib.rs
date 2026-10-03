@@ -4,6 +4,7 @@
 
 pub mod native;
 pub mod pairing;
+pub mod registration;
 pub mod sources;
 
 use reqwest::{
@@ -337,31 +338,33 @@ fn validate_browser_lookup(body: &Value) -> Result<(), ProbeError> {
     valid.ok_or(ProbeError::InvalidBootstrap)
 }
 
+fn request_header() -> Value {
+    json!([
+        Uuid::new_v4().to_string(),
+        null,
+        "GDitto",
+        null,
+        null,
+        null,
+        [
+            null,
+            null,
+            OBSERVED_WIRE_VERSION[0],
+            OBSERVED_WIRE_VERSION[1],
+            OBSERVED_WIRE_VERSION[2],
+            null,
+            4,
+            null,
+            6
+        ]
+    ])
+}
+
 fn lookup_request() -> Value {
     // Google's public web source: Z4a mode 1, BC field 1, RKa device type 3.
     // All identifiers are fresh. Mode 0 device registration is never requested.
     json!([
-        [
-            Uuid::new_v4().to_string(),
-            null,
-            "GDitto",
-            null,
-            null,
-            null,
-            [
-                null,
-                null,
-                OBSERVED_WIRE_VERSION[0],
-                OBSERVED_WIRE_VERSION[1],
-                OBSERVED_WIRE_VERSION[2],
-                null,
-                4,
-                null,
-                6
-            ]
-        ],
-        // Match the working browser's 32-character opaque suffix while keeping
-        // the identifier fresh and independent of its stored device identity.
+        request_header(),
         [[3, format!("messages-web-{}", Uuid::new_v4().simple())]],
         1,
         "GDitto"
