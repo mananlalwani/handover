@@ -182,6 +182,20 @@ fails validation is reported as an error, and no account is announced for it.
 Because no account is ever announced as authenticated,
 `handoverctl messages login` reports only that the request was queued.
 
+The local Chrome observer can send a marked browser-login bundle through the
+existing `messages.login` socket command. Handoverd recognizes only the opaque
+bundle marker and forwards it only when the active helper's `Hello` name is the
+in-tree helper. This keeps the browser proof away from the production adapter
+when the daemon is still configured to use it. The bundle is transient and is
+not logged or persisted by Handoverd; the current native helper discards it.
+
+New pending registrations have a random persistent Handover account alias in
+the same versioned registration record. Older records receive an alias on
+restore without changing their store key (the opaque registration-identity
+digest). The alias contains no account email. The account label still says the
+registration is not paired, and the helper never claims connectivity or
+authentication from a saved unpaired credential.
+
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,
 SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,
 typing-start, read receipts, status, own deletes, reconnect catch-up, logout.

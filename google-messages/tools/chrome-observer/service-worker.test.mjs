@@ -293,6 +293,11 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
     { ok: false, error: 'network', rpc_status: 'INVALID_ARGUMENT' },
     { ok: true, sources: 4, rpc_status: 'INVALID_ARGUMENT' },
   ]) assert.deepEqual(worker.sanitizeNativeReply(reply), { state: 'failed', result: { error: 'invalid_response' } });
+  for (const error of ['no_pending_registration', 'ambiguous_registration', 'daemon_unavailable']) {
+    assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error }), {
+      state: 'failed', result: { ok: false, error },
+    });
+  }
   assert.deepEqual(worker.sanitizeNativeReply({ ok: true, sources: 4, http_status: 204 }), { state: 'failed', result: { error: 'invalid_response' } });
   assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 401, message: 'secret' }), {
     state: 'failed', result: { ok: false, error: 'http_error', http_status: 401 },
@@ -355,4 +360,25 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal((await send({ type: 'snapshot' })).nativeProbe.operation, 'pairing_check');
   assert.equal(nativePayloadRefs.at(-1).account_email, '');
   assert.equal(nativePayloadRefs.at(-1).service_cookie, undefined);
+
+  const loginCallCount = nativeCalls.length;
+  assert.match((await send({ type: 'native-login' })).message, /Native login is waiting/);
+  const loginId = 'native-login-request';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: loginId, hasExtraInfo: false, request: {
+    url: `https://instantmessaging-pa.googleapis.com${authPath}`, method: 'POST',
+    headers: { Authorization: 'Bearer LOGIN_AUTH', 'X-Goog-Api-Key': 'LOGIN_API', Cookie: 'SID=LOGIN_COOKIE' },
+    postData: 'LOGIN_BODY_MUST_NOT_FORWARD',
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: loginId, hasExtraInfo: false });
+  await waitFor(() => nativeCalls.length === loginCallCount + 1);
+  assert.deepEqual(nativeCalls.at(-1).payload, {
+    type: 'gaia_login', endpoint: 'https://instantmessaging-pa.googleapis.com',
+    origin: 'https://messages.google.com', authorization: 'Bearer LOGIN_AUTH',
+    api_key: 'LOGIN_API', service_cookie: 'SID=LOGIN_COOKIE', account_email: 'person@example.org',
+  });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.operation, 'native_login');
+  assert.equal(nativePayloadRefs.at(-1).account_email, '');
+  const loginSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
+  for (const secret of ['person@example.org', 'LOGIN_AUTH', 'LOGIN_API', 'LOGIN_COOKIE']) assert.equal(loginSnapshot.includes(secret), false);
 });

@@ -93,13 +93,18 @@ separate and rejects the explicit registration proof mode.
 The new client owns its newly generated device identity, registration identity,
 token, expiry, pairing request identifier, and confirmed keys. Handoverd owns the
 normalized runtime account view through the existing helper contract. Google
-cookies, identities, tokens, and keys do not enter daemon snapshots or client IPC.
-The AGPL adapter's stored sessions will not be imported.
+cookies, authorization, API keys, email, and provider identity remain inside
+one marked, opaque Login bundle when browser proof crosses the local socket and
+helper pipe. Handoverd does not inspect or persist its payload, and routes it
+only to the in-tree helper. These values never enter daemon snapshots or
+client-facing IPC. The AGPL adapter's stored sessions will not be imported.
 
-Browser service cookies remain transient in the current login flow. The restricted
-session-record store exists, but no account state is written to it yet.
-Persistent credential acquisition, typed session records, and refresh still need
-implementation before unattended login or restart recovery can be claimed.
+Browser service cookies remain transient. A restricted session-record store
+persists the mode-0 unpaired registration and a random Handover account alias;
+the alias contains no email. Older pending records are upgraded in place when
+restored. The current helper discards the browser bundle and announces the saved
+registration as offline and unauthenticated. Confirmed-session persistence,
+refresh, and restart recovery still need implementation.
 
 Google's restore path requires a complete set of registration and pairing data
 and applies a configuration-dependent pairing-age limit. A partial record must

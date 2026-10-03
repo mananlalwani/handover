@@ -92,6 +92,7 @@ type PageFloors = HashMap<PageFloorKey, (Option<i64>, String)>;
 
 struct HubInner {
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
+    helper_name: Mutex<Option<String>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), HelperCallError>>>>,
     fetches: Mutex<FetchWaiters>,
     /// Serialize fetches per conversation so their cached pages and cursors
@@ -126,6 +127,7 @@ impl MessagingHub {
         Self {
             inner: Arc::new(HubInner {
                 sender: Mutex::new(None),
+                helper_name: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
                 fetches: Mutex::new(HashMap::new()),
                 counter: AtomicU64::new(1),
@@ -149,6 +151,11 @@ impl MessagingHub {
 
     pub(crate) fn is_shutdown(&self) -> bool {
         self.inner.shutdown.load(Ordering::Relaxed)
+    }
+
+    pub(crate) async fn accepts_native_browser_login(&self) -> bool {
+        self.inner.helper_name.lock().await.as_deref()
+            == Some(handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME)
     }
 
     #[cfg(test)]
@@ -552,8 +559,12 @@ impl MessagingHub {
             .map(|(id, _)| *id)
     }
 
-    async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
+    pub(crate) async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
         *self.inner.sender.lock().await = sender;
+    }
+
+    pub(crate) async fn set_helper_name(&self, name: Option<String>) {
+        *self.inner.helper_name.lock().await = name;
     }
 }
 
@@ -607,6 +618,7 @@ async fn run_session(
     hub: &MessagingHub,
     mut process: HelperProcess,
 ) {
+    hub.set_helper_name(Some(process.name.clone())).await;
     let (tx, mut rx) = mpsc::channel::<HelperCommand>(128);
     hub.set_sender(Some(tx)).await;
     // Catch-up: ask the helper to re-emit authoritative state for every
@@ -661,6 +673,7 @@ async fn run_session(
         }
     }
     hub.set_sender(None).await;
+    hub.set_helper_name(None).await;
 }
 
 async fn ingest_event(
@@ -1317,6 +1330,22 @@ pub(crate) fn validate_login_bundle(bundle_b64: &str) -> Result<(), HelperCallEr
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn native_browser_login_is_routed_only_to_the_in_tree_helper() {
+        let hub = super::MessagingHub::new();
+        assert!(!hub.accepts_native_browser_login().await);
+        hub.set_helper_name(Some("handover-gmessages/production".into()))
+            .await;
+        assert!(!hub.accepts_native_browser_login().await);
+        hub.set_helper_name(Some(
+            handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME.into(),
+        ))
+        .await;
+        assert!(hub.accepts_native_browser_login().await);
+        hub.set_helper_name(None).await;
+        assert!(!hub.accepts_native_browser_login().await);
+    }
+
     #[tokio::test]
     async fn helper_exit_after_submission_does_not_claim_rejection() {
         let hub = super::MessagingHub::new();

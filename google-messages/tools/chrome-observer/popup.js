@@ -28,6 +28,8 @@ async function refresh() {
     const result = probe.result ?? {};
     nativeStatus.textContent = result.ok && result.registered
       ? 'Native device registered. The unpaired credential was saved locally.'
+      : result.ok && probe.operation === 'native_login'
+      ? 'Sign-in proof was queued by Handover. This did not send a phone pairing request.'
       : result.ok && probe.operation === 'pairing_check'
       ? `Read-only pairing readiness check complete. ${Number.isInteger(result.sources) ? `${result.sources} registered source(s) found.` : ''} No phone pairing request was sent.`
       : result.ok
@@ -39,6 +41,12 @@ async function refresh() {
       nativeStatus.textContent = result.error === 'sign_in_not_observed'
         ? 'No matching sign-in request was seen; no registration request was sent.'
         : 'Registration outcome was not confirmed. Check Google Messages registered devices before trying again.';
+    } else if (probe.operation === 'native_login' && result.error === 'no_pending_registration') {
+      nativeStatus.textContent = 'Register one native device before sending a sign-in proof to Handover.';
+    } else if (probe.operation === 'native_login' && result.error === 'ambiguous_registration') {
+      nativeStatus.textContent = 'More than one pending native registration exists. Choose which account to use before continuing.';
+    } else if (probe.operation === 'native_login' && result.error === 'daemon_unavailable') {
+      nativeStatus.textContent = 'Handover could not accept the sign-in proof. Check that the daemon is running with the in-tree native helper selected.';
     } else {
       const statusCode = result.error === 'http_error' && Number.isInteger(result.http_status) ? `, HTTP ${result.http_status}` : '';
       const rpcStatus = typeof result.rpc_status === 'string' ? `, RPC ${result.rpc_status}` : '';
@@ -95,6 +103,12 @@ document.querySelector('#register-device').addEventListener('click', async () =>
 document.querySelector('#pairing-check').addEventListener('click', async () => {
   const result = await message({ type: 'pairing-check' });
   nativeStatus.textContent = result?.error ?? 'Read-only pairing readiness check started. Refresh Google Messages to provide a one-time sign-in proof.';
+  await refresh();
+});
+
+document.querySelector('#native-login').addEventListener('click', async () => {
+  const result = await message({ type: 'native-login' });
+  nativeStatus.textContent = result?.error ?? 'Native login is waiting for SignInGaia. Refresh Google Messages to send one sign-in proof to Handover.';
   await refresh();
 });
 

@@ -1,9 +1,13 @@
-//! Bounded Chrome Native Messaging transport for the authentication probe.
+//! Bounded Chrome Native Messaging transport for authentication and local login.
 
 use std::{future::Future, io, time::Duration};
 
+use base64::{Engine, engine::general_purpose};
+use handover_core::messaging::MessagingAccountId;
+use handover_ipc::Client as IpcClient;
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 use crate::{
     BrowserProof, ProbeError, ProbeResult, RpcReason, RpcStatus, probe, register_device,
@@ -61,7 +65,9 @@ where
         READ_TIMEOUT,
         PROBE_TIMEOUT,
         |proof| async move {
-            if proof.kind == "gaia_register" {
+            if proof.kind == "gaia_login" {
+                login_via_daemon(proof).await
+            } else if proof.kind == "gaia_register" {
                 let registration =
                     register_device(&proof, Duration::from_secs(30 * 24 * 60 * 60)).await?;
                 persist_registration(registration)?;
@@ -72,6 +78,48 @@ where
         },
     )
     .await
+}
+
+async fn login_via_daemon(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
+    let store = SessionStore::default_store().map_err(|_| ProbeError::RegistrationFailed)?;
+    let (account_id, bundle_b64) = build_login_bundle(&proof, &store)?;
+    let mut client = IpcClient::connect()
+        .await
+        .map_err(|_| ProbeError::DaemonUnavailable)?;
+    client
+        .messaging_login(account_id, bundle_b64)
+        .await
+        .map_err(|_| ProbeError::DaemonUnavailable)?;
+    Ok(ProbeResult { sources: 0 })
+}
+
+fn build_login_bundle(
+    proof: &BrowserProof,
+    store: &SessionStore,
+) -> Result<(MessagingAccountId, String), ProbeError> {
+    proof.validate_login()?;
+    let mut registrations = UnpairedRegistration::restore_all_pending(store)
+        .map_err(|_| ProbeError::RegistrationFailed)?;
+    if registrations.is_empty() {
+        return Err(ProbeError::NoPendingRegistration);
+    }
+    if registrations.len() != 1 {
+        return Err(ProbeError::AmbiguousRegistration);
+    }
+    let registration = registrations.pop().expect("one registration was checked");
+    let account_id = MessagingAccountId::new(registration.handover_account_id().to_owned());
+    let serialized = Zeroizing::new({
+        let mut bytes = b"HOVL\x01\0".to_vec();
+        bytes.extend_from_slice(
+            &serde_json::to_vec(proof).map_err(|_| ProbeError::InvalidBootstrap)?,
+        );
+        bytes
+    });
+    let bundle_b64 = general_purpose::STANDARD.encode(serialized.as_slice());
+    if bundle_b64.len() > handover_gmessages::contract::MAX_BUNDLE_BYTES {
+        return Err(ProbeError::InvalidBootstrap);
+    }
+    Ok((account_id, bundle_b64))
 }
 
 fn persist_registration(registration: UnpairedRegistration) -> Result<(), ProbeError> {
@@ -197,6 +245,20 @@ mod tests {
     const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
     const ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/";
 
+    fn pairing_proof() -> BrowserProof {
+        BrowserProof {
+            kind: "gaia_pairing".into(),
+            endpoint: "https://instantmessaging-pa.googleapis.com".into(),
+            origin: "https://messages.google.com".into(),
+            authorization: "Bearer synthetic".into(),
+            api_key: "synthetic".into(),
+            auth_user: Some("0".into()),
+            service_cookie: Some("SID=synthetic".into()),
+            account_email: Some("person@example.test".into()),
+            browser_request: None,
+        }
+    }
+
     fn proof_json(extra: &str) -> Vec<u8> {
         format!(
             "{{\"type\":\"gaia_lookup\",\"endpoint\":\"https://example.test/\",\
@@ -256,6 +318,74 @@ mod tests {
             serde_json::json!({"ok":true,"sources":2})
         );
         task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn login_bundle_uses_the_persisted_alias_and_keeps_email_inside_the_opaque_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path().join("sessions"));
+        let registration_response =
+            br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#;
+        let registration = crate::registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(registration_response, Duration::from_secs(3600))
+            .unwrap();
+        let account_id = registration.handover_account_id().to_owned();
+        registration.persist_pending(&store).unwrap();
+
+        let mut proof = pairing_proof();
+        proof.kind = "gaia_login".into();
+        let (selected_account, bundle_b64) = build_login_bundle(&proof, &store).unwrap();
+        assert_eq!(selected_account.as_str(), account_id);
+        assert!(!selected_account.as_str().contains('@'));
+        assert!(
+            bundle_b64
+                .starts_with(handover_gmessages::contract::NATIVE_BROWSER_LOGIN_BUNDLE_PREFIX)
+        );
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(bundle_b64)
+            .unwrap();
+        let forwarded: BrowserProof = serde_json::from_slice(&decoded[6..]).unwrap();
+        assert_eq!(
+            forwarded.account_email.as_deref(),
+            Some("person@example.test")
+        );
+        assert_eq!(forwarded.kind, "gaia_login");
+    }
+
+    #[test]
+    fn login_bundle_requires_exactly_one_pending_registration() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path().join("sessions"));
+        let mut proof = pairing_proof();
+        proof.kind = "gaia_login".into();
+        assert!(matches!(
+            build_login_bundle(&proof, &store),
+            Err(ProbeError::NoPendingRegistration)
+        ));
+
+        for identity in ["first-id", "second-id"] {
+            let response = serde_json::to_vec(&serde_json::json!([
+                [],
+                base64::engine::general_purpose::STANDARD.encode(identity),
+                null,
+                [
+                    base64::engine::general_purpose::STANDARD.encode("synthetic-token"),
+                    "3600000000"
+                ]
+            ]))
+            .unwrap();
+            crate::registration::RegistrationAttempt::prepare()
+                .unwrap()
+                .accept_response(&response, Duration::from_secs(3600))
+                .unwrap()
+                .persist_pending(&store)
+                .unwrap();
+        }
+        assert!(matches!(
+            build_login_bundle(&proof, &store),
+            Err(ProbeError::AmbiguousRegistration)
+        ));
     }
 
     #[tokio::test]

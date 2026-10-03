@@ -17,12 +17,25 @@ use serde::{Deserialize, Serialize};
 /// Helper contract version. Bumped only for breaking changes; unknown
 /// versions are rejected on both sides.
 pub const HELPER_PROTOCOL: u32 = 1;
+/// Reported by the in-tree Google Messages helper in the `Hello` event.
+pub const NATIVE_GOOGLE_MESSAGES_HELPER_NAME: &str = "handover-google-messages-helper/native";
 
 /// Maximum decoded helper line: 1 MiB. Pages above this are malformed.
 pub const MAX_HELPER_LINE_BYTES: usize = 1024 * 1024;
 
 /// Maximum credential bundle accepted on `Login`: 256 KiB.
 pub const MAX_BUNDLE_BYTES: usize = 256 * 1024;
+
+/// Encoded base64 prefix for the first-party browser login envelope. The
+/// daemon uses it only to route this private bundle to the matching in-tree
+/// helper, never to inspect its payload.
+pub const NATIVE_BROWSER_LOGIN_BUNDLE_PREFIX: &str = "SE9WTAEA";
+
+/// Identify the first-party browser-login envelope without decoding or
+/// inspecting its Google-specific payload.
+pub fn is_native_browser_login_bundle(bundle_b64: &str) -> bool {
+    bundle_b64.starts_with(NATIVE_BROWSER_LOGIN_BUNDLE_PREFIX)
+}
 
 /// Commands from the daemon to the helper.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -408,6 +421,13 @@ mod tests {
         };
         let encoded = encode_command(&command).expect("encodes");
         assert!(encoded.len() + 1 > MAX_HELPER_LINE_BYTES || bundle_too_big(&command));
+    }
+
+    #[test]
+    fn native_browser_login_marker_is_detected_without_decoding_the_payload() {
+        assert!(is_native_browser_login_bundle("SE9WTAEAeA=="));
+        assert!(!is_native_browser_login_bundle("eyJ0eXBlIjoibG9naW4ifQ=="));
+        assert!(!is_native_browser_login_bundle(""));
     }
 
     fn bundle_too_big(command: &HelperCommand) -> bool {

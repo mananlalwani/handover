@@ -1,6 +1,8 @@
-//! Independently authored, read-only Google Messages authentication probe.
+//! Independently authored Google Messages protocol client for Handover.
 //!
-//! This does not register a device, pair a phone, or provide a messaging backend.
+//! It contains bounded authentication, registration, pairing, and receive
+//! primitives. Network effects are explicit; the helper does not yet run a
+//! completed phone-pairing or messaging session.
 
 pub mod native;
 pub mod pairing;
@@ -100,7 +102,7 @@ pub enum RpcReason {
 }
 
 /// A one-use browser proof. Debug deliberately excludes all supplied values.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserProof {
     #[serde(rename = "type")]
@@ -163,6 +165,9 @@ pub enum ProbeError {
     InvalidEndpoint,
     InvalidCredentials,
     RegistrationFailed,
+    NoPendingRegistration,
+    AmbiguousRegistration,
+    DaemonUnavailable,
     SessionExpired,
     ReceiveFailed,
     NoEligiblePhone,
@@ -199,6 +204,9 @@ impl ProbeError {
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidCredentials => "invalid_credentials",
             Self::RegistrationFailed => "registration_failed",
+            Self::NoPendingRegistration => "no_pending_registration",
+            Self::AmbiguousRegistration => "ambiguous_registration",
+            Self::DaemonUnavailable => "daemon_unavailable",
             Self::SessionExpired => "session_expired",
             Self::ReceiveFailed => "receive_failed",
             Self::NoEligiblePhone => "no_eligible_phone",
@@ -306,7 +314,15 @@ impl BrowserProof {
     }
 
     fn validate_pairing(&self) -> Result<HeaderMap, ProbeError> {
-        if self.kind != "gaia_pairing" || self.browser_request.is_some() {
+        self.validate_account_proof("gaia_pairing")
+    }
+
+    fn validate_login(&self) -> Result<HeaderMap, ProbeError> {
+        self.validate_account_proof("gaia_login")
+    }
+
+    fn validate_account_proof(&self, kind: &str) -> Result<HeaderMap, ProbeError> {
+        if self.kind != kind || self.browser_request.is_some() {
             return Err(ProbeError::InvalidBootstrap);
         }
         if !self
@@ -321,7 +337,10 @@ impl BrowserProof {
 
     fn validate_mode(&self, registration: bool) -> Result<HeaderMap, ProbeError> {
         let kind_allowed = if registration {
-            matches!(self.kind.as_str(), "gaia_register" | "gaia_pairing")
+            matches!(
+                self.kind.as_str(),
+                "gaia_register" | "gaia_pairing" | "gaia_login"
+            )
         } else {
             matches!(
                 self.kind.as_str(),
@@ -360,6 +379,7 @@ impl BrowserProof {
                 | "gaia_lookup_browser_request"
                 | "gaia_lookup_inspect"
                 | "gaia_pairing"
+                | "gaia_login"
                 | "gaia_register",
                 Some(cookie),
             ) => {
@@ -1400,6 +1420,18 @@ mod tests {
             proof.validate_messaging(),
             Err(ProbeError::InvalidCredentials)
         );
+    }
+
+    #[tokio::test]
+    async fn native_login_proof_is_not_accepted_by_the_read_only_probe() {
+        let mut login_proof = proof();
+        login_proof.kind = "gaia_login".into();
+        login_proof.service_cookie = Some("SID=synthetic".into());
+        login_proof.account_email = Some("person@example.test".into());
+        assert!(matches!(
+            probe(login_proof).await,
+            Err(ProbeError::InvalidBootstrap)
+        ));
     }
 
     #[test]

@@ -17,6 +17,7 @@ path = "src/bin/helper.rs"
 base64 = "0.22.1"
 handover-core.workspace = true
 handover-gmessages.workspace = true
+handover-ipc.workspace = true
 prost = "0.14.1"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
 serde.workspace = true

@@ -110,6 +110,20 @@ files. The result reports a source count only; it does not select a phone or
 start pairing. This browser-to-native proof has offline coverage but has not
 been live-tested.
 
+### Send sign-in proof to Handover
+
+**Send sign-in proof to Handover** captures the same matched request and
+transient `GA_EMAIL`, then passes them only inside an opaque, size-bounded
+Login bundle through the local daemon to the in-tree helper. The daemon checks
+the active helper's Hello name before forwarding this marked bundle, so the
+production adapter cannot receive it accidentally. The native helper currently
+validates and discards the bundle and announces the saved random local account
+alias as offline and unauthenticated. No Google request, phone pairing, or
+message send occurs. This local IPC path has mock/offline coverage but has not
+been live-tested. Exactly one saved pending registration must exist so Handover
+can use its persisted random account alias; zero or multiple records are
+rejected without choosing one arbitrarily.
+
 ### Compare the browser lookup body
 
 “Compare browser lookup” is an optional read-only diagnostic. Start it on the

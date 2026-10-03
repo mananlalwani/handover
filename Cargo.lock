@@ -887,6 +887,7 @@ dependencies = [
  "ctr",
  "handover-core",
  "handover-gmessages",
+ "handover-ipc",
  "hkdf",
  "hmac",
  "libc",

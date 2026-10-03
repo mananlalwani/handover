@@ -395,6 +395,19 @@ where
             return Ok(true);
         }
     };
+    if handover_gmessages::contract::is_native_browser_login_bundle(&bundle_b64)
+        && !hub.accepts_native_browser_login().await
+    {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::CredentialRejected,
+                "native browser login requires the in-tree helper",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    }
     // The bundle travels the local socket and the local helper pipe only.
     // It is never logged, never stored by the daemon, and never argv.
     let account = account_id.as_str().to_string();
@@ -2343,7 +2356,7 @@ mod messaging_failure_tests {
         MessagingAccountEvent, MessagingAccountId, MessagingEvent as CoreEvent, Participant,
         TransportKind,
     };
-    use handover_ipc::{Client, ErrorCode, IpcError};
+    use handover_ipc::{Client, ErrorCode, IpcError, ServerMessage, ServerPayload};
     use std::collections::BTreeSet;
 
     use super::*;
@@ -2406,6 +2419,69 @@ mod messaging_failure_tests {
             }),
         )));
         Arc::new(RwLock::new(store))
+    }
+
+    #[tokio::test]
+    async fn native_browser_login_bundle_is_rejected_for_the_production_helper() {
+        let hub = crate::messaging_backend::MessagingHub::new();
+        hub.set_helper_name(Some("handover-gmessages/production".into()))
+            .await;
+        let mut writer = Vec::new();
+        let bundle = format!(
+            "{}eA==",
+            handover_gmessages::contract::NATIVE_BROWSER_LOGIN_BUNDLE_PREFIX
+        );
+        let handled = super::handle_login(
+            MessagingAccountId::new("gmessages-test"),
+            bundle,
+            &mut writer,
+            &Some(hub.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(handled);
+        let response: ServerMessage = serde_json::from_slice(&writer[..writer.len() - 1]).unwrap();
+        assert!(matches!(
+            response.payload,
+            ServerPayload::Error {
+                code: ErrorCode::CredentialRejected,
+                ..
+            }
+        ));
+        assert!(!hub.try_has_sender());
+    }
+
+    #[tokio::test]
+    async fn native_browser_login_bundle_reaches_only_the_in_tree_helper() {
+        let hub = crate::messaging_backend::MessagingHub::new();
+        hub.set_helper_name(Some(
+            handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME.into(),
+        ))
+        .await;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        hub.set_sender(Some(sender)).await;
+        let account_id = MessagingAccountId::new("gmessages-test");
+        let bundle = format!(
+            "{}eA==",
+            handover_gmessages::contract::NATIVE_BROWSER_LOGIN_BUNDLE_PREFIX
+        );
+        let mut writer = Vec::new();
+        super::handle_login(account_id.clone(), bundle.clone(), &mut writer, &Some(hub))
+            .await
+            .unwrap();
+
+        let accepted: ServerMessage = serde_json::from_slice(&writer[..writer.len() - 1]).unwrap();
+        assert_eq!(
+            accepted.payload,
+            ServerPayload::AccountAccepted { account_id }
+        );
+        assert!(matches!(
+            receiver.recv().await,
+            Some(handover_gmessages::contract::HelperCommand::Login {
+                account,
+                bundle_b64,
+            }) if account == "gmessages-test" && bundle_b64 == bundle
+        ));
     }
 
     async fn server_without_helper(

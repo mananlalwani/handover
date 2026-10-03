@@ -23,6 +23,7 @@ use base64::Engine as _;
 use handover_core::messaging::check_account_id;
 use handover_gmessages::contract::{
     HELPER_PROTOCOL, HelperCommand, HelperEvent, MAX_BUNDLE_BYTES, MAX_HELPER_LINE_BYTES,
+    NATIVE_GOOGLE_MESSAGES_HELPER_NAME,
 };
 use handover_google_messages::registration::UnpairedRegistration;
 use handover_google_messages::session_store::SessionStore;
@@ -30,7 +31,7 @@ use zeroize::Zeroizing;
 
 /// Reported in `Hello`. The daemon logs the OS process name separately; this
 /// identifies the implementation, not the account.
-const HELPER_NAME: &str = "handover-google-messages-helper/native";
+const HELPER_NAME: &str = NATIVE_GOOGLE_MESSAGES_HELPER_NAME;
 
 /// Shown next to every account this helper announces.
 ///
@@ -246,9 +247,10 @@ impl NativeHelper {
         // identifier, and it is a valid account id for the daemon's gate.
         match UnpairedRegistration::restore_all_pending_with_keys(store) {
             Ok(pending) => {
-                for (key, _registration) in pending {
-                    self.accounts.insert(key.clone());
-                    events.push(announcement(&key));
+                for (_key, registration) in pending {
+                    let account = registration.handover_account_id().to_owned();
+                    self.accounts.insert(account.clone());
+                    events.push(announcement(&account));
                 }
             }
             // Fail closed: a record this build cannot validate must not be
@@ -343,6 +345,38 @@ mod tests {
                 name: HELPER_NAME.into(),
             }]
         );
+    }
+
+    #[test]
+    fn hello_announces_the_persisted_random_account_alias() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path().join("sessions"));
+        let response = br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#;
+        let registration = handover_google_messages::registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(response, std::time::Duration::from_secs(3600))
+            .unwrap();
+        let account_id = registration.handover_account_id().to_string();
+        let protocol_identity =
+            handover_google_messages::session_store::account_key_for_identity(b"synthetic-id")
+                .unwrap();
+        registration.persist_pending(&store).unwrap();
+        let mut helper = NativeHelper::new();
+        helper.store = Some(store);
+
+        let events = hello_events(&mut helper);
+        assert_eq!(account_ids(&events), vec![account_id.as_str()]);
+        assert!(!account_ids(&events).contains(&protocol_identity.as_str()));
+        assert!(matches!(
+            events
+                .iter()
+                .find(|event| matches!(event, HelperEvent::Account { .. })),
+            Some(HelperEvent::Account {
+                connected: false,
+                authenticated: false,
+                ..
+            })
+        ));
     }
 
     #[test]

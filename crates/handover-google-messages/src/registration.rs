@@ -1,6 +1,7 @@
 //! Offline account registration preparation. This module makes no HTTP requests.
 
 use base64::{Engine, engine::general_purpose};
+use handover_core::messaging::check_account_id;
 use prost::Message;
 use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
@@ -35,6 +36,7 @@ pub enum RegistrationError {
 /// Debug and Serde cannot expose the request or key.
 pub struct RegistrationAttempt {
     device_id: String,
+    handover_account_id: String,
     transport_key: Zeroizing<[u8; 32]>,
     request: Zeroizing<Vec<u8>>,
     started: Instant,
@@ -68,6 +70,7 @@ impl RegistrationAttempt {
         }
         Ok(Self {
             device_id,
+            handover_account_id: new_handover_account_id(),
             transport_key,
             request: Zeroizing::new(bytes?),
             started: Instant::now(),
@@ -130,6 +133,7 @@ impl RegistrationAttempt {
             }
             Ok(UnpairedRegistration {
                 _device_id: self.device_id,
+                handover_account_id: self.handover_account_id,
                 _identity: identity,
                 _token: token,
                 _transport_key: self.transport_key,
@@ -146,6 +150,7 @@ impl RegistrationAttempt {
 /// There is no online state, persistence, or authenticated-session conversion.
 pub struct UnpairedRegistration {
     _device_id: String,
+    handover_account_id: String,
     _identity: Zeroizing<Vec<u8>>,
     _token: Zeroizing<Vec<u8>>,
     _transport_key: Zeroizing<[u8; 32]>,
@@ -179,6 +184,7 @@ impl UnpairedRegistration {
             token: self._token.to_vec(),
             transport_key: self._transport_key.to_vec(),
             expires_unix,
+            handover_account_id: self.handover_account_id.clone(),
         }
         .encode_to_vec();
         let result = (|| {
@@ -208,7 +214,12 @@ impl UnpairedRegistration {
         };
         let mut saved = StoredUnpairedRegistration::decode(record.as_bytes())
             .map_err(|_| RegistrationError::InvalidStoredRegistration)?;
-        restore_stored_registration(&mut saved, identity).map(Some)
+        let needs_migration = saved.handover_account_id.is_empty();
+        let registration = restore_stored_registration(&mut saved, identity)?;
+        if needs_migration {
+            registration.persist_pending(store)?;
+        }
+        Ok(Some(registration))
     }
 
     /// Restore all valid pending registrations. Expired records are ignored;
@@ -249,8 +260,13 @@ impl UnpairedRegistration {
             if saved.expires_unix <= now {
                 continue;
             }
+            let needs_migration = saved.handover_account_id.is_empty();
             let identity = Zeroizing::new(saved.identity.clone());
-            restored.push((key, restore_stored_registration(&mut saved, &identity)?));
+            let registration = restore_stored_registration(&mut saved, &identity)?;
+            if needs_migration {
+                registration.persist_pending(store)?;
+            }
+            restored.push((key, registration));
         }
         Ok(restored)
     }
@@ -318,6 +334,12 @@ impl UnpairedRegistration {
             Ok(remaining)
         }
     }
+
+    /// Stable random Handover account ID stored with this registration. It
+    /// contains no Google account address or provider identity.
+    pub fn handover_account_id(&self) -> &str {
+        &self.handover_account_id
+    }
 }
 
 fn restore_stored_registration(
@@ -345,6 +367,13 @@ fn restore_stored_registration(
     transport_key.copy_from_slice(&saved.transport_key);
     let restored = UnpairedRegistration {
         _device_id: std::mem::take(&mut saved.device_id),
+        handover_account_id: if saved.handover_account_id.is_empty() {
+            new_handover_account_id()
+        } else if valid_handover_account_id(&saved.handover_account_id) {
+            std::mem::take(&mut saved.handover_account_id)
+        } else {
+            return Err(RegistrationError::InvalidStoredRegistration);
+        },
         _identity: Zeroizing::new(std::mem::take(&mut saved.identity)),
         _token: Zeroizing::new(std::mem::take(&mut saved.token)),
         _transport_key: transport_key,
@@ -369,6 +398,10 @@ struct StoredUnpairedRegistration {
     transport_key: Vec<u8>,
     #[prost(uint64, tag = "6")]
     expires_unix: u64,
+    /// Optional for compatibility with records written before account aliases
+    /// existed. Restore backfills a random alias and rewrites the same record.
+    #[prost(string, tag = "7")]
+    handover_account_id: String,
 }
 
 impl StoredUnpairedRegistration {
@@ -377,7 +410,19 @@ impl StoredUnpairedRegistration {
         self.token.zeroize();
         self.transport_key.zeroize();
         self.device_id.zeroize();
+        self.handover_account_id.zeroize();
     }
+}
+
+fn new_handover_account_id() -> String {
+    format!("gmessages-{}", Uuid::new_v4().simple())
+}
+
+fn valid_handover_account_id(value: &str) -> bool {
+    value.len() == 42
+        && value.starts_with("gmessages-")
+        && value[10..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        && check_account_id(value).is_ok()
 }
 
 impl Drop for StoredUnpairedRegistration {
@@ -449,6 +494,24 @@ fn erase_strings(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Message)]
+    struct StoredRegistrationForTest {
+        #[prost(uint32, tag = "1")]
+        version: u32,
+        #[prost(string, tag = "2")]
+        device_id: String,
+        #[prost(bytes = "vec", tag = "3")]
+        identity: Vec<u8>,
+        #[prost(bytes = "vec", tag = "4")]
+        token: Vec<u8>,
+        #[prost(bytes = "vec", tag = "5")]
+        transport_key: Vec<u8>,
+        #[prost(uint64, tag = "6")]
+        expires_unix: u64,
+        #[prost(string, tag = "7")]
+        handover_account_id: String,
+    }
 
     fn response() -> Vec<u8> {
         serde_json::to_vec(&json!([
@@ -533,6 +596,76 @@ mod tests {
         let all = UnpairedRegistration::restore_all_pending(&store).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(format!("{:?}", all[0]), "UnpairedRegistration { redacted }");
+    }
+
+    #[test]
+    fn pending_registration_persists_a_stable_random_handover_account_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::session_store::SessionStore::new(directory.path().join("sessions"));
+        let registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(3600))
+            .unwrap();
+        let identity = registration._identity.to_vec();
+        registration.persist_pending(&store).unwrap();
+
+        let key = crate::session_store::account_key_for_identity(&identity).unwrap();
+        let record = store.load(&key).unwrap().unwrap();
+        let stored = StoredRegistrationForTest::decode(record.as_bytes()).unwrap();
+        assert!(stored.handover_account_id.starts_with("gmessages-"));
+        assert_ne!(stored.handover_account_id, key);
+
+        let restored = UnpairedRegistration::restore_pending(&store, &identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.handover_account_id(), stored.handover_account_id);
+        let restored_record = store.load(&key).unwrap().unwrap();
+        let restored_stored =
+            StoredRegistrationForTest::decode(restored_record.as_bytes()).unwrap();
+        assert_eq!(
+            restored_stored.handover_account_id,
+            stored.handover_account_id
+        );
+        assert_eq!(restored_stored.version, 1);
+    }
+
+    #[test]
+    fn restoring_legacy_pending_registration_backfills_alias_in_place() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::session_store::SessionStore::new(directory.path().join("sessions"));
+        let registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(3600))
+            .unwrap();
+        let identity = registration._identity.to_vec();
+        let expires_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let legacy = StoredRegistrationForTest {
+            version: 1,
+            device_id: registration._device_id.clone(),
+            identity: registration._identity.to_vec(),
+            token: registration._token.to_vec(),
+            transport_key: registration._transport_key.to_vec(),
+            expires_unix,
+            handover_account_id: String::new(),
+        };
+        let key = crate::session_store::account_key_for_identity(&identity).unwrap();
+        let record = crate::session_store::SessionRecord::new(legacy.encode_to_vec()).unwrap();
+        store.store(&key, &record).unwrap();
+
+        let restored = UnpairedRegistration::restore_all_pending_with_keys(&store).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].0, key);
+        let account_id = restored[0].1.handover_account_id();
+        assert!(valid_handover_account_id(account_id));
+
+        let rewritten = store.load(&key).unwrap().unwrap();
+        let migrated = StoredRegistrationForTest::decode(rewritten.as_bytes()).unwrap();
+        assert_eq!(migrated.handover_account_id, account_id);
+        assert_eq!(migrated.identity, identity);
     }
 
     #[test]
