@@ -5,7 +5,10 @@ use std::{future::Future, io, time::Duration};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{BrowserProof, ProbeError, ProbeResult, RpcReason, RpcStatus, probe};
+use crate::{
+    BrowserProof, ProbeError, ProbeResult, RpcReason, RpcStatus, probe, register_device,
+    registration::UnpairedRegistration, session_store::SessionStore,
+};
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024;
@@ -57,9 +60,25 @@ where
         caller_origin,
         READ_TIMEOUT,
         PROBE_TIMEOUT,
-        probe,
+        |proof| async move {
+            if proof.kind == "gaia_register" {
+                let registration =
+                    register_device(&proof, Duration::from_secs(30 * 24 * 60 * 60)).await?;
+                persist_registration(registration)?;
+                Ok(ProbeResult { sources: 0 })
+            } else {
+                probe(proof).await
+            }
+        },
     )
     .await
+}
+
+fn persist_registration(registration: UnpairedRegistration) -> Result<(), ProbeError> {
+    let store = SessionStore::default_store().map_err(|_| ProbeError::RegistrationFailed)?;
+    registration
+        .persist_pending(&store)
+        .map_err(|_| ProbeError::RegistrationFailed)
 }
 
 async fn run_with_probe<R, W, F, Fut>(

@@ -88,6 +88,17 @@ structured ErrorInfo details. This never includes server messages or metadata.
 Unknown or opaque details are discarded. Its availability on the live Google
 Messages endpoint remains unverified.
 
+### Register one native device
+
+The separate **Register one native device** action is effectful. It captures
+only authorization, API key, account selector, origin, and service cookies from
+one matched SignInGaia request. It does not read or forward that browser
+request's body. Rust creates and sends a fresh mode-0 registration request,
+then stores the unpaired credential under the restricted
+`${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-native` directory. The
+result does not mean the phone was paired. No automatic retry is made. Pairing
+and message sending are separate operations.
+
 ### Compare the browser lookup body
 
 “Compare browser lookup” is an optional read-only diagnostic. Start it on the

@@ -6,7 +6,7 @@ use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
 use std::{
     fmt,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -27,6 +27,8 @@ pub enum RegistrationError {
     Encoding,
     Pairing(PairingError),
     Acknowledgement(crate::receive::ReceiveError),
+    SessionStore(crate::session_store::SessionStoreError),
+    InvalidStoredRegistration,
 }
 
 /// One fresh device identity and transport key, for one registration attempt.
@@ -158,6 +160,87 @@ impl fmt::Debug for UnpairedRegistration {
 }
 
 impl UnpairedRegistration {
+    /// Persist this incomplete registration in the restricted local session
+    /// store so an interrupted pairing does not discard its server token.
+    pub fn persist_pending(
+        &self,
+        store: &crate::session_store::SessionStore,
+    ) -> Result<(), RegistrationError> {
+        let remaining = self.remaining_lifetime()?;
+        let expires_unix = SystemTime::now()
+            .checked_add(remaining)
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .ok_or(RegistrationError::InvalidLifetime)?;
+        let mut encoded = StoredUnpairedRegistration {
+            version: 1,
+            device_id: self._device_id.clone(),
+            identity: self._identity.to_vec(),
+            token: self._token.to_vec(),
+            transport_key: self._transport_key.to_vec(),
+            expires_unix,
+        }
+        .encode_to_vec();
+        let result = (|| {
+            let record = crate::session_store::SessionRecord::new(encoded.clone())
+                .map_err(RegistrationError::SessionStore)?;
+            let key = crate::session_store::account_key_for_identity(&self._identity)
+                .map_err(RegistrationError::SessionStore)?;
+            store
+                .store(&key, &record)
+                .map_err(RegistrationError::SessionStore)
+        })();
+        zeroize::Zeroize::zeroize(&mut encoded);
+        result
+    }
+
+    /// Restore a pending registration for the same opaque server identity.
+    /// Expired or malformed records are rejected and never become accounts.
+    pub fn restore_pending(
+        store: &crate::session_store::SessionStore,
+        identity: &[u8],
+    ) -> Result<Option<Self>, RegistrationError> {
+        let Some(record) = store
+            .load_for_identity(identity)
+            .map_err(RegistrationError::SessionStore)?
+        else {
+            return Ok(None);
+        };
+        let mut saved = StoredUnpairedRegistration::decode(record.as_bytes())
+            .map_err(|_| RegistrationError::InvalidStoredRegistration)?;
+        let restored = (|| {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| RegistrationError::InvalidStoredRegistration)?
+                .as_secs();
+            if saved.version != 1
+                || saved.identity != identity
+                || saved.device_id.len() > 128
+                || !saved.device_id.starts_with("messages-web-")
+                || saved.token.is_empty()
+                || saved.token.len() > TOKEN_LIMIT
+                || saved.transport_key.len() != 32
+                || saved.expires_unix <= now
+                || saved.expires_unix.saturating_sub(now) > 30 * 24 * 60 * 60
+            {
+                return Err(RegistrationError::InvalidStoredRegistration);
+            }
+            let lifetime = Duration::from_secs(saved.expires_unix - now);
+            let mut transport_key = Zeroizing::new([0; 32]);
+            transport_key.copy_from_slice(&saved.transport_key);
+            Ok(Self {
+                _device_id: std::mem::take(&mut saved.device_id),
+                _identity: Zeroizing::new(std::mem::take(&mut saved.identity)),
+                _token: Zeroizing::new(std::mem::take(&mut saved.token)),
+                _transport_key: transport_key,
+                started: Instant::now(),
+                lifetime,
+            })
+        })();
+        saved.zeroize_secrets();
+        restored.map(Some)
+    }
+
     /// Prepare a fresh receive stream request using this unpaired credential.
     /// This does not start a stream, refresh a token, or establish online state.
     pub fn prepare_receive(&self) -> Result<ReceiveRequest, RegistrationError> {
@@ -220,6 +303,37 @@ impl UnpairedRegistration {
         } else {
             Ok(remaining)
         }
+    }
+}
+
+#[derive(Message)]
+struct StoredUnpairedRegistration {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(string, tag = "2")]
+    device_id: String,
+    #[prost(bytes = "vec", tag = "3")]
+    identity: Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    token: Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    transport_key: Vec<u8>,
+    #[prost(uint64, tag = "6")]
+    expires_unix: u64,
+}
+
+impl StoredUnpairedRegistration {
+    fn zeroize_secrets(&mut self) {
+        self.identity.zeroize();
+        self.token.zeroize();
+        self.transport_key.zeroize();
+        self.device_id.zeroize();
+    }
+}
+
+impl Drop for StoredUnpairedRegistration {
+    fn drop(&mut self) {
+        self.zeroize_secrets();
     }
 }
 
@@ -339,6 +453,34 @@ mod tests {
             registration.prepare_receive(),
             Err(RegistrationError::Expired)
         ));
+    }
+
+    #[test]
+    fn pending_registration_round_trips_only_through_restricted_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::session_store::SessionStore::new(directory.path().join("sessions"));
+        let registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(&response(), Duration::from_secs(3600))
+            .unwrap();
+        let identity = registration._identity.to_vec();
+        registration.persist_pending(&store).unwrap();
+        let restored = UnpairedRegistration::restore_pending(&store, &identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(format!("{restored:?}"), "UnpairedRegistration { redacted }");
+        let request: Value =
+            serde_json::from_slice(restored.prepare_receive().unwrap().request_bytes().unwrap())
+                .unwrap();
+        assert_eq!(
+            request[0][5],
+            general_purpose::STANDARD.encode("synthetic-token")
+        );
+        assert!(
+            UnpairedRegistration::restore_pending(&store, b"other-identity")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

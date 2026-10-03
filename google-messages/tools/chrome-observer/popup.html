@@ -24,11 +24,13 @@
   <p>The comparison passes the matched SignInGaia request's service cookies to the local Rust probe once. Nothing is saved.</p>
   <button id="browser-request-probe">Compare browser lookup</button>
   <p>This comparison passes a validated read-only lookup and its service cookies to Rust once. It includes the browser's opaque device ID. Registration and token-bearing requests are rejected. Nothing is saved.</p>
+  <button id="register-device">Register one native device</button>
+  <p>This changes your Google Messages registered devices. It makes one Rust-built registration request using the matched browser sign-in credentials, then stores the unpaired credential in Handover's private local session directory. It does not pair your phone or send a message.</p>
   <button id="inspect-probe">Inspect rejection locally</button>
   <p>This opt-in test makes the same read-only request and lets you view Google's error description locally. It may contain identifiers. It stays out of exports and clears after 60 seconds. Share only a redacted cause.</p>
   <button id="view-local-description">View local error description once</button>
   <pre id="local-description" hidden></pre>
-  <p>For the one-time test, start this probe, then refresh the current Google Messages tab to trigger its SignInGaia request.</p>
+  <p>For a probe, start it and refresh this tab to trigger SignInGaia. For registration, click the separate button above before refreshing.</p>
   <p id="native-status" role="status">Native authentication probe: idle.</p>
   <button id="stop">Stop</button>
   <button id="save">Prepare JSON export</button>

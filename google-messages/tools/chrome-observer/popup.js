@@ -26,15 +26,23 @@ async function refresh() {
   if (probe?.state === 'waiting' || probe?.state === 'running') clearLocalView();
   if (probe?.state === 'complete') {
     const result = probe.result ?? {};
-    nativeStatus.textContent = result.ok
+    nativeStatus.textContent = result.ok && result.registered
+      ? 'Native device registered. The unpaired credential was saved locally.'
+      : result.ok
       ? `Native authentication check complete. ${Number.isInteger(result.sources) ? `${result.sources} source(s) found.` : ''}`
       : 'Native authentication check complete.';
   } else if (probe?.state === 'failed') {
     const result = probe.result ?? {};
-    const statusCode = result.error === 'http_error' && Number.isInteger(result.http_status) ? `, HTTP ${result.http_status}` : '';
-    const rpcStatus = typeof result.rpc_status === 'string' ? `, RPC ${result.rpc_status}` : '';
-    const rpcReason = typeof result.rpc_reason === 'string' ? `, reason ${result.rpc_reason}` : '';
-    nativeStatus.textContent = `Native authentication probe failed (${result.error ?? 'invalid_response'}${statusCode}${rpcStatus}${rpcReason}).`;
+    if (result.registration) {
+      nativeStatus.textContent = result.error === 'sign_in_not_observed'
+        ? 'No matching sign-in request was seen; no registration request was sent.'
+        : 'Registration outcome was not confirmed. Check Google Messages registered devices before trying again.';
+    } else {
+      const statusCode = result.error === 'http_error' && Number.isInteger(result.http_status) ? `, HTTP ${result.http_status}` : '';
+      const rpcStatus = typeof result.rpc_status === 'string' ? `, RPC ${result.rpc_status}` : '';
+      const rpcReason = typeof result.rpc_reason === 'string' ? `, reason ${result.rpc_reason}` : '';
+      nativeStatus.textContent = `Native authentication probe failed (${result.error ?? 'invalid_response'}${statusCode}${rpcStatus}${rpcReason}).`;
+    }
   } else nativeStatus.textContent = `Native authentication probe: ${probe?.state ?? 'idle'}.`;
 }
 
@@ -73,6 +81,12 @@ document.querySelector('#cookie-probe').addEventListener('click', async () => {
 document.querySelector('#browser-request-probe').addEventListener('click', async () => {
   const result = await message({ type: 'auth-probe-browser-request' });
   nativeStatus.textContent = result?.error ?? 'Browser lookup comparison started. Refresh Google Messages, then reopen this popup.';
+  await refresh();
+});
+
+document.querySelector('#register-device').addEventListener('click', async () => {
+  const result = await message({ type: 'register-device' });
+  nativeStatus.textContent = result?.error ?? 'Registration armed. Refresh Google Messages to submit one native registration request.';
   await refresh();
 });
 

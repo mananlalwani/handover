@@ -178,6 +178,14 @@ impl SessionStore {
         Ok(Some(SessionRecord(bytes)))
     }
 
+    pub fn load_for_identity(
+        &self,
+        identity: &[u8],
+    ) -> Result<Option<SessionRecord>, SessionStoreError> {
+        let key = account_key_for_identity(identity)?;
+        self.load(&key)
+    }
+
     pub fn delete(&self, account_key: &str) -> Result<bool, SessionStoreError> {
         let path = self.account_path(account_key)?;
         if !check_directory(&self.directory)? {

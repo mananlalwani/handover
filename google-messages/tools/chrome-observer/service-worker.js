@@ -140,11 +140,11 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   requests.clear();
   authCandidates.clear();
   authHeaderMaps.clear();
-  if (!preserveNativeProbe && oldMode === 'auth' && nativeProbe.state === 'waiting') {
-    const error = reason === 'Duration ended.' ? 'timeout'
+  if (!preserveNativeProbe && (oldMode === 'auth' || oldMode === 'register') && nativeProbe.state === 'waiting') {
+    const error = reason === 'Duration ended.' ? (oldMode === 'register' ? 'sign_in_not_observed' : 'timeout')
       : reason === 'Stopped after the tab navigated away.' ? 'tab_changed'
         : reason === 'Stopped because the tab closed.' ? 'tab_closed' : 'stopped';
-    nativeProbe = { state: 'failed', result: { error } };
+    nativeProbe = { state: 'failed', result: { error, ...(oldMode === 'register' ? { registration: true } : {}) } };
   }
   if (oldTabId !== null) {
     try { await withTimeout(chrome.debugger.detach({ tabId: oldTabId }), 5000); } catch { /* already detached or timed out */ }
@@ -156,13 +156,13 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
 async function start(duration, mode = 'observe', withServiceCookies = false, withBrowserRequest = false, inspect = false) {
   clearLocalDescription();
   probeId += 1;
-  const maximum = mode === 'auth' ? 120 : 300;
+  const maximum = mode === 'auth' || mode === 'register' ? 120 : 300;
   if (!Number.isInteger(duration) || duration < 1 || duration > maximum) return { error: `Choose a duration from 1 to ${maximum} seconds.` };
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab || !Number.isInteger(tab.id) || !eligibleTabUrl(tab.url ?? '')) return { error: 'The active tab must be messages.google.com over HTTPS.' };
   if (active) await stop('Previous observation stopped.');
   generation += 1;
-  if (mode === 'auth') {
+  if (mode === 'auth' || mode === 'register') {
     authForwarded = false;
     nativeProbe = { state: 'waiting' };
   }
@@ -173,7 +173,7 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
     await chrome.debugger.attach({ tabId }, '1.3');
     active = true;
     captureMode = mode;
-    captureServiceCookies = mode === 'auth' && withServiceCookies === true;
+    captureServiceCookies = (mode === 'auth' || mode === 'register') && withServiceCookies === true;
     captureBrowserRequest = mode === 'auth' && withBrowserRequest === true;
     inspectLocalError = mode === 'auth' && inspect === true;
     const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -181,12 +181,12 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
     await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
       maxTotalBufferSize: 2 * 1024 * 1024,
       maxResourceBufferSize: 1024 * 1024,
-      maxPostDataSize: mode === 'auth' ? (captureBrowserRequest ? 2048 : 0) : 1024 * 1024,
+      maxPostDataSize: mode === 'auth' || mode === 'register' ? (captureBrowserRequest ? 2048 : 0) : 1024 * 1024,
     }), 5000);
     durationTimer = setTimeout(() => { void enqueueCommand(() => stop('Duration ended.')); }, duration * 1000);
     chrome.alarms.create('observer-duration', { when: Date.now() + duration * 1000 });
     notify();
-    return { message: mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
+    return { message: mode === 'register' ? 'Registration is waiting for SignInGaia.' : mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
   } catch {
     await stop('Could not attach the observer.');
     return { error: 'Could not attach the observer.' };
@@ -243,7 +243,7 @@ function clearAuthRequest(requestId) {
 }
 
 async function processAuthCandidate(requestId, candidate) {
-  if (!active || captureMode !== 'auth' || authForwarded || !candidate || !candidate.ready) return;
+  if (!active || !['auth', 'register'].includes(captureMode) || authForwarded || !candidate || !candidate.ready) return;
   const headers = { ...candidate.requestHeaders, ...(candidate.extraHeaders ?? {}) };
   let authorization = headers.authorization;
   let apiKey = headers['x-goog-api-key'];
@@ -265,7 +265,7 @@ async function processAuthCandidate(requestId, candidate) {
     return;
   }
   const payload = {
-    type: candidate.inspect ? 'gaia_lookup_inspect' : candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
+    type: candidate.registration ? 'gaia_register' : candidate.inspect ? 'gaia_lookup_inspect' : candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
     endpoint: candidate.endpoint,
     origin: origin ?? 'https://messages.google.com',
     authorization,
@@ -275,7 +275,7 @@ async function processAuthCandidate(requestId, candidate) {
     ...(candidate.browserRequest ? { browser_request: candidate.browserRequest } : {}),
   };
   authForwarded = true;
-  nativeProbe = { state: 'running' };
+  nativeProbe = { state: 'running', ...(candidate.registration ? { operation: 'registration' } : {}) };
   const currentProbe = probeId;
   const inspect = candidate.inspect;
   authCandidates.clear();
@@ -297,7 +297,8 @@ async function processAuthCandidate(requestId, candidate) {
     finally { clearNativePayload(payload); }
     const outcome = await nativeReplyWithTimeout(Promise.resolve(nativeCall));
     if (currentProbe !== probeId) return;
-    nativeProbe = outcome.reply ? sanitizeNativeReply(outcome.reply) : { state: 'failed', result: { error: outcome.error } };
+    nativeProbe = outcome.reply ? sanitizeNativeReply(outcome.reply, candidate.registration === true) : { state: 'failed', result: { error: outcome.error, ...(candidate.registration ? { registration: true } : {}) } };
+    if (candidate.registration && nativeProbe.state === 'failed') nativeProbe.result.registration = true;
     if (inspect && nativeProbe.state === 'failed' && nativeProbe.result?.error === 'http_error' &&
         typeof outcome.reply?.local_description === 'string' && byteCount(outcome.reply.local_description) <= 2048) {
       localDescription = outcome.reply.local_description;
@@ -321,17 +322,19 @@ export async function nativeReplyWithTimeout(nativeCall, milliseconds = MAX_NATI
   catch (error) { return { error: error?.message === 'native_timeout' ? 'timeout' : 'native_error' }; }
 }
 
-export function sanitizeNativeReply(value) {
+export function sanitizeNativeReply(value, registration = false) {
   const rpcStatuses = new Set(['CANCELLED', 'UNKNOWN', 'INVALID_ARGUMENT', 'DEADLINE_EXCEEDED', 'NOT_FOUND', 'ALREADY_EXISTS', 'PERMISSION_DENIED', 'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'ABORTED', 'OUT_OF_RANGE', 'UNIMPLEMENTED', 'INTERNAL', 'UNAVAILABLE', 'DATA_LOSS']);
   const rpcReasons = new Set(['API_KEY_INVALID', 'API_KEY_SERVICE_BLOCKED', 'API_KEY_HTTP_REFERRER_BLOCKED', 'API_KEY_IP_ADDRESS_BLOCKED', 'API_KEY_ANDROID_APP_BLOCKED', 'API_KEY_IOS_APP_BLOCKED', 'CONSUMER_INVALID', 'SERVICE_DISABLED']);
-  const errors = new Set(['invalid_origin', 'invalid_frame', 'invalid_bootstrap', 'invalid_endpoint', 'invalid_credentials', 'network', 'http_error', 'unexpected_response', 'response_too_large', 'timeout', 'rpc_error', 'native_error']);
+  const errors = new Set(['invalid_origin', 'invalid_frame', 'invalid_bootstrap', 'invalid_endpoint', 'invalid_credentials', 'registration_failed', 'sign_in_not_observed', 'network', 'http_error', 'unexpected_response', 'response_too_large', 'timeout', 'rpc_error', 'native_error']);
   if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') {
     return { state: 'failed', result: { error: 'invalid_response' } };
   }
   if (value.ok) {
     if (!Number.isInteger(value.sources) || value.sources < 0 || value.sources > 128 ||
         value.error !== undefined || value.http_status !== undefined || value.rpc_status !== undefined || value.rpc_reason !== undefined) return { state: 'failed', result: { error: 'invalid_response' } };
-    return { state: 'complete', result: { ok: true, sources: value.sources } };
+    return { state: 'complete', result: registration
+      ? { ok: true, registered: true }
+      : { ok: true, sources: value.sources } };
   }
   if (typeof value.error !== 'string' || !errors.has(value.error)) return { state: 'failed', result: { error: 'invalid_response' } };
   const result = { ok: false, error: value.error };
@@ -369,6 +372,7 @@ function authRequest(requestId, request) {
   }
   const candidate = {
     endpoint, withServiceCookies: captureServiceCookies,
+    registration: captureMode === 'register',
     browserRequest,
     inspect: inspectLocalError,
     requestHeaders: selectedAuthHeaders(request.headers, captureServiceCookies),
@@ -402,7 +406,7 @@ chrome.debugger.onEvent.addListener((source, method, params = {}) => {
   if (!active || source.tabId !== tabId || method !== 'Network.requestWillBeSent' &&
       method !== 'Network.requestWillBeSentExtraInfo' && method !== 'Network.responseReceived' &&
       method !== 'Network.loadingFinished' && method !== 'Network.loadingFailed') return;
-  if (captureMode === 'auth') {
+  if (captureMode === 'auth' || captureMode === 'register') {
     if (method === 'Network.requestWillBeSent') authRequest(params.requestId, params.request ?? {});
     else if (method === 'Network.requestWillBeSentExtraInfo') authExtraInfo(params.requestId, params.headers);
     else if (method === 'Network.responseReceived' && params.hasExtraInfo === false) {
@@ -465,7 +469,7 @@ chrome.debugger.onEvent.addListener((source, method, params = {}) => {
 
 chrome.debugger.onDetach.addListener(source => {
   if (source.tabId !== tabId) return;
-  if (captureMode === 'auth' && nativeProbe.state === 'waiting') nativeProbe = { state: 'failed', result: { error: 'detached' } };
+  if ((captureMode === 'auth' || captureMode === 'register') && nativeProbe.state === 'waiting') nativeProbe = { state: 'failed', result: { error: 'detached' } };
   active = false;
   generation += 1;
   tabId = null;
@@ -516,6 +520,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'start') { enqueueCommand(() => start(message.duration)).then(sendResponse, () => sendResponse({ error: 'Could not start the observer.' })); return true; }
   if (message?.type === 'auth-probe') { enqueueCommand(() => start(120, 'auth')).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
+  if (message?.type === 'register-device') { enqueueCommand(() => start(120, 'register', true)).then(sendResponse, () => sendResponse({ error: 'Could not start registration.' })); return true; }
   if (message?.type === 'auth-probe-with-cookies') { enqueueCommand(() => start(120, 'auth', true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-browser-request') { enqueueCommand(() => start(120, 'auth', true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-inspect') { enqueueCommand(() => start(120, 'auth', true, true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }

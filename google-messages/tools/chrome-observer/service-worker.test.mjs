@@ -293,4 +293,29 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 401, message: 'secret' }), {
     state: 'failed', result: { ok: false, error: 'http_error', http_status: 401 },
   });
+
+  const callsBeforeRegistration = nativeCalls.length;
+  assert.match((await send({ type: 'register-device' })).message, /Registration is waiting/);
+  assert.equal(calls.filter(call => call[0] === 'Network.enable').at(-1)[2].maxPostDataSize, 0);
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: 'registration-request', hasExtraInfo: false, request: {
+    url: `https://instantmessaging-pa.googleapis.com${authPath}`, method: 'POST',
+    headers: { Authorization: 'Bearer REGISTER_AUTH', 'X-Goog-Api-Key': 'REGISTER_API', Cookie: 'SID=REGISTER_COOKIE' },
+    postData: 'REGISTER_BODY_MUST_NOT_FORWARD',
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: 'registration-request', hasExtraInfo: false });
+  await waitFor(() => nativeCalls.length === callsBeforeRegistration + 1);
+  assert.deepEqual(nativeCalls.at(-1).payload, {
+    type: 'gaia_register', endpoint: 'https://instantmessaging-pa.googleapis.com',
+    origin: 'https://messages.google.com', authorization: 'Bearer REGISTER_AUTH',
+    api_key: 'REGISTER_API', service_cookie: 'SID=REGISTER_COOKIE',
+  });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  assert.deepEqual((await send({ type: 'snapshot' })).nativeProbe, {
+    state: 'complete', result: { ok: true, registered: true },
+  });
+  assert.equal(worker.sanitizeNativeReply({ ok: true, sources: 0 }, true).result.registered, true);
+  const registrationSnapshot = JSON.stringify((await send({ type: 'snapshot' })).nativeProbe);
+  for (const secret of ['REGISTER_AUTH', 'REGISTER_API', 'REGISTER_COOKIE', 'REGISTER_BODY']) {
+    assert.equal(registrationSnapshot.includes(secret), false);
+  }
 });

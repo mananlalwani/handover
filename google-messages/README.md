@@ -15,9 +15,10 @@ coverage and remain unverified against Google. It does not yet read conversation
 or send user messages. The existing adapter remains in use during development.
 
 The native crate now includes a restricted local session-record store. It is
-not yet connected to a restorable confirmed account session. An explicit mode-0
-registration transport is implemented and mock-tested, but has not been run
-against Google's service or connected to the login extension. Type-44/45
+not yet connected to a restorable confirmed account session. An explicit,
+opt-in mode-0 registration action now uses the observer's matched browser
+credentials and saves its unpaired credential in that store. This path is
+mock-tested but has not been run against Google's service. Type-44/45
 pairing envelopes include the registration token and observed Tachyon header.
 An explicit authenticated HTTP send path is covered by a local mock only. It
 reports HTTP acceptance and has not sent a request to Google.
