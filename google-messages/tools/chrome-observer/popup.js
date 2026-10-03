@@ -39,7 +39,11 @@ async function refresh() {
       : 'Native authentication check complete.';
   } else if (probe?.state === 'failed') {
     const result = probe.result ?? {};
-    if (result.error === 'account_changed') {
+    if (result.error === 'account_unavailable') {
+      nativeStatus.textContent = 'Could not read the signed-in account from Messages. No native request was sent. Wait for the conversation list to load before starting again.';
+    } else if (['observer_start_failed', 'tab_changed', 'command_timeout'].includes(result.error)) {
+      nativeStatus.textContent = `Could not start the observer (${result.error}). No native request was sent.`;
+    } else if (result.error === 'account_changed') {
       nativeStatus.textContent = 'The signed-in account changed or could not be checked. No native request was sent. Reload the Messages page before starting again.';
     } else if (result.registration) {
       nativeStatus.textContent = result.error === 'sign_in_not_observed'

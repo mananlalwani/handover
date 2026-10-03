@@ -336,6 +336,13 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   runtimeEmail = 'unsafe value SECRET';
   assert.equal(await worker.readGoogleAccountEmail(17), null);
   assert.equal(JSON.stringify((await send({ type: 'snapshot' }))).includes('person@example.org'), false);
+  const callsBeforeFailedStart = nativeCalls.length;
+  assert.match((await send({ type: 'native-pair' })).error, /Could not read GA_EMAIL/);
+  const failedStart = (await send({ type: 'snapshot' })).nativeProbe;
+  assert.equal(failedStart.state, 'failed');
+  assert.equal(failedStart.operation, 'native_pair');
+  assert.equal(failedStart.result.error, 'account_unavailable');
+  assert.equal(nativeCalls.length, callsBeforeFailedStart);
   runtimeEmail = 'person@example.org';
   const pairingCallCount = nativeCalls.length;
   assert.match((await send({ type: 'pairing-check' })).message, /read-only source lookup/i);

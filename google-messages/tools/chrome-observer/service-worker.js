@@ -196,9 +196,14 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
     notify();
     return { message: mode === 'register' ? 'Registration is waiting for SignInGaia.' : mode === 'pairing_check' ? 'Read-only source lookup is waiting for SignInGaia.' : mode === 'native_pair' ? 'Native phone pairing is waiting for SignInGaia.' : mode === 'native_login' ? 'Native login is waiting for SignInGaia.' : mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
   } catch (error) {
-    await stop('Could not attach the observer.');
-    if (error?.message === 'account_unavailable') return { error: 'Could not read GA_EMAIL from the current Messages page. No native request was sent.' };
-    return { error: 'Could not attach the observer.' };
+    const errorCode = ['account_unavailable', 'tab_changed', 'command_timeout'].includes(error?.message)
+      ? error.message : 'observer_start_failed';
+    if (PROOF_MODES.has(mode)) {
+      nativeProbe = { ...nativeProbe, state: 'failed', result: { error: errorCode } };
+    }
+    await stop('Could not start the observer.', { preserveNativeProbe: true });
+    if (errorCode === 'account_unavailable') return { error: 'Could not read GA_EMAIL from the current Messages page. No native request was sent.' };
+    return { error: 'Could not start the observer. No native request was sent.' };
   }
 }
 
