@@ -353,3 +353,14 @@ unique IDs. It only prepares the payload. No ACK HTTP transport or retry policy
 exists yet, so this code does not claim that Google accepted an acknowledgement.
 Unknown messages and unprocessed pairing replies do not produce acknowledgement
 handles.
+
+### Local session files
+
+`session_store` writes bounded opaque records under
+`${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-native`. It uses a
+0700 directory, 0600 files, no-follow reads, atomic replacement, and hashed
+account names. Record bytes are zeroized in memory and never appear in Debug.
+This store follows the existing adapter's local permission model. It does not
+encrypt records against another process running as the same user. A typed,
+versioned confirmed-session record still has to be designed and connected to
+registration and pairing before the client can restore an account.

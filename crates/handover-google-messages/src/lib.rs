@@ -6,6 +6,7 @@ pub mod native;
 pub mod pairing;
 pub mod receive;
 pub mod registration;
+pub mod session_store;
 pub mod sources;
 
 use reqwest::{

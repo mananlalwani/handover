@@ -23,6 +23,8 @@ rand = { version = "0.8.5", features = ["std_rng"] }
 zeroize = "1.8.1"
 hkdf = "0.12.4"
 sha2 = "0.10.9"
+libc.workspace = true
+tempfile.workspace = true
 aes = { version = "0.8.4", features = ["zeroize"] }
 ctr = "0.9.2"
 hmac = "0.12.1"
