@@ -76,6 +76,10 @@ python3 google-messages/tools/summarize_observation.py /path/to/google-messages-
 The summarizer rejects unexpected fields and emits RPC counts, HTTP facts, and
 top-level shape counts. It does not print complete nested shapes or values.
 
+The [source-selection and session contract](docs/pairing-session.md) records the
+next pairing requirements. The bounded Rust source decoder is tested with
+synthetic records; it is not yet connected to a live pairing flow.
+
 ## Integration target
 
 Implement the existing Handover helper IPC v1, documented in

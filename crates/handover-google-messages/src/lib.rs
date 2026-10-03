@@ -3,6 +3,7 @@
 //! This does not register a device, pair a phone, or provide a messaging backend.
 
 pub mod native;
+pub mod sources;
 
 use reqwest::{
     Client,
@@ -635,29 +636,43 @@ fn detail_reason(detail: &Value) -> Option<RpcReason> {
 }
 
 fn parse_response(body: &[u8]) -> Result<ProbeResult, ProbeError> {
-    let value: Value = serde_json::from_slice(body).map_err(|_| ProbeError::UnexpectedResponse)?;
+    Ok(ProbeResult {
+        sources: lookup_records(body)?.len(),
+    })
+}
+
+fn lookup_records(body: &[u8]) -> Result<Vec<Value>, ProbeError> {
+    if body.len() > RESPONSE_LIMIT {
+        return Err(ProbeError::ResponseTooLarge);
+    }
+    let mut value: Value =
+        serde_json::from_slice(body).map_err(|_| ProbeError::UnexpectedResponse)?;
     if value.is_object() {
         return Err(ProbeError::RpcError);
     }
-    let fields = value.as_array().ok_or(ProbeError::UnexpectedResponse)?;
+    let fields = value.as_array_mut().ok_or(ProbeError::UnexpectedResponse)?;
     if fields.is_empty() || fields.len() > 3 || !fields[0].is_array() {
         return Err(ProbeError::UnexpectedResponse);
     }
     // mPa field 3 is YC; YC repeated field 3 contains registered sources.
-    let sources = match fields.get(2) {
-        None | Some(Value::Null) => 0,
-        Some(Value::Array(list)) if list.len() <= 4 => match list.get(2) {
-            None | Some(Value::Null) => 0,
-            Some(Value::Array(sources))
-                if sources.len() <= SOURCE_LIMIT && sources.iter().all(Value::is_array) =>
-            {
-                sources.len()
+    match fields.get_mut(2) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(list)) if list.len() <= 4 => match list.get_mut(2) {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(value @ Value::Array(_)) => {
+                let Value::Array(sources) = value.take() else {
+                    unreachable!()
+                };
+                if sources.len() <= SOURCE_LIMIT && sources.iter().all(Value::is_array) {
+                    Ok(sources)
+                } else {
+                    Err(ProbeError::UnexpectedResponse)
+                }
             }
-            _ => return Err(ProbeError::UnexpectedResponse),
+            _ => Err(ProbeError::UnexpectedResponse),
         },
-        _ => return Err(ProbeError::UnexpectedResponse),
-    };
-    Ok(ProbeResult { sources })
+        _ => Err(ProbeError::UnexpectedResponse),
+    }
 }
 
 #[cfg(test)]
