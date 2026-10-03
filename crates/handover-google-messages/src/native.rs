@@ -5,7 +5,7 @@ use std::{future::Future, io, time::Duration};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{BrowserProof, ProbeError, ProbeResult, probe};
+use crate::{BrowserProof, ProbeError, ProbeResult, RpcStatus, probe};
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024;
@@ -25,6 +25,8 @@ enum HostResponse {
         error: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
         http_status: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rpc_status: Option<RpcStatus>,
     },
 }
 
@@ -79,7 +81,12 @@ where
             Ok(Err(code)) => failure(code, None),
             Ok(Ok(proof)) => match tokio::time::timeout(probe_timeout, probe_fn(proof)).await {
                 Err(_) => failure("timeout", None),
-                Ok(Err(error)) => failure(error.code(), error.http_status()),
+                Ok(Err(error)) => HostResponse::Failure {
+                    ok: false,
+                    error: error.code(),
+                    http_status: error.http_status(),
+                    rpc_status: error.rpc_status(),
+                },
                 Ok(Ok(result)) => HostResponse::Success {
                     ok: true,
                     sources: result.sources,
@@ -137,6 +144,7 @@ fn failure(code: &'static str, http_status: Option<u16>) -> HostResponse {
         ok: false,
         error: code,
         http_status,
+        rpc_status: None,
     }
 }
 
@@ -183,7 +191,10 @@ mod tests {
     }
 
     async fn rejected_probe(_: BrowserProof) -> Result<ProbeResult, ProbeError> {
-        Err(ProbeError::HttpError(401))
+        Err(ProbeError::HttpErrorWithStatus(
+            400,
+            RpcStatus::InvalidArgument,
+        ))
     }
 
     #[tokio::test]
@@ -314,7 +325,7 @@ mod tests {
         ));
         assert_eq!(
             response(&mut client_reader).await,
-            serde_json::json!({"ok":false,"error":"http_error","http_status":401})
+            serde_json::json!({"ok":false,"error":"http_error","http_status":400,"rpc_status":"INVALID_ARGUMENT"})
         );
         task.await.unwrap().unwrap();
     }

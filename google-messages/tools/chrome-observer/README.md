@@ -71,7 +71,9 @@ request. There is no automatic retry or switch between the two modes.
 Cookies remain in the local native pipe and transient process memory, and Rust
 returns them only to the exact observed Google origin. Redirects remain disabled.
 They do not enter observer snapshots, exports, logs, daemon IPC, or files. The
-cookie-free button still rejects cookies. The comparison result is unverified.
+cookie-free button still rejects cookies. The first comparison returned HTTP
+400; native authentication remains unverified. Error results can include a fixed
+RPC status category. They never include Google's error messages or details.
 
 ## Offline checks
 

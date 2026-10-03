@@ -296,13 +296,14 @@ export async function nativeReplyWithTimeout(nativeCall, milliseconds = MAX_NATI
 }
 
 export function sanitizeNativeReply(value) {
+  const rpcStatuses = new Set(['CANCELLED', 'UNKNOWN', 'INVALID_ARGUMENT', 'DEADLINE_EXCEEDED', 'NOT_FOUND', 'ALREADY_EXISTS', 'PERMISSION_DENIED', 'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'ABORTED', 'OUT_OF_RANGE', 'UNIMPLEMENTED', 'INTERNAL', 'UNAVAILABLE', 'DATA_LOSS']);
   const errors = new Set(['invalid_origin', 'invalid_frame', 'invalid_bootstrap', 'invalid_endpoint', 'invalid_credentials', 'network', 'http_error', 'unexpected_response', 'response_too_large', 'timeout', 'rpc_error', 'native_error']);
   if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') {
     return { state: 'failed', result: { error: 'invalid_response' } };
   }
   if (value.ok) {
     if (!Number.isInteger(value.sources) || value.sources < 0 || value.sources > 128 ||
-        value.error !== undefined || value.http_status !== undefined) return { state: 'failed', result: { error: 'invalid_response' } };
+        value.error !== undefined || value.http_status !== undefined || value.rpc_status !== undefined) return { state: 'failed', result: { error: 'invalid_response' } };
     return { state: 'complete', result: { ok: true, sources: value.sources } };
   }
   if (typeof value.error !== 'string' || !errors.has(value.error)) return { state: 'failed', result: { error: 'invalid_response' } };
@@ -312,6 +313,10 @@ export function sanitizeNativeReply(value) {
       return { state: 'failed', result: { error: 'invalid_response' } };
     }
     result.http_status = value.http_status;
+  }
+  if (value.rpc_status !== undefined) {
+    if (value.error !== 'http_error' || !rpcStatuses.has(value.rpc_status)) return { state: 'failed', result: { error: 'invalid_response' } };
+    result.rpc_status = value.rpc_status;
   }
   return { state: 'failed', result };
 }

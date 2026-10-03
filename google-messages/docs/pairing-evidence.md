@@ -167,3 +167,32 @@ The test-control check found that the runtime drop-in named
 and zero production helper processes verified the corrected pause. Earlier
 pause claims without those checks are unverified. The test overrides were
 removed and the production account reported online after the native result.
+
+The approved service-cookie comparison returned HTTP 400, reported by the user.
+The status changed from the previous cookie-free 401, but these were separate
+requests with fresh proofs. This does not by itself establish successful
+authentication or prove that cookies caused the change. The relay was restored
+and the test page closed afterward.
+
+The sanitized authenticated request shape has seven header positions. Its field
+7 is a nine-position client-info array with numeric fields 3, 4, 5, 7, and 9.
+Google's `GH` builder at 956120 sets fields 7 and 9 to 4 and 6, and obtains the
+three version components from the public build label. `OPa` at 777875 parses that
+label. The original anonymous capture declares
+`comms-messages.web-server_20260930.02_p0`. A fresh anonymous read on 2026-10-02
+returned `comms-messages.web-server_20261001.02_p0`, giving components 20261001,
+2, and 0 for this test. The current public script, SHA-256
+`18f7b5199eb7f7c13474f312876464ad960a1438616e6afc3ddd98efdb65870b`,
+also confirms client-info fields 7 and 9 are still 4 and 6, and version fields
+3, 4, and 5 use the three build components. Its minified symbols have changed.
+The experimental probe now includes this observed metadata. This is a pinned
+wire-version test, not automatic version discovery or a claim of compatibility
+with future Google builds. The device identifier format is unchanged for this
+comparison, so the metadata block is the only request-body change.
+
+For errors, the probe can now return only a fixed `google.rpc.Code` category
+from Google's documented [HTTP JSON error representation](https://google.aip.dev/193).
+Error bodies are bounded to 16 KiB with a one-second read limit. Unknown status
+strings, messages, and details are discarded. This diagnostic does not expose
+Google's free-form error text or establish that this particular service follows
+the documented representation. The metadata change is not yet live-tested.

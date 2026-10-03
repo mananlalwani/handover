@@ -229,6 +229,14 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal(debuggerCommands.filter(name => name === 'Network.getResponseBody').length, bodyCallsBeforeAuth);
   await assert.rejects(worker.withTimeout(new Promise(() => {}), 5, 'native_timeout'), /native_timeout/);
   assert.deepEqual(await worker.nativeReplyWithTimeout(new Promise(() => {}), 5), { error: 'timeout' });
+  assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT', message: 'PRIVATE_ERROR_MESSAGE' }), {
+    state: 'failed', result: { ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT' },
+  });
+  for (const reply of [
+    { ok: false, error: 'http_error', http_status: 400, rpc_status: 'PRIVATE_ERROR_MESSAGE' },
+    { ok: false, error: 'network', rpc_status: 'INVALID_ARGUMENT' },
+    { ok: true, sources: 4, rpc_status: 'INVALID_ARGUMENT' },
+  ]) assert.deepEqual(worker.sanitizeNativeReply(reply), { state: 'failed', result: { error: 'invalid_response' } });
   assert.deepEqual(worker.sanitizeNativeReply({ ok: true, sources: 4, http_status: 204 }), { state: 'failed', result: { error: 'invalid_response' } });
   assert.deepEqual(worker.sanitizeNativeReply({ ok: false, error: 'http_error', http_status: 401, message: 'secret' }), {
     state: 'failed', result: { ok: false, error: 'http_error', http_status: 401 },

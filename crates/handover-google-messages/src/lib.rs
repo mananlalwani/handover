@@ -23,6 +23,30 @@ const ENDPOINTS: [&str; 3] = [
 ];
 const RESPONSE_LIMIT: usize = 512 * 1024;
 const SOURCE_LIMIT: usize = 128;
+// Public MW_CONFIG build label comms-messages.web-server_20261001.02_p0,
+// interpreted by OPa and GH in the independently captured Google source.
+const OBSERVED_WIRE_VERSION: [u32; 3] = [20261001, 2, 0];
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RpcStatus {
+    Cancelled,
+    Unknown,
+    InvalidArgument,
+    DeadlineExceeded,
+    NotFound,
+    AlreadyExists,
+    PermissionDenied,
+    Unauthenticated,
+    ResourceExhausted,
+    FailedPrecondition,
+    Aborted,
+    OutOfRange,
+    Unimplemented,
+    Internal,
+    Unavailable,
+    DataLoss,
+}
 
 /// A one-use browser proof. Debug deliberately excludes all supplied values.
 #[derive(Deserialize)]
@@ -59,6 +83,7 @@ pub enum ProbeError {
     InvalidCredentials,
     Network,
     HttpError(u16),
+    HttpErrorWithStatus(u16, RpcStatus),
     UnexpectedResponse,
     ResponseTooLarge,
     Timeout,
@@ -75,7 +100,7 @@ impl ProbeError {
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidCredentials => "invalid_credentials",
             Self::Network => "network",
-            Self::HttpError(_) => "http_error",
+            Self::HttpError(_) | Self::HttpErrorWithStatus(_, _) => "http_error",
             Self::UnexpectedResponse => "unexpected_response",
             Self::ResponseTooLarge => "response_too_large",
             Self::Timeout => "timeout",
@@ -86,7 +111,18 @@ impl ProbeError {
 
     pub fn http_status(&self) -> Option<u16> {
         match self {
-            Self::HttpError(status) if (100..=599).contains(status) => Some(*status),
+            Self::HttpError(status) | Self::HttpErrorWithStatus(status, _)
+                if (100..=599).contains(status) =>
+            {
+                Some(*status)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn rpc_status(&self) -> Option<RpcStatus> {
+        match self {
+            Self::HttpErrorWithStatus(_, status) => Some(*status),
             _ => None,
         }
     }
@@ -157,7 +193,25 @@ fn lookup_request() -> Value {
     // Google's public web source: Z4a mode 1, BC field 1, RKa device type 3.
     // All identifiers are fresh. Mode 0 device registration is never requested.
     json!([
-        [Uuid::new_v4().to_string(), null, "GDitto"],
+        [
+            Uuid::new_v4().to_string(),
+            null,
+            "GDitto",
+            null,
+            null,
+            null,
+            [
+                null,
+                null,
+                OBSERVED_WIRE_VERSION[0],
+                OBSERVED_WIRE_VERSION[1],
+                OBSERVED_WIRE_VERSION[2],
+                null,
+                4,
+                null,
+                6
+            ]
+        ],
         [[3, format!("messages-web-{}", Uuid::new_v4())]],
         1,
         "GDitto"
@@ -206,7 +260,7 @@ async fn query(
     }
     let mut response = request.send().await.map_err(transport_error)?;
     if !response.status().is_success() {
-        return Err(ProbeError::HttpError(response.status().as_u16()));
+        return Err(http_error_details(response).await);
     }
     let content_type = response
         .headers()
@@ -230,6 +284,48 @@ async fn query(
         body.extend_from_slice(&chunk);
     }
     parse_response(&body)
+}
+
+async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim();
+    const ERROR_LIMIT: usize = 16 * 1024;
+    if !matches!(
+        content_type,
+        "application/json" | "application/json+protobuf"
+    ) || response
+        .content_length()
+        .is_some_and(|n| n > ERROR_LIMIT as u64)
+    {
+        return ProbeError::HttpError(status);
+    }
+    let category = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.ok()? {
+            if chunk.len() > ERROR_LIMIT - body.len() {
+                return None;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        // AIP-193 status is a fixed enum. Never retain or return message/details.
+        let value: Value = serde_json::from_slice(&body).ok()?;
+        serde_json::from_value::<RpcStatus>(value.get("error")?.get("status")?.clone()).ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    match category {
+        Some(category) => ProbeError::HttpErrorWithStatus(status, category),
+        None => ProbeError::HttpError(status),
+    }
 }
 
 fn parse_response(body: &[u8]) -> Result<ProbeResult, ProbeError> {
@@ -317,7 +413,11 @@ mod tests {
         assert_eq!(first[3], "GDitto");
         assert_ne!(first[0][0], second[0][0]);
         assert_ne!(first[1][0][1], second[1][0][1]);
-        assert_eq!(first[0].as_array().unwrap().len(), 3);
+        assert_eq!(first[0].as_array().unwrap().len(), 7);
+        assert_eq!(
+            first[0][6],
+            json!([null, null, 20261001, 2, 0, null, 4, null, 6])
+        );
     }
 
     #[test]
@@ -496,5 +596,42 @@ mod tests {
         let body: Value = serde_json::from_str(&request[offset + 4..]).unwrap();
         assert_eq!(body[2], 1);
         assert!(!request[offset + 4..].contains("synthetic-comparison"));
+    }
+
+    #[tokio::test]
+    async fn http_error_diagnostics_accept_only_fixed_rpc_categories() {
+        for (body, expected) in [
+            (
+                json!({"error":{"status":"INVALID_ARGUMENT","message":"PRIVATE_SERVER_TEXT","details":{"cookie":"PRIVATE_COOKIE"}}}),
+                ProbeError::HttpErrorWithStatus(400, RpcStatus::InvalidArgument),
+            ),
+            (
+                json!({"error":{"status":"PRIVATE_SERVER_TEXT"}}),
+                ProbeError::HttpError(400),
+            ),
+            (json!({"error":{"status":123}}), ProbeError::HttpError(400)),
+            (
+                json!({"error":{"status":"INVALID_ARGUMENT","message":"x".repeat(16384)}}),
+                ProbeError::HttpError(400),
+            ),
+        ] {
+            let body = serde_json::to_vec(&body).unwrap();
+            let header = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let (endpoint, server) = mock_server([header.as_bytes(), &body].concat()).await;
+            let result = query(
+                &client(false).unwrap(),
+                &endpoint,
+                proof().validate().unwrap(),
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(result, expected);
+            assert!(!format!("{result:?}").contains("PRIVATE_"));
+            server.await.unwrap();
+        }
     }
 }
