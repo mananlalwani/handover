@@ -1,8 +1,8 @@
 # Observe RPC structure in normal Chrome
 
-This local research extension uses Chrome's [debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger) to observe the active Google Messages tab without a remote-debugging browser launch. It also has a separate opt-in mode for testing the original Rust client's read-only authentication request. It does not pair a phone.
+This local research extension uses Chrome's [debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger) to observe the active Google Messages tab without a remote-debugging browser launch. It also has separate opt-in actions for testing the Rust client's read-only authentication request and registering a native device. It does not pair a phone.
 
-Chrome's debugger permission is powerful. The implementation only attaches to an active HTTPS `messages.google.com` tab and uses network observation commands. It does not navigate, inject scripts, read cookies, change requests, or send messages. Remove the extension when testing is finished.
+Chrome's debugger permission is powerful. The implementation only attaches to an active HTTPS `messages.google.com` tab. It does not navigate, change network requests, read the browser cookie store, or send messages. A bounded account-read helper for pairing evaluates one fixed expression that returns only the page's `GA_EMAIL` value; the current popup does not invoke it yet. Remove the extension when testing is finished.
 
 ## Load locally
 
@@ -98,6 +98,17 @@ then stores the unpaired credential under the restricted
 `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-native` directory. The
 result does not mean the phone was paired. No automatic retry is made. Pairing
 and message sending are separate operations.
+
+### Check pairing readiness
+
+**Check native pairing readiness** reads only Google's `GA_EMAIL` setting from
+the active Messages page using a fixed expression, validates it as an email
+address, and holds it only until the matching SignInGaia request is forwarded.
+The native host then performs one read-only mode-1 source lookup. The email,
+cookies, and authorization do not enter snapshots, exports, logs, daemon IPC, or
+files. The result reports a source count only; it does not select a phone or
+start pairing. This browser-to-native proof has offline coverage but has not
+been live-tested.
 
 ### Compare the browser lookup body
 

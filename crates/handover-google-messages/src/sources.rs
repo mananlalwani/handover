@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose};
 use prost::Message;
 use serde_json::Value;
 use std::fmt;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{ProbeError, lookup_records};
 
@@ -37,6 +38,12 @@ impl fmt::Debug for RegisteredPhone {
     }
 }
 
+impl Drop for RegisteredPhone {
+    fn drop(&mut self) {
+        self.identity.zeroize();
+    }
+}
+
 /// Selection does not register, connect, or attest that a phone is online.
 #[derive(Debug)]
 pub enum PhoneSelection<'a> {
@@ -47,54 +54,60 @@ pub enum PhoneSelection<'a> {
 
 impl RegisteredSources {
     pub fn from_lookup_response(body: &[u8]) -> Result<Self, ProbeError> {
-        let records = lookup_records(body)?;
-        let mut phones = Vec::new();
-        for record in &records {
-            let fields = record.as_array().ok_or(ProbeError::UnexpectedResponse)?;
-            // Google's xJ filters source field 3 to types 1 and 4.
-            let Some(kind) = fields.get(2).and_then(Value::as_u64) else {
-                continue;
-            };
-            if !matches!(kind, 1 | 4) {
-                continue;
-            }
-            let identity = bytes(fields.first(), ID_LIMIT)?;
-            if identity.is_empty() {
-                return Err(ProbeError::UnexpectedResponse);
-            }
-            let metadata = bytes(fields.get(7), METADATA_LIMIT)?;
-            let metadata = PhoneMetadata::decode(metadata.as_slice())
-                .map_err(|_| ProbeError::UnexpectedResponse)?;
-            let last_refresh_micros = match fields.get(6) {
-                None | Some(Value::Null) => None,
-                Some(Value::String(s))
-                    if !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit()) =>
-                {
-                    Some(
-                        s.parse::<u64>()
-                            .map_err(|_| ProbeError::UnexpectedResponse)?,
-                    )
+        let mut records = lookup_records(body)?;
+        let result = (|| {
+            let mut phones = Vec::new();
+            for record in &records {
+                let fields = record.as_array().ok_or(ProbeError::UnexpectedResponse)?;
+                // Google's xJ filters source field 3 to types 1 and 4.
+                let Some(kind) = fields.get(2).and_then(Value::as_u64) else {
+                    continue;
+                };
+                if !matches!(kind, 1 | 4) {
+                    continue;
                 }
-                Some(value) => Some(value.as_u64().ok_or(ProbeError::UnexpectedResponse)?),
-            };
-            if phones
-                .iter()
-                .any(|p: &RegisteredPhone| p.identity == identity)
-            {
-                return Err(ProbeError::UnexpectedResponse);
+                let mut identity = Zeroizing::new(bytes(fields.first(), ID_LIMIT)?);
+                if identity.is_empty() {
+                    return Err(ProbeError::UnexpectedResponse);
+                }
+                let metadata = Zeroizing::new(bytes(fields.get(7), METADATA_LIMIT)?);
+                let metadata = PhoneMetadata::decode(metadata.as_slice())
+                    .map_err(|_| ProbeError::UnexpectedResponse)?;
+                let last_refresh_micros = match fields.get(6) {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(s))
+                        if !s.is_empty()
+                            && s.len() <= 20
+                            && s.bytes().all(|b| b.is_ascii_digit()) =>
+                    {
+                        Some(
+                            s.parse::<u64>()
+                                .map_err(|_| ProbeError::UnexpectedResponse)?,
+                        )
+                    }
+                    Some(value) => Some(value.as_u64().ok_or(ProbeError::UnexpectedResponse)?),
+                };
+                if phones
+                    .iter()
+                    .any(|p: &RegisteredPhone| p.identity.as_slice() == identity.as_slice())
+                {
+                    return Err(ProbeError::UnexpectedResponse);
+                }
+                phones.push(RegisteredPhone {
+                    identity: std::mem::take(&mut *identity),
+                    enabled: metadata.enabled,
+                    registration_time: metadata.registration_time,
+                    last_refresh_micros,
+                    prewarm_supported: metadata.prewarm_supported,
+                });
             }
-            phones.push(RegisteredPhone {
-                identity,
-                enabled: metadata.enabled,
-                registration_time: metadata.registration_time,
-                last_refresh_micros,
-                prewarm_supported: metadata.prewarm_supported,
-            });
-        }
-        Ok(Self {
-            total: records.len(),
-            phones,
-        })
+            Ok(Self {
+                total: records.len(),
+                phones,
+            })
+        })();
+        records.iter_mut().for_each(erase_strings);
+        result
     }
 
     pub fn total_count(&self) -> usize {
@@ -128,6 +141,15 @@ impl RegisteredSources {
             Some(_) if ambiguous => PhoneSelection::Ambiguous,
             Some(phone) => PhoneSelection::Selected(phone),
         }
+    }
+}
+
+fn erase_strings(value: &mut Value) {
+    match value {
+        Value::String(string) => string.zeroize(),
+        Value::Array(values) => values.iter_mut().for_each(erase_strings),
+        Value::Object(values) => values.values_mut().for_each(erase_strings),
+        _ => {}
     }
 }
 

@@ -26,6 +26,8 @@
   <p>This comparison passes a validated read-only lookup and its service cookies to Rust once. It includes the browser's opaque device ID. Registration and token-bearing requests are rejected. Nothing is saved.</p>
   <button id="register-device">Register one native device</button>
   <p>This changes your Google Messages registered devices. It makes one Rust-built registration request using the matched browser sign-in credentials, then stores the unpaired credential in Handover's private local session directory. It does not pair your phone or send a message.</p>
+  <button id="pairing-check">Check native pairing readiness</button>
+  <p>Reads only the signed-in account email from the Messages page, then makes one read-only source lookup. It does not pair a phone, change registered devices, or send a message.</p>
   <button id="inspect-probe">Inspect rejection locally</button>
   <p>This opt-in test makes the same read-only request and lets you view Google's error description locally. It may contain identifiers. It stays out of exports and clears after 60 seconds. Share only a redacted cause.</p>
   <button id="view-local-description">View local error description once</button>

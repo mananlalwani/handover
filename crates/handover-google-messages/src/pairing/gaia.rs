@@ -877,13 +877,14 @@ mod tests {
         });
 
         let proof = crate::BrowserProof {
-            kind: "gaia_register".into(),
+            kind: "gaia_pairing".into(),
             endpoint: crate::ENDPOINTS[0].into(),
             origin: crate::ORIGIN_VALUE.into(),
             authorization: "synthetic-auth".into(),
             api_key: "synthetic-api-key".into(),
             auth_user: Some("0".into()),
             service_cookie: Some("SID=synthetic-cookie".into()),
+            account_email: Some("person@example.test".into()),
             browser_request: None,
         };
         let mut headers = proof.validate_messaging().unwrap();

@@ -14,6 +14,8 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_RECORD_SIZE: usize = 1024 * 1024;
+const MAX_STORED_RECORDS: usize = 32;
+const MAX_TOTAL_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const RECORD_HEADER: [u8; 8] = *b"HGMN\x01\x00\x00\x00";
 const MAX_ACCOUNT_KEY: usize = 96;
 
@@ -186,6 +188,51 @@ impl SessionStore {
         self.load(&key)
     }
 
+    /// Load a bounded set of versioned records without exposing their hashed
+    /// filenames. Symlinks and non-session files are ignored.
+    pub fn load_all(&self) -> Result<Vec<(String, SessionRecord)>, SessionStoreError> {
+        if !check_directory(&self.directory)? {
+            return Ok(Vec::new());
+        }
+        let entries = fs::read_dir(&self.directory).map_err(|_| SessionStoreError::Io)?;
+        let mut records = Vec::new();
+        let mut total = 0usize;
+        for entry in entries {
+            let entry = entry.map_err(|_| SessionStoreError::Io)?;
+            if !entry
+                .file_type()
+                .map_err(|_| SessionStoreError::Io)?
+                .is_file()
+            {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(key) = name.strip_suffix(".session") else {
+                continue;
+            };
+            if key.len() != 64
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                continue;
+            }
+            if records.len() >= MAX_STORED_RECORDS {
+                return Err(SessionStoreError::RecordTooLarge);
+            }
+            if let Some(record) = self.load(key)? {
+                total = total
+                    .checked_add(record.as_bytes().len())
+                    .filter(|size| *size <= MAX_TOTAL_RECORD_BYTES)
+                    .ok_or(SessionStoreError::RecordTooLarge)?;
+                records.push((key.to_owned(), record));
+            }
+        }
+        Ok(records)
+    }
+
     pub fn delete(&self, account_key: &str) -> Result<bool, SessionStoreError> {
         let path = self.account_path(account_key)?;
         if !check_directory(&self.directory)? {
@@ -280,6 +327,21 @@ mod tests {
         assert!(store.delete("account_1").unwrap());
         assert!(store.load("account_1").unwrap().is_none());
         assert!(!store.delete("account_1").unwrap());
+    }
+
+    #[test]
+    fn loads_only_bounded_hashed_session_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("sessions");
+        let store = SessionStore::new(&directory);
+        let first = SessionRecord::new(b"one".to_vec()).unwrap();
+        let second = SessionRecord::new(b"two".to_vec()).unwrap();
+        let first_key = account_key_for_identity(b"id-one").unwrap();
+        let second_key = account_key_for_identity(b"id-two").unwrap();
+        store.store(&first_key, &first).unwrap();
+        store.store(&second_key, &second).unwrap();
+        fs::write(directory.join("unrelated.txt"), b"ignored").unwrap();
+        assert_eq!(store.load_all().unwrap().len(), 2);
     }
 
     #[test]

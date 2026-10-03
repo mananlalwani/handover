@@ -23,11 +23,14 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   const bodyWait = deferred();
   const nativeWait = deferred();
   const nativeCalls = [];
+  const nativePayloadRefs = [];
+  let runtimeEmail = 'person@example.org';
   const bodyPayload = text => ({ body: btoa(text), base64Encoded: true });
   const chrome = {
     runtime: {
       id: 'observer-test', onMessage: eventHook(), sendMessage: async () => {},
       sendNativeMessage: async (host, payload) => {
+        nativePayloadRefs.push(payload);
         nativeCalls.push({ host, payload: structuredClone(payload) });
         if (nativeCalls.length === 1) return nativeWait.promise;
         if (payload.type === 'gaia_lookup_inspect') return { ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT', local_description: 'PRIVATE_LOCAL_DESCRIPTION', metadata: 'PRIVATE_METADATA' };
@@ -47,6 +50,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
       sendCommand: async (source, method, params) => {
         debuggerCommands.push(method);
         calls.push([method, source, params]);
+        if (method === 'Runtime.evaluate') return { result: { type: 'string', value: runtimeEmail } };
         if (method === 'Network.getResponseBody') {
           return calls.filter(call => call[0] === method).length === 1
             ? bodyWait.promise
@@ -318,4 +322,37 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   for (const secret of ['REGISTER_AUTH', 'REGISTER_API', 'REGISTER_COOKIE', 'REGISTER_BODY']) {
     assert.equal(registrationSnapshot.includes(secret), false);
   }
+  assert.equal(await worker.readGoogleAccountEmail(17), 'person@example.org');
+  const emailCommand = calls.filter(call => call[0] === 'Runtime.evaluate').at(-1);
+  assert.deepEqual(emailCommand[2], {
+    expression: '(()=>{try{const app=globalThis.default_mw;const setting=app?.uE;const read=app?.u;if(!setting||typeof read!=="function")return null;return read(setting)}catch{return null}})()',
+    returnByValue: true, awaitPromise: false, silent: true,
+  });
+  runtimeEmail = 'unsafe value SECRET';
+  assert.equal(await worker.readGoogleAccountEmail(17), null);
+  assert.equal(JSON.stringify((await send({ type: 'snapshot' }))).includes('person@example.org'), false);
+  runtimeEmail = 'person@example.org';
+  const pairingCallCount = nativeCalls.length;
+  assert.match((await send({ type: 'pairing-check' })).message, /read-only source lookup/i);
+  assert.equal(calls.filter(call => call[0] === 'Network.enable').at(-1)[2].maxPostDataSize, 0);
+  const pairingId = 'pairing-check-request';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: pairingId, hasExtraInfo: false, request: {
+    url: `https://instantmessaging-pa.googleapis.com${authPath}`, method: 'POST',
+    headers: { Authorization: 'Bearer PAIRING_AUTH', 'X-Goog-Api-Key': 'PAIRING_API', Cookie: 'SID=PAIRING_COOKIE' },
+    postData: 'PAIRING_BODY_MUST_NOT_FORWARD',
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: pairingId, hasExtraInfo: false });
+  await waitFor(() => nativeCalls.length === pairingCallCount + 1);
+  assert.deepEqual(nativeCalls.at(-1).payload, {
+    type: 'gaia_pairing', endpoint: 'https://instantmessaging-pa.googleapis.com',
+    origin: 'https://messages.google.com', authorization: 'Bearer PAIRING_AUTH',
+    api_key: 'PAIRING_API', service_cookie: 'SID=PAIRING_COOKIE', account_email: 'person@example.org',
+  });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  const pairingSnapshot = JSON.stringify((await send({ type: 'snapshot' })).nativeProbe);
+  assert.equal(pairingSnapshot.includes('person@example.org'), false);
+  assert.equal(pairingSnapshot.includes('PAIRING_AUTH'), false);
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.operation, 'pairing_check');
+  assert.equal(nativePayloadRefs.at(-1).account_email, '');
+  assert.equal(nativePayloadRefs.at(-1).service_cookie, undefined);
 });

@@ -208,37 +208,35 @@ impl UnpairedRegistration {
         };
         let mut saved = StoredUnpairedRegistration::decode(record.as_bytes())
             .map_err(|_| RegistrationError::InvalidStoredRegistration)?;
-        let restored = (|| {
+        restore_stored_registration(&mut saved, identity).map(Some)
+    }
+
+    /// Restore all valid pending registrations. Expired records are ignored;
+    /// malformed records fail closed rather than selecting a different one.
+    pub fn restore_all_pending(
+        store: &crate::session_store::SessionStore,
+    ) -> Result<Vec<Self>, RegistrationError> {
+        let mut restored = Vec::new();
+        for (key, record) in store.load_all().map_err(RegistrationError::SessionStore)? {
+            let mut saved = StoredUnpairedRegistration::decode(record.as_bytes())
+                .map_err(|_| RegistrationError::InvalidStoredRegistration)?;
+            if crate::session_store::account_key_for_identity(&saved.identity)
+                .map_err(RegistrationError::SessionStore)?
+                != key
+            {
+                return Err(RegistrationError::InvalidStoredRegistration);
+            }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| RegistrationError::InvalidStoredRegistration)?
                 .as_secs();
-            if saved.version != 1
-                || saved.identity != identity
-                || saved.device_id.len() > 128
-                || !saved.device_id.starts_with("messages-web-")
-                || saved.token.is_empty()
-                || saved.token.len() > TOKEN_LIMIT
-                || saved.transport_key.len() != 32
-                || saved.expires_unix <= now
-                || saved.expires_unix.saturating_sub(now) > 30 * 24 * 60 * 60
-            {
-                return Err(RegistrationError::InvalidStoredRegistration);
+            if saved.expires_unix <= now {
+                continue;
             }
-            let lifetime = Duration::from_secs(saved.expires_unix - now);
-            let mut transport_key = Zeroizing::new([0; 32]);
-            transport_key.copy_from_slice(&saved.transport_key);
-            Ok(Self {
-                _device_id: std::mem::take(&mut saved.device_id),
-                _identity: Zeroizing::new(std::mem::take(&mut saved.identity)),
-                _token: Zeroizing::new(std::mem::take(&mut saved.token)),
-                _transport_key: transport_key,
-                started: Instant::now(),
-                lifetime,
-            })
-        })();
-        saved.zeroize_secrets();
-        restored.map(Some)
+            let identity = Zeroizing::new(saved.identity.clone());
+            restored.push(restore_stored_registration(&mut saved, &identity)?);
+        }
+        Ok(restored)
     }
 
     /// Prepare a fresh receive stream request using this unpaired credential.
@@ -304,6 +302,41 @@ impl UnpairedRegistration {
             Ok(remaining)
         }
     }
+}
+
+fn restore_stored_registration(
+    saved: &mut StoredUnpairedRegistration,
+    identity: &[u8],
+) -> Result<UnpairedRegistration, RegistrationError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| RegistrationError::InvalidStoredRegistration)?
+        .as_secs();
+    if saved.version != 1
+        || saved.identity != identity
+        || saved.device_id.len() > 128
+        || !saved.device_id.starts_with("messages-web-")
+        || saved.token.is_empty()
+        || saved.token.len() > TOKEN_LIMIT
+        || saved.transport_key.len() != 32
+        || saved.expires_unix <= now
+        || saved.expires_unix.saturating_sub(now) > 30 * 24 * 60 * 60
+    {
+        return Err(RegistrationError::InvalidStoredRegistration);
+    }
+    let lifetime = Duration::from_secs(saved.expires_unix - now);
+    let mut transport_key = Zeroizing::new([0; 32]);
+    transport_key.copy_from_slice(&saved.transport_key);
+    let restored = UnpairedRegistration {
+        _device_id: std::mem::take(&mut saved.device_id),
+        _identity: Zeroizing::new(std::mem::take(&mut saved.identity)),
+        _token: Zeroizing::new(std::mem::take(&mut saved.token)),
+        _transport_key: transport_key,
+        started: Instant::now(),
+        lifetime,
+    };
+    saved.zeroize_secrets();
+    Ok(restored)
 }
 
 #[derive(Message)]
@@ -481,6 +514,9 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let all = UnpairedRegistration::restore_all_pending(&store).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(format!("{:?}", all[0]), "UnpairedRegistration { redacted }");
     }
 
     #[test]

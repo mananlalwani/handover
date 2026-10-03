@@ -11,6 +11,7 @@ const AUTH_PROBE_HOST = 'com.handover.google_messages.auth_probe';
 const MAX_NATIVE_WAIT = 20_000;
 const BODY_TYPES = new Set(['application/x-protobuf', 'application/protobuf']);
 const JSON_TYPES = new Set(['application/json', 'application/json+protobuf']);
+const GA_EMAIL_EXPRESSION = '(()=>{try{const app=globalThis.default_mw;const setting=app?.uE;const read=app?.u;if(!setting||typeof read!=="function")return null;return read(setting)}catch{return null}})()';
 
 let tabId = null;
 let active = false;
@@ -24,6 +25,7 @@ let captureMode = null;
 let captureServiceCookies = false;
 let captureBrowserRequest = false;
 let inspectLocalError = false;
+let pairingAccountEmail = null;
 let localDescription = null;
 let localDescriptionTimer = null;
 
@@ -130,6 +132,7 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   captureServiceCookies = false;
   captureBrowserRequest = false;
   inspectLocalError = false;
+  pairingAccountEmail = null;
   clearLocalDescription();
   generation += 1;
   if (durationTimer !== null) {
@@ -140,7 +143,7 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   requests.clear();
   authCandidates.clear();
   authHeaderMaps.clear();
-  if (!preserveNativeProbe && (oldMode === 'auth' || oldMode === 'register') && nativeProbe.state === 'waiting') {
+  if (!preserveNativeProbe && (oldMode === 'auth' || oldMode === 'register' || oldMode === 'pairing_check') && nativeProbe.state === 'waiting') {
     const error = reason === 'Duration ended.' ? (oldMode === 'register' ? 'sign_in_not_observed' : 'timeout')
       : reason === 'Stopped after the tab navigated away.' ? 'tab_changed'
         : reason === 'Stopped because the tab closed.' ? 'tab_closed' : 'stopped';
@@ -156,15 +159,15 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
 async function start(duration, mode = 'observe', withServiceCookies = false, withBrowserRequest = false, inspect = false) {
   clearLocalDescription();
   probeId += 1;
-  const maximum = mode === 'auth' || mode === 'register' ? 120 : 300;
+  const maximum = mode === 'auth' || mode === 'register' || mode === 'pairing_check' ? 120 : 300;
   if (!Number.isInteger(duration) || duration < 1 || duration > maximum) return { error: `Choose a duration from 1 to ${maximum} seconds.` };
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab || !Number.isInteger(tab.id) || !eligibleTabUrl(tab.url ?? '')) return { error: 'The active tab must be messages.google.com over HTTPS.' };
   if (active) await stop('Previous observation stopped.');
   generation += 1;
-  if (mode === 'auth' || mode === 'register') {
+  if (mode === 'auth' || mode === 'register' || mode === 'pairing_check') {
     authForwarded = false;
-    nativeProbe = { state: 'waiting' };
+    nativeProbe = { state: 'waiting', ...(mode === 'pairing_check' ? { operation: 'pairing_check' } : {}) };
   }
   records = [];
   dropped = 0;
@@ -173,22 +176,27 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
     await chrome.debugger.attach({ tabId }, '1.3');
     active = true;
     captureMode = mode;
-    captureServiceCookies = (mode === 'auth' || mode === 'register') && withServiceCookies === true;
+    captureServiceCookies = (mode === 'auth' || mode === 'register' || mode === 'pairing_check') && withServiceCookies === true;
     captureBrowserRequest = mode === 'auth' && withBrowserRequest === true;
     inspectLocalError = mode === 'auth' && inspect === true;
     const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!currentTab || currentTab.id !== tab.id || !eligibleTabUrl(currentTab.url ?? '')) throw new Error('tab_changed');
+    if (mode === 'pairing_check') {
+      pairingAccountEmail = await readGoogleAccountEmail(tab.id);
+      if (!pairingAccountEmail) throw new Error('account_unavailable');
+    }
     await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
       maxTotalBufferSize: 2 * 1024 * 1024,
       maxResourceBufferSize: 1024 * 1024,
-      maxPostDataSize: mode === 'auth' || mode === 'register' ? (captureBrowserRequest ? 2048 : 0) : 1024 * 1024,
+      maxPostDataSize: mode === 'auth' || mode === 'register' || mode === 'pairing_check' ? (captureBrowserRequest ? 2048 : 0) : 1024 * 1024,
     }), 5000);
     durationTimer = setTimeout(() => { void enqueueCommand(() => stop('Duration ended.')); }, duration * 1000);
     chrome.alarms.create('observer-duration', { when: Date.now() + duration * 1000 });
     notify();
-    return { message: mode === 'register' ? 'Registration is waiting for SignInGaia.' : mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
-  } catch {
+    return { message: mode === 'register' ? 'Registration is waiting for SignInGaia.' : mode === 'pairing_check' ? 'Read-only source lookup is waiting for SignInGaia.' : mode === 'auth' ? 'Authentication probe is waiting for SignInGaia.' : `Observing for up to ${duration} seconds.` };
+  } catch (error) {
     await stop('Could not attach the observer.');
+    if (error?.message === 'account_unavailable') return { error: 'Could not read GA_EMAIL from the current Messages page. No native request was sent.' };
     return { error: 'Could not attach the observer.' };
   }
 }
@@ -199,6 +207,24 @@ export function withTimeout(promise, milliseconds, errorCode = 'command_timeout'
     promise,
     new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error(errorCode)), milliseconds); }),
   ]).finally(() => clearTimeout(timeout));
+}
+
+function validAccountEmail(value) {
+  return typeof value === 'string' && value.length <= 254 &&
+    /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/.test(value);
+}
+
+// Read only Google's GA_EMAIL setting from the active Messages page. The fixed
+// expression returns one string; it never enumerates page state or runs input.
+export async function readGoogleAccountEmail(id) {
+  const result = await withTimeout(chrome.debugger.sendCommand(
+    { tabId: id },
+    'Runtime.evaluate',
+    { expression: GA_EMAIL_EXPRESSION, returnByValue: true, awaitPromise: false, silent: true },
+  ), 5000);
+  const email = result?.result?.value;
+  if (result?.result) result.result.value = null;
+  return validAccountEmail(email) ? email : null;
 }
 
 function selectedAuthHeaders(headers, includeServiceCookie = false) {
@@ -243,7 +269,7 @@ function clearAuthRequest(requestId) {
 }
 
 async function processAuthCandidate(requestId, candidate) {
-  if (!active || !['auth', 'register'].includes(captureMode) || authForwarded || !candidate || !candidate.ready) return;
+  if (!active || !['auth', 'register', 'pairing_check'].includes(captureMode) || authForwarded || !candidate || !candidate.ready) return;
   const headers = { ...candidate.requestHeaders, ...(candidate.extraHeaders ?? {}) };
   let authorization = headers.authorization;
   let apiKey = headers['x-goog-api-key'];
@@ -265,17 +291,19 @@ async function processAuthCandidate(requestId, candidate) {
     return;
   }
   const payload = {
-    type: candidate.registration ? 'gaia_register' : candidate.inspect ? 'gaia_lookup_inspect' : candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
+    type: candidate.registration ? 'gaia_register' : candidate.pairingCheck ? 'gaia_pairing' : candidate.inspect ? 'gaia_lookup_inspect' : candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
     endpoint: candidate.endpoint,
     origin: origin ?? 'https://messages.google.com',
     authorization,
     api_key: apiKey,
     ...(authUser === undefined ? {} : { auth_user: authUser }),
     ...(candidate.withServiceCookies ? { service_cookie: headers.cookie } : {}),
+    ...(candidate.pairingCheck ? { account_email: pairingAccountEmail } : {}),
     ...(candidate.browserRequest ? { browser_request: candidate.browserRequest } : {}),
   };
   authForwarded = true;
-  nativeProbe = { state: 'running', ...(candidate.registration ? { operation: 'registration' } : {}) };
+  const operation = candidate.pairingCheck ? 'pairing_check' : null;
+  nativeProbe = { state: 'running', ...(operation ? { operation } : {}) };
   const currentProbe = probeId;
   const inspect = candidate.inspect;
   authCandidates.clear();
@@ -288,6 +316,7 @@ async function processAuthCandidate(requestId, candidate) {
   apiKey = null;
   authUser = null;
   origin = null;
+  pairingAccountEmail = null;
   await enqueueCommand(() => stop('Authentication request captured.', { preserveNativeProbe: true }));
   if (currentProbe !== probeId) { clearNativePayload(payload); return; }
 
@@ -298,6 +327,7 @@ async function processAuthCandidate(requestId, candidate) {
     const outcome = await nativeReplyWithTimeout(Promise.resolve(nativeCall));
     if (currentProbe !== probeId) return;
     nativeProbe = outcome.reply ? sanitizeNativeReply(outcome.reply, candidate.registration === true) : { state: 'failed', result: { error: outcome.error, ...(candidate.registration ? { registration: true } : {}) } };
+    if (operation) nativeProbe.operation = operation;
     if (candidate.registration && nativeProbe.state === 'failed') nativeProbe.result.registration = true;
     if (inspect && nativeProbe.state === 'failed' && nativeProbe.result?.error === 'http_error' &&
         typeof outcome.reply?.local_description === 'string' && byteCount(outcome.reply.local_description) <= 2048) {
@@ -312,6 +342,7 @@ async function processAuthCandidate(requestId, candidate) {
 function clearNativePayload(payload) {
   payload.authorization = '';
   payload.api_key = '';
+  if (Object.hasOwn(payload, 'account_email')) payload.account_email = '';
   if (Object.hasOwn(payload, 'service_cookie')) delete payload.service_cookie;
   if (Object.hasOwn(payload, 'auth_user')) delete payload.auth_user;
   if (Object.hasOwn(payload, 'browser_request')) delete payload.browser_request;
@@ -373,6 +404,7 @@ function authRequest(requestId, request) {
   const candidate = {
     endpoint, withServiceCookies: captureServiceCookies,
     registration: captureMode === 'register',
+    pairingCheck: captureMode === 'pairing_check',
     browserRequest,
     inspect: inspectLocalError,
     requestHeaders: selectedAuthHeaders(request.headers, captureServiceCookies),
@@ -406,7 +438,7 @@ chrome.debugger.onEvent.addListener((source, method, params = {}) => {
   if (!active || source.tabId !== tabId || method !== 'Network.requestWillBeSent' &&
       method !== 'Network.requestWillBeSentExtraInfo' && method !== 'Network.responseReceived' &&
       method !== 'Network.loadingFinished' && method !== 'Network.loadingFailed') return;
-  if (captureMode === 'auth' || captureMode === 'register') {
+  if (captureMode === 'auth' || captureMode === 'register' || captureMode === 'pairing_check') {
     if (method === 'Network.requestWillBeSent') authRequest(params.requestId, params.request ?? {});
     else if (method === 'Network.requestWillBeSentExtraInfo') authExtraInfo(params.requestId, params.headers);
     else if (method === 'Network.responseReceived' && params.hasExtraInfo === false) {
@@ -469,7 +501,7 @@ chrome.debugger.onEvent.addListener((source, method, params = {}) => {
 
 chrome.debugger.onDetach.addListener(source => {
   if (source.tabId !== tabId) return;
-  if ((captureMode === 'auth' || captureMode === 'register') && nativeProbe.state === 'waiting') nativeProbe = { state: 'failed', result: { error: 'detached' } };
+  if ((captureMode === 'auth' || captureMode === 'register' || captureMode === 'pairing_check') && nativeProbe.state === 'waiting') nativeProbe = { state: 'failed', result: { error: 'detached' } };
   active = false;
   generation += 1;
   tabId = null;
@@ -482,6 +514,7 @@ chrome.debugger.onDetach.addListener(source => {
   captureServiceCookies = false;
   captureBrowserRequest = false;
   inspectLocalError = false;
+  pairingAccountEmail = null;
   clearLocalDescription();
   notify();
 });
@@ -521,6 +554,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'start') { enqueueCommand(() => start(message.duration)).then(sendResponse, () => sendResponse({ error: 'Could not start the observer.' })); return true; }
   if (message?.type === 'auth-probe') { enqueueCommand(() => start(120, 'auth')).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'register-device') { enqueueCommand(() => start(120, 'register', true)).then(sendResponse, () => sendResponse({ error: 'Could not start registration.' })); return true; }
+  if (message?.type === 'pairing-check') { enqueueCommand(() => start(120, 'pairing_check', true)).then(sendResponse, () => sendResponse({ error: 'Could not start pairing readiness check.' })); return true; }
   if (message?.type === 'auth-probe-with-cookies') { enqueueCommand(() => start(120, 'auth', true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-browser-request') { enqueueCommand(() => start(120, 'auth', true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-inspect') { enqueueCommand(() => start(120, 'auth', true, true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }

@@ -28,6 +28,8 @@ async function refresh() {
     const result = probe.result ?? {};
     nativeStatus.textContent = result.ok && result.registered
       ? 'Native device registered. The unpaired credential was saved locally.'
+      : result.ok && probe.operation === 'pairing_check'
+      ? `Read-only pairing readiness check complete. ${Number.isInteger(result.sources) ? `${result.sources} registered source(s) found.` : ''} No phone pairing request was sent.`
       : result.ok
       ? `Native authentication check complete. ${Number.isInteger(result.sources) ? `${result.sources} source(s) found.` : ''}`
       : 'Native authentication check complete.';
@@ -87,6 +89,12 @@ document.querySelector('#browser-request-probe').addEventListener('click', async
 document.querySelector('#register-device').addEventListener('click', async () => {
   const result = await message({ type: 'register-device' });
   nativeStatus.textContent = result?.error ?? 'Registration armed. Refresh Google Messages to submit one native registration request.';
+  await refresh();
+});
+
+document.querySelector('#pairing-check').addEventListener('click', async () => {
+  const result = await message({ type: 'pairing-check' });
+  nativeStatus.textContent = result?.error ?? 'Read-only pairing readiness check started. Refresh Google Messages to provide a one-time sign-in proof.';
   await refresh();
 });
 

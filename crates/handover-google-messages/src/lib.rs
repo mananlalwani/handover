@@ -111,6 +111,7 @@ pub struct BrowserProof {
     pub api_key: String,
     pub auth_user: Option<String>,
     pub service_cookie: Option<String>,
+    pub account_email: Option<String>,
     pub browser_request: Option<Value>,
 }
 
@@ -123,6 +124,9 @@ impl Drop for BrowserProof {
         }
         if let Some(cookie) = &mut self.service_cookie {
             cookie.zeroize();
+        }
+        if let Some(email) = &mut self.account_email {
+            email.zeroize();
         }
         if let Some(body) = &mut self.browser_request {
             erase_json_strings(body);
@@ -161,6 +165,9 @@ pub enum ProbeError {
     RegistrationFailed,
     SessionExpired,
     ReceiveFailed,
+    NoEligiblePhone,
+    AmbiguousPhone,
+    PairingFailed,
     Network,
     HttpError(u16),
     HttpErrorWithStatus(u16, RpcStatus),
@@ -194,6 +201,9 @@ impl ProbeError {
             Self::RegistrationFailed => "registration_failed",
             Self::SessionExpired => "session_expired",
             Self::ReceiveFailed => "receive_failed",
+            Self::NoEligiblePhone => "no_eligible_phone",
+            Self::AmbiguousPhone => "ambiguous_phone",
+            Self::PairingFailed => "pairing_failed",
             Self::Network => "network",
             Self::HttpError(_)
             | Self::HttpErrorWithStatus(_, _)
@@ -271,19 +281,47 @@ impl BrowserProof {
     }
 
     fn validate_registration(&self) -> Result<HeaderMap, ProbeError> {
+        if self.kind != "gaia_register" || self.account_email.is_some() {
+            return Err(ProbeError::InvalidBootstrap);
+        }
         self.validate_mode(true)
     }
 
     fn validate_messaging(&self) -> Result<HeaderMap, ProbeError> {
-        if self.kind != "gaia_register" || self.browser_request.is_some() {
+        if !matches!(self.kind.as_str(), "gaia_register" | "gaia_pairing")
+            || self.browser_request.is_some()
+        {
             return Err(ProbeError::InvalidBootstrap);
+        }
+        if self.kind == "gaia_pairing"
+            && !self
+                .account_email
+                .as_deref()
+                .is_some_and(valid_account_email)
+            || self.kind == "gaia_register" && self.account_email.is_some()
+        {
+            return Err(ProbeError::InvalidCredentials);
+        }
+        self.validate_mode(true)
+    }
+
+    fn validate_pairing(&self) -> Result<HeaderMap, ProbeError> {
+        if self.kind != "gaia_pairing" || self.browser_request.is_some() {
+            return Err(ProbeError::InvalidBootstrap);
+        }
+        if !self
+            .account_email
+            .as_deref()
+            .is_some_and(valid_account_email)
+        {
+            return Err(ProbeError::InvalidCredentials);
         }
         self.validate_mode(true)
     }
 
     fn validate_mode(&self, registration: bool) -> Result<HeaderMap, ProbeError> {
         let kind_allowed = if registration {
-            self.kind == "gaia_register"
+            matches!(self.kind.as_str(), "gaia_register" | "gaia_pairing")
         } else {
             matches!(
                 self.kind.as_str(),
@@ -291,6 +329,7 @@ impl BrowserProof {
                     | "gaia_lookup_with_cookies"
                     | "gaia_lookup_browser_request"
                     | "gaia_lookup_inspect"
+                    | "gaia_pairing"
             )
         };
         if !kind_allowed {
@@ -320,6 +359,7 @@ impl BrowserProof {
                 "gaia_lookup_with_cookies"
                 | "gaia_lookup_browser_request"
                 | "gaia_lookup_inspect"
+                | "gaia_pairing"
                 | "gaia_register",
                 Some(cookie),
             ) => {
@@ -353,6 +393,60 @@ impl BrowserProof {
         );
         Ok(headers)
     }
+}
+
+fn valid_account_email(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 254
+        || !value.is_ascii()
+        || value.chars().any(char::is_whitespace)
+    {
+        return false;
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    if local.is_empty()
+        || local.len() > 64
+        || domain.len() > 189
+        || domain.split('.').count() < 2
+        || domain.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return false;
+    }
+    local.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'.' | b'!'
+                    | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'/'
+                    | b'='
+                    | b'?'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'{'
+                    | b'|'
+                    | b'}'
+                    | b'~'
+                    | b'-'
+            )
+    })
 }
 
 fn validate_browser_lookup(body: &Value) -> Result<(), ProbeError> {
@@ -522,6 +616,77 @@ pub struct AcknowledgementHttpAccepted {
     pub http_status: u16,
 }
 
+/// A locally prepared type-44 request. Preparation performs only the matched
+/// read-only source lookup; the caller must explicitly submit the envelope.
+pub struct PreparedPairing {
+    attempt: pairing::gaia::InitialPairing,
+    envelope: pairing::gaia::PairingSendEnvelope,
+}
+
+impl fmt::Debug for PreparedPairing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PreparedPairing { redacted }")
+    }
+}
+
+impl PreparedPairing {
+    pub fn envelope(&self) -> &pairing::gaia::PairingSendEnvelope {
+        &self.envelope
+    }
+
+    pub fn accept_reply(
+        self,
+        reply: receive::PairingReply,
+    ) -> Result<
+        (
+            pairing::gaia::AwaitingPhoneConfirmation,
+            receive::Acknowledgement,
+        ),
+        ProbeError,
+    > {
+        reply
+            .accept_initial_and_ack(self.attempt)
+            .map_err(|_| ProbeError::PairingFailed)
+    }
+}
+
+/// Perform one authenticated, read-only source lookup and prepare a fresh
+/// type-44 pairing envelope. No registration or send occurs in this call.
+pub async fn prepare_initial_pairing(
+    proof: &BrowserProof,
+    registration: &registration::UnpairedRegistration,
+    session_id: &str,
+) -> Result<PreparedPairing, ProbeError> {
+    let headers = proof.validate_pairing()?;
+    let email = proof
+        .account_email
+        .as_deref()
+        .ok_or(ProbeError::InvalidCredentials)?;
+    let endpoint = format!("{}{}", proof.endpoint, SIGN_IN_PATH);
+    let body = query_response(&client(true)?, &endpoint, headers, &lookup_request(), false).await?;
+    prepare_pairing_from_sources(email, registration, session_id, &body)
+}
+
+fn prepare_pairing_from_sources(
+    email: &str,
+    registration: &registration::UnpairedRegistration,
+    session_id: &str,
+    body: &[u8],
+) -> Result<PreparedPairing, ProbeError> {
+    let sources = sources::RegisteredSources::from_lookup_response(body)?;
+    let phone = match sources.select_phone() {
+        sources::PhoneSelection::Selected(phone) => phone,
+        sources::PhoneSelection::NoneEligible => return Err(ProbeError::NoEligiblePhone),
+        sources::PhoneSelection::Ambiguous => return Err(ProbeError::AmbiguousPhone),
+    };
+    let attempt =
+        pairing::gaia::InitialPairing::prepare(phone).map_err(|_| ProbeError::PairingFailed)?;
+    let envelope = registration
+        .initial_pairing_envelope(&attempt, email, session_id)
+        .map_err(|_| ProbeError::PairingFailed)?;
+    Ok(PreparedPairing { attempt, envelope })
+}
+
 /// Send one pairing envelope. Browser authorization remains separate from the
 /// registration token encoded inside the envelope.
 pub async fn send_pairing_envelope(
@@ -531,7 +696,7 @@ pub async fn send_pairing_envelope(
     envelope
         .ensure_valid()
         .map_err(|_| ProbeError::SessionExpired)?;
-    let mut headers = proof.validate_messaging()?;
+    let mut headers = proof.validate_pairing()?;
     headers.insert(
         CONTENT_TYPE,
         HeaderValue::from_static("application/x-protobuf"),
@@ -761,6 +926,17 @@ async fn query_with_body_and_inspection(
     body: &Value,
     inspect: bool,
 ) -> Result<ProbeResult, ProbeError> {
+    let body = query_response(http, endpoint, headers, body, inspect).await?;
+    parse_response(&body)
+}
+
+async fn query_response(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    body: &Value,
+    inspect: bool,
+) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
     let body = serde_json::to_vec(body).map_err(|_| ProbeError::NativeError)?;
     let request = http.post(endpoint).headers(headers).body(body);
     let mut response = request.send().await.map_err(transport_error)?;
@@ -781,14 +957,14 @@ async fn query_with_body_and_inspection(
     {
         return Err(ProbeError::ResponseTooLarge);
     }
-    let mut body = Vec::new();
+    let mut body = Zeroizing::new(Vec::new());
     while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
         if chunk.len() > RESPONSE_LIMIT - body.len() {
             return Err(ProbeError::ResponseTooLarge);
         }
         body.extend_from_slice(&chunk);
     }
-    parse_response(&body)
+    Ok(body)
 }
 
 async fn http_error_details(mut response: reqwest::Response, inspect: bool) -> ProbeError {
@@ -1008,6 +1184,7 @@ fn lookup_records(body: &[u8]) -> Result<Vec<Value>, ProbeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine, engine::general_purpose};
 
     fn proof() -> BrowserProof {
         BrowserProof {
@@ -1018,6 +1195,7 @@ mod tests {
             api_key: "sensitive-key".into(),
             auth_user: Some("0".into()),
             service_cookie: None,
+            account_email: None,
             browser_request: None,
         }
     }
@@ -1027,6 +1205,26 @@ mod tests {
         proof.kind = "gaia_register".into();
         proof.service_cookie = Some("SID=synthetic-cookie".into());
         proof
+    }
+
+    fn lookup_response_with_phones(phones: &[(&str, bool, i64)]) -> Vec<u8> {
+        let records: Vec<Value> = phones
+            .iter()
+            .map(|(identity, enabled, timestamp)| {
+                let metadata = [0x08, u8::from(*enabled), 0x10, *timestamp as u8];
+                json!([
+                    general_purpose::STANDARD.encode(identity.as_bytes()),
+                    null,
+                    1,
+                    null,
+                    null,
+                    null,
+                    null,
+                    general_purpose::STANDARD.encode(metadata)
+                ])
+            })
+            .collect();
+        serde_json::to_vec(&json!([[], null, [null, null, records, null]])).unwrap()
     }
 
     #[test]
@@ -1176,6 +1374,65 @@ mod tests {
         p.service_cookie = Some("SID=synthetic".into());
         p.endpoint = "https://unapproved.test".into();
         assert_eq!(p.validate().unwrap_err(), ProbeError::InvalidEndpoint);
+    }
+
+    #[test]
+    fn pairing_credentials_require_a_valid_transient_account_email() {
+        let mut proof = registration_proof();
+        proof.kind = "gaia_pairing".into();
+        proof.account_email = Some("person+handover@example.test".into());
+        let headers = proof.validate_messaging().unwrap();
+        assert!(headers[COOKIE].is_sensitive());
+        assert!(!format!("{proof:?} {headers:?}").contains("person+handover"));
+
+        for invalid in [
+            "",
+            "no-at.example.test",
+            "person@localhost",
+            "person @example.test",
+            "person@example..test",
+            "person@example.test\r\nX-Evil: true",
+        ] {
+            assert!(!valid_account_email(invalid));
+        }
+        proof.account_email = None;
+        assert_eq!(
+            proof.validate_messaging(),
+            Err(ProbeError::InvalidCredentials)
+        );
+    }
+
+    #[test]
+    fn pairing_preparation_selects_one_phone_and_keeps_routes_private() {
+        let registration = registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+        let body =
+            lookup_response_with_phones(&[("older-phone", true, 5), ("newer-phone", true, 9)]);
+        let prepared = prepare_pairing_from_sources(
+            "person@example.test",
+            &registration,
+            "12345678-1234-4234-8234-123456789abc",
+            &body,
+        )
+        .unwrap();
+        assert_eq!(format!("{prepared:?}"), "PreparedPairing { redacted }");
+        assert!(!prepared.envelope().as_bytes().is_empty());
+        let ambiguous = lookup_response_with_phones(&[("one", true, 9), ("two", true, 9)]);
+        assert_eq!(
+            prepare_pairing_from_sources(
+                "person@example.test",
+                &registration,
+                "12345678-1234-4234-8234-123456789abc",
+                &ambiguous,
+            )
+            .unwrap_err(),
+            ProbeError::AmbiguousPhone
+        );
     }
 
     #[test]
