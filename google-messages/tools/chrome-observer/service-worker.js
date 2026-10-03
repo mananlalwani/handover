@@ -12,7 +12,7 @@ const MAX_NATIVE_WAIT = 20_000;
 const PROOF_MODES = new Set(['auth', 'register', 'pairing_check', 'native_login', 'native_pair']);
 const BODY_TYPES = new Set(['application/x-protobuf', 'application/protobuf']);
 const JSON_TYPES = new Set(['application/json', 'application/json+protobuf']);
-const GA_EMAIL_EXPRESSION = '(()=>{try{const app=globalThis.default_mw;const setting=app?.uE;const read=app?.u;if(!setting||typeof read!=="function")return null;return read(setting)}catch{return null}})()';
+const GA_EMAIL_EXPRESSION = '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string"||config.length>1048576||!app||typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return null;const account=app.T(app.oca(app.n,config),app.DPa,5);return account?.Ye()??null}catch{return null}})()';
 
 let tabId = null;
 let active = false;
@@ -220,7 +220,8 @@ function validAccountEmail(value) {
     /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/.test(value);
 }
 
-// Read only Google's GA_EMAIL setting from the active Messages page. The fixed
+// GA_EMAIL is ClientConfig field 5, account field 2. Use the page's own
+// protobuf JSON reader; Angular's injection accessor needs a DI context. The fixed
 // expression returns one string; it never enumerates page state or runs input.
 export async function readGoogleAccountEmail(id) {
   const result = await withTimeout(chrome.debugger.sendCommand(

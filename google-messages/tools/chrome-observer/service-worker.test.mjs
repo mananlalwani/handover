@@ -330,7 +330,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal(await worker.readGoogleAccountEmail(17), 'person@example.org');
   const emailCommand = calls.filter(call => call[0] === 'Runtime.evaluate').at(-1);
   assert.deepEqual(emailCommand[2], {
-    expression: '(()=>{try{const app=globalThis.default_mw;const setting=app?.uE;const read=app?.u;if(!setting||typeof read!=="function")return null;return read(setting)}catch{return null}})()',
+    expression: '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string"||config.length>1048576||!app||typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return null;const account=app.T(app.oca(app.n,config),app.DPa,5);return account?.Ye()??null}catch{return null}})()',
     returnByValue: true, awaitPromise: false, silent: true,
   });
   runtimeEmail = 'unsafe value SECRET';
@@ -427,4 +427,28 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   const switchedSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
   for (const secret of ['another@example.org', 'SWITCH_AUTH', 'SWITCH_API', 'SWITCH_COOKIE']) assert.equal(switchedSnapshot.includes(secret), false);
 
+});
+
+test('account expression reads bootstrap GA_EMAIL without Angular injection context', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const source = await readFile(new URL('./service-worker.js', import.meta.url), 'utf8');
+  const expression = source.match(/const GA_EMAIL_EXPRESSION = '([^\n]+)';/)[1];
+  const context = {
+    MW_CONFIG: JSON.stringify([null, null, null, null, [null, 'fixture@example.org']]),
+    default_mw: {
+      uE: {}, u() { throw new Error('NG0203: injection context required'); },
+      n: class { constructor(fields) { this.fields = fields; } },
+      DPa: class { constructor(fields) { this.fields = fields; } Ye() { return this.fields[1]; } },
+      oca(Type, text) { return new Type(JSON.parse(text)); },
+      T(config, Type, field) { return new Type(config.fields[field - 1]); },
+    },
+  };
+  assert.equal(runInNewContext(expression, context), 'fixture@example.org');
+  context.MW_CONFIG = '{}';
+  assert.equal(runInNewContext(expression, context), null);
+  delete context.MW_CONFIG;
+  assert.equal(runInNewContext(expression, context), null);
+  context.MW_CONFIG = 'x'.repeat(1048577);
+  context.default_mw.oca = () => { throw new Error('oversized config must not be parsed'); };
+  assert.equal(runInNewContext(expression, context), null);
 });
