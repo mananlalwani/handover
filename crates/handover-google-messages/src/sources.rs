@@ -15,6 +15,7 @@ const METADATA_LIMIT: usize = 4096;
 pub struct RegisteredSources {
     total: usize,
     phones: Vec<RegisteredPhone>,
+    identities: Vec<Zeroizing<Vec<u8>>>,
 }
 
 impl fmt::Debug for RegisteredSources {
@@ -57,8 +58,13 @@ impl RegisteredSources {
         let mut records = lookup_records(body)?;
         let result = (|| {
             let mut phones = Vec::new();
+            let mut identities = Vec::new();
             for record in &records {
                 let fields = record.as_array().ok_or(ProbeError::UnexpectedResponse)?;
+                let identity = Zeroizing::new(bytes(fields.first(), ID_LIMIT)?);
+                if !identity.is_empty() {
+                    identities.push(identity);
+                }
                 // Google's xJ filters source field 3 to types 1 and 4.
                 let Some(kind) = fields.get(2).and_then(Value::as_u64) else {
                     continue;
@@ -104,10 +110,20 @@ impl RegisteredSources {
             Ok(Self {
                 total: records.len(),
                 phones,
+                identities,
             })
         })();
         records.iter_mut().for_each(erase_strings);
         result
+    }
+
+    pub(crate) fn contains_registration(
+        &self,
+        registration: &crate::registration::UnpairedRegistration,
+    ) -> bool {
+        self.identities
+            .iter()
+            .any(|identity| registration.matches_identity(identity))
     }
 
     pub fn total_count(&self) -> usize {

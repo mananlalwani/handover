@@ -29,7 +29,9 @@
   <button id="pairing-check">Check native pairing readiness</button>
   <p>Reads only the signed-in account email from the Messages page, then makes one read-only source lookup. It does not pair a phone, change registered devices, or send a message.</p>
   <button id="native-login">Send sign-in proof to Handover</button>
-  <p>Passes one transient sign-in proof through the local daemon to its selected helper using the existing Login bundle. The current native helper accepts and discards the bundle; this does not send a phone pairing request or a message.</p>
+  <p>Passes one transient sign-in proof through the local daemon to its selected helper using the existing Login bundle. The native helper checks that the saved registration belongs to this signed-in account. It performs a read-only lookup and sends no phone pairing request or message.</p>
+  <button id="native-pair">Pair phone with Handover</button>
+  <p>Starts one native phone pairing attempt after checking the account. This changes phone pairing state. Confirm the emoji shown by Handover on your phone. It does not send a chat message. Stop the existing relay before testing. If pairing is interrupted, check the phone before trying again.</p>
   <button id="inspect-probe">Inspect rejection locally</button>
   <p>This opt-in test makes the same read-only request and lets you view Google's error description locally. It may contain identifiers. It stays out of exports and clears after 60 seconds. Share only a redacted cause.</p>
   <button id="view-local-description">View local error description once</button>

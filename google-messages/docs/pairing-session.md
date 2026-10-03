@@ -1,7 +1,7 @@
 # Source selection and pairing session
 
 The independent Rust lookup succeeded on 2026-10-02 using one-time matched
-browser credentials. Live pairing and session restoration remain unimplemented.
+browser credentials. Native pairing now has an offline-tested helper runtime; live pairing and usable messaging session restoration remain unverified.
 This document separates the observed wire contract from implementation policy.
 
 ## Registered phone selection
@@ -66,8 +66,8 @@ A future client must keep these outcomes distinct:
 
 The explicit `register_device` transport now sends the independently constructed
 mode-0 SignInGaia request. Calling it changes Google's registered-device state.
-Only its local HTTP mock has been exercised; it has not been invoked against
-Google. Receive and acknowledgement transports have local mock coverage, but
+The user completed one native registration on 2026-10-03. Receive and
+acknowledgement transports have local mock coverage, but
 have not been tested against Google. Chat sends remain absent. Automatic browser
 SendMessage traffic includes protocol envelopes; it must not be interpreted as
 permission to send user messages.
@@ -80,12 +80,12 @@ The caller supplies a local lifetime cap. Expiry starts at request preparation,
 so delayed responses cannot extend that cap.
 
 The returned `UnpairedRegistration` keeps credentials private, redacts Debug,
-and exposes only remaining lifetime. It has no persistence or connected-account
-conversion. Owned request bytes, keys, and decoded credentials use zeroizing
+and exposes only remaining lifetime and its random local account alias. Its
+versioned record is stored privately; it has no connected-account conversion. Owned request bytes, keys, and decoded credentials use zeroizing
 storage. The caller owns the response buffer; this does not promise erasure of
 every parsing or encoding temporary. Synthetic tests cover the request fields,
 fresh IDs and keys, response bounds, invalid lifetimes, and expiry. Registration
-has not been tested against Google's service. The read-only probe remains
+was completed against Google's service by the user. The read-only probe remains
 separate and rejects the explicit registration proof mode.
 
 ## Session ownership and storage
@@ -102,9 +102,10 @@ client-facing IPC. The AGPL adapter's stored sessions will not be imported.
 Browser service cookies remain transient. A restricted session-record store
 persists the mode-0 unpaired registration and a random Handover account alias;
 the alias contains no email. Older pending records are upgraded in place when
-restored. The current helper discards the browser bundle and announces the saved
-registration as offline and unauthenticated. Confirmed-session persistence,
-refresh, and restart recovery still need implementation.
+restored. The helper uses browser proof transiently for explicit account lookup
+or pairing and saves confirmed keys separately. Saved registrations and pairings
+remain offline and unauthenticated. Native refresh and usable messaging-session
+recovery still need implementation.
 
 Google's restore path requires a complete set of registration and pairing data
 and applies a configuration-dependent pairing-age limit. A partial record must
@@ -271,7 +272,7 @@ five-minute expiry and 16 KiB response bound, and retains optional encrypted use
 data from field 8 privately, bounded to 8 KiB. It does not decrypt that data yet.
 
 `PhoneConfirmedPairing` records only the acknowledged exchange. It has redacted
-Debug output and no session-key export, persistence, or online-account conversion.
+Debug output and no public session-key export or online-account conversion. The helper can persist and restore its private pairing record.
 Tests cover success, correlation mismatches, rejection, encrypted-data bounds,
 and expiry. Live phone confirmation remains unverified.
 
@@ -297,8 +298,7 @@ Users should not need to copy cookies or prepare credential files. The existing
 diagnostic observer remains a development tool until the login component exists.
 
 Rust will own fresh registration, phone pairing, and messaging. Browser cookies
-will not be persisted. Confirmed native session storage and refresh still need
-implementation and verification; the intended setup flow is browser sign-in,
+will not be persisted. Confirmed pairing keys now have a private local record. Native token refresh and usable session recovery still need implementation and verification; the intended setup flow is browser sign-in,
 phone confirmation, then session management by Handover. This direction does not
 claim that unattended refresh or restart recovery already works.
 
@@ -382,62 +382,58 @@ pairing replies do not produce acknowledgement handles.
 account names. A small versioned header and exact length check reject corrupt
 records. Record bytes are zeroized in memory and never appear in Debug.
 This store follows the existing adapter's local permission model. It does not
-encrypt records against another process running as the same user. A typed,
-versioned confirmed-session record still has to be designed and connected to
-registration and pairing before the client can restore an account.
+encrypt records against another process running as the same user. The helper now stores a typed, versioned confirmed-pairing record in the
+`confirmed` subdirectory. Restoring it retains local keys and pairing evidence;
+it does not establish a working authenticated messaging session.
 
-`restore_all_pending_with_keys` returns each restored registration together with
-the file digest it was stored under. A caller that owns a separate,
-daemon-visible account namespace needs that mapping, and re-decoding the record
-format in a second place would risk the two copies disagreeing about what is a
-valid record. The digest is a filename, not a credential, and it carries no
-account identifier. It is also a valid `handover-core` account id, which is what
-lets the helper announce a restored registration without inventing a name.
+`restore_all_pending_with_keys` returns each pending registration alongside its
+hashed filename. The helper exposes the persisted random Handover alias, rather
+than that filename, as the normalized account ID. Provider identities remain
+private to the protocol client.
 
-### Helper process seam
+### Helper-driven pairing and local recovery
 
-`handover-google-messages-helper` is the daemon-supervised process that will own
-this client's long-lived pairing and session state. It speaks the existing
-normalized helper contract v1, so no Google type and no new public Handover model
-is needed to reach it. It lives in this crate rather than in
-`handover-gmessages`, which stays framing, normalization, staging, and
-supervision only.
+`handover-google-messages-helper` owns pairing through normalized helper IPC v1.
+The Native Messaging host delivers a versioned opaque proof bundle. The daemon
+selects the native helper and its sender atomically before forwarding it, so a
+replacement by the production adapter cannot receive the proof.
 
-The helper is a process seam today, not a client. It answers `hello`, announces
-each locally saved pending unpaired registration as `connected: false` and
-`authenticated: false`, bounds and decodes a `login` bundle before discarding
-it, and rejects every command it cannot serve. It opens no network connection
-and sends nothing.
+The read-only `gaia_login` operation verifies account ownership and phone
+selection. It matches the saved web registration identity against source field 1,
+as Google's `a5a` does at offset 1069043 in the public bootstrap captured above.
+An absent registration fails before receive or send. The account email remains
+transient and supplies only the account destination; it does not become the
+public Handover account alias.
 
-Three choices in that binary are worth stating because they constrain later work:
+The explicit `gaia_pairing_start` operation runs one five-minute attempt. It
+opens authenticated receive before type 44, correlates replies by type, request
+ID, and sender before consuming handshake state, displays the revision-1 symbol,
+and sends type 45. Stale replies remain unhandled and unacknowledged. Only a
+validated final phone reply creates confirmed pairing evidence.
 
-- No account is ever announced as connected or authenticated. A restored pending
-  registration has no paired phone, and nothing has been re-attested with Google,
-  so an announcement claiming otherwise would be invented state.
-- A rejected send returns `ok: false`, never acceptance. The daemon journals an
-  outgoing operation when a send is accepted, so an accepted reply for a
-  submission that never happened would leave a false record.
-- An unservable command with no waiter publishes nothing. An empty
-  authoritative conversation list or message window would read as "this account
-  is empty", which is a claim the helper cannot support.
+The helper saves registration and pairing keys in a versioned local record under
+`gmessages-native/confirmed` before the final ACK. The private record includes
+peer/correlation material and bounded encrypted user data, but no browser
+cookies, email, or authorization header. It uses the existing restricted store.
+Restore checks schema versions, key sizes, correlation identifiers, and the
+record's hashed registration identity. Expired transport tokens stay expired.
+An ACK outage retains confirmed keys and does not authorize another pairing.
 
-Each read is capped just past the contract's 1 MiB line limit rather than using
-`BufRead::lines`, which would allocate a whole line before any size check. A
-line that runs past the cap is dropped without being echoed, and the helper
-stops instead of trying to resynchronize mid-line, so the daemon's restart
-handles recovery.
+There is one active ceremony, an eight-reply queue, and an eight-event progress
+queue. Overflow, receive failure, cancellation, and timeout end the attempt
+without retry. The helper remains responsive to commands. Logout cancels and
+joins the worker before deleting files, including confirmation saved before its
+completion event reached the actor. Local deletion does not prove remote
+revocation.
 
-The announced account id is the store's filename digest. That discloses no
-account identifier, but it also means a restored registration appears in clients
-under an unreadable id. A later slice should give accounts a chosen name once
-login can produce a real session; the digest is a placeholder, not a design
-choice.
+Confirmed records are restored as offline and unauthenticated. Conversations,
+history, messaging updates/sends, native refresh, remote logout, and usable
+session recovery remain unimplemented. Confirmation alone must not advertise
+those capabilities.
 
-Verified offline: contract framing, the bounded read, both size bounds, base64
-handling, account-name validation against the daemon's own gate, store
-round-tripping, fail-closed restore, and the announcement invariants above.
-Verified live: nothing. The helper has never been run under `handoverd`, and it
-has never contacted Google. An earlier test run read the operator's real state
-directory by mistake, which confirmed that a saved pending registration is
-restorable and is announced as offline and unauthenticated, but that run was a
-test defect rather than a designed check.
+Verified offline: a local HTTP service and UKEY2 mock phone complete types 44 and
+45 and derive the same symbol. Tests cover read-only operation, account mismatch,
+stale replies, send/receive failure, cancellation, final ACK failure, private key
+recovery, expired-token preservation, and routing after helper replacement.
+Native phone pairing has not been live-tested. Registration remains the only
+native operation the user has performed against Google beyond read-only lookup.

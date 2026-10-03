@@ -9,35 +9,35 @@
 //!
 //! Scope: this is the process seam, not a finished client. It owns the
 //! restricted session store, restores pending unpaired registrations, and
-//! gates every capability it cannot yet serve. It performs no network I/O and
-//! sends nothing. Pairing ceremony, receive streaming, and message sends are
-//! deliberately absent rather than stubbed with invented results.
+//! runs explicit bounded phone-pairing attempts, and gates messaging until a
+//! usable session exists. Browser proofs stay transient.
 //!
 //! It never logs bundles, tokens, keys, account email, message bodies, or
 //! media bytes.
 
-use std::collections::BTreeSet;
-use std::io::{BufRead, Read, Write};
+use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
 use base64::Engine as _;
 use handover_core::messaging::check_account_id;
 use handover_gmessages::contract::{
     HELPER_PROTOCOL, HelperCommand, HelperEvent, MAX_BUNDLE_BYTES, MAX_HELPER_LINE_BYTES,
     NATIVE_GOOGLE_MESSAGES_HELPER_NAME,
 };
-use handover_google_messages::registration::UnpairedRegistration;
 use handover_google_messages::session_store::SessionStore;
-use zeroize::Zeroizing;
+use handover_google_messages::{
+    login::{ConfirmedPairing, LoginBootstrap, LoginOutcome, LoginProgress},
+    registration::UnpairedRegistration,
+};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{sync::mpsc, task::JoinSet};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Reported in `Hello`. The daemon logs the OS process name separately; this
 /// identifies the implementation, not the account.
 const HELPER_NAME: &str = NATIVE_GOOGLE_MESSAGES_HELPER_NAME;
 
-/// Shown next to every account this helper announces.
-///
-/// Both account sources are unpaired. A restored pending registration has no
-/// phone behind it, and an accepted login has no session at all, so the label
-/// says so rather than letting a disconnected account read as paired.
+/// Label for a saved registration that has no confirmed phone pairing.
 const ACCOUNT_LABEL: &str = "Google Messages (not paired)";
 
 /// Stable reason for any command this helper cannot serve. Deliberately a
@@ -45,56 +45,147 @@ const ACCOUNT_LABEL: &str = "Google Messages (not paired)";
 /// the daemon's error path.
 const UNAVAILABLE: &str = "capability not available in the native helper";
 
-fn main() {
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    let _ = serve(&mut NativeHelper::new(), &mut stdin.lock(), &mut stdout);
+#[tokio::main]
+async fn main() {
+    let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut writer = tokio::io::stdout();
+    let _ = serve_async(&mut NativeHelper::new(), &mut reader, &mut writer).await;
+}
+
+async fn publish<W: AsyncWrite + Unpin>(writer: &mut W, event: HelperEvent) -> std::io::Result<()> {
+    writer.write_all(encode(&event).as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await
+}
+
+/// The command reader stays responsive throughout pairing. One ceremony and
+/// eight progress events are allowed; pipe closure and logout cancel its I/O.
+async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
+    helper: &mut NativeHelper,
+    reader: &mut R,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    let (progress_tx, mut progress_rx) = mpsc::channel(8);
+    let mut jobs = JoinSet::new();
+    let mut generation = 0_u64;
+    let mut active_account: Option<String> = None;
+    let mut line = Zeroizing::new(Vec::new());
+    loop {
+        let mut bounded = AsyncReadExt::take(
+            &mut *reader,
+            MAX_LINE_READ.saturating_sub(line.len() as u64),
+        );
+        tokio::select! {
+            read = bounded.read_until(b'\n', &mut line) => {
+                if read? == 0 {
+                    jobs.abort_all();
+                    while jobs.join_next().await.is_some() {}
+                    return Ok(());
+                }
+                let terminated = line.last() == Some(&b'\n');
+                if terminated { line.pop(); }
+                if line.len() <= MAX_HELPER_LINE_BYTES {
+                    if let Ok(control) = serde_json::from_slice::<Control>(&line) {
+                        if control.kind == "logout" && active_account.is_some()
+                            && control.account.as_deref() == active_account.as_deref() {
+                            // Wait for cancellation before deleting credentials.
+                            // A concurrently finishing task may be writing them.
+                            jobs.abort_all();
+                            while jobs.join_next().await.is_some() {}
+                            generation = generation.wrapping_add(1);
+                            active_account = None;
+                            helper.login_active = None;
+                            helper.pending_login = None;
+                        }
+                    }
+                }
+                if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
+                    for response in helper.handle_line(&line) {
+                        writer.write_all(response.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                    }
+                    writer.flush().await?;
+                }
+                line.zeroize();
+                if helper.shutdown_requested() || !terminated {
+                    jobs.abort_all();
+                    while jobs.join_next().await.is_some() {}
+                    return Ok(());
+                }
+                if let Some((account, bootstrap)) = helper.pending_login.take() {
+                    generation = generation.wrapping_add(1);
+                    let expected = generation;
+                    active_account = Some(account.clone());
+                    let progress_tx = progress_tx.clone();
+                    jobs.spawn(async move {
+                        let result = bootstrap.run(|progress| {
+                            progress_tx.try_send((expected, account.clone(), progress))
+                                .map_err(|_| handover_google_messages::ProbeError::NativeError)
+                        }).await;
+                        (expected, account, result)
+                    });
+                }
+            }
+            Some((expected, account, progress)) = progress_rx.recv() => {
+                if expected != generation || active_account.as_deref() != Some(&account) { continue; }
+                let prompt = match progress {
+                    LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
+                    LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
+                };
+                publish(writer, HelperEvent::Pairing { account, prompt }).await?;
+            }
+            Some(completed) = jobs.join_next(), if !jobs.is_empty() => {
+                let Ok((expected, account, result)) = completed else { continue; };
+                if expected != generation || active_account.as_deref() != Some(&account) { continue; }
+                // Drain progress before completing, so a fast mock peer cannot
+                // cause the verification prompt to be lost behind completion.
+                while let Ok((event_generation, event_account, progress)) = progress_rx.try_recv() {
+                    if event_generation != generation || event_account != account { continue; }
+                    let prompt = match progress {
+                        LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
+                        LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
+                    };
+                    publish(writer, HelperEvent::Pairing { account: account.clone(), prompt }).await?;
+                }
+                helper.login_active = None;
+                active_account = None;
+                match result {
+                    Ok(LoginOutcome::Ready) => {}
+                    Ok(LoginOutcome::PhoneConfirmed { pairing, acknowledgement_accepted }) => {
+                        helper.confirmed.insert(account.clone(), *pairing);
+                        publish(writer, HelperEvent::Account {
+                            account: account.clone(), label: "Google Messages (offline)".into(),
+                            connected: false, authenticated: false,
+                        }).await?;
+                        let prompt = if acknowledgement_accepted {
+                            "Phone confirmed native pairing and its keys were saved. Messaging startup is pending."
+                        } else {
+                            "Phone confirmed native pairing and its keys were saved. Acknowledgement failed; do not pair again."
+                        };
+                        publish(writer, HelperEvent::Pairing { account, prompt: prompt.into() }).await?;
+                    }
+                    Err(error) => {
+                        publish(writer, HelperEvent::Pairing {
+                            account,
+                            prompt: format!("Native login failed ({}). Check phone pairing state before retrying.", error.code()),
+                        }).await?;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Control {
+    #[serde(rename = "type")]
+    kind: String,
+    account: Option<String>,
 }
 
 /// One read is capped just past the contract's line limit, plus room for the
 /// newline and a byte of overshoot that proves the line was too long.
 const MAX_LINE_READ: u64 = (MAX_HELPER_LINE_BYTES + 2) as u64;
-
-/// The helper is passed in rather than built here so tests can drive the real
-/// read path against a temporary store. Building it internally would make
-/// every test read the developer's own session directory.
-fn serve<R: BufRead, W: Write>(
-    helper: &mut NativeHelper,
-    reader: &mut R,
-    writer: &mut W,
-) -> std::io::Result<()> {
-    loop {
-        // `BufRead::lines` would allocate the whole line before any size check,
-        // which would leave the contract's 1 MiB bound meaningless. `take`
-        // caps the buffer instead.
-        let mut line = Vec::new();
-        if Read::take(&mut *reader, MAX_LINE_READ).read_until(b'\n', &mut line)? == 0 {
-            return Ok(());
-        }
-        let terminated = line.last() == Some(&b'\n');
-        if terminated {
-            line.pop();
-        }
-        if !line.is_empty() && !line.iter().all(|byte| byte.is_ascii_whitespace()) {
-            for response in helper.handle_line(&line) {
-                writer.write_all(response.as_bytes())?;
-                writer.write_all(b"\n")?;
-            }
-            writer.flush()?;
-        }
-        if helper.shutdown_requested() {
-            return Ok(());
-        }
-        if !terminated {
-            // The line ran past the cap. Its bytes are dropped without being
-            // echoed, and the remainder of that line is left unread, so the
-            // next commands on this pipe are fragments and are rejected as
-            // malformed. The daemon restarts a helper that stops making
-            // progress, which is the intended recovery.
-            return Ok(());
-        }
-    }
-}
 
 fn encode(event: &HelperEvent) -> String {
     serde_json::to_string(event).unwrap_or_else(|_| {
@@ -103,22 +194,6 @@ fn encode(event: &HelperEvent) -> String {
         // end of input for that read.
         r#"{"type":"error","message":"event encoding failed"}"#.to_string()
     })
-}
-
-/// Decode one bounded bundle. The encoded length is already capped by the
-/// caller, so the decode allocation is bounded too. The returned bytes are
-/// erased on drop.
-fn decode_bundle(bundle_b64: &str) -> Result<Zeroizing<Vec<u8>>, &'static str> {
-    if bundle_b64.is_empty() {
-        return Err("empty bundle");
-    }
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(bundle_b64)
-        .map_err(|_| "bad encoding")?;
-    if decoded.is_empty() || decoded.len() > MAX_BUNDLE_BYTES {
-        return Err("bad bundle");
-    }
-    Ok(Zeroizing::new(decoded))
 }
 
 /// Build the announcement for one account this helper knows about.
@@ -146,6 +221,9 @@ struct NativeHelper {
     /// `Login` and `Hello` created.
     accounts: BTreeSet<String>,
     shutdown: bool,
+    pending_login: Option<(String, LoginBootstrap)>,
+    login_active: Option<String>,
+    confirmed: BTreeMap<String, ConfirmedPairing>,
 }
 
 impl NativeHelper {
@@ -154,6 +232,9 @@ impl NativeHelper {
             store: SessionStore::default_store().ok(),
             accounts: BTreeSet::new(),
             shutdown: false,
+            pending_login: None,
+            login_active: None,
+            confirmed: BTreeMap::new(),
         }
     }
 
@@ -194,7 +275,7 @@ impl NativeHelper {
             HelperCommand::Login {
                 account,
                 bundle_b64,
-            } => self.login(&account, &bundle_b64),
+            } => self.login(&account, &Zeroizing::new(bundle_b64)),
             HelperCommand::Logout { account } => self.logout(&account),
             HelperCommand::Shutdown => {
                 self.shutdown = true;
@@ -243,14 +324,37 @@ impl NativeHelper {
         // A saved pending registration is announced so a restarted daemon shows
         // the account without asking the user to register again. It is not
         // authenticated: no phone is paired and nothing has been re-attested
-        // with Google. Announcing the store key discloses no account
-        // identifier, and it is a valid account id for the daemon's gate.
+        // with Google. The persisted random alias is valid
+        // for the daemon account gate and discloses no provider identity.
+        match ConfirmedPairing::restore_all(store) {
+            Ok(confirmed) => {
+                for pairing in confirmed {
+                    let account = pairing.account_id().to_owned();
+                    self.accounts.insert(account.clone());
+                    self.confirmed.insert(account.clone(), pairing);
+                    events.push(HelperEvent::Account {
+                        account,
+                        label: "Google Messages (offline)".into(),
+                        connected: false,
+                        authenticated: false,
+                    });
+                }
+            }
+            Err(_) => {
+                events.push(HelperEvent::Error {
+                    message: "native confirmed session store is unreadable".into(),
+                });
+                return events;
+            }
+        }
         match UnpairedRegistration::restore_all_pending_with_keys(store) {
             Ok(pending) => {
                 for (_key, registration) in pending {
                     let account = registration.handover_account_id().to_owned();
-                    self.accounts.insert(account.clone());
-                    events.push(announcement(&account));
+                    if !self.confirmed.contains_key(&account) {
+                        self.accounts.insert(account.clone());
+                        events.push(announcement(&account));
+                    }
                 }
             }
             // Fail closed: a record this build cannot validate must not be
@@ -268,36 +372,68 @@ impl NativeHelper {
                 message: "login rejected: invalid account name".into(),
             }];
         }
-        let bundle = match decode_bundle(bundle_b64) {
-            Ok(bundle) => bundle,
-            Err(reason) => {
+        if self.login_active.is_some() || self.confirmed.contains_key(account) {
+            return vec![HelperEvent::Error {
+                message: "native login already active for an account".into(),
+            }];
+        }
+        let Some(store) = &self.store else {
+            return vec![HelperEvent::Error {
+                message: "native session store unavailable".into(),
+            }];
+        };
+        let bootstrap = match LoginBootstrap::from_bundle(account, bundle_b64, store) {
+            Ok(bootstrap) => bootstrap,
+            Err(error) => {
                 return vec![HelperEvent::Error {
-                    message: format!("login rejected: {reason}"),
+                    message: format!("native login rejected ({})", error.code()),
                 }];
             }
         };
-        // The bundle carries browser-derived material. This helper has no
-        // registration or pairing path yet, so nothing is derived from it and
-        // nothing is written to disk: it is erased here rather than stored for
-        // a later step that does not exist.
-        drop(bundle);
-        // The account is announced as unpaired so the daemon shows what the
-        // user asked for and can log it out again. This claims no session and
-        // no Google-side state.
-        self.accounts.insert(account.to_string());
+        self.login_active = Some(account.to_owned());
+        self.pending_login = Some((account.to_owned(), bootstrap));
+        self.accounts.insert(account.to_owned());
         vec![announcement(account)]
     }
 
     fn logout(&mut self, account: &str) -> Vec<HelperEvent> {
-        // No session exists to revoke remotely and no browser credential was
-        // retained, so removal is purely local bookkeeping.
-        if self.accounts.remove(account) {
-            vec![HelperEvent::AccountRemoved {
-                account: account.to_string(),
-            }]
-        } else {
-            Vec::new()
+        if !self.accounts.contains(account) {
+            return Vec::new();
         }
+        // Stop this account's transient work before forgetting local credentials.
+        // No remote revocation has been implemented.
+        if self.login_active.as_deref() == Some(account) {
+            self.login_active = None;
+            self.pending_login = None;
+        }
+        let forgotten = (|| {
+            let store = self.store.as_ref().ok_or(())?;
+            // Include a confirmation that completed before its actor event
+            // was observed. Logout must remove the actual saved record.
+            for pairing in ConfirmedPairing::restore_all(store).map_err(|_| ())? {
+                if pairing.account_id() == account {
+                    pairing.forget(store).map_err(|_| ())?;
+                }
+            }
+            for (key, pending) in
+                UnpairedRegistration::restore_all_pending_with_keys(store).map_err(|_| ())?
+            {
+                if pending.handover_account_id() == account {
+                    store.delete(&key).map_err(|_| ())?;
+                }
+            }
+            Ok::<_, ()>(())
+        })();
+        if forgotten.is_err() {
+            return vec![HelperEvent::Error {
+                message: "native credentials could not be forgotten".into(),
+            }];
+        }
+        self.confirmed.remove(account);
+        self.accounts.remove(account);
+        vec![HelperEvent::AccountRemoved {
+            account: account.to_owned(),
+        }]
     }
 }
 
@@ -328,6 +464,34 @@ mod tests {
         let mut helper = NativeHelper::new();
         helper.store = Some(SessionStore::new(directory.join("sessions")));
         helper
+    }
+
+    fn saved_login(helper: &NativeHelper) -> (String, String) {
+        let registration = handover_google_messages::registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                std::time::Duration::from_secs(3600),
+            )
+            .unwrap();
+        let account = registration.handover_account_id().to_owned();
+        registration
+            .persist_pending(helper.store.as_ref().unwrap())
+            .unwrap();
+        let mut bytes = b"HOVL\x01\0".to_vec();
+        bytes.extend(
+            serde_json::to_vec(&serde_json::json!({
+                "type": "gaia_login", "endpoint": "https://instantmessaging-pa.googleapis.com",
+                "origin": "https://messages.google.com", "authorization": "Bearer synthetic",
+                "api_key": "synthetic", "auth_user": "0", "service_cookie": "SID=synthetic",
+                "account_email": "person@example.test",
+            }))
+            .unwrap(),
+        );
+        (
+            account,
+            base64::engine::general_purpose::STANDARD.encode(bytes),
+        )
     }
 
     fn hello_events(helper: &mut NativeHelper) -> Vec<HelperEvent> {
@@ -380,6 +544,60 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_records_restore_once_as_offline_and_logout_forgets_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let (account, _) = saved_login(&helper);
+        let store = helper.store.as_ref().unwrap().clone();
+        let pending = store.load_all().unwrap();
+        let (key, registration) = &pending[0];
+        fn bytes(field: u32, value: &[u8], output: &mut Vec<u8>) {
+            prost::encoding::encode_varint(u64::from((field << 3) | 2), output);
+            prost::encoding::encode_varint(value.len() as u64, output);
+            output.extend_from_slice(value);
+        }
+        // Synthetic local record, independent of the protocol crate's private
+        // serializer. It carries no browser material or live pairing evidence.
+        let mut pairing = vec![8, 1];
+        bytes(2, &[0; 32], &mut pairing);
+        bytes(3, &[1; 32], &mut pairing);
+        bytes(4, b"synthetic-phone", &mut pairing);
+        bytes(5, b"12345678-1234-4234-8234-123456789abc", &mut pairing);
+        let mut record = vec![8, 1];
+        bytes(2, registration.as_bytes(), &mut record);
+        bytes(3, &pairing, &mut record);
+        let confirmed_store = SessionStore::new(directory.path().join("sessions/confirmed"));
+        confirmed_store
+            .store(
+                key,
+                &handover_google_messages::session_store::SessionRecord::new(record).unwrap(),
+            )
+            .unwrap();
+        let events = hello_events(&mut helper);
+        assert_eq!(account_ids(&events), [account.as_str()]);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, HelperEvent::Account {
+            connected: false, authenticated: false, label, ..
+        } if label == "Google Messages (offline)"))
+        );
+        assert_eq!(
+            line(
+                &mut helper,
+                &HelperCommand::Logout {
+                    account: account.clone()
+                }
+            ),
+            [HelperEvent::AccountRemoved { account }]
+        );
+        assert!(store.load_all().unwrap().is_empty());
+        assert!(confirmed_store.load_all().unwrap().is_empty());
+        let mut restarted = helper_with_store(directory.path());
+        assert!(account_ids(&hello_events(&mut restarted)).is_empty());
+    }
+
+    #[test]
     fn hello_fails_closed_when_the_store_holds_an_unrecognized_record() {
         let directory = tempfile::tempdir().unwrap();
         let store = SessionStore::new(directory.path().join("sessions"));
@@ -409,28 +627,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut helper = helper_with_store(directory.path());
         let store = helper.store.clone().expect("helper has a store");
-        // Seed one record so "nothing was written" is a real observation about
-        // a populated store rather than an absent directory.
-        store
-            .store(
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                &handover_google_messages::session_store::SessionRecord::new(
-                    b"preexisting".to_vec(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
+        let (account, bundle) = saved_login(&helper);
         let before = store.load_all().unwrap();
-        let bundle = base64::engine::general_purpose::STANDARD.encode(b"opaque bytes");
-
-        let events = line(
-            &mut helper,
-            &HelperCommand::Login {
-                account: "work".into(),
-                bundle_b64: bundle.clone(),
-            },
-        );
-        assert_eq!(account_ids(&events), vec!["work"]);
 
         // Nothing browser-derived may reach disk, and the pre-existing record
         // must survive untouched. Count the directory itself rather than
@@ -450,6 +648,15 @@ mod tests {
             names
         };
         let before_files = files(&sessions);
+        let events = line(
+            &mut helper,
+            &HelperCommand::Login {
+                account: account.clone(),
+                bundle_b64: bundle.clone(),
+            },
+        );
+        assert_eq!(account_ids(&events), vec![account.as_str()]);
+
         let after_files = files(&sessions);
         assert_eq!(
             after_files, before_files,
@@ -468,7 +675,7 @@ mod tests {
             let rejected = line(
                 &mut helper,
                 &HelperCommand::Login {
-                    account: "work".into(),
+                    account: account.clone(),
                     bundle_b64: bad.to_string(),
                 },
             );
@@ -504,14 +711,15 @@ mod tests {
         // helper that builds the event.
         let directory = tempfile::tempdir().unwrap();
         let mut helper = helper_with_store(directory.path());
+        let (account, bundle) = saved_login(&helper);
         let announced = line(
             &mut helper,
             &HelperCommand::Login {
-                account: "work".into(),
-                bundle_b64: base64::engine::general_purpose::STANDARD.encode(b"x"),
+                account: account.clone(),
+                bundle_b64: bundle,
             },
         );
-        assert_eq!(announced, vec![announcement("work")]);
+        assert_eq!(announced, vec![announcement(&account)]);
     }
 
     #[test]
@@ -553,29 +761,30 @@ mod tests {
             .is_empty(),
             "an account this helper never announced is not removed"
         );
+        let (account, bundle) = saved_login(&helper);
         line(
             &mut helper,
             &HelperCommand::Login {
-                account: "work".into(),
-                bundle_b64: base64::engine::general_purpose::STANDARD.encode(b"x"),
+                account: account.clone(),
+                bundle_b64: bundle,
             },
         );
         assert_eq!(
             line(
                 &mut helper,
                 &HelperCommand::Logout {
-                    account: "work".into()
+                    account: account.clone()
                 }
             ),
             vec![HelperEvent::AccountRemoved {
-                account: "work".into(),
+                account: account.clone(),
             }]
         );
         assert!(
             line(
                 &mut helper,
                 &HelperCommand::Logout {
-                    account: "work".into()
+                    account: account.clone()
                 }
             )
             .is_empty()
@@ -695,8 +904,8 @@ mod tests {
 
     /// Drive the real read path. `handle_line` alone would not catch an
     /// unbounded read, which is the failure this guards against.
-    #[test]
-    fn serve_bounds_each_read_and_answers_pipelined_commands() {
+    #[tokio::test]
+    async fn serve_bounds_each_read_and_answers_pipelined_commands() {
         let directory = tempfile::tempdir().unwrap();
         let mut helper = helper_with_store(directory.path());
         let mut input: Vec<u8> = Vec::new();
@@ -707,7 +916,9 @@ mod tests {
         input.extend_from_slice(b"{\"type\":\"shutdown\"}\n");
         input.extend_from_slice(b"{\"type\":\"hello\"}\n");
         let mut output: Vec<u8> = Vec::new();
-        serve(&mut helper, &mut input.as_slice(), &mut output).expect("serve");
+        serve_async(&mut helper, &mut input.as_slice(), &mut output)
+            .await
+            .expect("serve");
         let stdout = String::from_utf8(output).expect("helper emits UTF-8");
 
         let events: Vec<HelperEvent> = stdout
@@ -730,8 +941,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn serve_stops_at_an_oversized_line_without_buffering_it() {
+    #[tokio::test]
+    async fn serve_stops_at_an_oversized_line_without_buffering_it() {
         let directory = tempfile::tempdir().unwrap();
         let mut helper = helper_with_store(directory.path());
         // Sized independently of MAX_LINE_READ so the assertion still means
@@ -740,7 +951,9 @@ mod tests {
         input.push(b'\n');
         input.extend_from_slice(b"{\"type\":\"hello\"}\n");
         let mut output: Vec<u8> = Vec::new();
-        serve(&mut helper, &mut input.as_slice(), &mut output).expect("serve");
+        serve_async(&mut helper, &mut input.as_slice(), &mut output)
+            .await
+            .expect("serve");
         let stdout = String::from_utf8(output).expect("helper emits UTF-8");
         let events: Vec<HelperEvent> = stdout
             .lines()
@@ -757,13 +970,15 @@ mod tests {
         assert!(!stdout.contains('x'));
     }
 
-    #[test]
-    fn serve_answers_a_final_command_that_has_no_trailing_newline() {
+    #[tokio::test]
+    async fn serve_answers_a_final_command_that_has_no_trailing_newline() {
         let directory = tempfile::tempdir().unwrap();
         let mut helper = helper_with_store(directory.path());
         let input: Vec<u8> = b"{\"type\":\"hello\"}".to_vec();
         let mut output: Vec<u8> = Vec::new();
-        serve(&mut helper, &mut input.as_slice(), &mut output).expect("serve");
+        serve_async(&mut helper, &mut input.as_slice(), &mut output)
+            .await
+            .expect("serve");
         assert_eq!(
             String::from_utf8(output)
                 .expect("helper emits UTF-8")

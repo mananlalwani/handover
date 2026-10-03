@@ -28,6 +28,8 @@ async function refresh() {
     const result = probe.result ?? {};
     nativeStatus.textContent = result.ok && result.registered
       ? 'Native device registered. The unpaired credential was saved locally.'
+      : result.ok && probe.operation === 'native_pair'
+      ? 'Pairing was queued by Handover. Watch Handover for the phone confirmation emoji and result.'
       : result.ok && probe.operation === 'native_login'
       ? 'Sign-in proof was queued by Handover. This did not send a phone pairing request.'
       : result.ok && probe.operation === 'pairing_check'
@@ -37,15 +39,17 @@ async function refresh() {
       : 'Native authentication check complete.';
   } else if (probe?.state === 'failed') {
     const result = probe.result ?? {};
-    if (result.registration) {
+    if (result.error === 'account_changed') {
+      nativeStatus.textContent = 'The signed-in account changed or could not be checked. No native request was sent. Reload the Messages page before starting again.';
+    } else if (result.registration) {
       nativeStatus.textContent = result.error === 'sign_in_not_observed'
         ? 'No matching sign-in request was seen; no registration request was sent.'
         : 'Registration outcome was not confirmed. Check Google Messages registered devices before trying again.';
-    } else if (probe.operation === 'native_login' && result.error === 'no_pending_registration') {
+    } else if (['native_login', 'native_pair'].includes(probe.operation) && result.error === 'no_pending_registration') {
       nativeStatus.textContent = 'Register one native device before sending a sign-in proof to Handover.';
-    } else if (probe.operation === 'native_login' && result.error === 'ambiguous_registration') {
+    } else if (['native_login', 'native_pair'].includes(probe.operation) && result.error === 'ambiguous_registration') {
       nativeStatus.textContent = 'More than one pending native registration exists. Choose which account to use before continuing.';
-    } else if (probe.operation === 'native_login' && result.error === 'daemon_unavailable') {
+    } else if (['native_login', 'native_pair'].includes(probe.operation) && result.error === 'daemon_unavailable') {
       nativeStatus.textContent = 'Handover could not accept the sign-in proof. Check that the daemon is running with the in-tree native helper selected.';
     } else {
       const statusCode = result.error === 'http_error' && Number.isInteger(result.http_status) ? `, HTTP ${result.http_status}` : '';
@@ -109,6 +113,12 @@ document.querySelector('#pairing-check').addEventListener('click', async () => {
 document.querySelector('#native-login').addEventListener('click', async () => {
   const result = await message({ type: 'native-login' });
   nativeStatus.textContent = result?.error ?? 'Native login is waiting for SignInGaia. Refresh Google Messages to send one sign-in proof to Handover.';
+  await refresh();
+});
+
+document.querySelector('#native-pair').addEventListener('click', async () => {
+  const result = await message({ type: 'native-pair' });
+  nativeStatus.textContent = result?.error ?? 'Phone pairing is waiting for SignInGaia. Refresh Google Messages, then watch Handover for the confirmation emoji.';
   await refresh();
 });
 

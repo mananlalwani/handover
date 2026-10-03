@@ -2,7 +2,7 @@
 
 This local research extension uses Chrome's [debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger) to observe the active Google Messages tab without a remote-debugging browser launch. It also has separate opt-in actions for testing the Rust client's read-only authentication request and registering a native device. It does not pair a phone.
 
-Chrome's debugger permission is powerful. The implementation only attaches to an active HTTPS `messages.google.com` tab. It does not navigate, change network requests, read the browser cookie store, or send messages. A bounded account-read helper for pairing evaluates one fixed expression that returns only the page's `GA_EMAIL` value; the current popup does not invoke it yet. Remove the extension when testing is finished.
+Chrome's debugger permission is powerful. The implementation only attaches to an active HTTPS `messages.google.com` tab. It does not navigate, change network requests, read the browser cookie store, or send messages. A bounded account-read helper for pairing evaluates one fixed expression that returns only the page's `GA_EMAIL` value; the pairing and local-login actions invoke it once. Remove the extension when testing is finished.
 
 ## Load locally
 
@@ -116,13 +116,30 @@ been live-tested.
 transient `GA_EMAIL`, then passes them only inside an opaque, size-bounded
 Login bundle through the local daemon to the in-tree helper. The daemon checks
 the active helper's Hello name before forwarding this marked bundle, so the
-production adapter cannot receive it accidentally. The native helper currently
-validates and discards the bundle and announces the saved random local account
-alias as offline and unauthenticated. No Google request, phone pairing, or
-message send occurs. This local IPC path has mock/offline coverage but has not
-been live-tested. Exactly one saved pending registration must exist so Handover
-can use its persisted random account alias; zero or multiple records are
-rejected without choosing one arbitrarily.
+production adapter cannot receive it accidentally. The worker rechecks the
+signed-in email when the request is captured and rejects an account change. The native helper
+validates the saved account alias and makes a read-only source lookup. It verifies that the registration belongs to the signed-in account and
+selects the eligible phone. The daemon reports queue acceptance; the helper's
+Pairing event reports readiness or a fixed failure. This action sends no phone
+pairing request. Exactly one pending registration must exist for automatic alias
+selection.
+
+### Pair a phone with Handover
+
+“Pair phone with Handover” is a separate explicit action. It sends
+`gaia_pairing_start` through the same local route and starts one phone-pairing
+attempt. Stop the existing relay before a live test, reload this extension,
+start the action on the signed-in Messages tab, and refresh. Watch Handover's
+Pairing events for the emoji and compare it on the phone.
+
+The helper saves confirmed pairing keys privately before acknowledging the final
+reply. It does not save browser cookies or email and does not yet open a usable
+messaging session. The popup reports only that Handover queued the operation.
+If the attempt is interrupted, inspect the phone before trying again. There is
+no automatic retry and no chat message is sent by this operation.
+
+This flow has local HTTP/UKEY2 mock coverage. Native pairing and the updated
+extension actions have not been tested against the physical phone.
 
 ### Compare the browser lookup body
 

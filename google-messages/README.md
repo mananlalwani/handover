@@ -27,7 +27,9 @@ local mock only. It reports HTTP acceptance and has not sent a request to Google
 The crate also builds `handover-google-messages-helper`, the daemon-supervised
 process for this client. It speaks the existing normalized helper contract,
 restores locally saved pending registrations, and rejects every capability it
-cannot yet serve. It performs no network I/O. See
+cannot yet serve. Explicit login operations run account-binding lookup or a
+bounded phone-pairing ceremony. Confirmed keys are saved privately; messaging
+startup and browser-free token refresh remain unimplemented. See
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for how it relates to
 the loopback helper and the production adapter.
 

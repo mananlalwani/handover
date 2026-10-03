@@ -12,7 +12,7 @@ const D2D_SALT: [u8; 32] = [
     235, 29, 74, 179, 131, 118, 184, 37, 109, 168, 85, 16,
 ];
 
-/// Private keys have no serialization or export API. Deriving them does not
+/// Private keys have no public serialization or export API. Deriving them does not
 /// establish a working channel or attest messaging capabilities.
 pub(super) struct GaiaKeys {
     _first: Zeroizing<[u8; 32]>,
@@ -26,6 +26,26 @@ impl fmt::Debug for GaiaKeys {
 }
 
 impl GaiaKeys {
+    pub(super) fn stored_keys(&self) -> (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>) {
+        (
+            Zeroizing::new(self._first.to_vec()),
+            Zeroizing::new(self._second.to_vec()),
+        )
+    }
+
+    pub(super) fn restore(first: &[u8], second: &[u8]) -> Result<Self, HandshakeError> {
+        let first: [u8; 32] = first
+            .try_into()
+            .map_err(|_| HandshakeError::InvalidMessage)?;
+        let second: [u8; 32] = second
+            .try_into()
+            .map_err(|_| HandshakeError::InvalidMessage)?;
+        Ok(Self {
+            _first: Zeroizing::new(first),
+            _second: Zeroizing::new(second),
+        })
+    }
+
     pub(super) fn encrypt(
         &self,
         plaintext: &[u8],

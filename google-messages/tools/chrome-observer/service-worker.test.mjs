@@ -381,4 +381,43 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal(nativePayloadRefs.at(-1).account_email, '');
   const loginSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
   for (const secret of ['person@example.org', 'LOGIN_AUTH', 'LOGIN_API', 'LOGIN_COOKIE']) assert.equal(loginSnapshot.includes(secret), false);
+  const pairCallCount = nativeCalls.length;
+  assert.match((await send({ type: 'native-pair' })).message, /phone pairing is waiting/i);
+  assert.equal(calls.filter(call => call[0] === 'Network.enable').at(-1)[2].maxPostDataSize, 0);
+  const pairId = 'native-pair-request';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: pairId, hasExtraInfo: false, request: {
+    url: `https://instantmessaging-pa.googleapis.com${authPath}`, method: 'POST',
+    headers: { Authorization: 'Bearer PAIR_AUTH', 'X-Goog-Api-Key': 'PAIR_API', Cookie: 'SID=PAIR_COOKIE' },
+    postData: 'PAIR_BODY_MUST_NOT_FORWARD',
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: pairId, hasExtraInfo: false });
+  await waitFor(() => nativeCalls.length === pairCallCount + 1);
+  assert.deepEqual(nativeCalls.at(-1).payload, {
+    type: 'gaia_pairing_start', endpoint: 'https://instantmessaging-pa.googleapis.com',
+    origin: 'https://messages.google.com', authorization: 'Bearer PAIR_AUTH',
+    api_key: 'PAIR_API', service_cookie: 'SID=PAIR_COOKIE', account_email: 'person@example.org',
+  });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.operation, 'native_pair');
+  assert.equal(nativePayloadRefs.at(-1).account_email, '');
+  assert.equal(nativePayloadRefs.at(-1).service_cookie, undefined);
+  const pairSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
+  for (const secret of ['person@example.org', 'PAIR_AUTH', 'PAIR_API', 'PAIR_COOKIE', 'PAIR_BODY_MUST_NOT_FORWARD']) {
+    assert.equal(pairSnapshot.includes(secret), false);
+  }
+
+  const callsBeforeSwitch = nativeCalls.length;
+  await send({ type: 'native-pair' });
+  runtimeEmail = 'another@example.org';
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: 'account-switched', hasExtraInfo: false, request: {
+    url: `https://instantmessaging-pa.googleapis.com${authPath}`, method: 'POST',
+    headers: { Authorization: 'Bearer SWITCH_AUTH', 'X-Goog-Api-Key': 'SWITCH_API', Cookie: 'SID=SWITCH_COOKIE' },
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: 'account-switched', hasExtraInfo: false });
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'failed');
+  assert.equal((await send({ type: 'snapshot' })).nativeProbe.result.error, 'account_changed');
+  assert.equal(nativeCalls.length, callsBeforeSwitch);
+  const switchedSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
+  for (const secret of ['another@example.org', 'SWITCH_AUTH', 'SWITCH_API', 'SWITCH_COOKIE']) assert.equal(switchedSnapshot.includes(secret), false);
+
 });

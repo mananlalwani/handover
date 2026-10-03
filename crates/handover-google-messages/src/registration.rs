@@ -171,33 +171,49 @@ impl UnpairedRegistration {
         &self,
         store: &crate::session_store::SessionStore,
     ) -> Result<(), RegistrationError> {
-        let remaining = self.remaining_lifetime()?;
+        self.remaining_lifetime()?;
+        let record = crate::session_store::SessionRecord::new(self.stored_record()?.to_vec())
+            .map_err(RegistrationError::SessionStore)?;
+        let key = self.store_key()?;
+        store
+            .store(&key, &record)
+            .map_err(RegistrationError::SessionStore)
+    }
+
+    pub(crate) fn store_key(&self) -> Result<String, RegistrationError> {
+        crate::session_store::account_key_for_identity(&self._identity)
+            .map_err(RegistrationError::SessionStore)
+    }
+
+    pub(crate) fn stored_record(&self) -> Result<Zeroizing<Vec<u8>>, RegistrationError> {
+        let remaining = self.lifetime.saturating_sub(self.started.elapsed());
         let expires_unix = SystemTime::now()
             .checked_add(remaining)
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs())
             .ok_or(RegistrationError::InvalidLifetime)?;
-        let mut encoded = StoredUnpairedRegistration {
-            version: 1,
-            device_id: self._device_id.clone(),
-            identity: self._identity.to_vec(),
-            token: self._token.to_vec(),
-            transport_key: self._transport_key.to_vec(),
-            expires_unix,
-            handover_account_id: self.handover_account_id.clone(),
+        Ok(Zeroizing::new(
+            StoredUnpairedRegistration {
+                version: 1,
+                device_id: self._device_id.clone(),
+                identity: self._identity.to_vec(),
+                token: self._token.to_vec(),
+                transport_key: self._transport_key.to_vec(),
+                expires_unix,
+                handover_account_id: self.handover_account_id.clone(),
+            }
+            .encode_to_vec(),
+        ))
+    }
+
+    pub(crate) fn restore_confirmed_registration(record: &[u8]) -> Result<Self, RegistrationError> {
+        let mut saved = StoredUnpairedRegistration::decode(record)
+            .map_err(|_| RegistrationError::InvalidStoredRegistration)?;
+        if saved.handover_account_id.is_empty() {
+            return Err(RegistrationError::InvalidStoredRegistration);
         }
-        .encode_to_vec();
-        let result = (|| {
-            let record = crate::session_store::SessionRecord::new(encoded.clone())
-                .map_err(RegistrationError::SessionStore)?;
-            let key = crate::session_store::account_key_for_identity(&self._identity)
-                .map_err(RegistrationError::SessionStore)?;
-            store
-                .store(&key, &record)
-                .map_err(RegistrationError::SessionStore)
-        })();
-        zeroize::Zeroize::zeroize(&mut encoded);
-        result
+        let identity = Zeroizing::new(saved.identity.clone());
+        restore_stored_registration(&mut saved, &identity, true)
     }
 
     /// Restore a pending registration for the same opaque server identity.
@@ -215,7 +231,7 @@ impl UnpairedRegistration {
         let mut saved = StoredUnpairedRegistration::decode(record.as_bytes())
             .map_err(|_| RegistrationError::InvalidStoredRegistration)?;
         let needs_migration = saved.handover_account_id.is_empty();
-        let registration = restore_stored_registration(&mut saved, identity)?;
+        let registration = restore_stored_registration(&mut saved, identity, false)?;
         if needs_migration {
             registration.persist_pending(store)?;
         }
@@ -262,7 +278,7 @@ impl UnpairedRegistration {
             }
             let needs_migration = saved.handover_account_id.is_empty();
             let identity = Zeroizing::new(saved.identity.clone());
-            let registration = restore_stored_registration(&mut saved, &identity)?;
+            let registration = restore_stored_registration(&mut saved, &identity, false)?;
             if needs_migration {
                 registration.persist_pending(store)?;
             }
@@ -335,6 +351,10 @@ impl UnpairedRegistration {
         }
     }
 
+    pub(crate) fn matches_identity(&self, identity: &[u8]) -> bool {
+        self._identity.as_slice() == identity
+    }
+
     /// Stable random Handover account ID stored with this registration. It
     /// contains no Google account address or provider identity.
     pub fn handover_account_id(&self) -> &str {
@@ -345,6 +365,7 @@ impl UnpairedRegistration {
 fn restore_stored_registration(
     saved: &mut StoredUnpairedRegistration,
     identity: &[u8],
+    allow_expired: bool,
 ) -> Result<UnpairedRegistration, RegistrationError> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -357,12 +378,13 @@ fn restore_stored_registration(
         || saved.token.is_empty()
         || saved.token.len() > TOKEN_LIMIT
         || saved.transport_key.len() != 32
-        || saved.expires_unix <= now
+        || saved.expires_unix == 0
+        || !allow_expired && saved.expires_unix <= now
         || saved.expires_unix.saturating_sub(now) > 30 * 24 * 60 * 60
     {
         return Err(RegistrationError::InvalidStoredRegistration);
     }
-    let lifetime = Duration::from_secs(saved.expires_unix - now);
+    let lifetime = Duration::from_secs(saved.expires_unix.saturating_sub(now));
     let mut transport_key = Zeroizing::new([0; 32]);
     transport_key.copy_from_slice(&saved.transport_key);
     let restored = UnpairedRegistration {
@@ -524,6 +546,32 @@ mod tests {
             ]
         ]))
         .unwrap()
+    }
+
+    #[test]
+    fn confirmed_registration_restore_preserves_expired_token_state() {
+        let registration = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"c3ludGhldGljLWlk",null,["c3ludGhldGljLXRva2Vu","3600000000"]]"#,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+        let mut saved =
+            StoredUnpairedRegistration::decode(registration.stored_record().unwrap().as_slice())
+                .unwrap();
+        saved.expires_unix = 1;
+        let expired = saved.encode_to_vec();
+        let restored = UnpairedRegistration::restore_confirmed_registration(&expired).unwrap();
+        assert_eq!(
+            restored.handover_account_id(),
+            registration.handover_account_id()
+        );
+        assert_eq!(
+            restored.remaining_lifetime(),
+            Err(RegistrationError::Expired)
+        );
+        assert!(restored.prepare_receive().is_err());
     }
 
     #[test]

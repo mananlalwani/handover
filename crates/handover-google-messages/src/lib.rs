@@ -4,6 +4,7 @@
 //! primitives. Network effects are explicit; the helper does not yet run a
 //! completed phone-pairing or messaging session.
 
+pub mod login;
 pub mod native;
 pub mod pairing;
 pub mod receive;
@@ -166,6 +167,8 @@ pub enum ProbeError {
     InvalidCredentials,
     RegistrationFailed,
     NoPendingRegistration,
+    RegistrationAccountMismatch,
+    SessionStoreFailed,
     AmbiguousRegistration,
     DaemonUnavailable,
     SessionExpired,
@@ -205,6 +208,8 @@ impl ProbeError {
             Self::InvalidCredentials => "invalid_credentials",
             Self::RegistrationFailed => "registration_failed",
             Self::NoPendingRegistration => "no_pending_registration",
+            Self::RegistrationAccountMismatch => "registration_account_mismatch",
+            Self::SessionStoreFailed => "session_store_failed",
             Self::AmbiguousRegistration => "ambiguous_registration",
             Self::DaemonUnavailable => "daemon_unavailable",
             Self::SessionExpired => "session_expired",
@@ -318,7 +323,11 @@ impl BrowserProof {
     }
 
     fn validate_login(&self) -> Result<HeaderMap, ProbeError> {
-        self.validate_account_proof("gaia_login")
+        match self.kind.as_str() {
+            "gaia_login" => self.validate_account_proof("gaia_login"),
+            "gaia_pairing_start" => self.validate_account_proof("gaia_pairing_start"),
+            _ => Err(ProbeError::InvalidBootstrap),
+        }
     }
 
     fn validate_account_proof(&self, kind: &str) -> Result<HeaderMap, ProbeError> {
@@ -339,7 +348,7 @@ impl BrowserProof {
         let kind_allowed = if registration {
             matches!(
                 self.kind.as_str(),
-                "gaia_register" | "gaia_pairing" | "gaia_login"
+                "gaia_register" | "gaia_pairing" | "gaia_login" | "gaia_pairing_start"
             )
         } else {
             matches!(
@@ -380,6 +389,7 @@ impl BrowserProof {
                 | "gaia_lookup_inspect"
                 | "gaia_pairing"
                 | "gaia_login"
+                | "gaia_pairing_start"
                 | "gaia_register",
                 Some(cookie),
             ) => {
@@ -654,6 +664,10 @@ impl PreparedPairing {
         &self.envelope
     }
 
+    pub(crate) fn matches_reply(&self, reply: &receive::PairingReply) -> bool {
+        reply.matches_initial(&self.attempt)
+    }
+
     pub fn accept_reply(
         self,
         reply: receive::PairingReply,
@@ -694,6 +708,9 @@ fn prepare_pairing_from_sources(
     body: &[u8],
 ) -> Result<PreparedPairing, ProbeError> {
     let sources = sources::RegisteredSources::from_lookup_response(body)?;
+    if !sources.contains_registration(registration) {
+        return Err(ProbeError::RegistrationAccountMismatch);
+    }
     let phone = match sources.select_phone() {
         sources::PhoneSelection::Selected(phone) => phone,
         sources::PhoneSelection::NoneEligible => return Err(ProbeError::NoEligiblePhone),
@@ -890,7 +907,18 @@ async fn receive_stream(
     endpoint: &str,
     headers: HeaderMap,
     request: &registration::ReceiveRequest,
+    emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
+) -> Result<u8, ProbeError> {
+    receive_stream_when_ready(http, endpoint, headers, request, emit, || {}).await
+}
+
+async fn receive_stream_when_ready(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    request: &registration::ReceiveRequest,
     mut emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
+    ready: impl FnOnce(),
 ) -> Result<u8, ProbeError> {
     let body = request
         .request_bytes()
@@ -913,6 +941,7 @@ async fn receive_stream(
     if content_type.split(';').next().map(str::trim) != Some("application/json+protobuf") {
         return Err(ProbeError::UnexpectedResponse);
     }
+    ready();
     let mut stream = receive::ReceiveStream::default();
     while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
         stream
@@ -1228,7 +1257,7 @@ mod tests {
     }
 
     fn lookup_response_with_phones(phones: &[(&str, bool, i64)]) -> Vec<u8> {
-        let records: Vec<Value> = phones
+        let mut records: Vec<Value> = phones
             .iter()
             .map(|(identity, enabled, timestamp)| {
                 let metadata = [0x08, u8::from(*enabled), 0x10, *timestamp as u8];
@@ -1244,6 +1273,11 @@ mod tests {
                 ])
             })
             .collect();
+        records.push(json!([
+            general_purpose::STANDARD.encode("synthetic-id"),
+            null,
+            3
+        ]));
         serde_json::to_vec(&json!([[], null, [null, null, records, null]])).unwrap()
     }
 

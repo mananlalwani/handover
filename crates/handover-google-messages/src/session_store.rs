@@ -95,6 +95,11 @@ impl SessionStore {
         }
     }
 
+    pub(crate) fn confirmed_store(&self) -> Result<Self, SessionStoreError> {
+        ensure_directory(&self.directory)?;
+        Ok(Self::new(self.directory.join("confirmed")))
+    }
+
     pub fn store(
         &self,
         account_key: &str,

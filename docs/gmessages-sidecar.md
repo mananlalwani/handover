@@ -158,43 +158,43 @@ cargo build -p handover-google-messages --bin handover-google-messages-helper
 HANDOVER_GMESSAGES_HELPER=target/debug/handover-google-messages-helper handoverd
 ```
 
-It is a process seam, not a working client. It opens no network connection and
-sends nothing. Today it:
+The helper owns native pairing attempts and saved credentials. It does not yet
+serve conversations or messages. Pending registrations and confirmed pairings
+are announced as offline and unauthenticated until messaging startup can attest
+their current state.
 
-- answers `hello` with the contract version;
-- announces one account per locally saved pending unpaired registration, as
-  `connected: false` and `authenticated: false`. Nothing is re-attested with
-  Google. The announced account id is the session store's filename digest, so it
-  discloses no account identifier, at the cost of an unreadable id in clients;
-- accepts `login` after bounding and base64-decoding the bundle, then discards
-  it. The bundle carries browser-derived material and this helper has no
-  registration or pairing path yet, so nothing reaches disk;
-- rejects every send, media, reaction, delete, and open with `ok: false`, so the
-  daemon cannot journal an operation that was never submitted;
-- publishes no conversation list, message window, or read state. Silence is the
-  honest answer, because an empty authoritative list would read as an empty
-  account;
-- reports a pending history request as an error, so its waiter fails instead of
-  timing out.
+The Native Messaging host passes a marked, versioned browser-proof bundle through
+the existing Login command. The daemon checks the helper identity when it selects
+the sender, so a supervisor replacement cannot forward that proof to the
+production adapter. Handoverd neither interprets nor persists the proof.
 
-`logout` removes only an account this helper announced. A session record that
-fails validation is reported as an error, and no account is announced for it.
-Because no account is ever announced as authenticated,
-`handoverctl messages login` reports only that the request was queued.
+Pending registrations use random persisted Handover account aliases. Older
+records migrate in place. The alias contains no Google email or server identity.
+The helper requires the supplied alias to match a saved registration, then makes
+one read-only source lookup to verify that the signed-in account owns that web
+registration. Google's `a5a` implements the same identity comparison.
 
-The local Chrome observer can send a marked browser-login bundle through the
-existing `messages.login` socket command. Handoverd recognizes only the opaque
-bundle marker and forwards it only when the active helper's `Hello` name is the
-in-tree helper. This keeps the browser proof away from the production adapter
-when the daemon is still configured to use it. The bundle is transient and is
-not logged or persisted by Handoverd; the current native helper discards it.
+Two explicit operations share that private bundle:
 
-New pending registrations have a random persistent Handover account alias in
-the same versioned registration record. Older records receive an alias on
-restore without changing their store key (the opaque registration-identity
-digest). The alias contains no account email. The account label still says the
-registration is not paired, and the helper never claims connectivity or
-authentication from a saved unpaired credential.
+- `gaia_login` checks account binding and phone selection only. It sends no phone
+  pairing request.
+- `gaia_pairing_start` opens receive before submitting types 44 and 45, correlates
+  both replies, displays the verification emoji through the existing Pairing
+  event, and acknowledges only replies it has validated. There is one bounded
+  attempt and no automatic retry.
+
+Confirmed keys and the registration are saved in a versioned private record under
+`gmessages-native/confirmed`, before acknowledging the final phone reply. Browser
+cookies, authorization headers, and email are absent. A failed final ACK retains
+confirmed evidence and cannot silently trigger another pairing. Restore retains
+an expired transport token as expired. It does not claim a usable connection.
+Local logout cancels and joins active work before deleting credentials; remote
+revocation remains unimplemented.
+
+Offline tests exercise a local HTTP server and UKEY2 mock phone, matching symbols,
+account mismatch, stale replies, send/receive failure, cancellation, ACK failure,
+key recovery, and helper replacement. Native phone pairing has not been
+live-tested. The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,
 SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,

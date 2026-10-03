@@ -81,6 +81,10 @@ impl InitialPairing {
         })
     }
 
+    pub(crate) fn peer(&self) -> &[u8] {
+        &self.peer
+    }
+
     pub fn request_id(&self) -> &str {
         &self.request_id
     }
@@ -200,6 +204,10 @@ impl AwaitingPhoneConfirmation {
     /// Raw verification bytes. Human-readable emoji mapping remains unfinished.
     pub fn auth_string(&self) -> Result<&[u8; 32], PairingError> {
         Ok(self.pending.auth_string()?)
+    }
+
+    pub(crate) fn peer(&self) -> &[u8] {
+        &self.peer
     }
 
     pub fn request_id(&self) -> &str {
@@ -509,6 +517,40 @@ impl fmt::Debug for PhoneConfirmedPairing {
 }
 
 impl PhoneConfirmedPairing {
+    pub(crate) fn stored_record(&self) -> Zeroizing<Vec<u8>> {
+        let (first, second) = self.keys.stored_keys();
+        Zeroizing::new(
+            StoredPairing {
+                version: 1,
+                first: first.to_vec(),
+                second: second.to_vec(),
+                peer: self._peer.clone(),
+                pairing_id: self._pairing_id.clone(),
+                encrypted_user_data: self._encrypted_user_data.to_vec(),
+            }
+            .encode_to_vec(),
+        )
+    }
+
+    pub(crate) fn restore_record(record: &[u8]) -> Result<Self, PairingError> {
+        let mut stored =
+            StoredPairing::decode(record).map_err(|_| PairingError::InvalidResponse)?;
+        if stored.version != 1
+            || stored.peer.is_empty()
+            || stored.peer.len() > 1024
+            || Uuid::parse_str(&stored.pairing_id).is_err()
+            || stored.encrypted_user_data.len() > 8192
+        {
+            return Err(PairingError::InvalidResponse);
+        }
+        Ok(Self {
+            keys: super::keys::GaiaKeys::restore(&stored.first, &stored.second)?,
+            _peer: std::mem::take(&mut stored.peer),
+            _pairing_id: std::mem::take(&mut stored.pairing_id),
+            _encrypted_user_data: Zeroizing::new(std::mem::take(&mut stored.encrypted_user_data)),
+        })
+    }
+
     /// Offline encryption only; it makes no messaging request and advertises
     /// no send capability. Keys never leave the confirmed pairing object.
     pub fn encrypt_payload(
@@ -1100,5 +1142,32 @@ mod tests {
                 assert!(result.is_err());
             }
         }
+    }
+}
+
+// Private local record, not a Google wire type or helper IPC payload.
+#[derive(Message)]
+struct StoredPairing {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    first: Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    second: Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    peer: Vec<u8>,
+    #[prost(string, tag = "5")]
+    pairing_id: String,
+    #[prost(bytes = "vec", tag = "6")]
+    encrypted_user_data: Vec<u8>,
+}
+
+impl Drop for StoredPairing {
+    fn drop(&mut self) {
+        self.first.zeroize();
+        self.second.zeroize();
+        self.peer.zeroize();
+        self.pairing_id.zeroize();
+        self.encrypted_user_data.zeroize();
     }
 }

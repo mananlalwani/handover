@@ -158,6 +158,18 @@ impl fmt::Debug for PairingReply {
 }
 
 impl PairingReply {
+    pub(crate) fn matches_initial(&self, attempt: &InitialPairing) -> bool {
+        self.kind == 44
+            && self.request_id == attempt.request_id()
+            && self.sender.as_slice() == attempt.peer()
+    }
+
+    pub(crate) fn matches_confirmation(&self, pending: &AwaitingPhoneConfirmation) -> bool {
+        self.kind == 45
+            && self.request_id == pending.request_id()
+            && self.sender.as_slice() == pending.peer()
+    }
+
     pub fn accept_confirmation_and_ack(
         self,
         pending: AwaitingPhoneConfirmation,

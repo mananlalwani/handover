@@ -18,7 +18,7 @@ impl VerificationEmoji {
     }
 }
 
-pub(super) fn revision_one(auth: &[u8; 32]) -> VerificationEmoji {
+pub(crate) fn revision_one(auth: &[u8; 32]) -> VerificationEmoji {
     let word = u32::from_be_bytes([auth[0], auth[1], auth[2], auth[3]]);
     VerificationEmoji(REVISION_ONE[word as usize % REVISION_ONE.len()])
 }

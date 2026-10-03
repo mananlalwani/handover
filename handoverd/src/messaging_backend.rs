@@ -173,7 +173,22 @@ impl MessagingHub {
     }
 
     async fn submit(&self, command: HelperCommand) -> Result<(), HelperCallError> {
-        let sender = self.inner.sender.lock().await.clone();
+        let sender = if matches!(&command, HelperCommand::Login { bundle_b64, .. }
+            if handover_gmessages::contract::is_native_browser_login_bundle(bundle_b64))
+        {
+            // Select identity and sender from the same supervisor generation.
+            // A restart after the IPC preflight must not reroute browser proof.
+            let name = self.inner.helper_name.lock().await;
+            let sender = self.inner.sender.lock().await;
+            if name.as_deref()
+                != Some(handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME)
+            {
+                return Err(HelperCallError::BadBundle);
+            }
+            sender.clone()
+        } else {
+            self.inner.sender.lock().await.clone()
+        };
         match sender {
             Some(sender) => sender
                 .send(command)
@@ -559,10 +574,23 @@ impl MessagingHub {
             .map(|(id, _)| *id)
     }
 
+    async fn set_connection(
+        &self,
+        name: Option<String>,
+        sender: Option<mpsc::Sender<HelperCommand>>,
+    ) {
+        let mut current_name = self.inner.helper_name.lock().await;
+        let mut current_sender = self.inner.sender.lock().await;
+        *current_name = name;
+        *current_sender = sender;
+    }
+
+    #[cfg(test)]
     pub(crate) async fn set_sender(&self, sender: Option<mpsc::Sender<HelperCommand>>) {
         *self.inner.sender.lock().await = sender;
     }
 
+    #[cfg(test)]
     pub(crate) async fn set_helper_name(&self, name: Option<String>) {
         *self.inner.helper_name.lock().await = name;
     }
@@ -618,9 +646,9 @@ async fn run_session(
     hub: &MessagingHub,
     mut process: HelperProcess,
 ) {
-    hub.set_helper_name(Some(process.name.clone())).await;
     let (tx, mut rx) = mpsc::channel::<HelperCommand>(128);
-    hub.set_sender(Some(tx)).await;
+    hub.set_connection(Some(process.name.clone()), Some(tx))
+        .await;
     // Catch-up: ask the helper to re-emit authoritative state for every
     // account we know. Unknown accounts announce themselves via Account.
     let known: Vec<MessagingAccountId> = state
@@ -672,8 +700,7 @@ async fn run_session(
             }
         }
     }
-    hub.set_sender(None).await;
-    hub.set_helper_name(None).await;
+    hub.set_connection(None, None).await;
 }
 
 async fn ingest_event(
@@ -1330,6 +1357,39 @@ pub(crate) fn validate_login_bundle(bundle_b64: &str) -> Result<(), HelperCallEr
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn helper_replacement_after_preflight_never_reroutes_browser_proof() {
+        let hub = MessagingHub::new();
+        let (native, mut native_rx) = mpsc::channel(1);
+        hub.set_connection(
+            Some(handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME.into()),
+            Some(native),
+        )
+        .await;
+        assert!(hub.accepts_native_browser_login().await);
+        let (production, mut production_rx) = mpsc::channel(1);
+        hub.set_connection(
+            Some("handover-gmessages/production".into()),
+            Some(production),
+        )
+        .await;
+        let command = HelperCommand::Login {
+            account: "gmessages-test".into(),
+            bundle_b64: format!(
+                "{}eA==",
+                handover_gmessages::contract::NATIVE_BROWSER_LOGIN_BUNDLE_PREFIX
+            ),
+        };
+        assert_eq!(hub.fire(command).await, Err(HelperCallError::BadBundle));
+        assert!(native_rx.try_recv().is_err());
+        assert!(production_rx.try_recv().is_err());
+        hub.fire(HelperCommand::Hello).await.unwrap();
+        assert!(matches!(
+            production_rx.recv().await,
+            Some(HelperCommand::Hello)
+        ));
+    }
+
     #[tokio::test]
     async fn native_browser_login_is_routed_only_to_the_in_tree_helper() {
         let hub = super::MessagingHub::new();

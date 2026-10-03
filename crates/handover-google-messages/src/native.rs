@@ -65,7 +65,7 @@ where
         READ_TIMEOUT,
         PROBE_TIMEOUT,
         |proof| async move {
-            if proof.kind == "gaia_login" {
+            if matches!(proof.kind.as_str(), "gaia_login" | "gaia_pairing_start") {
                 login_via_daemon(proof).await
             } else if proof.kind == "gaia_register" {
                 let registration =
