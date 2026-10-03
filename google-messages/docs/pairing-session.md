@@ -359,7 +359,8 @@ handles.
 `session_store` writes bounded opaque records under
 `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages-native`. It uses a
 0700 directory, 0600 files, no-follow reads, atomic replacement, and hashed
-account names. Record bytes are zeroized in memory and never appear in Debug.
+account names. A small versioned header and exact length check reject corrupt
+records. Record bytes are zeroized in memory and never appear in Debug.
 This store follows the existing adapter's local permission model. It does not
 encrypt records against another process running as the same user. A typed,
 versioned confirmed-session record still has to be designed and connected to

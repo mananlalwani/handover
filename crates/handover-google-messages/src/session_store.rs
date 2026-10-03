@@ -14,6 +14,7 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_RECORD_SIZE: usize = 1024 * 1024;
+const RECORD_HEADER: [u8; 8] = *b"HGMN\x01\x00\x00\x00";
 const MAX_ACCOUNT_KEY: usize = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +109,9 @@ impl SessionStore {
             .set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|_| SessionStoreError::Io)?;
         temporary
-            .write_all(record.as_bytes())
+            .write_all(&RECORD_HEADER)
+            .and_then(|()| temporary.write_all(&(record.as_bytes().len() as u32).to_le_bytes()))
+            .and_then(|()| temporary.write_all(record.as_bytes()))
             .map_err(|_| SessionStoreError::Io)?;
         temporary
             .as_file()
@@ -147,19 +150,31 @@ impl SessionStore {
         {
             return Err(SessionStoreError::UnsafeFile);
         }
-        if metadata.len() > MAX_RECORD_SIZE as u64 {
+        if metadata.len() > (MAX_RECORD_SIZE + RECORD_HEADER.len() + 4) as u64 {
             return Err(SessionStoreError::RecordTooLarge);
         }
+        let maximum_file_size = MAX_RECORD_SIZE + RECORD_HEADER.len() + 4;
         let mut bytes = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
-        file.take((MAX_RECORD_SIZE + 1) as u64)
+        file.take((maximum_file_size + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| SessionStoreError::Io)?;
-        if bytes.len() > MAX_RECORD_SIZE {
+        if bytes.len() > maximum_file_size {
             return Err(SessionStoreError::RecordTooLarge);
         }
-        if bytes.is_empty() {
+        if bytes.len() < RECORD_HEADER.len() + 4 || bytes[..8] != RECORD_HEADER {
             return Err(SessionStoreError::InvalidRecord);
         }
+        let mut length = [0; 4];
+        length.copy_from_slice(&bytes[8..12]);
+        let payload_length = u32::from_le_bytes(length) as usize;
+        if payload_length == 0
+            || payload_length > MAX_RECORD_SIZE
+            || bytes.len() != 12 + payload_length
+        {
+            return Err(SessionStoreError::InvalidRecord);
+        }
+        bytes.copy_within(12.., 0);
+        bytes.truncate(payload_length);
         Ok(Some(SessionRecord(bytes)))
     }
 
@@ -257,6 +272,30 @@ mod tests {
         assert!(store.delete("account_1").unwrap());
         assert!(store.load("account_1").unwrap().is_none());
         assert!(!store.delete("account_1").unwrap());
+    }
+
+    #[test]
+    fn rejects_unknown_or_truncated_record_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(temp.path().join("sessions"));
+        let record = SessionRecord::new(b"valid".to_vec()).unwrap();
+        store.store("account", &record).unwrap();
+        let path = store.directory.join("account.session");
+        fs::write(&path, b"bad-header").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            store.load("account").unwrap_err(),
+            SessionStoreError::InvalidRecord
+        );
+        let mut truncated = RECORD_HEADER.to_vec();
+        truncated.extend_from_slice(&10u32.to_le_bytes());
+        truncated.extend_from_slice(b"short");
+        fs::write(&path, truncated).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            store.load("account").unwrap_err(),
+            SessionStoreError::InvalidRecord
+        );
     }
 
     #[test]
