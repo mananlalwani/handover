@@ -1,7 +1,7 @@
 # Source selection and pairing session
 
 The independent Rust lookup succeeded on 2026-10-02 using one-time matched
-browser credentials. Pairing and session restoration remain unimplemented.
+browser credentials. Live pairing and session restoration remain unimplemented.
 This document separates the observed wire contract from implementation policy.
 
 ## Registered phone selection
@@ -170,3 +170,38 @@ selected next-protocol label to the default. A wrapper regression failed before
 rejecting that label and passed afterward. Omitted labels retain the upstream
 legacy default. The same regression verifies that an invalid P-256 point is
 rejected. All 14 upstream handshake tests continue to pass.
+
+## Offline Gaia pairing envelopes
+
+`pairing::gaia::InitialPairing` prepares the inner type-44 request for one
+selected eligible phone. The independently authored protobuf fields come from
+`Lw/Cza` at 313397 and `H5a` at 1077416. Device metadata follows `M4a` at
+1068170, with Handover's own user-agent string and Linux desktop metadata.
+Each attempt has fresh pairing and outer request IDs, a millisecond timestamp,
+and the UKEY2 client-init bytes. It performs no registration or network request.
+
+The consuming response path checks the outer request ID, sender identity, inner
+pairing ID, status, confirmation-required flag, and supported revisions before
+accepting the server handshake. Response fields follow `Dza/Eza` at 313835.
+Responses are limited to 16 KiB and the handshake retains its 4 KiB bound.
+Embedded UKEY2 protobuf bytes are retained verbatim for transcript derivation.
+Decoding and re-encoding them could discard unknown fields or change field order.
+
+The current implementation accepts only authentication and key revisions 1 and
+feature revision 0. Google's browser also accepts revision 0 for authentication
+and keys, but its older derivation and display behavior remain unsupported here.
+There is no silent fallback.
+
+`AwaitingPhoneConfirmation` prepares the inner type-45 client-finish request,
+following `G5a` at 1076135. It keeps the original pairing ID and timestamp, uses
+a fresh outer request ID, and omits the initial revision fields. It exposes raw
+verification bytes, with the existing five-minute expiry, but cannot accept final
+success or produce an online account. Emoji display, routing envelopes, receive
+dispatch and acknowledgements, registration transport, and final confirmation
+handling remain unfinished.
+
+Synthetic tests complete the embedded handshake with an upstream peer and compare
+verification material. They also cover correlation, rejected status, required
+confirmation, unsupported revisions, malformed and oversized responses, exact
+transcript preservation, and expiry. No phone or Google service was contacted
+for these tests. The production relay is unchanged.

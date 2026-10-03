@@ -132,6 +132,10 @@ impl RegisteredSources {
 }
 
 impl RegisteredPhone {
+    pub(crate) fn pairing_identity(&self) -> Option<&[u8]> {
+        (self.enabled && self.registration_time > 0).then_some(self.identity.as_slice())
+    }
+
     pub fn last_refresh_micros(&self) -> Option<u64> {
         self.last_refresh_micros
     }
