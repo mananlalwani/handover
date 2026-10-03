@@ -13,7 +13,7 @@ const PROOF_MODES = new Set(['auth', 'register', 'pairing_check', 'native_login'
 const BODY_TYPES = new Set(['application/x-protobuf', 'application/protobuf']);
 const JSON_TYPES = new Set(['application/json', 'application/json+protobuf']);
 const ACCOUNT_READ_ERRORS = new Set(['account_config_unavailable', 'account_config_oversized', 'account_namespace_unavailable', 'account_parser_unavailable', 'account_field_unavailable', 'account_config_parse_failed']);
-const GA_EMAIL_EXPRESSION = '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string")return {error:"account_config_unavailable"};if(config.length>1048576)return {error:"account_config_oversized"};if(!app)return {error:"account_namespace_unavailable"};if(typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return {error:"account_parser_unavailable"};const account=app.T(app.oca(app.n,config),app.DPa,5);if(!account)return {error:"account_field_unavailable"};return {email:account.Ye()}}catch{return {error:"account_config_parse_failed"}}})()';
+const GA_EMAIL_EXPRESSION = '(()=>{try{const config=globalThis.MW_CONFIG;if(typeof config!=="string")return {error:"account_config_unavailable"};if(config.length>1048576)return {error:"account_config_oversized"};const data=JSON.parse(config);if(!Array.isArray(data))return {error:"account_config_parse_failed"};const field=(a,n)=>{if(!Array.isArray(a))return null;const i=n-1;const last=a.length-1;const tail=a[last];if(i<last)return a[i];if(tail&&typeof tail==="object"&&!Array.isArray(tail))return Object.hasOwn(tail,n)?tail[n]:null;return i===last?tail:null};const account=field(data,5);if(!Array.isArray(account))return {error:"account_field_unavailable"};return {email:field(account,2)}}catch{return {error:"account_config_parse_failed"}}})()';
 
 let tabId = null;
 let active = false;
@@ -222,7 +222,7 @@ function validAccountEmail(value) {
 }
 
 // GA_EMAIL is ClientConfig field 5, account field 2. Use the page's own
-// protobuf JSON reader; Angular's injection accessor needs a DI context. The fixed
+// protobuf JSON representation directly. Page parser exports are not stable. The fixed
 // expression returns the email or a fixed error code, never other page state.
 export async function readGoogleAccountEmail(id) {
   const result = await withTimeout(chrome.debugger.sendCommand(

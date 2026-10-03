@@ -330,7 +330,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   assert.equal(await worker.readGoogleAccountEmail(17), 'person@example.org');
   const emailCommand = calls.filter(call => call[0] === 'Runtime.evaluate').at(-1);
   assert.deepEqual(emailCommand[2], {
-    expression: '(()=>{try{const app=globalThis.default_mw;const config=globalThis.MW_CONFIG;if(typeof config!=="string")return {error:"account_config_unavailable"};if(config.length>1048576)return {error:"account_config_oversized"};if(!app)return {error:"account_namespace_unavailable"};if(typeof app.oca!=="function"||typeof app.n!=="function"||typeof app.T!=="function"||typeof app.DPa!=="function")return {error:"account_parser_unavailable"};const account=app.T(app.oca(app.n,config),app.DPa,5);if(!account)return {error:"account_field_unavailable"};return {email:account.Ye()}}catch{return {error:"account_config_parse_failed"}}})()',
+    expression: '(()=>{try{const config=globalThis.MW_CONFIG;if(typeof config!=="string")return {error:"account_config_unavailable"};if(config.length>1048576)return {error:"account_config_oversized"};const data=JSON.parse(config);if(!Array.isArray(data))return {error:"account_config_parse_failed"};const field=(a,n)=>{if(!Array.isArray(a))return null;const i=n-1;const last=a.length-1;const tail=a[last];if(i<last)return a[i];if(tail&&typeof tail==="object"&&!Array.isArray(tail))return Object.hasOwn(tail,n)?tail[n]:null;return i===last?tail:null};const account=field(data,5);if(!Array.isArray(account))return {error:"account_field_unavailable"};return {email:field(account,2)}}catch{return {error:"account_config_parse_failed"}}})()',
     returnByValue: true, awaitPromise: false, silent: true,
   });
   runtimeEmail = 'unsafe value SECRET';
@@ -429,7 +429,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
 
 });
 
-test('account expression reads bootstrap GA_EMAIL without Angular injection context', async () => {
+test('account expression reads only bootstrap GA_EMAIL without page parser exports', async () => {
   const { runInNewContext } = await import('node:vm');
   const source = await readFile(new URL('./service-worker.js', import.meta.url), 'utf8');
   const expression = source.match(/const GA_EMAIL_EXPRESSION = '([^\n]+)';/)[1];
@@ -456,8 +456,9 @@ test('account expression reads bootstrap GA_EMAIL without Angular injection cont
   context.MW_CONFIG = '[]';
   context.default_mw.T = () => null;
   assert.equal(runInNewContext(expression, context).error, 'account_field_unavailable');
-  delete context.default_mw.oca;
-  assert.equal(runInNewContext(expression, context).error, 'account_parser_unavailable');
   delete context.default_mw;
-  assert.equal(runInNewContext(expression, context).error, 'account_namespace_unavailable');
+  context.MW_CONFIG = JSON.stringify([null, null, null, null, [null, 'fixture@example.org']]);
+  assert.equal(runInNewContext(expression, context).email, 'fixture@example.org');
+  context.MW_CONFIG = JSON.stringify([{ 5: [{ 2: 'fixture@example.org' }] }]);
+  assert.equal(runInNewContext(expression, context).email, 'fixture@example.org');
 });
