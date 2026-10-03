@@ -332,3 +332,10 @@ unverified against the live endpoint.
 Local inspection responses allow a bounded 16-KiB native frame because a
 2-KiB description can expand when JSON escapes control bytes. Ordinary replies
 retain their 1-KiB limit. The description itself remains limited to 2 KiB.
+
+The first local-inspection attempt stopped with cookie_unavailable, reported
+by the user. No native request was issued. This can occur when ExtraInfo precedes
+the URL event; cookies are intentionally discarded until the exact service
+request is matched. The existing reverse-order test covers that fail-closed
+behavior. The relay was restored and the test tab closed. A manual retry uses
+the same capture rules and inspection request.
