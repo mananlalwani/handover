@@ -23,6 +23,15 @@ let commandQueue = Promise.resolve();
 let captureMode = null;
 let captureServiceCookies = false;
 let captureBrowserRequest = false;
+let inspectLocalError = false;
+let localDescription = null;
+let localDescriptionTimer = null;
+
+function clearLocalDescription() {
+  localDescription = null;
+  if (localDescriptionTimer !== null) clearTimeout(localDescriptionTimer);
+  localDescriptionTimer = null;
+}
 let nativeProbe = { state: 'idle' };
 let authForwarded = false;
 let probeId = 0;
@@ -112,6 +121,7 @@ function responseBodyShape(result, contentType) {
 }
 
 async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
+  if (!preserveNativeProbe) probeId += 1;
   const oldTabId = tabId;
   const oldMode = captureMode;
   active = false;
@@ -119,6 +129,8 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   captureMode = null;
   captureServiceCookies = false;
   captureBrowserRequest = false;
+  inspectLocalError = false;
+  clearLocalDescription();
   generation += 1;
   if (durationTimer !== null) {
     clearTimeout(durationTimer);
@@ -141,7 +153,9 @@ async function stop(reason = 'Stopped.', { preserveNativeProbe = false } = {}) {
   return { message: reason };
 }
 
-async function start(duration, mode = 'observe', withServiceCookies = false, withBrowserRequest = false) {
+async function start(duration, mode = 'observe', withServiceCookies = false, withBrowserRequest = false, inspect = false) {
+  clearLocalDescription();
+  probeId += 1;
   const maximum = mode === 'auth' ? 120 : 300;
   if (!Number.isInteger(duration) || duration < 1 || duration > maximum) return { error: `Choose a duration from 1 to ${maximum} seconds.` };
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -149,7 +163,6 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
   if (active) await stop('Previous observation stopped.');
   generation += 1;
   if (mode === 'auth') {
-    probeId += 1;
     authForwarded = false;
     nativeProbe = { state: 'waiting' };
   }
@@ -162,6 +175,7 @@ async function start(duration, mode = 'observe', withServiceCookies = false, wit
     captureMode = mode;
     captureServiceCookies = mode === 'auth' && withServiceCookies === true;
     captureBrowserRequest = mode === 'auth' && withBrowserRequest === true;
+    inspectLocalError = mode === 'auth' && inspect === true;
     const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!currentTab || currentTab.id !== tab.id || !eligibleTabUrl(currentTab.url ?? '')) throw new Error('tab_changed');
     await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
@@ -251,7 +265,7 @@ async function processAuthCandidate(requestId, candidate) {
     return;
   }
   const payload = {
-    type: candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
+    type: candidate.inspect ? 'gaia_lookup_inspect' : candidate.browserRequest ? 'gaia_lookup_browser_request' : candidate.withServiceCookies ? 'gaia_lookup_with_cookies' : 'gaia_lookup',
     endpoint: candidate.endpoint,
     origin: origin ?? 'https://messages.google.com',
     authorization,
@@ -263,6 +277,7 @@ async function processAuthCandidate(requestId, candidate) {
   authForwarded = true;
   nativeProbe = { state: 'running' };
   const currentProbe = probeId;
+  const inspect = candidate.inspect;
   authCandidates.clear();
   authHeaderMaps.clear();
   candidate.requestHeaders = {};
@@ -283,6 +298,11 @@ async function processAuthCandidate(requestId, candidate) {
     const outcome = await nativeReplyWithTimeout(Promise.resolve(nativeCall));
     if (currentProbe !== probeId) return;
     nativeProbe = outcome.reply ? sanitizeNativeReply(outcome.reply) : { state: 'failed', result: { error: outcome.error } };
+    if (inspect && nativeProbe.state === 'failed' && nativeProbe.result?.error === 'http_error' &&
+        typeof outcome.reply?.local_description === 'string' && byteCount(outcome.reply.local_description) <= 2048) {
+      localDescription = outcome.reply.local_description;
+      localDescriptionTimer = setTimeout(clearLocalDescription, 60_000);
+    }
   } catch {
     if (currentProbe === probeId) nativeProbe = { state: 'failed', result: { error: 'native_error' } };
   } finally { notify(); }
@@ -350,6 +370,7 @@ function authRequest(requestId, request) {
   const candidate = {
     endpoint, withServiceCookies: captureServiceCookies,
     browserRequest,
+    inspect: inspectLocalError,
     requestHeaders: selectedAuthHeaders(request.headers, captureServiceCookies),
   };
   const prior = authHeaderMaps.get(requestId);
@@ -456,6 +477,8 @@ chrome.debugger.onDetach.addListener(source => {
   authHeaderMaps.clear();
   captureServiceCookies = false;
   captureBrowserRequest = false;
+  inspectLocalError = false;
+  clearLocalDescription();
   notify();
 });
 
@@ -486,10 +509,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ active, mode: captureMode, count: records.length, dropped, records: records.slice(), nativeProbe: structuredClone(nativeProbe) });
     return false;
   }
+  if (message?.type === 'take-local-description') {
+    sendResponse({ description: localDescription });
+    clearLocalDescription();
+    return false;
+  }
   if (message?.type === 'start') { enqueueCommand(() => start(message.duration)).then(sendResponse, () => sendResponse({ error: 'Could not start the observer.' })); return true; }
   if (message?.type === 'auth-probe') { enqueueCommand(() => start(120, 'auth')).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-with-cookies') { enqueueCommand(() => start(120, 'auth', true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'auth-probe-browser-request') { enqueueCommand(() => start(120, 'auth', true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
+  if (message?.type === 'auth-probe-inspect') { enqueueCommand(() => start(120, 'auth', true, true, true)).then(sendResponse, () => sendResponse({ error: 'Could not start authentication probe.' })); return true; }
   if (message?.type === 'stop') { enqueueCommand(() => stop()).then(sendResponse, () => sendResponse({ error: 'Could not stop the observer.' })); return true; }
   return false;
 });

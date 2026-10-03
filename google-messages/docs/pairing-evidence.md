@@ -312,3 +312,23 @@ browser referrer was observed by our sanitized capture. Only the fixed Messages
 origin is sent, with no conversation path or query. Request body, cookies,
 authorization, user-agent behavior, and query handling stay unchanged. Other
 probe actions remain unchanged. This header change is not yet live-tested.
+
+The origin-only referrer comparison also returned HTTP 400 / INVALID_ARGUMENT, reported by the user. Adding that header did not resolve the rejection. Authentication remains unverified. The relay was restored after the test.
+
+The fixed diagnostics do not identify the rejected argument. A separate opt-in
+local inspection now permits the owner to view only the bounded RPC description,
+which may include identifiers. It uses the same validated browser lookup and
+origin-only referrer. It adds no headers or request fields. The raw description
+is excluded from snapshots and exports, retrieved once, and cleared after
+60 seconds in the worker and 60 seconds after viewing in the popup. The owner
+can review it locally and share a redacted cause. Metadata and full bodies are
+never returned. All ordinary probe actions still discard free-form text, and
+Debug/Display redact the local-description wrapper. Tests cover opt-in gating,
+redaction, one-time retrieval, expiry, and exclusion from snapshots. Stopping
+or beginning any capture now invalidates pending native replies unless the
+stop is the internal capture-to-native handoff. This local view remains
+unverified against the live endpoint.
+
+Local inspection responses allow a bounded 16-KiB native frame because a
+2-KiB description can expand when JSON escapes control bytes. Ordinary replies
+retain their 1-KiB limit. The description itself remains limited to 2 KiB.

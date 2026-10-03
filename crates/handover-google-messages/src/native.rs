@@ -9,6 +9,8 @@ use crate::{BrowserProof, ProbeError, ProbeResult, RpcReason, RpcStatus, probe};
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024;
+// A 2-KiB description can expand sixfold when JSON escapes control bytes.
+const MAX_LOCAL_RESPONSE_BYTES: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -29,6 +31,8 @@ enum HostResponse {
         rpc_status: Option<RpcStatus>,
         #[serde(skip_serializing_if = "Option::is_none")]
         rpc_reason: Option<RpcReason>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        local_description: Option<String>,
     },
 }
 
@@ -89,6 +93,7 @@ where
                     http_status: error.http_status(),
                     rpc_status: error.rpc_status(),
                     rpc_reason: error.rpc_reason(),
+                    local_description: error.local_description().map(str::to_owned),
                 },
                 Ok(Ok(result)) => HostResponse::Success {
                     ok: true,
@@ -122,9 +127,16 @@ async fn write_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     response: HostResponse,
 ) -> io::Result<()> {
+    let limit = match &response {
+        HostResponse::Failure {
+            local_description: Some(_),
+            ..
+        } => MAX_LOCAL_RESPONSE_BYTES,
+        _ => MAX_RESPONSE_BYTES,
+    };
     let payload = serde_json::to_vec(&response)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "response_encoding_failed"))?;
-    if payload.len() > MAX_RESPONSE_BYTES {
+    if payload.len() > limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "response_too_large",
@@ -149,6 +161,7 @@ fn failure(code: &'static str, http_status: Option<u16>) -> HostResponse {
         http_status,
         rpc_status: None,
         rpc_reason: None,
+        local_description: None,
     }
 }
 
@@ -184,7 +197,7 @@ mod tests {
         let mut length = [0; 4];
         reader.read_exact(&mut length).await.unwrap();
         let length = u32::from_ne_bytes(length) as usize;
-        assert!(length <= MAX_RESPONSE_BYTES);
+        assert!(length <= MAX_LOCAL_RESPONSE_BYTES);
         let mut payload = vec![0; length];
         reader.read_exact(&mut payload).await.unwrap();
         serde_json::from_slice(&payload).unwrap()
@@ -332,6 +345,35 @@ mod tests {
             response(&mut client_reader).await,
             serde_json::json!({"ok":false,"error":"http_error","http_status":400,"rpc_status":"INVALID_ARGUMENT","rpc_reason":"API_KEY_INVALID"})
         );
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_inspection_can_frame_the_bounded_description() {
+        let (host_reader, mut client_writer) = duplex(4096);
+        let (host_writer, mut client_reader) = duplex(16 * 1024);
+        client_writer
+            .write_all(&frame(&proof_json("")))
+            .await
+            .unwrap();
+        let task = tokio::spawn(run_with_probe(
+            host_reader,
+            host_writer,
+            EXTENSION_ID,
+            ORIGIN,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            |_| async {
+                Err(ProbeError::HttpErrorForLocalInspection(
+                    400,
+                    Some(RpcStatus::InvalidArgument),
+                    None,
+                    crate::LocalDescription("\u{0001}".repeat(2048)),
+                ))
+            },
+        ));
+        let result = response(&mut client_reader).await;
+        assert_eq!(result["local_description"].as_str().unwrap().len(), 2048);
         task.await.unwrap().unwrap();
     }
 }

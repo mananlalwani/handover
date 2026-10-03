@@ -113,7 +113,7 @@ pub struct ProbeResult {
 }
 
 /// Fixed errors contain neither credentials nor server payloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeError {
     InvalidOrigin,
     InvalidFrame,
@@ -124,11 +124,22 @@ pub enum ProbeError {
     HttpError(u16),
     HttpErrorWithStatus(u16, RpcStatus),
     HttpErrorWithReason(u16, RpcStatus, RpcReason),
+    HttpErrorForLocalInspection(u16, Option<RpcStatus>, Option<RpcReason>, LocalDescription),
     UnexpectedResponse,
     ResponseTooLarge,
     Timeout,
     RpcError,
     NativeError,
+}
+
+/// An opt-in local description. Never include its contents in Debug or logs.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LocalDescription(String);
+
+impl fmt::Debug for LocalDescription {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LocalDescription { redacted }")
+    }
 }
 
 impl ProbeError {
@@ -142,7 +153,8 @@ impl ProbeError {
             Self::Network => "network",
             Self::HttpError(_)
             | Self::HttpErrorWithStatus(_, _)
-            | Self::HttpErrorWithReason(_, _, _) => "http_error",
+            | Self::HttpErrorWithReason(_, _, _)
+            | Self::HttpErrorForLocalInspection(_, _, _, _) => "http_error",
             Self::UnexpectedResponse => "unexpected_response",
             Self::ResponseTooLarge => "response_too_large",
             Self::Timeout => "timeout",
@@ -156,6 +168,7 @@ impl ProbeError {
             Self::HttpError(status)
             | Self::HttpErrorWithStatus(status, _)
             | Self::HttpErrorWithReason(status, _, _)
+            | Self::HttpErrorForLocalInspection(status, _, _, _)
                 if (100..=599).contains(status) =>
             {
                 Some(*status)
@@ -169,6 +182,7 @@ impl ProbeError {
             Self::HttpErrorWithStatus(_, status) | Self::HttpErrorWithReason(_, status, _) => {
                 Some(*status)
             }
+            Self::HttpErrorForLocalInspection(_, status, _, _) => *status,
             _ => None,
         }
     }
@@ -176,6 +190,14 @@ impl ProbeError {
     pub fn rpc_reason(&self) -> Option<RpcReason> {
         match self {
             Self::HttpErrorWithReason(_, _, reason) => Some(*reason),
+            Self::HttpErrorForLocalInspection(_, _, reason, _) => *reason,
+            _ => None,
+        }
+    }
+
+    pub fn local_description(&self) -> Option<&str> {
+        match self {
+            Self::HttpErrorForLocalInspection(_, _, _, description) => Some(&description.0),
             _ => None,
         }
     }
@@ -203,13 +225,18 @@ impl BrowserProof {
     fn validate(&self) -> Result<HeaderMap, ProbeError> {
         if !matches!(
             self.kind.as_str(),
-            "gaia_lookup" | "gaia_lookup_with_cookies" | "gaia_lookup_browser_request"
+            "gaia_lookup"
+                | "gaia_lookup_with_cookies"
+                | "gaia_lookup_browser_request"
+                | "gaia_lookup_inspect"
         ) {
             return Err(ProbeError::InvalidBootstrap);
         }
         match (self.kind.as_str(), self.browser_request.as_ref()) {
-            ("gaia_lookup_browser_request", Some(body)) => validate_browser_lookup(body)?,
-            ("gaia_lookup_browser_request", None) | (_, Some(_)) => {
+            ("gaia_lookup_browser_request" | "gaia_lookup_inspect", Some(body)) => {
+                validate_browser_lookup(body)?
+            }
+            ("gaia_lookup_browser_request" | "gaia_lookup_inspect", None) | (_, Some(_)) => {
                 return Err(ProbeError::InvalidBootstrap);
             }
             (_, None) => {}
@@ -225,7 +252,10 @@ impl BrowserProof {
         headers.insert("x-goog-api-key", sensitive_header(&self.api_key, 4096)?);
         match (self.kind.as_str(), self.service_cookie.as_deref()) {
             ("gaia_lookup", None) => {}
-            ("gaia_lookup_with_cookies" | "gaia_lookup_browser_request", Some(cookie)) => {
+            (
+                "gaia_lookup_with_cookies" | "gaia_lookup_browser_request" | "gaia_lookup_inspect",
+                Some(cookie),
+            ) => {
                 headers.insert(COOKIE, sensitive_header(cookie, 16384)?);
             }
             _ => return Err(ProbeError::InvalidCredentials),
@@ -237,7 +267,10 @@ impl BrowserProof {
             headers.insert("x-goog-authuser", sensitive_header(user, 2)?);
         }
         headers.insert(ORIGIN, HeaderValue::from_static(ORIGIN_VALUE));
-        if self.kind == "gaia_lookup_browser_request" {
+        if matches!(
+            self.kind.as_str(),
+            "gaia_lookup_browser_request" | "gaia_lookup_inspect"
+        ) {
             headers.insert(
                 reqwest::header::REFERER,
                 HeaderValue::from_static("https://messages.google.com/"),
@@ -360,7 +393,15 @@ pub async fn probe(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
     let endpoint = format!("{}{SIGN_IN_PATH}", proof.endpoint);
     let http = client(true)?;
     if let Some(body) = proof.browser_request {
-        query_with_body(&http, &endpoint, headers, proof.auth_user.as_deref(), &body).await
+        query_with_body_and_inspection(
+            &http,
+            &endpoint,
+            headers,
+            proof.auth_user.as_deref(),
+            &body,
+            proof.kind == "gaia_lookup_inspect",
+        )
+        .await
     } else {
         query(&http, &endpoint, headers, proof.auth_user.as_deref()).await
     }
@@ -382,6 +423,17 @@ async fn query_with_body(
     auth_user: Option<&str>,
     body: &Value,
 ) -> Result<ProbeResult, ProbeError> {
+    query_with_body_and_inspection(http, endpoint, headers, auth_user, body, false).await
+}
+
+async fn query_with_body_and_inspection(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    auth_user: Option<&str>,
+    body: &Value,
+    inspect: bool,
+) -> Result<ProbeResult, ProbeError> {
     let body = serde_json::to_vec(body).map_err(|_| ProbeError::NativeError)?;
     let mut request = http.post(endpoint).headers(headers).body(body);
     if let Some(user) = auth_user {
@@ -389,7 +441,7 @@ async fn query_with_body(
     }
     let mut response = request.send().await.map_err(transport_error)?;
     if !response.status().is_success() {
-        return Err(http_error_details(response).await);
+        return Err(http_error_details(response, inspect).await);
     }
     let content_type = response
         .headers()
@@ -415,7 +467,7 @@ async fn query_with_body(
     parse_response(&body)
 }
 
-async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
+async fn http_error_details(mut response: reqwest::Response, inspect: bool) -> ProbeError {
     let status = response.status().as_u16();
     const ERROR_LIMIT: usize = 16 * 1024;
     // The first-party error decoder accepts JSON-protobuf independently of
@@ -426,7 +478,7 @@ async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
     {
         return ProbeError::HttpError(status);
     }
-    let category = tokio::time::timeout(Duration::from_secs(1), async {
+    let details = tokio::time::timeout(Duration::from_secs(1), async {
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.ok()? {
             if chunk.len() > ERROR_LIMIT - body.len() {
@@ -434,16 +486,44 @@ async fn http_error_details(mut response: reqwest::Response) -> ProbeError {
             }
             body.extend_from_slice(&chunk);
         }
-        error_category(&body)
+        let category = error_category(&body);
+        let description = if inspect && category.is_some() {
+            local_error_description(&body)
+        } else {
+            None
+        };
+        Some((category, description))
     })
     .await
     .ok()
     .flatten();
+    let (category, description) = details.unwrap_or((None, None));
+    if let Some(description) = description {
+        return ProbeError::HttpErrorForLocalInspection(
+            status,
+            category.map(|v| v.0),
+            category.and_then(|v| v.1),
+            description,
+        );
+    }
     match category {
         Some((category, Some(reason))) => ProbeError::HttpErrorWithReason(status, category, reason),
         Some((category, None)) => ProbeError::HttpErrorWithStatus(status, category),
         None => ProbeError::HttpError(status),
     }
+}
+
+fn local_error_description(body: &[u8]) -> Option<LocalDescription> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let description = if value.is_array() {
+        value.get(1)?.as_str()?
+    } else {
+        value.get("error")?.get("message")?.as_str()?
+    };
+    if description.is_empty() || description.len() > 2048 {
+        return None;
+    }
+    Some(LocalDescription(description.to_owned()))
 }
 
 fn error_category(body: &[u8]) -> Option<(RpcStatus, Option<RpcReason>)> {
@@ -677,6 +757,8 @@ mod tests {
                 .unwrap()
                 .contains_key(reqwest::header::REFERER)
         );
+        p.kind = "gaia_lookup_inspect".into();
+        p.validate().unwrap();
         for (pointer, value) in [
             ("/2", json!(0)),
             ("/0/5", json!("PRIVATE_TOKEN")),
@@ -977,6 +1059,40 @@ mod tests {
             assert!(!format!("{result:?}").contains("PRIVATE_"));
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn local_description_requires_opt_in_and_never_appears_in_debug() {
+        let body = br#"[3,"PRIVATE_DESCRIPTION",[{"metadata":"PRIVATE_METADATA"}]]"#;
+        for inspect in [false, true] {
+            let header = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let (endpoint, server) = mock_server([header.as_bytes(), body].concat()).await;
+            let error = query_with_body_and_inspection(
+                &client(false).unwrap(),
+                &endpoint,
+                proof().validate().unwrap(),
+                None,
+                &lookup_request(),
+                inspect,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.local_description(),
+                inspect.then_some("PRIVATE_DESCRIPTION")
+            );
+            assert!(!format!("{error:?}").contains("PRIVATE_"));
+            assert!(!error.to_string().contains("PRIVATE_"));
+            server.await.unwrap();
+        }
+        assert!(
+            local_error_description(&serde_json::to_vec(&json!([3, "x".repeat(2049)])).unwrap())
+                .is_none()
+        );
+        assert!(local_error_description(b"[3,{}]").is_none());
     }
 
     #[test]

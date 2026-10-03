@@ -30,6 +30,7 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
       sendNativeMessage: async (host, payload) => {
         nativeCalls.push({ host, payload: structuredClone(payload) });
         if (nativeCalls.length === 1) return nativeWait.promise;
+        if (payload.type === 'gaia_lookup_inspect') return { ok: false, error: 'http_error', http_status: 400, rpc_status: 'INVALID_ARGUMENT', local_description: 'PRIVATE_LOCAL_DESCRIPTION', metadata: 'PRIVATE_METADATA' };
         return { ok: true, sources: 3, token: 'native-secret' };
       },
     },
@@ -243,6 +244,34 @@ test('worker validates the active tab, uses only Network CDP calls, and isolates
   await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'complete');
   const browserSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
   for (const privateValue of ['12345678-1234-4234-8234-123456789abc', 'messages-web-0123456789abcdef0123456789abcdef', 'BROWSER_AUTH', 'BROWSER_COOKIE']) assert.equal(browserSnapshot.includes(privateValue), false);
+  await send({ type: 'auth-probe-inspect' });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: 'inspect', request: {
+    url: `https://instantmessaging-pa.clients6.google.com${authPath}`, method: 'POST', headers, postData: JSON.stringify(browserBody),
+  } });
+  chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: 'inspect', hasExtraInfo: false });
+  await waitFor(() => nativeCalls.length === 5);
+  await waitFor(async () => (await send({ type: 'snapshot' })).nativeProbe.state === 'failed');
+  const inspectSnapshot = JSON.stringify(await send({ type: 'snapshot' }));
+  assert.equal(inspectSnapshot.includes('PRIVATE_LOCAL_DESCRIPTION'), false);
+  assert.equal(inspectSnapshot.includes('PRIVATE_METADATA'), false);
+  assert.deepEqual(await send({ type: 'take-local-description' }), { description: 'PRIVATE_LOCAL_DESCRIPTION' });
+  assert.deepEqual(await send({ type: 'take-local-description' }), { description: null });
+  await send({ type: 'auth-probe-inspect' });
+  const originalTimeout = globalThis.setTimeout;
+  let expireDescription;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay === 60_000) expireDescription = callback;
+    return originalTimeout(callback, delay, ...args);
+  };
+  try {
+    chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.requestWillBeSent', { requestId: 'inspect-expiry', request: {
+      url: `https://instantmessaging-pa.clients6.google.com${authPath}`, method: 'POST', headers, postData: JSON.stringify(browserBody),
+    } });
+    chrome.debugger.onEvent.fire({ tabId: 17 }, 'Network.responseReceived', { requestId: 'inspect-expiry', hasExtraInfo: false });
+    await waitFor(() => typeof expireDescription === 'function');
+    expireDescription();
+    assert.deepEqual(await send({ type: 'take-local-description' }), { description: null });
+  } finally { globalThis.setTimeout = originalTimeout; }
   assert.equal(debuggerCommands.filter(name => name === 'Network.getResponseBody').length, bodyCallsBeforeAuth);
   await assert.rejects(worker.withTimeout(new Promise(() => {}), 5, 'native_timeout'), /native_timeout/);
   assert.deepEqual(await worker.nativeReplyWithTimeout(new Promise(() => {}), 5), { error: 'timeout' });

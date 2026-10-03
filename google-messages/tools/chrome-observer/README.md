@@ -99,3 +99,23 @@ registration, token-bearing requests, unexpected fields, and unsupported
 shapes. If the browser does not issue an accepted lookup, the 120-second window
 ends without a native request. The other two probe buttons keep building fresh
 independent request bodies. This comparison has not yet been live-tested.
+
+### Inspect a rejection locally
+
+“Inspect rejection locally” is a separate opt-in diagnostic. It makes the same
+validated token-free browser lookup as the comparison, including the origin-only
+Messages referrer. After a failure, reopen the popup within 60 seconds and click
+“View local error description once”. Google's description may include private
+identifiers. Review it locally and share only a redacted cause.
+
+This action returns only the RPC description, bounded to 2 KiB, alongside the
+fixed diagnostic fields. It never includes error metadata or full response
+bodies. Rust Debug and Display remain redacted. The worker keeps the description
+out of snapshots and JSON exports, allows one retrieval, and clears it after
+60 seconds or on stop/new capture. The popup renders plain text and clears it
+60 seconds after viewing or on closing. The description is never persisted.
+Other probe actions continue to discard free-form error text. Live availability
+of a useful description remains unverified.
+
+Fixed native replies retain their 1-KiB frame limit. The opt-in description reply
+has a 16-KiB frame limit to allow JSON escaping of its 2-KiB description.

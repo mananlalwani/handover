@@ -23,6 +23,7 @@ async function refresh() {
     ? `Observing this tab. ${state.count} sanitized records so far.`
     : `Stopped. ${state.count} sanitized records available.`;
   const probe = state.nativeProbe;
+  if (probe?.state === 'waiting' || probe?.state === 'running') clearLocalView();
   if (probe?.state === 'complete') {
     const result = probe.result ?? {};
     nativeStatus.textContent = result.ok
@@ -94,3 +95,29 @@ chrome.runtime.onMessage.addListener(message => {
   if (message?.type === 'state-changed') refresh();
 });
 refresh();
+
+const localView = document.querySelector('#local-description');
+let localViewTimer = null;
+function clearLocalView() {
+  localView.textContent = '';
+  localView.hidden = true;
+  if (localViewTimer !== null) clearTimeout(localViewTimer);
+  localViewTimer = null;
+}
+
+document.querySelector('#inspect-probe').addEventListener('click', async () => {
+  clearLocalView();
+  const result = await message({ type: 'auth-probe-inspect' });
+  nativeStatus.textContent = result?.error ?? 'Local inspection started. Refresh Messages, then reopen the popup and view the description once.';
+  await refresh();
+});
+
+document.querySelector('#view-local-description').addEventListener('click', async () => {
+  clearLocalView();
+  const result = await message({ type: 'take-local-description' });
+  localView.textContent = typeof result?.description === 'string' && new TextEncoder().encode(result.description).length <= 2048
+    ? result.description : 'No local error description is available. It may have expired or the server omitted it.';
+  localView.hidden = false;
+  localViewTimer = setTimeout(clearLocalView, 60_000);
+});
+window.addEventListener('unload', clearLocalView);
