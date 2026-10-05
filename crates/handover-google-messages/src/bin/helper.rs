@@ -138,7 +138,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
             Some((expected, account, progress)) = progress_rx.recv() => {
                 if expected != generation || active_account.as_deref() != Some(&account) { continue; }
                 let prompt = match progress {
-                    LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
+                    LoginProgress::Ready => "Native registration matches the signed-in account.".to_owned(),
                     LoginProgress::RegistrationVerified => "Native registration matches the signed-in account. Opening pairing channel.".to_owned(),
                     LoginProgress::InitialSendAccepted => "Initial pairing request received HTTP acceptance. Waiting for the phone response.".to_owned(),
                     LoginProgress::InitialAcknowledgementAccepted => "Initial pairing reply acknowledged. Sending the final pairing request.".to_owned(),
@@ -155,7 +155,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 while let Ok((event_generation, event_account, progress)) = progress_rx.try_recv() {
                     if event_generation != generation || event_account != account { continue; }
                     let prompt = match progress {
-                        LoginProgress::Ready => "Native registration verified. Ready to start phone pairing.".to_owned(),
+                        LoginProgress::Ready => "Native registration matches the signed-in account.".to_owned(),
                         LoginProgress::RegistrationVerified => "Native registration matches the signed-in account. Opening pairing channel.".to_owned(),
                         LoginProgress::InitialSendAccepted => "Initial pairing request received HTTP acceptance. Waiting for the phone response.".to_owned(),
                         LoginProgress::InitialAcknowledgementAccepted => "Initial pairing reply acknowledged. Sending the final pairing request.".to_owned(),

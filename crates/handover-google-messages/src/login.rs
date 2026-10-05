@@ -1,4 +1,4 @@
-//! Helper-owned, bounded phone pairing. Browser proof is never persisted.
+//! Helper-owned, bounded phone pairing and verified desktop authentication storage.
 
 use std::{fmt, time::Duration};
 

@@ -469,7 +469,9 @@ Logout deletes the desktop credential before removing local pairing records;
 failed credential deletion leaves those records intact for a later attempt.
 
 The desktop store passed a live synthetic save, update, load, and deletion test.
-Real Google authentication has not yet been saved through this path. Startup,
-credential refresh, and browser-free messaging restoration remain unimplemented
+A fresh browser sign-in proof also passed the live native account check on
+2026-10-05, and the helper reported successful desktop authentication storage.
+The production relay was restored afterward. Startup, credential refresh, and
+browser-free messaging restoration remain unimplemented
 and require separate live verification. Paired keys or stored authentication alone
 do not establish an online account.
