@@ -204,8 +204,9 @@ Live tests also published 201 conversations and paged message history across a
 helper restart. Conversation names and older-page coverage in the newest thread
 passed phone comparison. A live diagnostic decoded an incoming message update.
 The shared daemon receiver also served two history pages without overlap and
-remained connected afterward. Automatic display of a new incoming message still
-needs a phone test. Chat sends remain unimplemented.
+remained connected afterward. On 2026-10-05, the user confirmed that a new
+incoming message appeared automatically in an open Handover conversation
+without refreshing or reopening it. Chat sends remain unimplemented.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

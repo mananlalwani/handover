@@ -704,6 +704,8 @@ chunking without closing history pages. A live daemon test published 201
 conversations, read two twenty-message history pages without overlap, and
 remained connected afterward. A second live test restarted the daemon and
 recovered the same connected account and all 201 conversations without browser
-interaction. The production relay was restored after both tests. A phone
-comparison of automatic incoming-message publication through Handover remains
-pending.
+interaction. On 2026-10-05, the user confirmed that a new incoming message
+appeared automatically in an open Handover conversation without refreshing or
+reopening it. This verifies live publication through the native helper and
+desktop client; it does not verify every message type or delivery status.
+The production relay was restored after the tests.
