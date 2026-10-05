@@ -238,7 +238,10 @@ Content is published before status, and the phone update is acknowledged
 only after both reach the daemon. Draft, incoming, and unsupported status codes
 produce no delivery assertion. Conflicting statuses for a duplicated message in
 one update are rejected. This path has synthetic decoder and helper-contract
-coverage; live status updates remain unverified.
+coverage. A subsequent native SMS test reported acceptance without an assigned
+ID, followed by an authenticated `sent` message status. No delivered or displayed
+status was observed; those paths still need live verification. Production was
+restored after the test.
 
 An accepted send without an assigned ID is not yet linked to a later message
 push. Operation delivery-status correlation therefore remains unimplemented;
