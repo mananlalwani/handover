@@ -273,7 +273,12 @@ the send. Incoming, draft, and unsupported status updates never establish a
 link. Updates missing the temporary identifier still update messages but cannot
 resolve an unassigned outgoing operation. The field follows first-party Q2a's
 message field 12. Synthetic projection, helper-contract, and daemon recovery
-checks cover this path; it still needs live verification. Older native sends
+checks cover this path. A live self-conversation test advanced the exact outgoing
+operation from accepted without an ID to delivered with a phone-assigned ID.
+The same assigned message appeared in daemon live events. After production was
+restored and the daemon restarted, the delivered outcome and assigned ID remained
+in the outgoing journal snapshot. Displayed and late-push recovery from unknown
+still need live verification. Older native sends
 used unrelated random temporary identifiers and cannot gain this link.
 Message contents and timestamps are never used to guess an identity.
 The old adapter remains the active production implementation.
