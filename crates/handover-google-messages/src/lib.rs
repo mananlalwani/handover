@@ -8,6 +8,7 @@ mod conversation;
 pub mod credential_store;
 pub mod history;
 pub mod login;
+pub mod media;
 pub mod native;
 pub mod pairing;
 pub mod receive;

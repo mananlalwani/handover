@@ -285,12 +285,29 @@ controlled live interruption test. Local recovery coverage now writes an accepte
 operation to disk, restores it as unknown, applies late delivery evidence,
 rejects a late acceptance downgrade, and restores the delivered result through
 a second journal reload. The daemon ingestion test also asserts that late
-recovery emits no helper command. The live interruption test will send once
-while the phone is offline, restart receive, then restore phone connectivity
+recovery emits no helper command. The controlled live interruption test is
+deferred. The offline-first attempt never submitted a send, so it did not
+exercise outgoing recovery. A future test must interrupt after submission
 and observe the same operation without resubmitting it. Older native sends
 used unrelated random temporary identifiers and cannot gain this link.
 Message contents and timestamps are never used to guess an identity.
 The old adapter remains the active production implementation.
+
+The native media codec now implements the first-party chunked AES-256-GCM
+file envelope with the existing 50 MiB staging limit. It authenticates chunk
+order and finality before returning plaintext and wipes intermediate buffers
+on failure. Local tests compare single- and multiple-chunk outputs with
+independent Node WebCrypto fixtures and reject changed keys, tampering,
+reordered chunks, truncation, and appended chunks. Uploads, downloads, and
+native media sends are not connected yet, and no media capability is advertised.
+There has been no live native attachment test.
+
+Media framing was observed in the public web client's SVb/TVb, PVb/QVb, and
+NVb functions. The modules were fetched anonymously from Google's public
+asset URL using the module registry in the previously observed `mw_b` bundle.
+The combined public asset SHA-256 is
+`4120a43a939d8148df97560a1eabc74d00226c2cc21006effaaa5be52a812b05`.
+No adapter source or generated protocol definitions were used.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,
 SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,
