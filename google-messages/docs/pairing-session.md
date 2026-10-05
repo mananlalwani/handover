@@ -1,7 +1,7 @@
 # Source selection and pairing session
 
 The independent Rust lookup succeeded on 2026-10-02 using one-time matched
-browser credentials. Native pairing now has an offline-tested helper runtime; live pairing and usable messaging session restoration remain unverified.
+browser credentials. Native phone pairing completed a live test on 2026-10-05, including saved keys and final acknowledgement. Usable messaging-session restoration remains unverified.
 This document separates the observed wire contract from implementation policy.
 
 ## Registered phone selection
@@ -437,3 +437,37 @@ stale replies, send/receive failure, cancellation, final ACK failure, private ke
 recovery, expired-token preservation, and routing after helper replacement.
 Native phone pairing has not been live-tested. Registration remains the only
 native operation the user has performed against Google beyond read-only lookup.
+
+
+## Messaging startup and credential retention decision
+
+Native pairing is confirmed, but the saved record contains no Google account
+authorization or service cookies. Current operations receive those values in a
+transient browser proof and discard them afterward. A paired-key record alone
+must not be reported as an authenticated online account.
+
+A read-only review of the installed libgm version found that it retains a cookie
+map in its authentication data and applies those cookies to HTTP requests. Its
+connect path also checks transport-token freshness, starts receive, and activates
+a session before conversation access. Google's current Gaia provider `c5a.Ba`
+obtains account authorization for normal requests. This establishes a credential
+lifecycle requirement, not proof that native browser-free refresh already works.
+
+Two implementation policies are available. Retaining browser proof only in RAM
+preserves the existing transient-only policy but requires another browser
+bootstrap after the helper restarts. The proposed low-friction policy stores
+required Google authentication in the desktop Secret Service. The local desktop
+currently provides `org.freedesktop.secrets` through gnome-keyring. No secret was
+read or stored while checking that service's availability.
+
+If approved, the protocol helper will own credential-store access. Opaque account
+aliases remain unchanged. Credential values and provider identity stay below the
+normalized model and do not enter snapshots, message history, exports, or logs.
+There will be no plaintext cookie-file fallback. A locked or unavailable store
+requires unlock or browser sign-in; remote authentication failure must not cause
+automatic re-pairing. Credential-store deletion will accompany local logout.
+Native refresh still needs its own protocol implementation and live verification.
+
+This proposal changes the earlier transient-only authentication policy and is
+awaiting the user's decision. No credential persistence or online-session
+implementation was added during this review.
