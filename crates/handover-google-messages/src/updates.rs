@@ -101,7 +101,13 @@ pub(crate) fn decode(
                 _ => Ok(Update::Unsupported(6)),
             }
         }
-        7 if payload.is_empty() => Ok(Update::PresenceCheck),
+        7 => {
+            let presence = Presence::decode(*payload).map_err(|_| invalid())?;
+            if presence.id.len() > 1024 || presence.id.chars().any(char::is_control) {
+                return Err(invalid());
+            }
+            Ok(Update::PresenceCheck)
+        }
         other => Ok(Update::Unsupported(other as u8)),
     }
 }
@@ -169,6 +175,17 @@ impl Drop for Thread {
     }
 }
 #[derive(Message)]
+#[prost(skip_debug)]
+struct Presence {
+    #[prost(string, tag = "1")]
+    id: String,
+}
+impl Drop for Presence {
+    fn drop(&mut self) {
+        self.id.zeroize();
+    }
+}
+#[derive(Message)]
 struct Alert {
     #[prost(int32, tag = "2")]
     kind: i32,
@@ -196,6 +213,14 @@ mod tests {
             Update::PresenceCheck
         ));
         assert_eq!(format!("{:?}", Update::Active), "Update { redacted }");
+    }
+    #[test]
+    fn presence_checks_accept_bounded_identifiers_and_reject_malformed_text() {
+        assert!(matches!(
+            decode("fixture", &[], &[0x3a, 3, 0x0a, 1, b'x'], true).unwrap(),
+            Update::PresenceCheck
+        ));
+        assert!(decode("fixture", &[], &[0x3a, 3, 0x0a, 1, 0xff], true).is_err());
     }
     #[test]
     fn ambiguous_truncated_and_unknown_updates_do_not_become_messages() {

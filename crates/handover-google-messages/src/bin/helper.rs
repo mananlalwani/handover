@@ -189,12 +189,86 @@ async fn main() {
 
 enum WorkOutcome {
     Login(LoginOutcome),
-    ConversationPage(Vec<handover_core::messaging::Conversation>),
-    History {
-        conversation: String,
-        fetch_id: Option<u64>,
-        page: handover_google_messages::history::HistoryPage,
-    },
+}
+
+use handover_google_messages::session::{LiveCommand, LiveEvent, LiveOutput};
+
+enum LiveSignal {
+    Output(LiveOutput),
+    Ended(Result<(), handover_google_messages::ProbeError>),
+}
+fn reconnect_delay(
+    error: &handover_google_messages::ProbeError,
+    attempt: u8,
+) -> Option<std::time::Duration> {
+    use handover_google_messages::ProbeError;
+    let transient = matches!(
+        error,
+        ProbeError::Network | ProbeError::Timeout | ProbeError::ReceiveFailed
+    ) || error
+        .http_status()
+        .is_some_and(|status| (500..=599).contains(&status));
+    (transient && attempt < 5).then(|| std::time::Duration::from_secs(1 << attempt))
+}
+
+struct LiveWorker {
+    generation: u64,
+    ready: bool,
+    commands: mpsc::Sender<LiveCommand>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+impl Drop for LiveWorker {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+impl LiveWorker {
+    async fn stop(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+fn start_live_worker(
+    account: String,
+    generation: u64,
+    store: SessionStore,
+    signals: mpsc::Sender<(u64, String, LiveSignal)>,
+) -> LiveWorker {
+    let (commands, incoming) = mpsc::channel(1);
+    let task = tokio::spawn(async move {
+        let result = async {
+            let pairing = ConfirmedPairing::restore_all(&store)?.into_iter()
+                .find(|pairing| pairing.account_id() == account)
+                .ok_or(handover_google_messages::ProbeError::InvalidBootstrap)?;
+            let session = handover_google_messages::session::RecoveredSession::restore(pairing).await?;
+            let (events, mut outgoing) = mpsc::channel(1);
+            let network = session.run_live(incoming, events);
+            tokio::pin!(network);
+            loop {
+                tokio::select! {
+                    result = &mut network => return result,
+                    output = outgoing.recv() => {
+                        let Some(output) = output else { return Err(handover_google_messages::ProbeError::NativeError); };
+                        signals.send((generation, account.clone(), LiveSignal::Output(output))).await
+                            .map_err(|_| handover_google_messages::ProbeError::NativeError)?;
+                    }
+                }
+            }
+        }.await;
+        let _ = signals
+            .send((generation, account, LiveSignal::Ended(result)))
+            .await;
+    });
+    LiveWorker {
+        generation,
+        ready: false,
+        commands,
+        task: Some(task),
+    }
 }
 
 fn wire_conversation(
@@ -271,6 +345,17 @@ async fn publish_history<W: AsyncWrite + Unpin>(
     fetch_id: Option<u64>,
     page: handover_google_messages::history::HistoryPage,
 ) -> std::io::Result<()> {
+    publish_messages(writer, account, conversation, fetch_id, page, true).await
+}
+
+async fn publish_messages<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    account: String,
+    conversation: String,
+    fetch_id: Option<u64>,
+    page: handover_google_messages::history::HistoryPage,
+    history: bool,
+) -> std::io::Result<()> {
     use handover_gmessages::contract::{WireAttachment, WireMessage};
     let mut event = HelperEvent::Messages {
         account,
@@ -314,13 +399,10 @@ async fn publish_history<W: AsyncWrite + Unpin>(
             };
             let last = messages.pop().expect("just added");
             if messages.is_empty() {
-                return publish(
-                    writer,
-                    HelperEvent::Error {
-                        message: "native history record exceeds helper contract bound".into(),
-                    },
-                )
-                .await;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "native message exceeds helper contract bound",
+                ));
             }
             publish(writer, event.clone()).await?;
             let HelperEvent::Messages { messages, .. } = &mut event else {
@@ -338,18 +420,44 @@ async fn publish_history<W: AsyncWrite + Unpin>(
     else {
         unreachable!()
     };
-    *page_complete = true;
+    *page_complete = history;
     *cursor_next = page.cursor_next;
     if encode(&event).len() > MAX_HELPER_LINE_BYTES {
-        return publish(
-            writer,
-            HelperEvent::Error {
-                message: "native history page exceeds helper contract bound".into(),
-            },
-        )
-        .await;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "native message page exceeds helper contract bound",
+        ));
     }
     publish(writer, event).await
+}
+
+async fn publish_push_messages<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    account: String,
+    records: Vec<handover_core::messaging::Message>,
+) -> std::io::Result<()> {
+    let mut threads = BTreeMap::<String, Vec<_>>::new();
+    for record in records {
+        threads
+            .entry(record.id.conversation_id.local_id.clone())
+            .or_default()
+            .push(record);
+    }
+    for (conversation, messages) in threads {
+        publish_messages(
+            writer,
+            account.clone(),
+            conversation,
+            None,
+            handover_google_messages::history::HistoryPage {
+                messages,
+                cursor_next: None,
+            },
+            false,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn publish_page<W: AsyncWrite + Unpin>(
@@ -429,85 +537,120 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let mut jobs = JoinSet::new();
     let mut generation = 0_u64;
     let mut active_account: Option<String> = None;
-    let mut active_sync = false;
+    let (live_tx, mut live_rx) = mpsc::channel(8);
+    let mut workers = BTreeMap::<String, LiveWorker>::new();
+    let mut retries = BTreeMap::<String, tokio::time::Instant>::new();
+    let mut attempts = BTreeMap::<String, u8>::new();
     let mut line = Zeroizing::new(Vec::new());
     loop {
         if jobs.is_empty() {
-            if let Some(request) = helper.pending_history.take() {
-                let model = helper
-                    .conversations
-                    .get(&(request.account.clone(), request.conversation.clone()))
-                    .cloned();
-                if let Some(store) = helper.store.clone() {
-                    generation = generation.wrapping_add(1);
-                    let expected = generation;
-                    active_account = Some(request.account.clone());
-                    active_sync = true;
-                    helper.login_active = Some(request.account.clone());
-                    jobs.spawn(async move {
-                        let result = async {
-                            let pairing = ConfirmedPairing::restore_all(&store)?
-                                .into_iter()
-                                .find(|pairing| pairing.account_id() == request.account)
-                                .ok_or(handover_google_messages::ProbeError::InvalidBootstrap)?;
-                            let session =
-                                handover_google_messages::session::RecoveredSession::restore(
-                                    pairing,
-                                )
-                                .await?;
-                            let model = match model {
-                                Some(model) => model,
-                                None => session
-                                    .read_conversations()
-                                    .await?
-                                    .into_iter()
-                                    .find(|record| record.id.local_id == request.conversation)
-                                    .ok_or(
-                                        handover_google_messages::ProbeError::UnexpectedResponse,
-                                    )?,
-                            };
-                            let page = session
-                                .read_history(&model, request.cursor.as_deref(), request.limit)
-                                .await?;
-                            Ok(WorkOutcome::History {
-                                conversation: request.conversation,
-                                fetch_id: request.fetch_id,
-                                page,
-                            })
+            let requested = helper
+                .pending_history
+                .as_ref()
+                .map(|request| request.account.clone())
+                .or_else(|| helper.pending_sync.clone());
+            if let Some(account) = requested {
+                if !workers.contains_key(&account) {
+                    retries.remove(&account);
+                    attempts.remove(&account);
+                    if workers.len() >= 8 {
+                        helper.pending_history = None;
+                        helper.pending_sync = None;
+                        publish(
+                            writer,
+                            HelperEvent::Error {
+                                message: "native live account limit reached".into(),
+                            },
+                        )
+                        .await?;
+                    } else if let Some(store) = helper.store.clone() {
+                        generation = generation.wrapping_add(1);
+                        workers.insert(
+                            account.clone(),
+                            start_live_worker(account.clone(), generation, store, live_tx.clone()),
+                        );
+                        // Every worker begins with its own bounded inventory read.
+                        if helper.pending_sync.as_deref() == Some(&account) {
+                            helper.pending_sync = None;
                         }
-                        .await;
-                        (expected, request.account, result)
-                    });
+                    }
                 }
-            } else if let Some(account) = helper.pending_sync.take() {
-                if let Some(store) = helper.store.clone() {
-                    generation = generation.wrapping_add(1);
-                    let expected = generation;
-                    active_account = Some(account.clone());
-                    active_sync = true;
-                    helper.login_active = Some(account.clone());
-                    jobs.spawn(async move {
-                        let result = async {
-                            let pairing = ConfirmedPairing::restore_all(&store)?
-                                .into_iter()
-                                .find(|pairing| pairing.account_id() == account)
-                                .ok_or(handover_google_messages::ProbeError::InvalidBootstrap)?;
-                            let session =
-                                handover_google_messages::session::RecoveredSession::restore(
-                                    pairing,
+            }
+            if let Some(request) = helper.pending_history.take() {
+                if let Some(worker) = workers.get(&request.account) {
+                    if let Some(model) = helper
+                        .conversations
+                        .get(&(request.account.clone(), request.conversation.clone()))
+                        .cloned()
+                    {
+                        let command = LiveCommand::History {
+                            conversation: Box::new(model),
+                            cursor: request
+                                .cursor
+                                .as_ref()
+                                .map(|value| Zeroizing::new(value.clone())),
+                            limit: request.limit,
+                            fetch_id: request.fetch_id,
+                        };
+                        match worker.commands.try_send(command) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                helper.pending_history = Some(request)
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                publish(
+                                    writer,
+                                    HelperEvent::Error {
+                                        message: "native receive session unavailable".into(),
+                                    },
                                 )
-                                .await?;
-                            session
-                                .read_conversations()
-                                .await
-                                .map(WorkOutcome::ConversationPage)
+                                .await?
+                            }
                         }
-                        .await;
-                        (expected, account, result)
-                    });
+                    } else if worker.ready {
+                        publish(
+                            writer,
+                            HelperEvent::Error {
+                                message: "native history conversation unavailable".into(),
+                            },
+                        )
+                        .await?;
+                    } else {
+                        helper.pending_history = Some(request);
+                    }
+                } else {
+                    publish(
+                        writer,
+                        HelperEvent::Error {
+                            message: "native receive session unavailable".into(),
+                        },
+                    )
+                    .await?;
+                }
+            }
+            if let Some(account) = helper.pending_sync.take() {
+                if let Some(worker) = workers.get(&account) {
+                    match worker.commands.try_send(LiveCommand::Conversations) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            helper.pending_sync = Some(account)
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            publish(
+                                writer,
+                                HelperEvent::Error {
+                                    message: "native receive session unavailable".into(),
+                                },
+                            )
+                            .await?
+                        }
+                    }
                 }
             }
         }
+        let retry_deadline = retries.values().copied().min().unwrap_or_else(|| {
+            tokio::time::Instant::now() + std::time::Duration::from_secs(86_400)
+        });
         let mut bounded = AsyncReadExt::take(
             &mut *reader,
             MAX_LINE_READ.saturating_sub(line.len() as u64),
@@ -523,6 +666,17 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 if terminated { line.pop(); }
                 if line.len() <= MAX_HELPER_LINE_BYTES {
                     if let Ok(control) = serde_json::from_slice::<Control>(&line) {
+                        if control.kind == "logout" {
+                            if let Some(account) = control.account.as_deref() {
+                                retries.remove(account);
+                                attempts.remove(account);
+                                if let Some(worker) = workers.remove(account) {
+                                    worker.stop().await;
+                                    helper.online.remove(account);
+                                    publish(writer, disconnected(account)).await?;
+                                }
+                            }
+                        }
                         if control.kind == "logout" && active_account.is_some()
                             && control.account.as_deref() == active_account.as_deref() {
                             // Wait for cancellation before deleting credentials.
@@ -561,10 +715,16 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     return Ok(());
                 }
                 if let Some((account, bootstrap)) = helper.pending_login.take() {
+                    retries.remove(&account);
+                    attempts.remove(&account);
+                    if let Some(worker) = workers.remove(&account) {
+                        worker.stop().await;
+                        helper.end_live_session(&account);
+                        publish(writer, disconnected(&account)).await?;
+                    }
                     generation = generation.wrapping_add(1);
                     let expected = generation;
                     active_account = Some(account.clone());
-                    active_sync = false;
                     let progress_tx = progress_tx.clone();
                     jobs.spawn(async move {
                         let result = bootstrap.run(|progress| {
@@ -573,6 +733,70 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         }).await;
                         (expected, account, result.map(WorkOutcome::Login))
                     });
+                }
+            }
+            _ = tokio::time::sleep_until(retry_deadline), if !retries.is_empty() && jobs.is_empty() => {
+                let due: Vec<_> = retries.iter().filter(|(_, deadline)| **deadline <= tokio::time::Instant::now()).map(|(account, _)| account.clone()).collect();
+                for account in due {
+                    retries.remove(&account);
+                    if helper.confirmed.contains_key(&account) && !workers.contains_key(&account) && workers.len() < 8 {
+                        if let Some(store) = helper.store.clone() {
+                            generation = generation.wrapping_add(1);
+                            workers.insert(account.clone(), start_live_worker(account, generation, store, live_tx.clone()));
+                        }
+                    }
+                }
+            }
+            Some((expected, account, signal)) = live_rx.recv() => {
+                if workers.get(&account).is_none_or(|worker| worker.generation != expected) { continue; }
+                match signal {
+                    LiveSignal::Output(output) => {
+                        match output.event {
+                            LiveEvent::Online => {
+                                helper.online.insert(account.clone());
+                                attempts.remove(&account);
+                                publish(writer, HelperEvent::Account { account: account.clone(), label: "Google Messages".into(), connected: true, authenticated: true }).await?;
+                            }
+                            LiveEvent::Conversations(records) => {
+                                helper.conversations.retain(|(owner, _), _| owner != &account);
+                                if let Some(worker) = workers.get_mut(&account) { worker.ready = true; }
+                                for record in &records { helper.conversations.insert((account.clone(), record.id.local_id.clone()), record.clone()); }
+                                publish_page(writer, account.clone(), records).await?;
+                            }
+                            LiveEvent::ConversationUpdates(records) => {
+                                for record in &records { helper.conversations.insert((account.clone(), record.id.local_id.clone()), record.clone()); }
+                                publish_page(writer, account.clone(), records).await?;
+                            }
+                            LiveEvent::History { conversation, fetch_id, page } => {
+                                helper.remember_cursor(&account, &conversation, &page);
+                                if helper.save_cursor_links().is_err() {
+                                    publish(writer, HelperEvent::Error { message: "native history cursor storage failed".into() }).await?;
+                                    continue;
+                                }
+                                publish_history(writer, account.clone(), conversation, fetch_id, page).await?;
+                            }
+                            LiveEvent::Messages(records) => publish_push_messages(writer, account.clone(), records).await?,
+                        }
+                        let _ = output.accepted.send(());
+                    }
+                    LiveSignal::Ended(result) => {
+                        if let Some(worker) = workers.remove(&account) { worker.stop().await; }
+                        helper.end_live_session(&account);
+                        publish(writer, disconnected(&account)).await?;
+                        if let Err(error) = result {
+                            let attempt = *attempts.get(&account).unwrap_or(&0);
+                            if let Some(delay) = reconnect_delay(&error, attempt) {
+                                attempts.insert(account.clone(), attempt + 1);
+                                retries.insert(account.clone(), tokio::time::Instant::now() + delay);
+                            }
+                            let category = match error {
+                                handover_google_messages::ProbeError::SessionProtocol(category) => format!("session_protocol, {category:?}"),
+                                handover_google_messages::ProbeError::ReceiveProtocol(category) => format!("receive_protocol, {category:?}"),
+                                _ => error.code().to_owned(),
+                            };
+                            publish(writer, HelperEvent::Error { message: format!("native receive ended ({category})") }).await?;
+                        }
+                    }
                 }
             }
             Some((expected, account, progress)) = progress_rx.recv() => {
@@ -615,27 +839,14 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 helper.login_active = None;
                 active_account = None;
                 match result {
-                    Ok(WorkOutcome::ConversationPage(page)) => {
-                        helper.conversations.retain(|(owner, _), _| owner != &account);
-                        for record in &page {
-                            helper.conversations.insert((account.clone(), record.id.local_id.clone()), record.clone());
-                        }
-                        publish_page(writer, account, page).await?;
-                    }
-                    Ok(WorkOutcome::History { conversation, fetch_id, page }) => {
-                        helper.remember_cursor(&account, &conversation, &page);
-                        if helper.save_cursor_links().is_err() {
-                            publish(writer, HelperEvent::Error { message: "native history cursor storage failed".into() }).await?;
-                            continue;
-                        }
-                        publish_history(writer, account, conversation, fetch_id, page).await?;
-                    }
                     Ok(WorkOutcome::Login(LoginOutcome::Ready)) => {}
                     Ok(WorkOutcome::Login(LoginOutcome::CredentialsSaved)) => {
+                        helper.pending_sync = Some(account.clone());
                         publish(writer, HelperEvent::Pairing { account, prompt: "Native account verified. Google authentication saved in the desktop credential store. Messaging startup is pending.".into() }).await?;
                     }
                     Ok(WorkOutcome::Login(LoginOutcome::PhoneConfirmed { pairing, acknowledgement_accepted, credential_error })) => {
                         helper.confirmed.insert(account.clone(), *pairing);
+                        if credential_error.is_none() { helper.pending_sync = Some(account.clone()); }
                         publish(writer, HelperEvent::Account {
                             account: account.clone(), label: "Google Messages (offline)".into(),
                             connected: false, authenticated: false,
@@ -649,12 +860,6 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             format!("{prompt} Google authentication was not saved ({error:?}); sign in again, do not pair again.")
                         } else { prompt.into() };
                         publish(writer, HelperEvent::Pairing { account, prompt }).await?;
-                    }
-                    Err(error) if active_sync => {
-                        let category = if let handover_google_messages::ProbeError::SessionProtocol(category) = &error {
-                            format!("{}, {category:?}", error.code())
-                        } else { error.code().to_owned() };
-                        publish(writer, HelperEvent::Error { message: format!("native read failed ({category})") }).await?;
                     }
                     Err(error) => {
                         publish(writer, HelperEvent::Pairing {
@@ -712,16 +917,20 @@ fn encode(event: &HelperEvent) -> String {
 
 /// Build the announcement for one account this helper knows about.
 ///
-/// Every account is `connected: false` and `authenticated: false`. This helper
-/// starts offline. Saved pairing and authentication do not establish a live
-/// receive session, so announcements must not imply one.
-///
-/// Deliberately the single definition: every announcement this helper emits
-/// goes through here, so the invariant has one place to hold.
+/// Saved registration alone does not establish a live receive session.
 fn announcement(account: &str) -> HelperEvent {
     HelperEvent::Account {
         account: account.to_string(),
         label: ACCOUNT_LABEL.into(),
+        connected: false,
+        authenticated: false,
+    }
+}
+
+fn disconnected(account: &str) -> HelperEvent {
+    HelperEvent::Account {
+        account: account.to_owned(),
+        label: "Google Messages (offline)".into(),
         connected: false,
         authenticated: false,
     }
@@ -734,6 +943,7 @@ struct NativeHelper {
     /// Accounts this helper has announced, so `Logout` removes exactly what
     /// `Login` and `Hello` created.
     accounts: BTreeSet<String>,
+    online: BTreeSet<String>,
     shutdown: bool,
     pending_login: Option<(String, LoginBootstrap)>,
     pending_sync: Option<String>,
@@ -751,6 +961,7 @@ impl NativeHelper {
         Self {
             store: SessionStore::default_store().ok(),
             accounts: BTreeSet::new(),
+            online: BTreeSet::new(),
             shutdown: false,
             pending_login: None,
             pending_sync: None,
@@ -899,11 +1110,17 @@ impl NativeHelper {
                     let account = pairing.account_id().to_owned();
                     self.accounts.insert(account.clone());
                     self.confirmed.insert(account.clone(), pairing);
+                    let online = self.online.contains(&account);
                     events.push(HelperEvent::Account {
                         account,
-                        label: "Google Messages (offline)".into(),
-                        connected: false,
-                        authenticated: false,
+                        label: if online {
+                            "Google Messages"
+                        } else {
+                            "Google Messages (offline)"
+                        }
+                        .into(),
+                        connected: online,
+                        authenticated: online,
                     });
                 }
             }
@@ -1066,10 +1283,7 @@ impl NativeHelper {
         }
     }
 
-    fn logout(&mut self, account: &str) -> Vec<HelperEvent> {
-        if !self.accounts.contains(account) {
-            return Vec::new();
-        }
+    fn clear_pending_reads(&mut self, account: &str) {
         if self
             .pending_history
             .as_ref()
@@ -1080,6 +1294,18 @@ impl NativeHelper {
         if self.pending_sync.as_deref() == Some(account) {
             self.pending_sync = None;
         }
+    }
+
+    fn end_live_session(&mut self, account: &str) {
+        self.online.remove(account);
+        self.clear_pending_reads(account);
+    }
+
+    fn logout(&mut self, account: &str) -> Vec<HelperEvent> {
+        if !self.accounts.contains(account) {
+            return Vec::new();
+        }
+        self.clear_pending_reads(account);
         self.conversations.retain(|(owner, _), _| owner != account);
         self.cursor_links.retain(|link| link.account != account);
         // Stop this account's transient work before forgetting local credentials.
@@ -1118,6 +1344,7 @@ impl NativeHelper {
         }
         self.confirmed.remove(account);
         self.accounts.remove(account);
+        self.online.remove(account);
         vec![HelperEvent::AccountRemoved {
             account: account.to_owned(),
         }]
@@ -1369,6 +1596,24 @@ mod tests {
             connected: false, authenticated: false, label, ..
         } if label == "Google Messages (offline)"))
         );
+        helper.online.insert(account.clone());
+        assert!(hello_events(&mut helper).iter().any(|event| matches!(
+            event,
+            HelperEvent::Account {
+                connected: true,
+                authenticated: true,
+                ..
+            }
+        )));
+        helper.end_live_session(&account);
+        assert!(hello_events(&mut helper).iter().any(|event| matches!(
+            event,
+            HelperEvent::Account {
+                connected: false,
+                authenticated: false,
+                ..
+            }
+        )));
         helper.cursor_links.push_back(CursorLink {
             account: account.clone(),
             conversation: "thread".into(),
@@ -1520,7 +1765,7 @@ mod tests {
     }
 
     #[test]
-    fn no_account_is_ever_announced_as_connected_or_authenticated() {
+    fn saved_registrations_are_announced_offline() {
         // A pending registration has no paired phone and nothing has been
         // re-attested with Google. Announcing it as live would let a client
         // believe the account is usable.
@@ -1817,6 +2062,116 @@ mod tests {
             }]
         );
     }
+    #[test]
+    fn failed_session_discards_its_queued_reads_before_reconnect_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        helper.online.insert("first".into());
+        helper.pending_history = Some(HistoryRequest {
+            account: "first".into(),
+            conversation: "thread".into(),
+            limit: 20,
+            cursor: None,
+            fetch_id: Some(7),
+        });
+        helper.pending_sync = Some("second".into());
+        helper.end_live_session("first");
+        assert!(!helper.online.contains("first"));
+        assert!(
+            helper.pending_history.is_none(),
+            "the old request must not start another worker outside the retry policy"
+        );
+        assert_eq!(helper.pending_sync.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn reconnect_is_bounded_and_never_retries_preemption_or_invalid_authentication() {
+        use handover_google_messages::{ProbeError, receive::ReceiveError, session::SessionError};
+        assert_eq!(
+            reconnect_delay(&ProbeError::Network, 0).unwrap().as_secs(),
+            1
+        );
+        assert_eq!(
+            reconnect_delay(&ProbeError::ReceiveFailed, 4)
+                .unwrap()
+                .as_secs(),
+            16
+        );
+        assert!(reconnect_delay(&ProbeError::Network, 5).is_none());
+        for error in [
+            ProbeError::HttpError(401),
+            ProbeError::SessionExpired,
+            ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted),
+            ProbeError::SessionProtocol(SessionError::UpdateAuthentication),
+        ] {
+            assert!(reconnect_delay(&error, 0).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn live_messages_keep_thread_binding_without_closing_history() {
+        use handover_core::messaging::{
+            ConversationId, Message, MessageId, MessagingAccountId, Participant,
+        };
+        let records = (0..40)
+            .map(|n| Message {
+                id: MessageId::new(
+                    ConversationId::new(
+                        MessagingAccountId::new("fixture"),
+                        if n % 2 == 0 { "first" } else { "second" },
+                    ),
+                    format!("m{n}"),
+                ),
+                sender: Participant {
+                    local_id: "peer".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: false,
+                },
+                transport: None,
+                sent_at: Some(n),
+                text: Some("x".repeat(60_000)),
+                attachments: vec![],
+                reply_to: None,
+                reactions: vec![],
+                deleted: false,
+            })
+            .collect();
+        let mut output = Vec::new();
+        publish_push_messages(&mut output, "fixture".into(), records)
+            .await
+            .unwrap();
+        let mut count = 0;
+        let mut threads = BTreeSet::new();
+        for raw in output
+            .split(|byte| *byte == b'\n')
+            .filter(|raw| !raw.is_empty())
+        {
+            assert!(raw.len() <= MAX_HELPER_LINE_BYTES);
+            let HelperEvent::Messages {
+                account,
+                conversation,
+                messages,
+                cursor_next,
+                page_complete,
+                full,
+                generation,
+                fetch_id,
+            } = serde_json::from_slice(raw).unwrap()
+            else {
+                panic!("messages");
+            };
+            assert_eq!(account, "fixture");
+            assert!(!page_complete && !full);
+            assert!(cursor_next.is_none() && generation.is_none() && fetch_id.is_none());
+            assert!(messages.iter().all(|message| message.transport.is_none()));
+            count += messages.len();
+            threads.insert(conversation);
+        }
+        assert_eq!(count, 40);
+        assert_eq!(threads.len(), 2);
+    }
+
     #[tokio::test]
     async fn history_chunks_preserve_fetch_correlation_and_close_empty_pages() {
         use handover_core::messaging::{

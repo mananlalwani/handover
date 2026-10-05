@@ -663,3 +663,47 @@ without ACKs, retries, or printing contents and identifiers. The production
 relay was restored. This validates real message-update decoding; it does not
 verify text equality, delivery status, or live publication through Handover.
 Daemon integration and presence handling remain unfinished.
+
+## Shared native receive runtime
+
+The helper now keeps one receive owner per active account, serving conversation
+and history requests while processing pushes. It opens receive before activation,
+verifies device and phone bindings, and correlates each read by request ID,
+action, and sender. The existing bounded read projections and cursor index are
+reused. The account starts offline. Only an authenticated active-browser alert
+for the current session publishes connected and authenticated state. Stream
+failure, preemption, token expiry, or cancellation clears that state.
+
+Conversation pushes remain incremental. Message pushes use ordinary normalized
+message events with `page_complete: false`, no fetch ID, and no history cursor.
+The helper flushes the event to its daemon pipe before accepting it, and the
+session acknowledges a processed push only after that acceptance. Failed
+publication closes receive without an ACK. This is a pipe-publication guarantee,
+not proof of durable daemon storage. Unsupported event families remain unacked.
+The first-party `f4a` handler establishes an empty action-17 presence response;
+the runtime sends that response before acknowledging a validated presence check.
+
+There are at most eight active accounts, one queued command per account, four
+queued encrypted pushes per receiver, and eight queued helper signals. A read
+has the existing thirty-second history or 120-second conversation deadline.
+Publication acceptance has a thirty-second deadline. Conversation models are
+bounded to 10,000 records and 16 MiB per session. Logout joins the receiver before
+removing credentials. Pipe closure and shutdown cancel every worker.
+
+Transient transport failures reconnect after 1, 2, 4, 8, and 16 seconds, stopping
+after five failed attempts. Successful attested activation resets that streak.
+Preemption, invalid authentication, protocol failures, and expiry are not retried.
+Failed queued reads are discarded before reconnect selection, so they cannot
+bypass backoff or resubmit themselves. Expired token renewal remains unfinished.
+
+Local HTTP tests verify one receive stream across inventory, live messages, and
+history; publication before push ACK; failed publication without ACK or retry;
+presence responses; and stream cancellation. Helper tests verify bounded
+reconnect policy, queued-read failure, current account snapshots, and message
+chunking without closing history pages. A live daemon test published 201
+conversations, read two twenty-message history pages without overlap, and
+remained connected afterward. A second live test restarted the daemon and
+recovered the same connected account and all 201 conversations without browser
+interaction. The production relay was restored after both tests. A phone
+comparison of automatic incoming-message publication through Handover remains
+pending.

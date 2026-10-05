@@ -1141,3 +1141,242 @@ async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
             .unwrap();
     }
 }
+
+#[tokio::test]
+async fn live_session_shares_receive_with_history_and_requires_push_publication_before_ack() {
+    use crate::session::{LiveCommand, LiveEvent};
+    for reject_push in [false, true] {
+        let (outcome, _, _) = exercise(Scenario::Success, true).await;
+        let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
+            panic!("pairing");
+        };
+        let inventory = pairing
+            .encrypt(&synthetic_conversation_page(1))
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let history = pairing
+            .encrypt(&synthetic_history_page())
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let presence = pairing
+            .encrypt(&[0x3a, 3, 0x0a, 1, b'x'])
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let active = pairing
+            .encrypt(&[0x32, 2, 0x10, 2])
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let mut payload = vec![0x1a];
+        let records = synthetic_history_page();
+        prost::encoding::encode_varint(records.len() as u64, &mut payload);
+        payload.extend_from_slice(&records);
+        let pushed = pairing.encrypt(&payload).unwrap().as_bytes().to_vec();
+        let session =
+            crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
+                .unwrap();
+        let fixture = synthetic_conversation_page(1);
+        let model = crate::conversation::decode(session.account_id(), &fixture[2..]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (checked_tx, checked_rx) = tokio::sync::oneshot::channel();
+        let (presence_tx, presence_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut lookup, _) = listener.accept().await.unwrap();
+            assert_eq!(request(&mut lookup).await.0, crate::SIGN_IN_PATH);
+            response(
+                &mut lookup,
+                "application/json+protobuf",
+                &source_body(false),
+            )
+            .await;
+            let (mut receive, _) = listener.accept().await.unwrap();
+            assert_eq!(request(&mut receive).await.0, crate::RECEIVE_MESSAGES_PATH);
+            receive.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            chunk(&mut receive, b"[[[],").await;
+            let (mut activation, _) = listener.accept().await.unwrap();
+            let (path, body) = request(&mut activation).await;
+            assert_eq!(path, crate::SEND_MESSAGE_PATH);
+            let wrapper = rpc_request(&body);
+            assert_eq!(wrapper.action, 16);
+            let session_id = wrapper.request_id;
+            response(&mut activation, "application/json+protobuf", b"[]").await;
+            let (mut list, _) = listener.accept().await.unwrap();
+            let (path, body) = request(&mut list).await;
+            assert_eq!(path, crate::SEND_MESSAGE_PATH);
+            let wrapper = rpc_request(&body);
+            assert_eq!(wrapper.action, 1);
+            response(&mut list, "application/json+protobuf", b"[]").await;
+            rpc_push(
+                &mut receive,
+                &wrapper.request_id,
+                1,
+                inventory,
+                "inventory",
+                false,
+            )
+            .await;
+            expect_ack(&listener, "inventory").await;
+            rpc_push(&mut receive, &session_id, 16, active, "active", true).await;
+            expect_ack(&listener, "active").await;
+            rpc_push(&mut receive, &session_id, 16, pushed, "message-push", true).await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "a decoded push must wait for publication before ACK"
+            );
+            checked_tx.send(()).unwrap();
+            if !reject_push {
+                expect_ack(&listener, "message-push").await;
+                let (mut read, _) = listener.accept().await.unwrap();
+                let (path, body) = request(&mut read).await;
+                assert_eq!(
+                    path,
+                    crate::SEND_MESSAGE_PATH,
+                    "history must reuse receive, not open a second stream"
+                );
+                let wrapper = rpc_request(&body);
+                assert_eq!(wrapper.action, 2);
+                response(&mut read, "application/json+protobuf", b"[]").await;
+                rpc_push(
+                    &mut receive,
+                    &wrapper.request_id,
+                    2,
+                    history,
+                    "history-page",
+                    true,
+                )
+                .await;
+                expect_ack(&listener, "history-page").await;
+                rpc_push(
+                    &mut receive,
+                    &session_id,
+                    16,
+                    presence,
+                    "presence-check",
+                    true,
+                )
+                .await;
+                let (mut response_socket, _) = listener.accept().await.unwrap();
+                let (path, body) = request(&mut response_socket).await;
+                assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                assert_eq!(rpc_request(&body).action, 17);
+                response(&mut response_socket, "application/json+protobuf", b"[]").await;
+                expect_ack(&listener, "presence-check").await;
+                presence_tx.send(()).unwrap();
+            }
+            let mut byte = [0];
+            assert_eq!(
+                receive.read(&mut byte).await.unwrap(),
+                0,
+                "session must close receive when its owner leaves"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "failed publication must not ACK or retry"
+            );
+        });
+        let (commands, incoming) = tokio::sync::mpsc::channel(1);
+        let (events, mut outgoing) = tokio::sync::mpsc::channel(1);
+        let network = tokio::spawn(async move {
+            session
+                .run_live_at(
+                    &endpoint,
+                    crate::client(false).unwrap(),
+                    crate::client(false).unwrap(),
+                    incoming,
+                    events,
+                )
+                .await
+        });
+        let inventory = outgoing.recv().await.unwrap();
+        assert!(
+            matches!(inventory.event, LiveEvent::Conversations(ref records) if records.len() == 1)
+        );
+        inventory.accepted.send(()).unwrap();
+        let active = outgoing.recv().await.unwrap();
+        assert!(matches!(active.event, LiveEvent::Online));
+        active.accepted.send(()).unwrap();
+        let message = outgoing.recv().await.unwrap();
+        assert!(matches!(message.event, LiveEvent::Messages(ref records) if records.len() == 1));
+        checked_rx.await.unwrap();
+        if reject_push {
+            drop(message.accepted);
+        } else {
+            message.accepted.send(()).unwrap();
+            commands
+                .send(LiveCommand::History {
+                    conversation: Box::new(model),
+                    cursor: None,
+                    limit: 20,
+                    fetch_id: Some(77),
+                })
+                .await
+                .unwrap();
+            let page = outgoing.recv().await.unwrap();
+            assert!(
+                matches!(page.event, LiveEvent::History { fetch_id: Some(77), ref page, .. } if page.messages.len() == 1)
+            );
+            page.accepted.send(()).unwrap();
+            presence_rx.await.unwrap();
+        }
+        drop(commands);
+        let result = tokio::time::timeout(Duration::from_secs(2), network)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.is_err(), reject_push);
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+fn rpc_request(body: &[u8]) -> ActivationWrapper {
+    let body: Value = serde_json::from_slice(body).unwrap();
+    ActivationWrapper::decode(
+        STANDARD
+            .decode(body[1][11].as_str().unwrap())
+            .unwrap()
+            .as_slice(),
+    )
+    .unwrap()
+}
+async fn rpc_push(
+    stream: &mut TcpStream,
+    request_id: &str,
+    action: i32,
+    encrypted: Vec<u8>,
+    id: &str,
+    comma: bool,
+) {
+    if comma {
+        chunk(stream, b",").await;
+    }
+    let rpc = SessionResponse {
+        request_id: request_id.into(),
+        action,
+        encrypted,
+    };
+    let mut message = vec![Value::Null; 17];
+    message[0] = json!(id);
+    message[1] = json!(19);
+    message[11] = json!(STANDARD.encode(rpc.encode_to_vec()));
+    message[16] = json!(STANDARD.encode("synthetic-phone"));
+    chunk(stream, &serde_json::to_vec(&json!([[], message])).unwrap()).await;
+}
+async fn expect_ack(listener: &TcpListener, id: &str) {
+    let (mut ack, _) = listener.accept().await.unwrap();
+    let (path, body) = request(&mut ack).await;
+    assert_eq!(path, crate::ACK_MESSAGES_PATH);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body[1], json!([id]));
+    response(&mut ack, "application/json+protobuf", b"[]").await;
+}

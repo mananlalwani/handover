@@ -13,8 +13,9 @@ Handover's independently authored replacement lives in
 [`crates/handover-google-messages`](../crates/handover-google-messages/src/lib.rs)
 in this repository. Its native registration, phone pairing, and acknowledgements were live-tested
 through explicit phone confirmation on 2026-10-05. Bounded browser-free
-conversation and history reads also passed live tests. Persistent receive and
-chat sends remain unimplemented. It must not import or copy the AGPL adapter or mautrix
+conversation and history reads also passed live tests. The native helper now
+keeps a shared receive stream for live updates and reads. Chat sends remain
+unimplemented. It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
 backend-independent.
@@ -159,10 +160,13 @@ cargo build -p handover-google-messages --bin handover-google-messages-helper
 HANDOVER_GMESSAGES_HELPER=target/debug/handover-google-messages-helper handoverd
 ```
 
-The helper owns native pairing attempts and saved credentials. It now serves
-bounded conversation and history reads through contract v1. Accounts remain
-offline and unauthenticated because each read closes receive afterward. These
-reads do not establish a persistent messaging connection or send capabilities.
+The helper owns native pairing attempts and saved credentials. It serves
+bounded conversation and history reads through contract v1 on one receive stream
+per active account. Accounts start offline and become connected and authenticated
+only after the paired phone's encrypted activation alert matches that session.
+Live conversation and message updates use the same normalized events. Message
+pushes do not close history pages or change their cursors. Send capabilities
+remain unavailable. Standalone read probes still close receive after each read.
 
 The Native Messaging host passes a marked, versioned browser-proof bundle through
 the existing Login command. The daemon checks the helper identity when it selects
@@ -197,8 +201,11 @@ account mismatch, stale replies, send/receive failure, cancellation, ACK failure
 key recovery, and helper replacement. Native phone pairing completed a live
 test on 2026-10-05, including saved credentials and final acknowledgement.
 Live tests also published 201 conversations and paged message history across a
-helper restart. Conversation names passed visual comparison; message content and
-sender alignment still need a phone comparison. Chat sends remain unimplemented.
+helper restart. Conversation names and older-page coverage in the newest thread
+passed phone comparison. A live diagnostic decoded an incoming message update.
+The shared daemon receiver also served two history pages without overlap and
+remained connected afterward. Automatic display of a new incoming message still
+needs a phone test. Chat sends remain unimplemented.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

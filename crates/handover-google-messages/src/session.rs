@@ -9,6 +9,8 @@ use std::{
     fmt,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+mod live;
+pub use live::{LiveCommand, LiveEvent, LiveOutput};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -50,7 +52,7 @@ fn stage(error: ProbeError, category: SessionError) -> ProbeError {
     }
 }
 
-enum ReadResult {
+pub(crate) enum ReadResult {
     Startup,
     Conversations(Vec<handover_core::messaging::Conversation>),
     History(crate::history::HistoryPage),
@@ -234,7 +236,7 @@ impl RecoveredSession {
             .prepare_receive()
             .map_err(|_| ProbeError::SessionExpired)?;
         let activation = self.prepare_activation()?;
-        let list_id = std::sync::Mutex::new(Zeroizing::new(String::new()));
+        let list_id = std::sync::Mutex::new((Zeroizing::new(String::new()), action));
         let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel(1);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let receive_url = format!("{endpoint}{}", crate::RECEIVE_MESSAGES_PATH);
@@ -249,7 +251,8 @@ impl RecoveredSession {
                         if let Some(reply) = record.session_reply(
                             &list_id
                                 .lock()
-                                .map_err(|_| crate::receive::ReceiveError::TooLarge)?,
+                                .map_err(|_| crate::receive::ReceiveError::TooLarge)?
+                                .0,
                             action,
                             self.pairing.pairing.peer(),
                         )? {
@@ -275,120 +278,15 @@ impl RecoveredSession {
                 self.post_request(&short, endpoint, &activation)
                     .await
                     .map_err(|error| stage(error, SessionError::ActivationTransport))?;
-                if let Some((conversation, payload)) = history {
-                    let request_id = Uuid::new_v4().to_string();
-                    **list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? = request_id.clone();
-                    let request =
-                        self.build_request(&request_id, 2, &payload, 2, Some(86_400_000_000))?;
-                    self.post_request(&short, endpoint, &request).await?;
-                    let reply = reply_rx.recv().await.ok_or(ProbeError::ReceiveFailed)?;
-                    let plaintext = self
-                        .pairing
-                        .pairing
-                        .decrypt_payload(&reply.ciphertext)
-                        .map_err(|_| ProbeError::ReceiveFailed)?;
-                    let page = crate::history::decode(conversation, plaintext.as_bytes())?;
-                    self.acknowledge(&short, endpoint, reply.message_id).await?;
-                    return Ok(ReadResult::History(page));
-                }
-                if !conversations {
-                    return Ok(ReadResult::Startup);
-                }
-                let mut next_cursor = None;
-                let mut cursors = Vec::new();
-                let mut all = Vec::new();
-                let mut total_records = 0;
-                let mut total_bytes = 0;
-                for page_index in 0..100 {
-                    let payload = Zeroizing::new(
-                        ConversationRequest {
-                            limit: 25,
-                            status: 1,
-                            cursor: next_cursor.take(),
-                        }
-                        .encode_to_vec(),
-                    );
-                    let request_id = Uuid::new_v4().to_string();
-                    **list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? = request_id.clone();
-                    let list = self.build_request(
-                        &request_id,
-                        1,
-                        &payload,
-                        if page_index == 0 { 16 } else { 2 },
-                        Some(86_400_000_000),
-                    )?;
-                    self.post_request(&short, endpoint, &list)
-                        .await
-                        .map_err(|error| stage(error, SessionError::ConversationTransport))?;
-                    let reply = reply_rx.recv().await.ok_or(ProbeError::ReceiveFailed)?;
-                    let plaintext = self
-                        .pairing
-                        .pairing
-                        .decrypt_payload(&reply.ciphertext)
-                        .map_err(|_| ProbeError::ReceiveFailed)?;
-                    let mut page =
-                        ConversationPage::decode(plaintext.as_bytes()).map_err(|_| {
-                            ProbeError::SessionProtocol(SessionError::ConversationEncoding)
-                        })?;
-                    if page.conversations.len() > MAX_PAGE_RECORDS {
-                        return Err(ProbeError::SessionProtocol(SessionError::ConversationCount));
-                    }
-                    if page.conversations.iter().any(Vec::is_empty) {
-                        return Err(ProbeError::SessionProtocol(SessionError::EmptyConversation));
-                    }
-                    if page
-                        .conversations
-                        .iter()
-                        .any(|record| record.len() > 64 * 1024)
-                    {
-                        return Err(ProbeError::SessionProtocol(
-                            SessionError::OversizedConversation,
-                        ));
-                    }
-                    if let Some(cursor) = &page.cursor {
-                        if cursor.id.is_empty()
-                            || cursor.id.len() > 1024
-                            || cursor.id.chars().any(char::is_control)
-                            || cursor.timestamp < 0
-                        {
-                            return Err(ProbeError::SessionProtocol(
-                                SessionError::ConversationCursor,
-                            ));
-                        }
-                    }
-                    let decoded = page
-                        .conversations
-                        .iter()
-                        .map(|bytes| crate::conversation::decode(self.account_id(), bytes))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    total_records += decoded.len();
-                    total_bytes += plaintext.as_bytes().len();
-                    if total_records > 10_000 || total_bytes > 16 * 1024 * 1024 {
-                        return Err(ProbeError::SessionProtocol(SessionError::PaginationLimit));
-                    }
-                    all.extend(decoded);
-                    all = unique_conversations(all)?;
-                    next_cursor = page.cursor.take();
-                    if let Some(cursor) = &next_cursor {
-                        if cursors.iter().any(|seen: &ConversationCursor| {
-                            seen.id == cursor.id && seen.timestamp == cursor.timestamp
-                        }) {
-                            return Err(ProbeError::SessionProtocol(
-                                SessionError::ConversationCursor,
-                            ));
-                        }
-                        cursors.push(ConversationCursor {
-                            id: cursor.id.clone(),
-                            timestamp: cursor.timestamp,
-                        });
-                    }
-
-                    self.acknowledge(&short, endpoint, reply.message_id).await?;
-                    if next_cursor.is_none() {
-                        return Ok(ReadResult::Conversations(all));
-                    }
-                }
-                Err(ProbeError::SessionProtocol(SessionError::PaginationLimit))
+                self.read_on_stream(
+                    &short,
+                    endpoint,
+                    conversations,
+                    history,
+                    &list_id,
+                    &mut reply_rx,
+                )
+                .await
             };
             tokio::select! {
                 result = &mut receive => { result?; Err(ProbeError::ReceiveFailed) }
@@ -401,6 +299,130 @@ impl RecoveredSession {
         )
         .await
         .map_err(|_| ProbeError::Timeout)?
+    }
+
+    async fn read_on_stream(
+        &self,
+        short: &reqwest::Client,
+        endpoint: &str,
+        conversations: bool,
+        history: Option<(&handover_core::messaging::Conversation, Zeroizing<Vec<u8>>)>,
+        list_id: &std::sync::Mutex<(Zeroizing<String>, i32)>,
+        reply_rx: &mut tokio::sync::mpsc::Receiver<crate::receive::session_reply::SessionReply>,
+    ) -> Result<ReadResult, ProbeError> {
+        if let Some((conversation, payload)) = history {
+            let request_id = Uuid::new_v4().to_string();
+            *list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? =
+                (Zeroizing::new(request_id.clone()), 2);
+            let request = self.build_request(&request_id, 2, &payload, 2, Some(86_400_000_000))?;
+            self.post_request(short, endpoint, &request).await?;
+            let reply = reply_rx.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+            let plaintext = self
+                .pairing
+                .pairing
+                .decrypt_payload(&reply.ciphertext)
+                .map_err(|_| ProbeError::ReceiveFailed)?;
+            let page = crate::history::decode(conversation, plaintext.as_bytes())?;
+            self.acknowledge(short, endpoint, reply.message_id).await?;
+            return Ok(ReadResult::History(page));
+        }
+        if !conversations {
+            return Ok(ReadResult::Startup);
+        }
+        let mut next_cursor = None;
+        let mut cursors = Vec::new();
+        let mut all = Vec::new();
+        let mut total_records = 0;
+        let mut total_bytes = 0;
+        for page_index in 0..100 {
+            let payload = Zeroizing::new(
+                ConversationRequest {
+                    limit: 25,
+                    status: 1,
+                    cursor: next_cursor.take(),
+                }
+                .encode_to_vec(),
+            );
+            let request_id = Uuid::new_v4().to_string();
+            *list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? =
+                (Zeroizing::new(request_id.clone()), 1);
+            let list = self.build_request(
+                &request_id,
+                1,
+                &payload,
+                if page_index == 0 { 16 } else { 2 },
+                Some(86_400_000_000),
+            )?;
+            self.post_request(short, endpoint, &list)
+                .await
+                .map_err(|error| stage(error, SessionError::ConversationTransport))?;
+            let reply = reply_rx.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+            let plaintext = self
+                .pairing
+                .pairing
+                .decrypt_payload(&reply.ciphertext)
+                .map_err(|_| ProbeError::ReceiveFailed)?;
+            let mut page = ConversationPage::decode(plaintext.as_bytes())
+                .map_err(|_| ProbeError::SessionProtocol(SessionError::ConversationEncoding))?;
+            if page.conversations.len() > MAX_PAGE_RECORDS {
+                return Err(ProbeError::SessionProtocol(SessionError::ConversationCount));
+            }
+            if page.conversations.iter().any(Vec::is_empty) {
+                return Err(ProbeError::SessionProtocol(SessionError::EmptyConversation));
+            }
+            if page
+                .conversations
+                .iter()
+                .any(|record| record.len() > 64 * 1024)
+            {
+                return Err(ProbeError::SessionProtocol(
+                    SessionError::OversizedConversation,
+                ));
+            }
+            if let Some(cursor) = &page.cursor {
+                if cursor.id.is_empty()
+                    || cursor.id.len() > 1024
+                    || cursor.id.chars().any(char::is_control)
+                    || cursor.timestamp < 0
+                {
+                    return Err(ProbeError::SessionProtocol(
+                        SessionError::ConversationCursor,
+                    ));
+                }
+            }
+            let decoded = page
+                .conversations
+                .iter()
+                .map(|bytes| crate::conversation::decode(self.account_id(), bytes))
+                .collect::<Result<Vec<_>, _>>()?;
+            total_records += decoded.len();
+            total_bytes += plaintext.as_bytes().len();
+            if total_records > 10_000 || total_bytes > 16 * 1024 * 1024 {
+                return Err(ProbeError::SessionProtocol(SessionError::PaginationLimit));
+            }
+            all.extend(decoded);
+            all = unique_conversations(all)?;
+            next_cursor = page.cursor.take();
+            if let Some(cursor) = &next_cursor {
+                if cursors.iter().any(|seen: &ConversationCursor| {
+                    seen.id == cursor.id && seen.timestamp == cursor.timestamp
+                }) {
+                    return Err(ProbeError::SessionProtocol(
+                        SessionError::ConversationCursor,
+                    ));
+                }
+                cursors.push(ConversationCursor {
+                    id: cursor.id.clone(),
+                    timestamp: cursor.timestamp,
+                });
+            }
+
+            self.acknowledge(short, endpoint, reply.message_id).await?;
+            if next_cursor.is_none() {
+                return Ok(ReadResult::Conversations(all));
+            }
+        }
+        Err(ProbeError::SessionProtocol(SessionError::PaginationLimit))
     }
 
     /// Keep one receive stream open for a bounded, read-only diagnostic.
