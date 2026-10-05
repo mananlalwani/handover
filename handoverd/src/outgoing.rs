@@ -427,6 +427,54 @@ mod tests {
         assert_eq!(restored.message_id, Some(message));
     }
 
+    #[tokio::test]
+    async fn late_delivery_resolves_a_journal_restored_operation_and_survives_another_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.json");
+        let id = "send-0123456789abcdef0123456789abcdef";
+        write_at(
+            &path,
+            vec![operation(
+                id,
+                OutgoingOutcome::Provider(MessageStatus::Accepted),
+            )],
+        )
+        .unwrap();
+        let mut restored = StateStore::default();
+        restore_at(&mut restored, &path).unwrap();
+        let pending = restored.messaging().outgoing(id).unwrap();
+        assert_eq!(pending.outcome, OutgoingOutcome::Unknown);
+        assert!(pending.message_id.is_none());
+        let message =
+            handover_core::MessageId::new(pending.conversation_id.clone(), "phone-message");
+        let state = Arc::new(RwLock::new(restored));
+        let (events, _) = broadcast::channel(8);
+        update(
+            &state,
+            &events,
+            id,
+            OutgoingOutcome::Provider(MessageStatus::Delivered),
+            Some(message.clone()),
+        );
+        // A late local acknowledgement must not erase the phone evidence.
+        update(
+            &state,
+            &events,
+            id,
+            OutgoingOutcome::Provider(MessageStatus::Accepted),
+            None,
+        );
+        write_at(&path, state.read().unwrap().messaging().snapshot_outgoing()).unwrap();
+        let mut second_restart = StateStore::default();
+        restore_at(&mut second_restart, &path).unwrap();
+        let recovered = second_restart.messaging().outgoing(id).unwrap();
+        assert_eq!(
+            recovered.outcome,
+            OutgoingOutcome::Provider(MessageStatus::Delivered)
+        );
+        assert_eq!(recovered.message_id, Some(message));
+        assert_eq!(second_restart.messaging().snapshot_outgoing().len(), 1);
+    }
     #[test]
     fn restart_restores_uncertainty_without_changing_delivery_evidence() {
         let directory = tempfile::tempdir().unwrap();

@@ -2062,6 +2062,8 @@ mod tests {
         let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
         let (events, _) = broadcast::channel(16);
         let hub = MessagingHub::new();
+        let (commands, mut command_rx) = tokio::sync::mpsc::channel(1);
+        hub.set_sender(Some(commands)).await;
         let mut seen = HashSet::new();
         let conversation_id = ConversationId::new(MessagingAccountId::new("personal"), "thread");
         crate::apply_backend_event(
@@ -2131,6 +2133,10 @@ mod tests {
                 Some(MessageId::new(conversation_id.clone(), "assigned"))
             );
         }
+        assert!(
+            command_rx.try_recv().is_err(),
+            "late recovery must not issue a helper command"
+        );
     }
     #[tokio::test]
     async fn unknown_send_outcome_requires_matching_operation_scope() {

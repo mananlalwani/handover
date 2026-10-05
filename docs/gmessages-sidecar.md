@@ -278,7 +278,13 @@ operation from accepted without an ID to delivered with a phone-assigned ID.
 The same assigned message appeared in daemon live events. After production was
 restored and the daemon restarted, the delivered outcome and assigned ID remained
 in the outgoing journal snapshot. Displayed and late-push recovery from unknown
-still need live verification. Older native sends
+still need live verification. Local recovery coverage now writes an accepted
+operation to disk, restores it as unknown, applies late delivery evidence,
+rejects a late acceptance downgrade, and restores the delivered result through
+a second journal reload. The daemon ingestion test also asserts that late
+recovery emits no helper command. The live interruption test will send once
+while the phone is offline, restart receive, then restore phone connectivity
+and observe the same operation without resubmitting it. Older native sends
 used unrelated random temporary identifiers and cannot gain this link.
 Message contents and timestamps are never used to guess an identity.
 The old adapter remains the active production implementation.
