@@ -17,6 +17,10 @@ use zeroize::{Zeroize, Zeroizing};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionError {
     SendModel,
+    SendReplyEncoding,
+    SendReplyIdentity,
+    MissingSendResult,
+    UnknownSendResult,
     ActivationTransport,
     UpdateModel,
     UpdateAuthentication,

@@ -46,17 +46,20 @@ pub(crate) enum Reply {
     Rejected,
 }
 pub(crate) fn reply(bytes: &[u8]) -> Result<Reply, ProbeError> {
+    let error = |category| ProbeError::SessionProtocol(category);
     if bytes.len() > 64 * 1024 {
-        return Err(invalid());
+        return Err(error(SessionError::SendReplyEncoding));
     }
-    let mut response = Response::decode(bytes).map_err(|_| invalid())?;
+    let mut response =
+        Response::decode(bytes).map_err(|_| error(SessionError::SendReplyEncoding))?;
     match response.result {
         Some(1) => {
-            identifier(&response.message)?;
+            identifier(&response.message).map_err(|_| error(SessionError::SendReplyIdentity))?;
             Ok(Reply::Accepted(std::mem::take(&mut response.message)))
         }
         Some(2..=4) => Ok(Reply::Rejected),
-        _ => Err(invalid()),
+        None => Err(error(SessionError::MissingSendResult)),
+        Some(_) => Err(error(SessionError::UnknownSendResult)),
     }
 }
 pub(crate) fn capability(bytes: &[u8]) -> Result<bool, ProbeError> {
@@ -149,6 +152,20 @@ impl Drop for Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_replies_report_fixed_categories_without_payloads() {
+        for (bytes, category) in [
+            (&[0x12][..], SessionError::SendReplyEncoding),
+            (&[][..], SessionError::MissingSendResult),
+            (&[0x18, 0][..], SessionError::UnknownSendResult),
+            (&[0x18, 5][..], SessionError::UnknownSendResult),
+            (&[0x18, 1][..], SessionError::SendReplyIdentity),
+        ] {
+            assert!(
+                matches!(reply(bytes), Err(ProbeError::SessionProtocol(actual)) if actual == category)
+            );
+        }
+    }
     #[test]
     fn response_requires_explicit_known_result_and_success_identity() {
         for bytes in [
