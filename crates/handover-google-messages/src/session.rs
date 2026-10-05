@@ -15,6 +15,10 @@ use zeroize::{Zeroize, Zeroizing};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionError {
     ActivationTransport,
+    UpdateModel,
+    UpdateAuthentication,
+    UpdateStreamEnded,
+    UnknownUpdateConversation,
     ConversationTransport,
     ConversationEncoding,
     ConversationCount,
@@ -397,6 +401,138 @@ impl RecoveredSession {
         )
         .await
         .map_err(|_| ProbeError::Timeout)?
+    }
+
+    /// Keep one receive stream open for a bounded, read-only diagnostic.
+    /// Pushes are authenticated and projected but never acknowledged here.
+    /// This does not establish an online account or automatic reconnect policy.
+    pub async fn observe_updates(
+        &self,
+        known: Vec<handover_core::messaging::Conversation>,
+        duration: Duration,
+        emit: impl FnMut(crate::updates::Update) -> Result<(), ProbeError>,
+    ) -> Result<(), ProbeError> {
+        if duration.is_zero() || duration > Duration::from_secs(120) {
+            return Err(ProbeError::InvalidBootstrap);
+        }
+        self.observe_updates_at(
+            &self.proof.endpoint,
+            crate::client(true)?,
+            crate::streaming_client()?,
+            known,
+            duration,
+            emit,
+        )
+        .await
+    }
+
+    pub(crate) async fn observe_updates_at(
+        &self,
+        endpoint: &str,
+        short: reqwest::Client,
+        stream: reqwest::Client,
+        mut known: Vec<handover_core::messaging::Conversation>,
+        duration: Duration,
+        mut emit: impl FnMut(crate::updates::Update) -> Result<(), ProbeError>,
+    ) -> Result<(), ProbeError> {
+        if known.len() > 10_000
+            || known.iter().any(|record| {
+                record.id.account_id.as_str() != self.account_id()
+                    || handover_core::messaging::validate_conversation(record).is_err()
+            })
+        {
+            return Err(ProbeError::SessionProtocol(SessionError::UpdateModel));
+        }
+        let sources = Zeroizing::new(
+            crate::query_response(
+                &short,
+                &format!("{endpoint}{}", crate::SIGN_IN_PATH),
+                self.proof.validate_pairing()?,
+                &self.pairing.registration.lookup_request(),
+                false,
+            )
+            .await?,
+        );
+        let sources = crate::sources::RegisteredSources::from_lookup_response(&sources)?;
+        if !sources.contains_registration(&self.pairing.registration) {
+            return Err(ProbeError::RegistrationAccountMismatch);
+        }
+        if !sources.contains_paired_phone(self.pairing.pairing.peer()) {
+            return Err(ProbeError::NoEligiblePhone);
+        }
+        let request = self
+            .pairing
+            .registration
+            .prepare_receive()
+            .map_err(|_| ProbeError::SessionExpired)?;
+        let activation = self.prepare_activation()?;
+        let session_id = self.session_id.to_string();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (push_tx, mut push_rx) = tokio::sync::mpsc::channel(4);
+        let receive_url = format!("{endpoint}{}", crate::RECEIVE_MESSAGES_PATH);
+        let receive = crate::receive_stream_when_ready(
+            &stream,
+            &receive_url,
+            self.proof.validate_messaging()?,
+            &request,
+            |event| {
+                if let crate::receive::ReceiveEvent::Record(record) = event {
+                    if let Some(push) =
+                        record.session_reply(&session_id, 16, self.pairing.pairing.peer())?
+                    {
+                        push_tx
+                            .try_send(push)
+                            .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
+                    }
+                }
+                Ok(())
+            },
+            || {
+                let _ = ready_tx.send(());
+            },
+        );
+        tokio::pin!(receive);
+        let attempt = async {
+            tokio::select! {
+                result = &mut receive => { result?; return Err(ProbeError::SessionProtocol(SessionError::UpdateStreamEnded)); }
+                ready = ready_rx => { ready.map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateStreamEnded))?; }
+            }
+            tokio::select! {
+                result = &mut receive => { result?; return Err(ProbeError::SessionProtocol(SessionError::UpdateStreamEnded)); }
+                result = self.post_request(&short, endpoint, &activation) => { result?; }
+            }
+            let deadline = tokio::time::sleep(duration);
+            tokio::pin!(deadline);
+            loop {
+                tokio::select! {
+                    result = &mut receive => { result?; return Err(ProbeError::SessionProtocol(SessionError::UpdateStreamEnded)); }
+                    _ = &mut deadline => return Ok(()),
+                    push = push_rx.recv() => {
+                        let push = push.ok_or(ProbeError::ReceiveFailed)?;
+                        let plaintext = self.pairing.pairing.decrypt_payload(&push.ciphertext)
+                            .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
+                        let update = crate::updates::decode(self.account_id(), &known,
+                            plaintext.as_bytes(), push.request_id.as_str() == session_id)?;
+                        if let crate::updates::Update::Conversations(records) = &update {
+                            for record in records {
+                                if let Some(previous) = known.iter_mut().find(|previous| previous.id == record.id) {
+                                    *previous = record.clone();
+                                } else {
+                                    if known.len() >= 10_000 { return Err(ProbeError::SessionProtocol(SessionError::PaginationLimit)); }
+                                    known.push(record.clone());
+                                }
+                            }
+                        }
+                        let inactive = matches!(update, crate::updates::Update::Inactive);
+                        emit(update)?;
+                        if inactive { return Err(ProbeError::ReceiveProtocol(crate::receive::ReceiveError::SessionPreempted)); }
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(duration + Duration::from_secs(30), attempt)
+            .await
+            .map_err(|_| ProbeError::Timeout)?
     }
 
     pub async fn probe_conversations(&self) -> Result<usize, ProbeError> {

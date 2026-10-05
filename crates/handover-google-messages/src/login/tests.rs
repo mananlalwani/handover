@@ -1007,3 +1007,137 @@ fn synthetic_history_page() -> Vec<u8> {
     }
     .encode_to_vec()
 }
+
+#[tokio::test]
+async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
+    for (corrupt, foreign, inactive, reject_callback, foreign_session) in [
+        (false, false, false, false, false),
+        (true, false, false, false, false),
+        (false, true, false, false, false),
+        (false, false, true, false, false),
+        (false, false, false, true, false),
+        (false, false, false, false, true),
+    ] {
+        let (outcome, _, _) = exercise(Scenario::Success, true).await;
+        let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
+            panic!("pairing");
+        };
+        let mut payload = vec![0x32, 2, 0x10, if inactive { 1 } else { 2 }];
+        if !inactive {
+            payload = vec![0x1a];
+            let messages = synthetic_history_page();
+            prost::encoding::encode_varint(messages.len() as u64, &mut payload);
+            payload.extend_from_slice(&messages);
+        }
+        let mut encrypted = pairing.encrypt(&payload).unwrap().as_bytes().to_vec();
+        if corrupt {
+            encrypted[0] ^= 1;
+        }
+        let session =
+            crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
+                .unwrap();
+        let fixture = synthetic_conversation_page(1);
+        let model = crate::conversation::decode(session.account_id(), &fixture[2..]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut lookup, _) = listener.accept().await.unwrap();
+            assert_eq!(request(&mut lookup).await.0, crate::SIGN_IN_PATH);
+            response(
+                &mut lookup,
+                "application/json+protobuf",
+                &source_body(false),
+            )
+            .await;
+            let (mut receive, _) = listener.accept().await.unwrap();
+            assert_eq!(request(&mut receive).await.0, crate::RECEIVE_MESSAGES_PATH);
+            receive.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            chunk(&mut receive, b"[[[],").await;
+            let (mut activation, _) = listener.accept().await.unwrap();
+            let (path, body) = request(&mut activation).await;
+            assert_eq!(path, crate::SEND_MESSAGE_PATH);
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            let wrapper = ActivationWrapper::decode(
+                STANDARD
+                    .decode(body[1][11].as_str().unwrap())
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+            assert_eq!(wrapper.action, 16);
+            response(&mut activation, "application/json+protobuf", b"[]").await;
+            let rpc = SessionResponse {
+                request_id: if foreign_session {
+                    "foreign-session".into()
+                } else {
+                    wrapper.request_id
+                },
+                action: 16,
+                encrypted,
+            };
+            let mut message = vec![Value::Null; 17];
+            message[0] = json!("push-id");
+            message[1] = json!(19);
+            message[11] = json!(STANDARD.encode(rpc.encode_to_vec()));
+            message[16] = json!(STANDARD.encode(if foreign {
+                "foreign-phone"
+            } else {
+                "synthetic-phone"
+            }));
+            chunk(
+                &mut receive,
+                &serde_json::to_vec(&json!([[], message])).unwrap(),
+            )
+            .await;
+            let mut byte = [0];
+            assert_eq!(
+                receive.read(&mut byte).await.unwrap(),
+                0,
+                "observer must close receive"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "observer must not ACK or retry"
+            );
+        });
+        let mut count = 0;
+        let result = session
+            .observe_updates_at(
+                &endpoint,
+                crate::client(false).unwrap(),
+                crate::client(false).unwrap(),
+                vec![model],
+                Duration::from_millis(100),
+                |update| {
+                    count += 1;
+                    if inactive {
+                        assert!(matches!(update, crate::updates::Update::Inactive));
+                    } else {
+                        let crate::updates::Update::Messages(messages) = update else {
+                            panic!("messages");
+                        };
+                        assert_eq!(messages.len(), 1);
+                        assert_eq!(messages[0].text.as_deref(), Some("Synthetic content"));
+                    }
+                    if reject_callback {
+                        Err(ProbeError::NativeError)
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .await;
+        assert_eq!(count, usize::from(!corrupt && !foreign && !foreign_session));
+        if corrupt || inactive || reject_callback {
+            assert!(result.is_err());
+        } else {
+            result.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}

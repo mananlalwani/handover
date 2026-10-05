@@ -15,6 +15,7 @@ pub mod registration;
 pub mod session;
 pub mod session_store;
 pub mod sources;
+pub mod updates;
 
 use reqwest::{
     Client,

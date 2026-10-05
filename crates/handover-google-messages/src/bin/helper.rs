@@ -50,7 +50,13 @@ async fn main() {
     let operation = std::env::args().nth(1);
     if matches!(
         operation.as_deref(),
-        Some("--probe-startup" | "--check-recovery" | "--probe-conversations" | "--probe-history")
+        Some(
+            "--probe-startup"
+                | "--check-recovery"
+                | "--probe-conversations"
+                | "--probe-history"
+                | "--probe-updates"
+        )
     ) {
         let result = async {
             let store = SessionStore::default_store()
@@ -64,6 +70,42 @@ async fn main() {
                     .await?;
             if operation.as_deref() == Some("--check-recovery") {
                 Ok(None)
+            } else if operation.as_deref() == Some("--probe-updates") {
+                let known = session.read_conversations().await?;
+                println!(
+                    "Native update observer started for 60 seconds. No pushes will be acknowledged."
+                );
+                let mut count = 0;
+                session
+                    .observe_updates(known, std::time::Duration::from_secs(60), |update| {
+                        use handover_google_messages::updates::Update;
+                        match update {
+                            Update::Conversations(records) => println!(
+                                "Authenticated conversation update: {} record(s).",
+                                records.len()
+                            ),
+                            Update::Messages(records) => println!(
+                                "Authenticated message update: {} record(s).",
+                                records.len()
+                            ),
+                            Update::Active => {
+                                println!("Authenticated current-session activation observed.")
+                            }
+                            Update::Inactive => {
+                                println!("Authenticated current-session preemption observed.")
+                            }
+                            Update::PresenceCheck => println!(
+                                "Authenticated presence check observed; no presence response sent."
+                            ),
+                            Update::Unsupported(kind) => {
+                                println!("Authenticated unhandled update category: {kind}.")
+                            }
+                        }
+                        count += 1;
+                        Ok(())
+                    })
+                    .await?;
+                Ok(Some(count))
             } else if operation.as_deref() == Some("--probe-history") {
                 let conversation = session
                     .read_conversations()
@@ -110,6 +152,9 @@ async fn main() {
             Ok(None) if operation.as_deref() == Some("--check-recovery") => println!(
                 "Native keys and desktop authentication restored; registration token is locally valid. No network request was sent."
             ),
+            Ok(Some(count)) if operation.as_deref() == Some("--probe-updates") => println!(
+                "Native update observer complete: {count} validated push(es). No contents or identifiers were printed, and no pushes were acknowledged."
+            ),
             Ok(Some(count)) if operation.as_deref() == Some("--probe-history") => println!(
                 "Native history decoded and acknowledged: {count} normalized message(s). No content or identifiers were printed."
             ),
@@ -121,6 +166,9 @@ async fn main() {
             ),
             Err(handover_google_messages::ProbeError::SessionProtocol(category)) => println!(
                 "Native startup failed (session_protocol, {category:?}). Saved pairing retained."
+            ),
+            Err(handover_google_messages::ProbeError::ReceiveProtocol(category)) => println!(
+                "Native startup failed (receive_protocol, {category:?}). Saved pairing retained."
             ),
             Err(error) => println!(
                 "Native startup failed ({}, HTTP {:?}, RPC {:?}). Saved pairing retained.",

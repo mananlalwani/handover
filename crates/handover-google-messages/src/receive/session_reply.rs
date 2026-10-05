@@ -7,6 +7,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) struct SessionReply {
     pub(crate) ciphertext: Zeroizing<Vec<u8>>,
     pub(crate) message_id: Zeroizing<String>,
+    pub(crate) request_id: Zeroizing<String>,
 }
 #[derive(Message)]
 struct Response {
@@ -115,6 +116,7 @@ impl ReceiveRecord {
         Ok(Some(SessionReply {
             ciphertext: Zeroizing::new(response.encrypted.clone()),
             message_id: Zeroizing::new(id.to_owned()),
+            request_id: Zeroizing::new(response.request_id.clone()),
         }))
     }
 }

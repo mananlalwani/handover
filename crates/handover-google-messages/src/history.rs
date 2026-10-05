@@ -63,8 +63,24 @@ pub(crate) fn decode(conversation: &Conversation, bytes: &[u8]) -> Result<Histor
             Ok(URL_SAFE_NO_PAD.encode(cursor.encode_to_vec()))
         })
         .transpose()?;
+    let messages = decode_records(conversation, std::mem::take(&mut page.messages))?;
+    Ok(HistoryPage {
+        messages,
+        cursor_next,
+    })
+}
+
+pub(crate) fn decode_records(
+    conversation: &Conversation,
+    records: Vec<Vec<u8>>,
+) -> Result<Vec<CoreMessage>, ProbeError> {
+    // Own the raw records through a wiping container even on partial failure.
+    let mut records = Zeroizing::new(records);
+    if records.len() > 500 {
+        return Err(invalid());
+    }
     let mut messages: Vec<CoreMessage> = Vec::new();
-    for bytes in &mut page.messages {
+    for bytes in records.iter_mut() {
         if bytes.len() > 64 * 1024 {
             return Err(invalid());
         }
@@ -173,10 +189,7 @@ pub(crate) fn decode(conversation: &Conversation, bytes: &[u8]) -> Result<Histor
             messages.push(record);
         }
     }
-    Ok(HistoryPage {
-        messages,
-        cursor_next,
-    })
+    Ok(messages)
 }
 
 #[derive(Message)]

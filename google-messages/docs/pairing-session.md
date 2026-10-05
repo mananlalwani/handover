@@ -620,3 +620,39 @@ The following phone comparison confirmed that both views matched in the newest
 thread, including older pages beyond the previous stopping point. This closes
 that thread's visual paging check. Other conversations and attachment rendering
 were not separately verified. The production relay was restored afterward.
+
+## Native push receive diagnostic
+
+`handover-google-messages-helper --probe-updates` keeps one receive stream open
+for sixty seconds after activation. It restores the saved account, reads the
+bounded conversation inventory, verifies the registered device and paired phone,
+and projects authenticated push updates. This diagnostic does not publish daemon
+events, declare the account online, send chat messages, answer presence checks,
+acknowledge pushes, or reconnect automatically. It leaves inbox records available
+for the eventual receiver. Its output contains counts and fixed event categories.
+
+First-party `h7` at offset 1050750 establishes action 16 as the push route and
+uses the active session's request ID to select its updates. `yw`, `xw`, and
+`gxa` at 305719 establish the event oneof. Conversation updates use field 2,
+message updates field 3, user alerts field 6, and browser presence checks field 7.
+`Rua` and `Xwa` store repeated conversation and message records in field 2.
+`h7` maps user-alert type 2 to active and types 1, 7, and 8 to inactive.
+These are observations from the previously retained first-party web bundle.
+No adapter code or generated protocol definitions were imported.
+
+The diagnostic filters by the current session, action, and paired sender before
+queueing or decrypting a push. It rejects invalid MACs, conflicting event oneof
+members, malformed fields, oversized records, and message updates for unknown
+threads. Message updates reuse the history projection. Settings, typing, and
+other unsupported event families retain their numeric category without claiming
+normalized support. Four encrypted pushes may be queued; overflow ends receive.
+Cancellation, inactivity, or the duration limit closes the stream.
+
+A live startup initially overflowed that queue while accepting updates for other
+sessions. A regression test reproduced the missing session filter. With the
+filter applied, the live observer stayed open for the full sixty seconds and
+received three authenticated pushes: current-session activation, a user alert,
+and settings. A real incoming-message comparison
+remains necessary before daemon integration. Mock HTTP tests cover message
+projection, foreign senders and sessions, invalid MACs, inactivity, callback
+failure, stream closure, and absence of ACKs or retries.
