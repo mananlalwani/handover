@@ -77,7 +77,7 @@ async fn main() {
                 "Native keys and desktop authentication restored; registration token is locally valid. No network request was sent."
             ),
             Ok(Some(count)) => println!(
-                "Native conversation page decoded and acknowledged: {count} normalized record(s). Full snapshot and ongoing messaging remain unverified."
+                "Native conversations decoded and acknowledged: {count} normalized record(s). Full snapshot and ongoing messaging remain unverified."
             ),
             Ok(None) => println!(
                 "Native receive opened and activation was HTTP accepted. Online messaging remains unverified."
@@ -240,7 +240,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 )
                                 .await?;
                             session
-                                .read_conversation_page()
+                                .read_conversations()
                                 .await
                                 .map(WorkOutcome::ConversationPage)
                         }

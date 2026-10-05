@@ -749,23 +749,30 @@ struct ActivationTimestamp {
 
 #[tokio::test]
 async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_account() {
-    for (wrong, conversations, corrupt) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, true, true),
+    for (wrong, conversations, corrupt, paged, cycle) in [
+        (false, false, false, false, false),
+        (true, false, false, false, false),
+        (false, true, false, false, false),
+        (false, true, true, false, false),
+        (false, true, false, true, false),
+        (false, true, false, true, true),
     ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
             panic!("mock phone must confirm")
         };
-        let mut encrypted_page = pairing
-            .encrypt(&synthetic_conversation_page(26))
-            .unwrap()
-            .as_bytes()
-            .to_vec();
-        if corrupt {
-            encrypted_page[0] ^= 1;
+        let mut pages = Vec::new();
+        for index in 0..if paged { 2 } else { 1 } {
+            let mut bytes = synthetic_conversation_page(26 + index);
+            if paged && (index == 0 || cycle) {
+                // First-party cursor: conversation ID field 1, timestamp field 2.
+                bytes.extend_from_slice(&[0x2a, 8, 0x0a, 4, b'n', b'e', b'x', b't', 0x10, 1]);
+            }
+            let mut encrypted = pairing.encrypt(&bytes).unwrap().as_bytes().to_vec();
+            if corrupt {
+                encrypted[0] ^= 1;
+            }
+            pages.push(encrypted);
         }
         let session =
             crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
@@ -810,49 +817,54 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
             assert!(body[4].is_null());
             response(&mut send, "application/json+protobuf", b"[]").await;
             if conversations {
-                let (mut list, _) = listener.accept().await.unwrap();
-                let (path, body) = request(&mut list).await;
-                assert_eq!(path, crate::SEND_MESSAGE_PATH);
-                let body: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(body[1][22][1], 16);
-                let wrapper = ActivationWrapper::decode(
-                    STANDARD
-                        .decode(body[1][11].as_str().unwrap())
-                        .unwrap()
-                        .as_slice(),
-                )
-                .unwrap();
-                assert_eq!(wrapper.action, 1);
-                response(&mut list, "application/json+protobuf", b"[]").await;
-                let rpc_reply = SessionResponse {
-                    request_id: wrapper.request_id,
-                    action: 1,
-                    encrypted: encrypted_page,
-                };
-                let mut message = vec![Value::Null; 17];
-                message[0] = json!("session-reply");
-                message[1] = json!(19);
-                message[11] = json!(STANDARD.encode(rpc_reply.encode_to_vec()));
-                message[16] = json!(STANDARD.encode("synthetic-phone"));
-                chunk(
-                    &mut receive,
-                    &serde_json::to_vec(&json!([[], message])).unwrap(),
-                )
-                .await;
-                if corrupt {
-                    assert!(
-                        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                            .await
-                            .is_err(),
-                        "invalid MAC must not be acknowledged"
-                    );
-                } else {
-                    let (mut ack, _) = listener.accept().await.unwrap();
-                    let (path, body) = request(&mut ack).await;
-                    assert_eq!(path, crate::ACK_MESSAGES_PATH);
+                for (index, encrypted_page) in pages.into_iter().enumerate() {
+                    let (mut list, _) = listener.accept().await.unwrap();
+                    let (path, body) = request(&mut list).await;
+                    assert_eq!(path, crate::SEND_MESSAGE_PATH);
                     let body: Value = serde_json::from_slice(&body).unwrap();
-                    assert_eq!(body[1], json!(["session-reply"]));
-                    response(&mut ack, "application/json+protobuf", b"[]").await;
+                    assert_eq!(body[1][22][1], if index == 0 { 16 } else { 2 });
+                    let wrapper = ActivationWrapper::decode(
+                        STANDARD
+                            .decode(body[1][11].as_str().unwrap())
+                            .unwrap()
+                            .as_slice(),
+                    )
+                    .unwrap();
+                    assert_eq!(wrapper.action, 1);
+                    response(&mut list, "application/json+protobuf", b"[]").await;
+                    let rpc_reply = SessionResponse {
+                        request_id: wrapper.request_id,
+                        action: 1,
+                        encrypted: encrypted_page,
+                    };
+                    let mut message = vec![Value::Null; 17];
+                    message[0] = json!("session-reply");
+                    message[1] = json!(19);
+                    message[11] = json!(STANDARD.encode(rpc_reply.encode_to_vec()));
+                    message[16] = json!(STANDARD.encode("synthetic-phone"));
+                    if index > 0 {
+                        chunk(&mut receive, b",").await;
+                    }
+                    chunk(
+                        &mut receive,
+                        &serde_json::to_vec(&json!([[], message])).unwrap(),
+                    )
+                    .await;
+                    if corrupt || (cycle && index == 1) {
+                        assert!(
+                            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                                .await
+                                .is_err(),
+                            "invalid MAC must not be acknowledged"
+                        );
+                    } else {
+                        let (mut ack, _) = listener.accept().await.unwrap();
+                        let (path, body) = request(&mut ack).await;
+                        assert_eq!(path, crate::ACK_MESSAGES_PATH);
+                        let body: Value = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(body[1], json!(["session-reply"]));
+                        response(&mut ack, "application/json+protobuf", b"[]").await;
+                    }
                 }
             }
             let mut byte = [0];
@@ -880,10 +892,17 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
             ));
         } else if corrupt {
             assert!(matches!(result, Err(ProbeError::ReceiveFailed)));
+        } else if cycle {
+            assert!(matches!(
+                result,
+                Err(ProbeError::SessionProtocol(
+                    crate::session::SessionError::ConversationCursor
+                ))
+            ));
         } else {
             assert_eq!(
                 result.unwrap().map(|page| page.len()),
-                conversations.then_some(26)
+                conversations.then_some(if paged { 27 } else { 26 })
             );
         }
         tokio::time::timeout(Duration::from_secs(5), server)

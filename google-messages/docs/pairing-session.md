@@ -498,7 +498,8 @@ the first-page annotation route. It accepts only replies correlated to that
 request and paired phone. Preemption, plaintext substitutions, malformed IDs,
 invalid message authentication, or invalid page records stop the attempt.
 Unrelated events are discarded without acknowledgement. The receive queue holds
-one matching reply, and the network attempt has a thirty-second limit.
+one matching reply. Startup has a thirty-second limit; a paginated conversation
+read has a two-minute limit.
 
 The requested count is a hint, not a hard response limit. The live phone returned
 27 raw records representing 25 distinct normalized conversations. Identical
@@ -521,13 +522,19 @@ conflicting names or addresses fail. Transport stays unknown, and history/send
 capabilities remain absent. Message previews, media, and provider-specific flags
 are skipped. No Google protocol types cross the helper boundary.
 
-`ListConversations` and `Sync` now request one bounded page through the existing
-helper contract. The helper emits size-bounded incremental chunks with `full`
-false and no snapshot generation. It does not claim that the page covers every
-conversation or remove cached records that were absent from this page. Accounts
+`ListConversations` and `Sync` follow response cursors through the existing
+helper contract. Each page has a fresh correlated request ID. Only the first
+request uses annotation route 16; later requests use the default route 2. The
+cursor is independently encoded in request field 5 from first-party `Qxa` and
+`Lxa`. Traversal stops when the phone omits its cursor. Repeated cursors, more
+than 100 pages, more than 10,000 raw records, or more than 16 MiB of decrypted
+page data stop the operation. Invalid later pages prevent publication of the
+accumulated result. The helper emits size-bounded incremental chunks with `full`
+false and no snapshot generation. It does not claim an atomic snapshot or remove cached records absent from the
+traversal. The request retains the existing active-conversation status filter. Accounts
 remain offline because the bounded request closes receive after completion.
 Logout and pipe closure cancel the request before local credentials are removed.
-Further snapshot paging and persistent receive handling remain pending.
+Atomic snapshot recovery and persistent receive handling remain pending.
 
 On 2026-10-05, browser-free recovery, activation, decryption, projection, and
 acknowledgement passed against the paired phone. A separate daemon test published
@@ -536,3 +543,11 @@ remained offline, transport remained unknown, and no send or history capabilitie
 were exposed. The production relay was restored after both checks. Conversation
 names, membership, and unread counts still need visual comparison with the phone;
 these checks reported counts and model invariants only.
+
+The first visual comparison confirmed that names looked correct but exposed the
+first-page limit. On 2026-10-05, the paginated live read decoded and acknowledged
+201 distinct conversations without browser interaction. This count includes
+cursor traversal and merging compatible repeated records. A separate daemon
+check published all 201 records with the account still offline and no send or
+history capabilities. Completeness and membership still need another visual
+check against the phone.
