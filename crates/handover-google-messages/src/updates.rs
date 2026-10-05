@@ -1,13 +1,16 @@
 //! Independent projection of encrypted first-party push updates.
 use crate::{ProbeError, session::SessionError};
-use handover_core::messaging::{Conversation, Message as CoreMessage};
+use handover_core::messaging::{Conversation, Message as CoreMessage, MessageId};
 use prost::Message;
 use zeroize::{Zeroize, Zeroizing};
 
 /// A bounded observer result. It does not attest account connectivity.
 pub enum Update {
     Conversations(Vec<Conversation>),
-    Messages(Vec<CoreMessage>),
+    Messages {
+        records: Vec<CoreMessage>,
+        statuses: Vec<(MessageId, &'static str)>,
+    },
     Active,
     Inactive,
     PresenceCheck,
@@ -67,6 +70,7 @@ pub(crate) fn decode(
                 return Err(invalid());
             }
             let mut messages = Vec::<CoreMessage>::new();
+            let mut statuses = Vec::<(MessageId, &'static str)>::new();
             let raw = Zeroizing::new(std::mem::take(&mut batch.records));
             for bytes in raw.iter() {
                 if bytes.len() > 64 * 1024 {
@@ -82,6 +86,8 @@ pub(crate) fn decode(
                         SessionError::UnknownUpdateConversation,
                     ))?;
                 for record in crate::history::decode_records(conversation, vec![bytes.to_vec()])? {
+                    let outgoing = record.sender.is_self;
+                    let id = record.id.clone();
                     if let Some(previous) = messages.iter().find(|item| item.id == record.id) {
                         if previous != &record {
                             return Err(invalid());
@@ -89,9 +95,27 @@ pub(crate) fn decode(
                     } else {
                         messages.push(record);
                     }
+                    if outgoing {
+                        if let Some(status) =
+                            thread.status.as_ref().and_then(|value| status(value.code))
+                        {
+                            if let Some((_, previous)) =
+                                statuses.iter().find(|(previous_id, _)| *previous_id == id)
+                            {
+                                if *previous != status {
+                                    return Err(invalid());
+                                }
+                            } else {
+                                statuses.push((id, status));
+                            }
+                        }
+                    }
                 }
             }
-            Ok(Update::Messages(messages))
+            Ok(Update::Messages {
+                records: messages,
+                statuses,
+            })
         }
         6 => {
             let alert = Alert::decode(*payload).map_err(|_| invalid())?;
@@ -168,6 +192,23 @@ impl Drop for Batch {
 struct Thread {
     #[prost(string, tag = "7")]
     id: String,
+    #[prost(message, optional, tag = "4")]
+    status: Option<Status>,
+}
+#[derive(Message)]
+struct Status {
+    #[prost(int32, tag = "2")]
+    code: i32,
+}
+// Q2a/M2a in the first-party client distinguish these terminal outgoing states.
+// Other codes carry no supported delivery assertion.
+fn status(code: i32) -> Option<&'static str> {
+    match code {
+        1 => Some("sent"),
+        2 => Some("delivered"),
+        11 => Some("displayed"),
+        _ => None,
+    }
 }
 impl Drop for Thread {
     fn drop(&mut self) {
@@ -194,6 +235,80 @@ struct Alert {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture(code: i32) -> (Conversation, Vec<u8>) {
+        use handover_core::messaging::{
+            ConversationId, ConversationKind, MessagingAccountId, Participant, TransportKind,
+        };
+        let conversation = Conversation {
+            id: ConversationId::new(MessagingAccountId::new("fixture"), "thread"),
+            kind: ConversationKind::Direct,
+            transport: TransportKind::Unknown,
+            title: None,
+            participants: vec![
+                Participant {
+                    local_id: "self:fixture".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: true,
+                },
+                Participant {
+                    local_id: "peer:person".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: false,
+                },
+            ],
+            latest_message_id: None,
+            last_activity_at: None,
+            unread_count: None,
+            cursor: None,
+            capabilities: Default::default(),
+        };
+        let mut message = vec![0x0a, 1, b'm', 0x22, 2, 16, code as u8, 0x3a, 6];
+        message.extend_from_slice(b"thread");
+        message.extend_from_slice(&[0x4a, 6]);
+        message.extend_from_slice(b"person");
+        message.extend_from_slice(&[0x52, 5, 0x12, 3, 0x0a, 1, b'x']);
+        (conversation, message)
+    }
+    fn push(records: Vec<Vec<u8>>) -> Vec<u8> {
+        let payload = Batch { records }.encode_to_vec();
+        let mut push = vec![0x1a];
+        prost::encoding::encode_varint(payload.len() as u64, &mut push);
+        push.extend_from_slice(&payload);
+        push
+    }
+    #[test]
+    fn publishes_only_explicit_outgoing_delivery_states_bound_to_valid_messages() {
+        for (code, expected) in [
+            (1, Some("sent")),
+            (2, Some("delivered")),
+            (11, Some("displayed")),
+            (3, None),
+            (100, None),
+        ] {
+            let (conversation, record) = fixture(code);
+            let Update::Messages { records, statuses } = decode(
+                "fixture",
+                std::slice::from_ref(&conversation),
+                &push(vec![record]),
+                true,
+            )
+            .unwrap() else {
+                panic!("messages")
+            };
+            assert_eq!(records.len(), 1);
+            assert_eq!(statuses.len(), usize::from(expected.is_some()));
+            if let Some(expected) = expected {
+                assert_eq!(statuses[0], (records[0].id.clone(), expected));
+                assert!(records[0].sender.is_self);
+                assert_eq!(records[0].id.conversation_id, conversation.id);
+            }
+        }
+        let (conversation, first) = fixture(1);
+        let (_, second) = fixture(2);
+        assert!(decode("fixture", &[conversation], &push(vec![first, second]), true).is_err());
+    }
     #[test]
     fn session_control_requires_the_current_session() {
         assert!(matches!(

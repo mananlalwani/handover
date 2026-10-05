@@ -34,7 +34,10 @@ pub enum LiveEvent {
         fetch_id: Option<u64>,
         page: crate::history::HistoryPage,
     },
-    Messages(Vec<handover_core::messaging::Message>),
+    Messages {
+        records: Vec<handover_core::messaging::Message>,
+        statuses: Vec<(handover_core::messaging::MessageId, &'static str)>,
+    },
 }
 /// The consumer confirms publication before a processed push is acknowledged.
 pub struct LiveOutput {
@@ -462,8 +465,8 @@ impl RecoveredSession {
                 merge(known, &records)?;
                 publish(events, LiveEvent::ConversationUpdates(records)).await?;
             }
-            crate::updates::Update::Messages(records) => {
-                publish(events, LiveEvent::Messages(records)).await?
+            crate::updates::Update::Messages { records, statuses } => {
+                publish(events, LiveEvent::Messages { records, statuses }).await?
             }
             crate::updates::Update::PresenceCheck => {
                 let request = self.build_request(

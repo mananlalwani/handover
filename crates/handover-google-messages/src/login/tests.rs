@@ -1115,7 +1115,10 @@ async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
                     if inactive {
                         assert!(matches!(update, crate::updates::Update::Inactive));
                     } else {
-                        let crate::updates::Update::Messages(messages) = update else {
+                        let crate::updates::Update::Messages {
+                            records: messages, ..
+                        } = update
+                        else {
                             panic!("messages");
                         };
                         assert_eq!(messages.len(), 1);
@@ -1384,7 +1387,9 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         );
         capability_update.accepted.send(()).unwrap();
         let message = outgoing.recv().await.unwrap();
-        assert!(matches!(message.event, LiveEvent::Messages(ref records) if records.len() == 1));
+        assert!(
+            matches!(message.event, LiveEvent::Messages { ref records, .. } if records.len() == 1)
+        );
         checked_rx.await.unwrap();
         if reject_push {
             drop(message.accepted);

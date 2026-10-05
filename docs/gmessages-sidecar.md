@@ -229,7 +229,20 @@ accepts that response without an ID. The shared-receiver regression test covers
 publication and acknowledgement of this reply. A subsequent live native send
 reported `send_status accepted` without an ID, and the daemon retained the
 provider-accepted outcome instead of unknown. Production was restored afterward.
-Delivery-status correlation remains unverified.
+The native push decoder now publishes explicit sent, delivered, and displayed
+states for validated outgoing messages through the existing normalized `status`
+event. Field layout follows the first-party Q2a/M2a projection; outgoing state
+names were cross-checked against the public
+[libgm API documentation](https://pkg.go.dev/go.mau.fi/mautrix-gmessages@v0.2609.0/pkg/libgm/gmproto#MessageStatusType).
+Content is published before status, and the phone update is acknowledged
+only after both reach the daemon. Draft, incoming, and unsupported status codes
+produce no delivery assertion. Conflicting statuses for a duplicated message in
+one update are rejected. This path has synthetic decoder and helper-contract
+coverage; live status updates remain unverified.
+
+An accepted send without an assigned ID is not yet linked to a later message
+push. Operation delivery-status correlation therefore remains unimplemented;
+message contents and timestamps are never used to guess that link.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

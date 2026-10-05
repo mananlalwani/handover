@@ -84,7 +84,7 @@ async fn main() {
                                 "Authenticated conversation update: {} record(s).",
                                 records.len()
                             ),
-                            Update::Messages(records) => println!(
+                            Update::Messages { records, .. } => println!(
                                 "Authenticated message update: {} record(s).",
                                 records.len()
                             ),
@@ -434,6 +434,28 @@ async fn publish_messages<W: AsyncWrite + Unpin>(
         ));
     }
     publish(writer, event).await
+}
+
+async fn publish_message_updates<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    account: String,
+    records: Vec<handover_core::messaging::Message>,
+    statuses: Vec<(handover_core::messaging::MessageId, &'static str)>,
+) -> std::io::Result<()> {
+    publish_push_messages(writer, account.clone(), records).await?;
+    for (id, status) in statuses {
+        publish(
+            writer,
+            HelperEvent::Status {
+                account: account.clone(),
+                conversation: id.conversation_id.local_id,
+                message: id.local_id,
+                status: status.into(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn publish_push_messages<W: AsyncWrite + Unpin>(
@@ -879,7 +901,9 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 }
                                 publish_history(writer, account.clone(), conversation, fetch_id, page).await?;
                             }
-                            LiveEvent::Messages(records) => publish_push_messages(writer, account.clone(), records).await?,
+                            LiveEvent::Messages { records, statuses } => {
+                                publish_message_updates(writer, account.clone(), records, statuses).await?;
+                            },
                         }
                         let _ = output.accepted.send(());
                     }
@@ -2343,6 +2367,61 @@ mod tests {
         ] {
             assert!(reconnect_delay(&error, 0).is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn message_updates_publish_content_before_normalized_delivery_status() {
+        use handover_core::messaging::{
+            ConversationId, Message, MessageId, MessagingAccountId, Participant,
+        };
+        let id = MessageId::new(
+            ConversationId::new(MessagingAccountId::new("fixture"), "thread"),
+            "message",
+        );
+        let record = Message {
+            id: id.clone(),
+            sender: Participant {
+                local_id: "self:fixture".into(),
+                display_name: None,
+                address: None,
+                is_self: true,
+            },
+            transport: None,
+            sent_at: None,
+            text: Some("synthetic".into()),
+            attachments: Vec::new(),
+            reply_to: None,
+            reactions: Vec::new(),
+            deleted: false,
+        };
+        let mut output = Vec::new();
+        publish_message_updates(
+            &mut output,
+            "fixture".into(),
+            vec![record],
+            vec![(id, "delivered")],
+        )
+        .await
+        .unwrap();
+        let events: Vec<HelperEvent> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], HelperEvent::Messages { messages, page_complete: false, .. } if messages.len() == 1)
+        );
+        assert!(
+            matches!(&events[1], HelperEvent::Status { account, conversation, message, status } if account == "fixture" && conversation == "thread" && message == "message" && status == "delivered")
+        );
+        let HelperEvent::Status { status, .. } = &events[1] else {
+            panic!("status")
+        };
+        assert_eq!(
+            handover_gmessages::normalize::parse_status(status).unwrap(),
+            handover_core::messaging::MessageStatus::Delivered
+        );
     }
 
     #[tokio::test]
