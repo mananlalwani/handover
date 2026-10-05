@@ -277,8 +277,11 @@ checks cover this path. A live self-conversation test advanced the exact outgoin
 operation from accepted without an ID to delivered with a phone-assigned ID.
 The same assigned message appeared in daemon live events. After production was
 restored and the daemon restarted, the delivered outcome and assigned ID remained
-in the outgoing journal snapshot. Displayed and late-push recovery from unknown
-still need live verification. Local recovery coverage now writes an accepted
+in the outgoing journal snapshot. A subsequent read-receipt test emitted authenticated correlated sent, delivered,
+and displayed statuses. The one new outgoing operation retained its displayed
+outcome and assigned ID after production restoration and daemon restart.
+Displayed is now live-verified; late-push recovery from unknown still needs a
+controlled live interruption test. Local recovery coverage now writes an accepted
 operation to disk, restores it as unknown, applies late delivery evidence,
 rejects a late acceptance downgrade, and restores the delivered result through
 a second journal reload. The daemon ingestion test also asserts that late
