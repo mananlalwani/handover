@@ -253,7 +253,11 @@ supported updates. The shared-receiver regression covers a later message,
 history request, send, and presence check on the same stream. Malformed records
 and authentication failures still fail closed; history-page decoding still
 rejects unsupported content. The live payload was not retained, so this fix
-needs live verification against the original failure.
+was followed by a live RCS test that emitted accepted, sent, and delivered and
+remained connected for 80 seconds after acceptance, beyond the previous failure
+interval. No receiver error or disconnect was observed. The exact unsupported
+payload was not confirmed to recur, so replay coverage is synthetic rather than
+an attested reproduction of that payload. Production was restored afterward.
 
 An accepted send without an assigned ID is not yet linked to a later message
 push. Operation delivery-status correlation therefore remains unimplemented;
