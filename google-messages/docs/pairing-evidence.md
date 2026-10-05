@@ -608,3 +608,20 @@ replaces the header through HeaderMap insertion, and obsolete caller overrides
 are removed. The payload structure matches Google's repeated-string field-2
 acknowledgement constructor; no libgm payload shape was copied. This fix remains
 unverified against the live service.
+
+
+## Live pairing completed, 2026-10-05
+
+With the single-Content-Type acknowledgement fix, the native client matched the
+saved registration to the signed-in account, received initial-send HTTP
+acceptance, validated the phone's server-init, and derived the verification emoji.
+Initial acknowledgement and final-send HTTP acceptance were reported separately.
+The user selected the matching emoji on the phone. Handover then received and
+validated the final confirmation, saved the paired keys, and reported successful
+completion without the final-acknowledgement failure warning.
+
+The production daemon and legacy relay were restored and verified running. No
+conversation read, message send, media transfer, or token refresh was tested.
+The native helper still reports messaging startup as pending. Full milestone 2
+therefore remains incomplete, although native phone pairing is now live-tested.
+No credential values, identifiers, or message contents were recorded here.

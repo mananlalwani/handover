@@ -9,15 +9,10 @@ It has independently authored source lookup, registration preparation,
 correlated UKEY2 pairing, receive framing, pairing-reply validation, payload
 encryption, and acknowledgement payload construction. A live read-only
 authentication test returned four registered sources using matched browser
-service cookies and a request constructed by Rust. The user completed one live unpaired registration. Full pairing remains unverified. Live tests matched the registration to the account, received initial-send HTTP acceptance, and validated the phone handshake and emoji. A subsequent request returned HTTP 400 before phone confirmation. Acknowledgement transport has been corrected offline and retains mock coverage. It does not yet read conversations
-or send user messages. The existing adapter remains in use during development.
+service cookies and a request constructed by Rust. The user completed live registration and native phone pairing. On 2026-10-05, the native client received the initial phone handshake, derived the matching emoji, received explicit phone confirmation, saved the paired credentials, and completed the final acknowledgement. It does not yet read conversations or send user messages. The production adapter remains in use during development.
 
-The native crate includes a restricted local session-record store for pending registrations and confirmed pairing keys. Confirmed-session restore has mock coverage; messaging startup remains unimplemented. An explicit,
-opt-in mode-0 registration action uses the observer's matched browser
-credentials and saves its unpaired credential in that store. The user ran that
-registration once by hand on 2026-10-03, so the unpaired credential is real and
-saved locally. A live initial phone handshake has been validated and its confirmation emoji derived. Full phone pairing and user-message sending remain unconfirmed. Type-44/45 pairing envelopes include the registration token and
-observed Tachyon header. The initial pairing send now receives HTTP acceptance. The next request failed with HTTP 400 before phone confirmation. Send and acknowledgement transports now use the JSON-protobuf outer format observed in Google's web client; the embedded Ditto and UKEY2 payloads stay binary. The acknowledgement correction passes mock tests and awaits live verification. HTTP acceptance does not establish phone confirmation.
+The native crate includes a restricted local session-record store for pending registrations and confirmed pairing keys. Confirmed-session restore has mock coverage; online messaging startup remains unimplemented. The registration was created on 2026-10-03 and its paired credentials were saved after phone confirmation on 2026-10-05. Send and acknowledgement transports use the JSON-protobuf outer format observed in Google's web client; embedded Ditto and UKEY2 payloads stay binary. HTTP acceptance alone does not establish phone confirmation.
+
 
 The crate also builds `handover-google-messages-helper`, the daemon-supervised
 process for this client. It speaks the existing normalized helper contract,

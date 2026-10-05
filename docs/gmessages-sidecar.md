@@ -11,9 +11,9 @@ client.
 Handover's independently authored replacement lives in
 [`google-messages/`](../google-messages/README.md) and
 [`crates/handover-google-messages`](../crates/handover-google-messages/src/lib.rs)
-in this repository. It has offline registration, pairing, receive, encryption,
-and acknowledgement components, but no working online phone-pairing or
-conversation client yet. It must not import or copy the AGPL adapter or mautrix
+in this repository. Its native registration, phone pairing, and acknowledgements were live-tested
+through explicit phone confirmation on 2026-10-05. Online conversation and
+messaging startup remain unimplemented. It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
 backend-independent.
@@ -193,8 +193,10 @@ revocation remains unimplemented.
 
 Offline tests exercise a local HTTP server and UKEY2 mock phone, matching symbols,
 account mismatch, stale replies, send/receive failure, cancellation, ACK failure,
-key recovery, and helper replacement. Native phone pairing has not been
-live-tested. The old adapter remains the active production implementation.
+key recovery, and helper replacement. Native phone pairing completed a live
+test on 2026-10-05, including saved credentials and final acknowledgement.
+Conversation reads and message sends remain unverified. The old adapter remains
+the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,
 SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,
