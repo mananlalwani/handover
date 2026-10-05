@@ -241,7 +241,11 @@ one update are rejected. This path has synthetic decoder and helper-contract
 coverage. A subsequent native SMS test reported acceptance without an assigned
 ID, followed by an authenticated `sent` message status. No delivered or displayed
 status was observed; those paths still need live verification. Production was
-restored after the test.
+restored after the test. A later RCS test emitted acceptance, then authenticated
+`sent` and `delivered` message statuses. The diagnostic retained no message IDs,
+so these events verify the native status path, not operation correlation.
+Displayed remains unverified. A subsequent unsupported-content update ended the
+native receive session; production was restored, and that failure needs diagnosis.
 
 An accepted send without an assigned ID is not yet linked to a later message
 push. Operation delivery-status correlation therefore remains unimplemented;
