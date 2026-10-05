@@ -15,7 +15,7 @@ in this repository. Its native registration, phone pairing, and acknowledgements
 through explicit phone confirmation on 2026-10-05. Bounded browser-free
 conversation and history reads also passed live tests. The native helper now
 keeps a shared receive stream for live updates, reads, and text sends. Native
-text sending has mock coverage and still needs a recipient test.
+text sending passed a recipient test; send-reply correlation needs follow-up.
 It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
@@ -218,8 +218,10 @@ The shared daemon receiver also served two history pages without overlap and
 remained connected afterward. On 2026-10-05, the user confirmed that a new
 incoming message appeared automatically in an open Handover conversation
 without refreshing or reopening it. A separate live permission query enabled
-text capability on all 201 conversations. Native text sends have local mock coverage;
-recipient arrival and outgoing display still need live tests.
+text capability on all 201 conversations. The user then confirmed that one
+native text appeared on the phone and reached the recipient. The daemon
+recorded the operation as unknown without an assigned message ID. Recipient
+arrival is verified; native send-reply correlation remains unresolved.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

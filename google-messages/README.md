@@ -16,8 +16,9 @@ development.
 helper contract. It keeps one receive stream per active account for updates,
 reads, and bounded text sends. A phone capability response gates sending; an
 accepted send never claims delivery, and interrupted sends remain unknown
-without automatic retries. Native text sending has mock coverage and still
-needs a recipient test. Attachments, replies, reactions, token renewal, and
+without automatic retries. Native text sending passed a recipient test. The daemon
+recorded that send as unknown without an assigned provider ID, so send-reply
+correlation still needs verification. Attachments, replies, reactions, token renewal, and
 remote logout remain unfinished. See
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for the helper contract.
 

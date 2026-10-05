@@ -4,6 +4,7 @@ import QtQuick.Dialogs
 import QtQuick.Layouts
 import Quickshell
 import ".."
+import "../AccountPicker.js" as AccountPicker
 
 Rectangle {
     id: messagesCard
@@ -28,8 +29,20 @@ Rectangle {
             }
         }
     }
-    property var selectedAccount: modernAccountPicker.count > 0
-        ? HandoverService.messagingAccounts[modernAccountPicker.currentIndex] : null
+    property var accountChoices: AccountPicker.choices(HandoverService.messagingAccounts)
+    property string selectedAccountId: ""
+    property bool explicitAccountSelection: false
+    property var selectedAccount: accountChoices.find(item => item.id === selectedAccountId) || null
+    onAccountChoicesChanged: {
+        if (!accountChoices.some(item => item.id === selectedAccountId))
+            explicitAccountSelection = false;
+        selectedAccountId = AccountPicker.selectedId(accountChoices,
+            explicitAccountSelection ? selectedAccountId : "");
+    }
+    onSelectedAccountIdChanged: {
+        selectedConversation = null;
+        replyingTo = null;
+    }
     property var accountConversations: selectedAccount
         ? HandoverService.conversations.filter(item =>
             item.id.account_id === selectedAccount.id).slice().sort((a, b) =>
@@ -132,11 +145,14 @@ Item {
             Item { Layout.fillWidth: true }
             ComboBox {
                 id: modernAccountPicker
-                Layout.preferredWidth: 190
-                model: HandoverService.messagingAccounts.map(item => item.label)
-                onCurrentIndexChanged: {
-                    messagesCard.selectedConversation = null;
-                    messagesCard.replyingTo = null;
+                Layout.preferredWidth: 290
+                model: messagesCard.accountChoices
+                textRole: "displayLabel"
+                currentIndex: messagesCard.accountChoices.findIndex(item =>
+                    item.id === messagesCard.selectedAccountId)
+                onActivated: index => {
+                    messagesCard.explicitAccountSelection = true;
+                    messagesCard.selectedAccountId = messagesCard.accountChoices[index].id;
                 }
             }
             Button {
@@ -144,7 +160,7 @@ Item {
                 enabled: modernAccountPicker.count > 0
                     && !HandoverService.pendingMessaging
                 onClicked: HandoverService.syncAccount(
-                    HandoverService.messagingAccounts[modernAccountPicker.currentIndex].id)
+                    messagesCard.selectedAccount.id)
             }
         }
 

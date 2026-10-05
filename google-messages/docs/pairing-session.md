@@ -3,7 +3,8 @@
 The independent Rust lookup succeeded on 2026-10-02 using one-time matched
 browser credentials. Native phone pairing, session restoration, conversation
 and history reads, and automatic incoming display passed live tests on
-2026-10-05. Text sends have local mock coverage and need a recipient test.
+2026-10-05. One native text passed a recipient test; send-reply correlation
+remains unresolved.
 This document separates the observed wire contract from implementation policy.
 
 ## Registered phone selection
@@ -765,5 +766,11 @@ erase that uncertainty; an authenticated assigned message ID can resolve it.
 
 Mock tests cover capability gating, queue limits, acceptance before submission,
 authenticated success and rejection, publication before ACK, malformed replies,
-HTTP failure without retries, and operation-scope checks. Phone arrival and
-outgoing display remain unverified. The production adapter remains the default.
+HTTP failure without retries, and operation-scope checks. The user confirmed
+that one native text appeared on the phone and reached the recipient. The daemon
+observed helper acceptance followed by an unknown outcome, without an assigned
+message ID. That verifies actual sending, but not native send-reply correlation
+or provider delivery-state reporting. No automatic retry was made. A local
+forwarding diagnostic is ready to capture only fixed helper error categories
+and normalized send-state tokens on the next test. It never saves payloads or
+identifiers. The production adapter remains the default.
