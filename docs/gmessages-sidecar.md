@@ -259,9 +259,23 @@ interval. No receiver error or disconnect was observed. The exact unsupported
 payload was not confirmed to recur, so replay coverage is synthetic rather than
 an attested reproduction of that payload. Production was restored afterward.
 
-An accepted send without an assigned ID is not yet linked to a later message
-push. Operation delivery-status correlation therefore remains unimplemented;
-message contents and timestamps are never used to guess that link.
+For new native sends, the helper represents the daemon's random 128-bit outgoing
+operation ID as the protocol temporary UUID. An authenticated outgoing message
+update carrying that same temporary identifier can bind its phone-assigned ID
+and attested sent, delivered, or displayed state to the existing operation.
+The daemon requires an exact account and conversation match, ignores unknown
+operation IDs, and rejects attempts to change an assigned message ID. A late
+acceptance cannot downgrade a later status.
+
+This reversible identity representation requires no helper-side mapping store;
+a later push can resolve a journal-restored unknown operation without replaying
+the send. Incoming, draft, and unsupported status updates never establish a
+link. Updates missing the temporary identifier still update messages but cannot
+resolve an unassigned outgoing operation. The field follows first-party Q2a's
+message field 12. Synthetic projection, helper-contract, and daemon recovery
+checks cover this path; it still needs live verification. Older native sends
+used unrelated random temporary identifiers and cannot gain this link.
+Message contents and timestamps are never used to guess an identity.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

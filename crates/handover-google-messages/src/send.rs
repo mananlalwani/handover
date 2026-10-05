@@ -41,6 +41,31 @@ pub(crate) fn request(
     };
     Ok(Zeroizing::new(request.encode_to_vec()))
 }
+/// Preserve the daemon's random 128-bit operation identity in UUID text form.
+/// Other helper callers retain the existing fresh-temporary behavior.
+pub(crate) fn temporary(request_id: &str) -> uuid::Uuid {
+    request_id
+        .strip_prefix("send-")
+        .filter(|value| {
+            value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .unwrap_or_else(uuid::Uuid::new_v4)
+}
+pub(crate) fn operation_id(temporary: &str) -> Option<String> {
+    if temporary.len() != 36 {
+        return None;
+    }
+    let id = uuid::Uuid::parse_str(temporary).ok()?;
+    if id.to_string() != temporary {
+        return None;
+    }
+    Some(format!("send-{}", id.simple()))
+}
+
 pub(crate) enum Reply {
     Accepted(Option<String>),
     Rejected,
@@ -155,6 +180,21 @@ impl Drop for Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operation_identity_roundtrips_without_a_session_mapping() {
+        let request = "send-0123456789abcdef0123456789abcdef";
+        let wire = temporary(request).to_string();
+        assert_eq!(operation_id(&wire).as_deref(), Some(request));
+        for invalid in [
+            "",
+            "not-an-id",
+            "0123456789abcdef0123456789abcdef",
+            "01234567-89AB-CDEF-0123-456789ABCDEF",
+        ] {
+            assert!(operation_id(invalid).is_none());
+        }
+        assert_ne!(temporary("other-request"), temporary("other-request"));
+    }
     #[test]
     fn invalid_replies_report_fixed_categories_without_payloads() {
         for (bytes, category) in [

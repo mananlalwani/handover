@@ -10,6 +10,7 @@ pub enum Update {
     Messages {
         records: Vec<CoreMessage>,
         statuses: Vec<(MessageId, &'static str)>,
+        correlations: Vec<(String, MessageId)>,
     },
     Active,
     Inactive,
@@ -71,6 +72,7 @@ pub(crate) fn decode(
             }
             let mut messages = Vec::<CoreMessage>::new();
             let mut statuses = Vec::<(MessageId, &'static str)>::new();
+            let mut correlations = Vec::<(String, MessageId)>::new();
             let raw = Zeroizing::new(std::mem::take(&mut batch.records));
             for bytes in raw.iter() {
                 if bytes.len() > 64 * 1024 {
@@ -108,10 +110,22 @@ pub(crate) fn decode(
                     } else {
                         messages.push(record);
                     }
-                    if outgoing {
-                        if let Some(status) =
-                            thread.status.as_ref().and_then(|value| status(value.code))
-                        {
+                    let lifecycle = thread.status.as_ref().and_then(|value| status(value.code));
+                    if outgoing && lifecycle.is_some() {
+                        if let Some(request_id) = crate::send::operation_id(&thread.temporary) {
+                            if let Some((previous_request, previous)) =
+                                correlations.iter().find(|(request, previous)| {
+                                    *request == request_id || *previous == id
+                                })
+                            {
+                                if *previous != id || *previous_request != request_id {
+                                    return Err(invalid());
+                                }
+                            } else {
+                                correlations.push((request_id, id.clone()));
+                            }
+                        }
+                        if let Some(status) = lifecycle {
                             if let Some((_, previous)) =
                                 statuses.iter().find(|(previous_id, _)| *previous_id == id)
                             {
@@ -128,6 +142,7 @@ pub(crate) fn decode(
             Ok(Update::Messages {
                 records: messages,
                 statuses,
+                correlations,
             })
         }
         6 => {
@@ -207,6 +222,8 @@ struct Thread {
     id: String,
     #[prost(message, optional, tag = "4")]
     status: Option<Status>,
+    #[prost(string, tag = "12")]
+    temporary: String,
 }
 #[derive(Message)]
 struct Status {
@@ -226,6 +243,7 @@ fn status(code: i32) -> Option<&'static str> {
 impl Drop for Thread {
     fn drop(&mut self) {
         self.id.zeroize();
+        self.temporary.zeroize();
     }
 }
 #[derive(Message)]
@@ -301,13 +319,16 @@ mod tests {
             (100, None),
         ] {
             let (conversation, record) = fixture(code);
-            let Update::Messages { records, statuses } = decode(
+            let Update::Messages {
+                records, statuses, ..
+            } = decode(
                 "fixture",
                 std::slice::from_ref(&conversation),
                 &push(vec![record]),
                 true,
             )
-            .unwrap() else {
+            .unwrap()
+            else {
                 panic!("messages")
             };
             assert_eq!(records.len(), 1);
@@ -321,6 +342,57 @@ mod tests {
         let (conversation, first) = fixture(1);
         let (_, second) = fixture(2);
         assert!(decode("fixture", &[conversation], &push(vec![first, second]), true).is_err());
+    }
+    #[test]
+    fn temporary_identity_links_only_attested_outgoing_states() {
+        let operation = "send-0123456789abcdef0123456789abcdef";
+        let temporary = crate::send::temporary(operation).to_string();
+        for code in [1, 2, 11, 3, 100] {
+            let (conversation, mut record) = fixture(code);
+            record.extend_from_slice(&[0x62, 36]);
+            record.extend_from_slice(temporary.as_bytes());
+            let Update::Messages {
+                records,
+                correlations,
+                ..
+            } = decode("fixture", &[conversation], &push(vec![record]), true).unwrap()
+            else {
+                panic!("messages")
+            };
+            if [1, 2, 11].contains(&code) {
+                assert_eq!(
+                    correlations,
+                    vec![(operation.into(), records[0].id.clone())]
+                );
+            } else {
+                assert!(correlations.is_empty());
+            }
+        }
+        let (conversation, mut first) = fixture(1);
+        first.extend_from_slice(&[0x62, 36]);
+        first.extend_from_slice(temporary.as_bytes());
+        let mut second = first.clone();
+        second[2] = b'n';
+        assert!(
+            decode(
+                "fixture",
+                std::slice::from_ref(&conversation),
+                &push(vec![first.clone(), second]),
+                true
+            )
+            .is_err()
+        );
+        let mut second_operation = first.clone();
+        *second_operation.last_mut().unwrap() = b'e';
+        assert!(
+            decode(
+                "fixture",
+                &[conversation],
+                &push(vec![first, second_operation]),
+                true
+            )
+            .is_err()
+        );
     }
     #[test]
     fn unsupported_content_leaves_the_whole_batch_unprojected() {

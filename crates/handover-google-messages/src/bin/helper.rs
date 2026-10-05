@@ -441,8 +441,25 @@ async fn publish_message_updates<W: AsyncWrite + Unpin>(
     account: String,
     records: Vec<handover_core::messaging::Message>,
     statuses: Vec<(handover_core::messaging::MessageId, &'static str)>,
+    correlations: Vec<(String, handover_core::messaging::MessageId)>,
 ) -> std::io::Result<()> {
     publish_push_messages(writer, account.clone(), records).await?;
+    for (request_id, id) in correlations {
+        let Some((_, status)) = statuses.iter().find(|(message, _)| *message == id) else {
+            continue;
+        };
+        publish(
+            writer,
+            HelperEvent::SendStatus {
+                request_id,
+                account: account.clone(),
+                conversation: id.conversation_id.local_id,
+                message: Some(id.local_id),
+                status: (*status).into(),
+            },
+        )
+        .await?;
+    }
     for (id, status) in statuses {
         publish(
             writer,
@@ -901,8 +918,8 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 }
                                 publish_history(writer, account.clone(), conversation, fetch_id, page).await?;
                             }
-                            LiveEvent::Messages { records, statuses } => {
-                                publish_message_updates(writer, account.clone(), records, statuses).await?;
+                            LiveEvent::Messages { records, statuses, correlations } => {
+                                publish_message_updates(writer, account.clone(), records, statuses, correlations).await?;
                             },
                         }
                         let _ = output.accepted.send(());
@@ -2399,7 +2416,8 @@ mod tests {
             &mut output,
             "fixture".into(),
             vec![record],
-            vec![(id, "delivered")],
+            vec![(id.clone(), "delivered")],
+            vec![("send-0123456789abcdef0123456789abcdef".into(), id)],
         )
         .await
         .unwrap();
@@ -2408,14 +2426,17 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert!(
             matches!(&events[0], HelperEvent::Messages { messages, page_complete: false, .. } if messages.len() == 1)
         );
         assert!(
-            matches!(&events[1], HelperEvent::Status { account, conversation, message, status } if account == "fixture" && conversation == "thread" && message == "message" && status == "delivered")
+            matches!(&events[1], HelperEvent::SendStatus { request_id, account, conversation, message: Some(message), status } if request_id == "send-0123456789abcdef0123456789abcdef" && account == "fixture" && conversation == "thread" && message == "message" && status == "delivered")
         );
-        let HelperEvent::Status { status, .. } = &events[1] else {
+        assert!(
+            matches!(&events[2], HelperEvent::Status { account, conversation, message, status } if account == "fixture" && conversation == "thread" && message == "message" && status == "delivered")
+        );
+        let HelperEvent::Status { status, .. } = &events[2] else {
             panic!("status")
         };
         assert_eq!(

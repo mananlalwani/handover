@@ -1094,6 +1094,10 @@ async fn ingest_event(
                         !id.is_empty()
                             && id.len() <= handover_core::messaging::MAX_ID_LEN
                             && !id.chars().any(char::is_control)
+                            && operation
+                                .message_id
+                                .as_ref()
+                                .is_none_or(|known| known.local_id == *id)
                     })
                 {
                     if status == "unknown" {
@@ -2050,6 +2054,84 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn correlated_send_status_recovers_unknown_without_rebinding_identity() {
+        use handover_core::{
+            MessageStatus, OutgoingOperation, OutgoingOperationKind, OutgoingOutcome,
+        };
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(16);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        let conversation_id = ConversationId::new(MessagingAccountId::new("personal"), "thread");
+        crate::apply_backend_event(
+            &state,
+            &events,
+            StateEvent::Messaging(MessagingEvent::Outgoing(OutgoingOperation {
+                id: "send-test".into(),
+                conversation_id: conversation_id.clone(),
+                kind: OutgoingOperationKind::Text,
+                created_at: 1,
+                updated_at: 1,
+                outcome: OutgoingOutcome::Unknown,
+                message_id: None,
+            })),
+        );
+        for (account, conversation) in [("other", "thread"), ("personal", "other")] {
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::SendStatus {
+                    request_id: "send-test".into(),
+                    account: account.into(),
+                    conversation: conversation.into(),
+                    message: Some("assigned".into()),
+                    status: "delivered".into(),
+                },
+            )
+            .await;
+            assert_eq!(
+                state
+                    .read()
+                    .unwrap()
+                    .messaging()
+                    .outgoing("send-test")
+                    .unwrap()
+                    .outcome,
+                OutgoingOutcome::Unknown
+            );
+        }
+        for (message, status, expected) in [
+            (Some("assigned"), "delivered", MessageStatus::Delivered),
+            (None, "accepted", MessageStatus::Delivered),
+            (Some("different"), "displayed", MessageStatus::Delivered),
+            (Some("assigned"), "displayed", MessageStatus::Displayed),
+        ] {
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::SendStatus {
+                    request_id: "send-test".into(),
+                    account: "personal".into(),
+                    conversation: "thread".into(),
+                    message: message.map(str::to_owned),
+                    status: status.into(),
+                },
+            )
+            .await;
+            let locked = state.read().unwrap();
+            let operation = locked.messaging().outgoing("send-test").unwrap();
+            assert_eq!(operation.outcome, OutgoingOutcome::Provider(expected));
+            assert_eq!(
+                operation.message_id,
+                Some(MessageId::new(conversation_id.clone(), "assigned"))
+            );
+        }
+    }
     #[tokio::test]
     async fn unknown_send_outcome_requires_matching_operation_scope() {
         use handover_core::{OutgoingOperation, OutgoingOperationKind, OutgoingOutcome};

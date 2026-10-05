@@ -37,6 +37,7 @@ pub enum LiveEvent {
     Messages {
         records: Vec<handover_core::messaging::Message>,
         statuses: Vec<(handover_core::messaging::MessageId, &'static str)>,
+        correlations: Vec<(String, handover_core::messaging::MessageId)>,
     },
 }
 /// The consumer confirms publication before a processed push is acknowledged.
@@ -251,8 +252,11 @@ impl RecoveredSession {
                         .await?;
                         continue;
                     }
-                    let payload =
-                        crate::send::request(&conversation, &text, &Uuid::new_v4().to_string())?;
+                    let payload = crate::send::request(
+                        &conversation,
+                        &text,
+                        &crate::send::temporary(&request_id).to_string(),
+                    )?;
                     let send = tokio::time::timeout(
                         Duration::from_secs(60),
                         self.send_on_stream(
@@ -465,8 +469,20 @@ impl RecoveredSession {
                 merge(known, &records)?;
                 publish(events, LiveEvent::ConversationUpdates(records)).await?;
             }
-            crate::updates::Update::Messages { records, statuses } => {
-                publish(events, LiveEvent::Messages { records, statuses }).await?
+            crate::updates::Update::Messages {
+                records,
+                statuses,
+                correlations,
+            } => {
+                publish(
+                    events,
+                    LiveEvent::Messages {
+                        records,
+                        statuses,
+                        correlations,
+                    },
+                )
+                .await?
             }
             crate::updates::Update::PresenceCheck => {
                 let request = self.build_request(
