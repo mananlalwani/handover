@@ -551,3 +551,8 @@ cursor traversal and merging compatible repeated records. A separate daemon
 check published all 201 records with the account still offline and no send or
 history capabilities. Completeness and membership still need another visual
 check against the phone.
+
+The second visual comparison on 2026-10-05 confirmed that conversation names in
+the expanded list looked correct. It did not separately verify membership,
+unread counts, or the active-status filter's coverage. The production relay was
+restored after the comparison.
