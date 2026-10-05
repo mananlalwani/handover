@@ -280,6 +280,14 @@ Singleton {
     }
 
     function markRead(conversationId) {
+        if (!conversationId)
+            return false;
+        const account = messagingAccounts.find(item => item.id === conversationId.account_id);
+        const conversation = conversations.find(item => sameConversationId(item.id, conversationId));
+        if (!account || !account.connected || !account.authenticated
+                || !conversation || !conversation.capabilities
+                || !conversation.capabilities.includes("read_receipts"))
+            return false;
         return sendMessaging("messages.read", { conversation_id: conversationId });
     }
 
