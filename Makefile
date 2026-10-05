@@ -33,6 +33,7 @@ install-files:
 	install -Dm644 completions/handoverctl.fish $(FISH_COMPLETION_DIR)/handoverctl.fish
 	install -Dm644 $(UNIT_SRC) $(USER_UNIT_DIR)/handoverd.service
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
+	install -Dm644 quickshell/*.js $(QUICKSHELL_INSTALL_DIR)/
 	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
 	install -Dm644 quickshell/README.md $(QUICKSHELL_INSTALL_DIR)/README.md
 	install -d $(QUICKSHELL_INSTALL_DIR)/pages
@@ -64,6 +65,7 @@ uninstall-user:
 	rm -f $(ZSH_COMPLETION_DIR)/_handoverctl
 	rm -f $(FISH_COMPLETION_DIR)/handoverctl.fish
 	rm -f $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/*.js
 	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/README.md
 	rm -f $(QUICKSHELL_INSTALL_DIR)/pages/*.qml

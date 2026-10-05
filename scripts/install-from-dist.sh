@@ -25,6 +25,8 @@ install -Dm644 "$ROOT/share/systemd/user/handoverd.service" \
 install -d "$USER_DATA_HOME/handover/quickshell/pages"
 install -Dm644 "$ROOT/share/handover/quickshell/HandoverService.qml" \
 	"$USER_DATA_HOME/handover/quickshell/HandoverService.qml"
+install -Dm644 "$ROOT/share/handover/quickshell/"*.js \
+	"$USER_DATA_HOME/handover/quickshell/"
 install -Dm644 "$ROOT/share/handover/quickshell/example.qml" \
 	"$USER_DATA_HOME/handover/quickshell/example.qml"
 install -Dm644 "$ROOT/share/handover/quickshell/README.md" \
