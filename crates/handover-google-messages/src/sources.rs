@@ -117,6 +117,12 @@ impl RegisteredSources {
         result
     }
 
+    pub(crate) fn contains_paired_phone(&self, peer: &[u8]) -> bool {
+        self.phones
+            .iter()
+            .any(|phone| phone.pairing_identity() == Some(peer))
+    }
+
     pub(crate) fn contains_registration(
         &self,
         registration: &crate::registration::UnpairedRegistration,

@@ -1,15 +1,17 @@
 //! Independently authored Google Messages protocol client for Handover.
 //!
 //! It contains bounded authentication, registration, pairing, and receive
-//! primitives. Network effects are explicit; the helper does not yet run a
-//! completed phone-pairing or messaging session.
+//! primitives and read-only conversation projection. Network effects are
+//! explicit; persistent messaging and chat sends remain unavailable.
 
+mod conversation;
 pub mod credential_store;
 pub mod login;
 pub mod native;
 pub mod pairing;
 pub mod receive;
 pub mod registration;
+pub mod session;
 pub mod session_store;
 pub mod sources;
 
@@ -171,6 +173,7 @@ pub enum ProbeError {
     RegistrationAccountMismatch,
     SessionStoreFailed,
     CredentialStore(credential_store::CredentialError),
+    SessionProtocol(session::SessionError),
     AmbiguousRegistration,
     DaemonUnavailable,
     SessionExpired,
@@ -215,6 +218,7 @@ impl ProbeError {
             Self::RegistrationAccountMismatch => "registration_account_mismatch",
             Self::SessionStoreFailed => "session_store_failed",
             Self::CredentialStore(_) => "credential_store_failed",
+            Self::SessionProtocol(_) => "session_protocol",
             Self::AmbiguousRegistration => "ambiguous_registration",
             Self::DaemonUnavailable => "daemon_unavailable",
             Self::SessionExpired => "session_expired",

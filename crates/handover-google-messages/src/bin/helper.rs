@@ -10,7 +10,7 @@
 //! Scope: this is the process seam, not a finished client. It owns the
 //! restricted session store, restores pending unpaired registrations, and
 //! runs explicit bounded phone-pairing attempts, and gates messaging until a
-//! usable session exists. Browser proofs stay transient.
+//! usable session exists. Verified authentication stays in desktop Secret Service.
 //!
 //! It never logs bundles, tokens, keys, account email, message bodies, or
 //! media bytes.
@@ -47,9 +47,157 @@ const UNAVAILABLE: &str = "capability not available in the native helper";
 
 #[tokio::main]
 async fn main() {
+    let operation = std::env::args().nth(1);
+    if matches!(
+        operation.as_deref(),
+        Some("--probe-startup" | "--check-recovery" | "--probe-conversations")
+    ) {
+        let result = async {
+            let store = SessionStore::default_store()
+                .map_err(|_| handover_google_messages::ProbeError::SessionStoreFailed)?;
+            let mut pairings = ConfirmedPairing::restore_all(&store)?;
+            if pairings.len() != 1 {
+                return Err(handover_google_messages::ProbeError::AmbiguousRegistration);
+            }
+            let session =
+                handover_google_messages::session::RecoveredSession::restore(pairings.remove(0))
+                    .await?;
+            if operation.as_deref() == Some("--check-recovery") {
+                Ok(None)
+            } else if operation.as_deref() == Some("--probe-conversations") {
+                session.probe_conversations().await.map(Some)
+            } else {
+                session.probe_startup().await.map(|_| None)
+            }
+        }
+        .await;
+        let failed = result.is_err();
+        match result {
+            Ok(None) if operation.as_deref() == Some("--check-recovery") => println!(
+                "Native keys and desktop authentication restored; registration token is locally valid. No network request was sent."
+            ),
+            Ok(Some(count)) => println!(
+                "Native conversation page decoded and acknowledged: {count} normalized record(s). Full snapshot and ongoing messaging remain unverified."
+            ),
+            Ok(None) => println!(
+                "Native receive opened and activation was HTTP accepted. Online messaging remains unverified."
+            ),
+            Err(handover_google_messages::ProbeError::SessionProtocol(category)) => println!(
+                "Native startup failed (session_protocol, {category:?}). Saved pairing retained."
+            ),
+            Err(error) => println!(
+                "Native startup failed ({}, HTTP {:?}, RPC {:?}). Saved pairing retained.",
+                error.code(),
+                error.http_status(),
+                error.rpc_status()
+            ),
+        }
+        if failed {
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
     let mut writer = tokio::io::stdout();
     let _ = serve_async(&mut NativeHelper::new(), &mut reader, &mut writer).await;
+}
+
+enum WorkOutcome {
+    Login(LoginOutcome),
+    ConversationPage(Vec<handover_core::messaging::Conversation>),
+}
+
+fn wire_conversation(
+    conversation: handover_core::messaging::Conversation,
+) -> handover_gmessages::contract::WireConversation {
+    use handover_core::messaging::ConversationKind;
+    use handover_gmessages::contract::{
+        WireConversation, WireConversationKind, WireParticipant, WireTransport,
+    };
+    WireConversation {
+        local_id: conversation.id.local_id,
+        kind: match conversation.kind {
+            ConversationKind::Direct => WireConversationKind::Direct,
+            ConversationKind::Group => WireConversationKind::Group,
+        },
+        transport: WireTransport::Unknown,
+        title: conversation.title,
+        participants: conversation
+            .participants
+            .into_iter()
+            .map(|participant| WireParticipant {
+                local_id: participant.local_id,
+                display_name: participant.display_name,
+                address: participant.address,
+                is_self: participant.is_self,
+            })
+            .collect(),
+        latest_message: None,
+        last_activity_at: conversation.last_activity_at,
+        unread_count: conversation.unread_count,
+        cursor: None,
+        capabilities: Vec::new(),
+    }
+}
+
+async fn publish_page<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    account: String,
+    page: Vec<handover_core::messaging::Conversation>,
+) -> std::io::Result<()> {
+    let mut event = HelperEvent::Conversations {
+        account,
+        conversations: Vec::new(),
+        full: false,
+        generation: None,
+    };
+    for conversation in page {
+        let HelperEvent::Conversations { conversations, .. } = &mut event else {
+            unreachable!()
+        };
+        conversations.push(wire_conversation(conversation));
+        if encode(&event).len() > MAX_HELPER_LINE_BYTES {
+            let HelperEvent::Conversations { conversations, .. } = &mut event else {
+                unreachable!()
+            };
+            let last = conversations.pop().expect("just added");
+            if conversations.is_empty() {
+                publish(
+                    writer,
+                    HelperEvent::Error {
+                        message: "native conversation exceeds helper contract bound".into(),
+                    },
+                )
+                .await?;
+                continue;
+            }
+            publish(writer, event.clone()).await?;
+            let HelperEvent::Conversations { conversations, .. } = &mut event else {
+                unreachable!()
+            };
+            conversations.clear();
+            conversations.push(last);
+            if encode(&event).len() > MAX_HELPER_LINE_BYTES {
+                let HelperEvent::Conversations { conversations, .. } = &mut event else {
+                    unreachable!()
+                };
+                conversations.clear();
+                publish(
+                    writer,
+                    HelperEvent::Error {
+                        message: "native conversation exceeds helper contract bound".into(),
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+    if let HelperEvent::Conversations { conversations, .. } = &event {
+        if !conversations.is_empty() {
+            publish(writer, event).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn publish<W: AsyncWrite + Unpin>(writer: &mut W, event: HelperEvent) -> std::io::Result<()> {
@@ -69,8 +217,39 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let mut jobs = JoinSet::new();
     let mut generation = 0_u64;
     let mut active_account: Option<String> = None;
+    let mut active_sync = false;
     let mut line = Zeroizing::new(Vec::new());
     loop {
+        if jobs.is_empty() {
+            if let Some(account) = helper.pending_sync.take() {
+                if let Some(store) = helper.store.clone() {
+                    generation = generation.wrapping_add(1);
+                    let expected = generation;
+                    active_account = Some(account.clone());
+                    active_sync = true;
+                    helper.login_active = Some(account.clone());
+                    jobs.spawn(async move {
+                        let result = async {
+                            let pairing = ConfirmedPairing::restore_all(&store)?
+                                .into_iter()
+                                .find(|pairing| pairing.account_id() == account)
+                                .ok_or(handover_google_messages::ProbeError::InvalidBootstrap)?;
+                            let session =
+                                handover_google_messages::session::RecoveredSession::restore(
+                                    pairing,
+                                )
+                                .await?;
+                            session
+                                .read_conversation_page()
+                                .await
+                                .map(WorkOutcome::ConversationPage)
+                        }
+                        .await;
+                        (expected, account, result)
+                    });
+                }
+            }
+        }
         let mut bounded = AsyncReadExt::take(
             &mut *reader,
             MAX_LINE_READ.saturating_sub(line.len() as u64),
@@ -96,6 +275,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             active_account = None;
                             helper.login_active = None;
                             helper.pending_login = None;
+                            helper.pending_sync = None;
                         }
                         if control.kind == "logout" && helper.desktop_credentials {
                             if let Some(account) = control.account.as_deref().filter(|account| helper.accounts.contains(*account)) {
@@ -125,13 +305,14 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     generation = generation.wrapping_add(1);
                     let expected = generation;
                     active_account = Some(account.clone());
+                    active_sync = false;
                     let progress_tx = progress_tx.clone();
                     jobs.spawn(async move {
                         let result = bootstrap.run(|progress| {
                             progress_tx.try_send((expected, account.clone(), progress))
                                 .map_err(|_| handover_google_messages::ProbeError::NativeError)
                         }).await;
-                        (expected, account, result)
+                        (expected, account, result.map(WorkOutcome::Login))
                     });
                 }
             }
@@ -148,7 +329,15 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 publish(writer, HelperEvent::Pairing { account, prompt }).await?;
             }
             Some(completed) = jobs.join_next(), if !jobs.is_empty() => {
-                let Ok((expected, account, result)) = completed else { continue; };
+                let (expected, account, result) = match completed {
+                    Ok(completed) => completed,
+                    Err(_) => {
+                        helper.login_active = None;
+                        active_account = None;
+                        publish(writer, HelperEvent::Error { message: "native operation interrupted".into() }).await?;
+                        continue;
+                    }
+                };
                 if expected != generation || active_account.as_deref() != Some(&account) { continue; }
                 // Drain progress before completing, so a fast mock peer cannot
                 // cause the verification prompt to be lost behind completion.
@@ -167,11 +356,12 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 helper.login_active = None;
                 active_account = None;
                 match result {
-                    Ok(LoginOutcome::Ready) => {}
-                    Ok(LoginOutcome::CredentialsSaved) => {
+                    Ok(WorkOutcome::ConversationPage(page)) => publish_page(writer, account, page).await?,
+                    Ok(WorkOutcome::Login(LoginOutcome::Ready)) => {}
+                    Ok(WorkOutcome::Login(LoginOutcome::CredentialsSaved)) => {
                         publish(writer, HelperEvent::Pairing { account, prompt: "Native account verified. Google authentication saved in the desktop credential store. Messaging startup is pending.".into() }).await?;
                     }
-                    Ok(LoginOutcome::PhoneConfirmed { pairing, acknowledgement_accepted, credential_error }) => {
+                    Ok(WorkOutcome::Login(LoginOutcome::PhoneConfirmed { pairing, acknowledgement_accepted, credential_error })) => {
                         helper.confirmed.insert(account.clone(), *pairing);
                         publish(writer, HelperEvent::Account {
                             account: account.clone(), label: "Google Messages (offline)".into(),
@@ -186,6 +376,12 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             format!("{prompt} Google authentication was not saved ({error:?}); sign in again, do not pair again.")
                         } else { prompt.into() };
                         publish(writer, HelperEvent::Pairing { account, prompt }).await?;
+                    }
+                    Err(error) if active_sync => {
+                        let category = if let handover_google_messages::ProbeError::SessionProtocol(category) = &error {
+                            format!("{}, {category:?}", error.code())
+                        } else { error.code().to_owned() };
+                        publish(writer, HelperEvent::Error { message: format!("native conversation sync failed ({category})") }).await?;
                     }
                     Err(error) => {
                         publish(writer, HelperEvent::Pairing {
@@ -244,8 +440,8 @@ fn encode(event: &HelperEvent) -> String {
 /// Build the announcement for one account this helper knows about.
 ///
 /// Every account is `connected: false` and `authenticated: false`. This helper
-/// has no paired phone and re-attests nothing with Google, so an announcement
-/// must never imply a live session, a paired device, or a verified login.
+/// starts offline. Saved pairing and authentication do not establish a live
+/// receive session, so announcements must not imply one.
 ///
 /// Deliberately the single definition: every announcement this helper emits
 /// goes through here, so the invariant has one place to hold.
@@ -267,6 +463,7 @@ struct NativeHelper {
     accounts: BTreeSet<String>,
     shutdown: bool,
     pending_login: Option<(String, LoginBootstrap)>,
+    pending_sync: Option<String>,
     login_active: Option<String>,
     confirmed: BTreeMap<String, ConfirmedPairing>,
     desktop_credentials: bool,
@@ -279,6 +476,7 @@ impl NativeHelper {
             accounts: BTreeSet::new(),
             shutdown: false,
             pending_login: None,
+            pending_sync: None,
             login_active: None,
             confirmed: BTreeMap::new(),
             desktop_credentials: true,
@@ -328,14 +526,16 @@ impl NativeHelper {
                 self.shutdown = true;
                 Vec::new()
             }
-            // These carry no waiter and no request id. Silence is the honest
-            // answer: this helper has no authoritative list, window, or read
-            // state to publish, and an empty `Conversations` or `Messages`
-            // window would claim the account is empty.
-            HelperCommand::ListConversations { .. }
-            | HelperCommand::Sync { .. }
-            | HelperCommand::MarkRead { .. }
-            | HelperCommand::Typing { .. } => Vec::new(),
+            // One pending read coalesces repeated requests while network work
+            // is active. Pages remain incremental until complete snapshot
+            // paging is implemented.
+            HelperCommand::ListConversations { account } | HelperCommand::Sync { account } => {
+                if self.desktop_credentials && self.confirmed.contains_key(&account) {
+                    self.pending_sync = Some(account);
+                }
+                Vec::new()
+            }
+            HelperCommand::MarkRead { .. } | HelperCommand::Typing { .. } => Vec::new(),
             // A history request has a waiter the daemon would otherwise hold
             // until timeout, so fail it instead.
             HelperCommand::FetchHistory { .. } => vec![HelperEvent::Error {
@@ -421,7 +621,7 @@ impl NativeHelper {
         }
         if self.login_active.is_some() {
             return vec![HelperEvent::Error {
-                message: "native login already active for an account".into(),
+                message: "native operation already active for an account".into(),
             }];
         }
         let Some(store) = &self.store else {
@@ -540,6 +740,70 @@ mod tests {
             prompt,
             "Native account verified, but Google authentication was not saved (Locked). Sign in again; do not pair again."
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_pages_keep_the_contract_bound_and_remain_incremental() {
+        use handover_core::messaging::{
+            Conversation, ConversationId, ConversationKind, MessagingAccountId, Participant,
+            TransportKind,
+        };
+        let account = MessagingAccountId::new("gmessages-fixture");
+        let mut page = Vec::new();
+        for index in 0..12 {
+            page.push(Conversation {
+                id: ConversationId::new(account.clone(), format!("thread-{index}")),
+                kind: ConversationKind::Group,
+                transport: TransportKind::Unknown,
+                title: Some("Fixture".into()),
+                participants: (0..256)
+                    .map(|participant| Participant {
+                        local_id: format!("participant-{participant}"),
+                        display_name: Some("N".repeat(256)),
+                        address: Some("A".repeat(256)),
+                        is_self: false,
+                    })
+                    .collect(),
+                latest_message_id: None,
+                last_activity_at: Some(1234),
+                unread_count: None,
+                cursor: None,
+                capabilities: BTreeSet::new(),
+            });
+        }
+        let mut output = Vec::new();
+        publish_page(&mut output, account.as_str().into(), page)
+            .await
+            .unwrap();
+        let mut count = 0;
+        let mut chunks = 0;
+        for line in output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            assert!(line.len() <= MAX_HELPER_LINE_BYTES);
+            let HelperEvent::Conversations {
+                conversations,
+                full,
+                generation,
+                ..
+            } = serde_json::from_slice(line).unwrap()
+            else {
+                panic!("page must contain only conversations")
+            };
+            assert!(!full);
+            assert!(generation.is_none());
+            for wire in conversations {
+                let normalized =
+                    handover_gmessages::normalize_conversation(&account, wire).unwrap();
+                assert_eq!(normalized.transport, TransportKind::Unknown);
+                assert!(normalized.capabilities.is_empty());
+                count += 1;
+            }
+            chunks += 1;
+        }
+        assert_eq!(count, 12);
+        assert!(chunks > 1);
     }
 
     fn helper_with_store(directory: &std::path::Path) -> NativeHelper {

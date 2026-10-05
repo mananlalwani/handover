@@ -55,6 +55,8 @@ Singleton {
     }
 
     function contactLabel(participant) {
+        if (participant.is_self && !participant.display_name && !participant.address)
+            return "You";
         const contact = contactForParticipant(participant);
         return contact ? contact.display_name
             : (participant.display_name || participant.address || participant.local_id);

@@ -309,6 +309,13 @@ impl UnpairedRegistration {
         })
     }
 
+    pub(crate) fn messaging_header(&self) -> Result<Value, RegistrationError> {
+        self.remaining_lifetime()?;
+        let mut header = request_header();
+        header[5] = Value::String(general_purpose::STANDARD.encode(self._token.as_slice()));
+        Ok(header)
+    }
+
     /// Build a fresh initial pairing envelope only while this registration
     /// token remains valid. The token never leaves this registration object.
     pub fn initial_pairing_envelope(

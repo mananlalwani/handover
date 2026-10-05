@@ -22,6 +22,12 @@ const ACK_LIMIT: usize = 50;
 /// its request, peer, and response validation.
 pub struct Acknowledgement(Zeroizing<String>);
 
+impl Acknowledgement {
+    pub(crate) fn processed_session_reply(id: Zeroizing<String>) -> Self {
+        Self(id)
+    }
+}
+
 impl fmt::Debug for Acknowledgement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Acknowledgement { redacted }")

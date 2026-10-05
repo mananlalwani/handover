@@ -629,6 +629,10 @@ impl PhoneConfirmedPairing {
         })
     }
 
+    pub(crate) fn peer(&self) -> &[u8] {
+        &self._peer
+    }
+
     /// Offline encryption only; it makes no messaging request and advertises
     /// no send capability. Keys never leave the confirmed pairing object.
     pub fn encrypt_payload(

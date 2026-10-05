@@ -428,24 +428,24 @@ joins the worker before deleting files, including confirmation saved before its
 completion event reached the actor. Local deletion does not prove remote
 revocation.
 
-Confirmed records are restored as offline and unauthenticated. Conversations,
-history, messaging updates/sends, native refresh, remote logout, and usable
-session recovery remain unimplemented. Confirmation alone must not advertise
-those capabilities.
+Confirmed records restore as offline and unauthenticated. The bounded read-only
+conversation path below does not establish a persistent online session. History,
+ongoing updates, chat sends, native refresh, and remote logout remain unavailable.
+Confirmation alone must not advertise those capabilities.
 
 Verified offline: a local HTTP service and UKEY2 mock phone complete types 44 and
 45 and derive the same symbol. Tests cover read-only operation, account mismatch,
 stale replies, send/receive failure, cancellation, final ACK failure, private key
 recovery, expired-token preservation, and routing after helper replacement.
-Native phone pairing has not been live-tested. Registration remains the only
-native operation the user has performed against Google beyond read-only lookup.
+Native phone pairing completed a live test on 2026-10-05, including phone emoji
+confirmation, saved keys, and final acknowledgement.
 
 
 ## Messaging startup and credential retention decision
 
 Native pairing is confirmed, but the saved record contains no Google account
-authorization or service cookies. Current operations receive those values in a
-transient browser proof and discard them afterward. A paired-key record alone
+authorization or service cookies. The helper stores verified browser authentication separately in the desktop
+credential store under the approved policy below. A paired-key record alone
 must not be reported as an authenticated online account.
 
 A read-only review of the installed libgm version found that it retains a cookie
@@ -471,7 +471,68 @@ failed credential deletion leaves those records intact for a later attempt.
 The desktop store passed a live synthetic save, update, load, and deletion test.
 A fresh browser sign-in proof also passed the live native account check on
 2026-10-05, and the helper reported successful desktop authentication storage.
-The production relay was restored afterward. Startup, credential refresh, and
-browser-free messaging restoration remain unimplemented
-and require separate live verification. Paired keys or stored authentication alone
+The production relay was restored afterward. Bounded browser-free startup and
+conversation reads are implemented below. Token refresh, a persistent messaging
+connection, and complete snapshot recovery still require implementation and
+separate live verification. Paired keys or stored authentication alone
 do not establish an online account.
+
+
+## Bounded native startup and conversation reads
+
+The helper can restore confirmed keys and desktop authentication without opening
+Google Messages in a browser. A local recovery check validates credential shape
+and token lifetime without contacting Google. Expired tokens remain expired; no
+registration, re-pairing, or chat-send retry follows a failed check.
+
+A startup attempt first checks that the saved registration and paired phone
+remain in the signed-in account's source inventory. It opens receive before
+sending encrypted action-16 activation. First-party `Q3a`, `Qwa`, and `dJ`
+establish the encrypted timestamp, request/session-ID relationship, and outer
+transport fields. The activation request omits a delivery TTL. A live attempt on
+2026-10-05 opened receive and received HTTP acceptance for activation using the
+stored authentication. That result alone does not establish online messaging.
+
+The conversation probe sends encrypted action 1 with a requested count of 25 and
+the first-page annotation route. It accepts only replies correlated to that
+request and paired phone. Preemption, plaintext substitutions, malformed IDs,
+invalid message authentication, or invalid page records stop the attempt.
+Unrelated events are discarded without acknowledgement. The receive queue holds
+one matching reply, and the network attempt has a thirty-second limit.
+
+The requested count is a hint, not a hard response limit. The live phone returned
+27 raw records representing 25 distinct normalized conversations. Identical
+normalized records with the same conversation ID merge; conflicting records stop
+the page. The decoder keeps the existing 512-KiB receive-frame bound and permits
+at most 1,024 records per page, with a 64-KiB bound per conversation record. A
+validated page is acknowledged only after successful processing. The probe
+reports counts, never names, addresses, IDs, or payload contents.
+
+The minimal conversation projection follows first-party `SI`, `Wv`, `Qv`, and
+`Mv`. It preserves IDs, titles, participants, self flags, timestamps, and present
+unread counts. The participant key is distinct from its routing address. Peer
+identity uses that key when present and the routing address as a fallback.
+Explicit self flags establish one local user per account. Exact addresses and
+keys attested as self in the same conversation also link unflagged aliases.
+Multiple self SIM identities merge without choosing one SIM name or address.
+Distinct normalized membership can establish a group when an older thread omits
+the group flag. Duplicate participants with compatible known names merge;
+conflicting names or addresses fail. Transport stays unknown, and history/send
+capabilities remain absent. Message previews, media, and provider-specific flags
+are skipped. No Google protocol types cross the helper boundary.
+
+`ListConversations` and `Sync` now request one bounded page through the existing
+helper contract. The helper emits size-bounded incremental chunks with `full`
+false and no snapshot generation. It does not claim that the page covers every
+conversation or remove cached records that were absent from this page. Accounts
+remain offline because the bounded request closes receive after completion.
+Logout and pipe closure cancel the request before local credentials are removed.
+Further snapshot paging and persistent receive handling remain pending.
+
+On 2026-10-05, browser-free recovery, activation, decryption, projection, and
+acknowledgement passed against the paired phone. A separate daemon test published
+25 native conversation records through the existing IPC contract. The account
+remained offline, transport remained unknown, and no send or history capabilities
+were exposed. The production relay was restored after both checks. Conversation
+names, membership, and unread counts still need visual comparison with the phone;
+these checks reported counts and model invariants only.

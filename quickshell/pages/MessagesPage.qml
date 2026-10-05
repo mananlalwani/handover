@@ -67,6 +67,8 @@ Rectangle {
         if (conversation.title)
             return conversation.title;
         const others = conversation.participants.filter(item => !item.is_self);
+        if (others.length === 0 && conversation.participants.some(item => item.is_self))
+            return "You";
         return others.map(item =>
             HandoverService.contactLabel(item)).join(", ");
     }

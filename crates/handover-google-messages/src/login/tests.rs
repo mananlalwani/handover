@@ -1,4 +1,5 @@
 use super::*;
+use base64::engine::general_purpose::STANDARD;
 use crypto_provider_rustcrypto::RustCryptoImpl;
 use prost::Message;
 use rand::{SeedableRng, rngs::StdRng};
@@ -564,6 +565,30 @@ async fn exercise(
                 .as_bytes(),
             b"synthetic restart test"
         );
+        let session = crate::session::RecoveredSession::from_credentials(
+            ConfirmedPairing::restore_all(&store).unwrap().remove(0),
+            proof("gaia_pairing"),
+        )
+        .unwrap();
+        assert_eq!(format!("{session:?}"), "RecoveredSession { redacted }");
+        let activation = session.prepare_activation().unwrap();
+        assert_eq!(format!("{activation:?}"), "SessionRequest { redacted }");
+        let body: Value = serde_json::from_slice(activation.body().unwrap()).unwrap();
+        assert!(body[4].is_null(), "activation must omit delivery TTL");
+        let wrapper = STANDARD.decode(body[1][11].as_str().unwrap()).unwrap();
+        let wrapper = ActivationWrapper::decode(wrapper.as_slice()).unwrap();
+        assert_eq!(wrapper.action, 16);
+        assert_eq!(wrapper.request_id, wrapper.session_id);
+        assert!(uuid::Uuid::parse_str(&wrapper.session_id).is_ok());
+        let payload = pairing.pairing.decrypt_payload(&wrapper.encrypted).unwrap();
+        let payload = ActivationTimestamp::decode(payload.as_bytes()).unwrap();
+        assert!(payload.millis > 0);
+        let next = session.prepare_activation().unwrap();
+        assert_ne!(
+            activation.body().unwrap(),
+            next.body().unwrap(),
+            "encryption must have fresh counters"
+        );
         for (_, record) in store.confirmed_store().unwrap().load_all().unwrap() {
             for secret in [
                 b"person@example.test".as_slice(),
@@ -703,4 +728,190 @@ async fn correlated_invalid_payload_aborts_without_acknowledgement() {
         result.unwrap_err(),
         ProbeError::ReceiveProtocol(ReceiveError::MissingPairingBody)
     );
+}
+
+#[derive(Message)]
+struct ActivationWrapper {
+    #[prost(string, tag = "1")]
+    request_id: String,
+    #[prost(int32, tag = "2")]
+    action: i32,
+    #[prost(bytes = "vec", tag = "5")]
+    encrypted: Vec<u8>,
+    #[prost(string, tag = "6")]
+    session_id: String,
+}
+#[derive(Message)]
+struct ActivationTimestamp {
+    #[prost(int64, tag = "2")]
+    millis: i64,
+}
+
+#[tokio::test]
+async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_account() {
+    for (wrong, conversations, corrupt) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        let (outcome, _, _) = exercise(Scenario::Success, true).await;
+        let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
+            panic!("mock phone must confirm")
+        };
+        let mut encrypted_page = pairing
+            .encrypt(&synthetic_conversation_page(26))
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        if corrupt {
+            encrypted_page[0] ^= 1;
+        }
+        let session =
+            crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
+                .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (path, _) = request(&mut socket).await;
+            assert_eq!(path, crate::SIGN_IN_PATH);
+            response(
+                &mut socket,
+                "application/json+protobuf",
+                &source_body(wrong),
+            )
+            .await;
+            if wrong {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err()
+                );
+                return;
+            }
+            let (mut receive, _) = listener.accept().await.unwrap();
+            let (path, _) = request(&mut receive).await;
+            assert_eq!(path, crate::RECEIVE_MESSAGES_PATH);
+            receive.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            chunk(&mut receive, b"[[[],").await;
+            let (mut send, _) = listener.accept().await.unwrap();
+            let (path, body) = request(&mut send).await;
+            assert_eq!(path, crate::SEND_MESSAGE_PATH);
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            let wrapper = ActivationWrapper::decode(
+                STANDARD
+                    .decode(body[1][11].as_str().unwrap())
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+            assert_eq!(wrapper.action, 16);
+            assert!(body[4].is_null());
+            response(&mut send, "application/json+protobuf", b"[]").await;
+            if conversations {
+                let (mut list, _) = listener.accept().await.unwrap();
+                let (path, body) = request(&mut list).await;
+                assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body[1][22][1], 16);
+                let wrapper = ActivationWrapper::decode(
+                    STANDARD
+                        .decode(body[1][11].as_str().unwrap())
+                        .unwrap()
+                        .as_slice(),
+                )
+                .unwrap();
+                assert_eq!(wrapper.action, 1);
+                response(&mut list, "application/json+protobuf", b"[]").await;
+                let rpc_reply = SessionResponse {
+                    request_id: wrapper.request_id,
+                    action: 1,
+                    encrypted: encrypted_page,
+                };
+                let mut message = vec![Value::Null; 17];
+                message[0] = json!("session-reply");
+                message[1] = json!(19);
+                message[11] = json!(STANDARD.encode(rpc_reply.encode_to_vec()));
+                message[16] = json!(STANDARD.encode("synthetic-phone"));
+                chunk(
+                    &mut receive,
+                    &serde_json::to_vec(&json!([[], message])).unwrap(),
+                )
+                .await;
+                if corrupt {
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                            .await
+                            .is_err(),
+                        "invalid MAC must not be acknowledged"
+                    );
+                } else {
+                    let (mut ack, _) = listener.accept().await.unwrap();
+                    let (path, body) = request(&mut ack).await;
+                    assert_eq!(path, crate::ACK_MESSAGES_PATH);
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body[1], json!(["session-reply"]));
+                    response(&mut ack, "application/json+protobuf", b"[]").await;
+                }
+            }
+            let mut byte = [0];
+            assert_eq!(
+                receive.read(&mut byte).await.unwrap(),
+                0,
+                "probe must cancel receive before returning"
+            );
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            session.probe_startup_at(
+                &endpoint,
+                crate::client(false).unwrap(),
+                crate::client(false).unwrap(),
+                conversations,
+            ),
+        )
+        .await
+        .unwrap();
+        if wrong {
+            assert!(matches!(
+                result,
+                Err(ProbeError::RegistrationAccountMismatch)
+            ));
+        } else if corrupt {
+            assert!(matches!(result, Err(ProbeError::ReceiveFailed)));
+        } else {
+            assert_eq!(
+                result.unwrap().map(|page| page.len()),
+                conversations.then_some(26)
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[derive(Message)]
+struct SessionResponse {
+    #[prost(string, tag = "1")]
+    request_id: String,
+    #[prost(int32, tag = "4")]
+    action: i32,
+    #[prost(bytes = "vec", tag = "8")]
+    encrypted: Vec<u8>,
+}
+
+fn synthetic_conversation_page(count: usize) -> Vec<u8> {
+    let mut page = Vec::new();
+    for index in 0..count {
+        let id = format!("thread-{index}");
+        let mut record = vec![0x0a, id.len() as u8];
+        record.extend(id.as_bytes());
+        record.extend([0xa2, 0x01, 7, 0x0a, 5, 0x08, 1, 0x12, 1, b'p']);
+        page.extend([0x12, record.len() as u8]);
+        page.extend(record);
+    }
+    page
 }
