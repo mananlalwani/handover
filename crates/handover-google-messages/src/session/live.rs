@@ -270,7 +270,7 @@ impl RecoveredSession {
                         }
                     };
                     let (message, status) = match reply {
-                        crate::send::Reply::Accepted(id) => (Some(id), "accepted"),
+                        crate::send::Reply::Accepted(id) => (id, "accepted"),
                         crate::send::Reply::Rejected => (None, "failed:rejected"),
                     };
                     publish(

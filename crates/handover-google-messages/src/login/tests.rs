@@ -1148,6 +1148,7 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
     for (reject_push, send_code) in [
         (false, 1_i32),
         (false, 2),
+        (false, 5), // Explicit success without an assigned message ID.
         (false, 0),
         (false, -1),
         (true, 1),
@@ -1162,11 +1163,12 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             .as_bytes()
             .to_vec();
         let capability = pairing.encrypt(&[8, 1]).unwrap().as_bytes().to_vec();
-        let sent = pairing
-            .encrypt(&[0x12, 1, b's', 0x18, send_code.max(0) as u8])
-            .unwrap()
-            .as_bytes()
-            .to_vec();
+        let send_reply = if send_code == 5 {
+            vec![0x18, 1]
+        } else {
+            vec![0x12, 1, b's', 0x18, send_code.max(0) as u8]
+        };
+        let sent = pairing.encrypt(&send_reply).unwrap().as_bytes().to_vec();
         let history = pairing
             .encrypt(&synthetic_history_page())
             .unwrap()
@@ -1416,9 +1418,10 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             accepted.send(()).unwrap();
             if send_code > 0 {
                 let result = outgoing.recv().await.unwrap();
-                if send_code == 1 {
+                if send_code == 1 || send_code == 5 {
+                    let expected = if send_code == 1 { Some("s") } else { None };
                     assert!(
-                        matches!(result.event, LiveEvent::SendResult { ref request_id, ref message, status: "accepted", .. } if request_id == "send-test" && message.as_deref()==Some("s"))
+                        matches!(result.event, LiveEvent::SendResult { ref request_id, ref message, status: "accepted", .. } if request_id == "send-test" && message.as_deref()==expected)
                     );
                 } else {
                     assert!(matches!(

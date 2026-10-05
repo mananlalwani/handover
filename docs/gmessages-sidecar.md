@@ -15,7 +15,7 @@ in this repository. Its native registration, phone pairing, and acknowledgements
 through explicit phone confirmation on 2026-10-05. Bounded browser-free
 conversation and history reads also passed live tests. The native helper now
 keeps a shared receive stream for live updates, reads, and text sends. Native
-text sending passed a recipient test; send-reply correlation needs follow-up.
+text sending passed a recipient test; acceptance without an assigned ID needs live verification.
 It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
@@ -172,8 +172,10 @@ text send per account may be queued; replies, attachments, and new conversations
 remain unsupported. Standalone read probes still close receive after each read.
 
 The helper flushes `command_result ok` before submitting a queued send. That
-confirms helper acceptance only. An authenticated successful phone reply adds
-the assigned message ID with `send_status accepted`; it does not claim delivery.
+confirms helper acceptance only. An authenticated successful phone reply reports
+`send_status accepted`, with an assigned message ID when the phone supplies one.
+Success without an ID remains accepted; it does not claim delivery or invent an
+identity. A supplied invalid ID still fails validation.
 An explicit phone rejection reports `failed:rejected`. Session loss or
 cancellation reports `send_status unknown`, preserving the daemon's normalized
 unknown outgoing outcome. Unknown is valid only for an outgoing operation,
@@ -221,7 +223,11 @@ without refreshing or reopening it. A separate live permission query enabled
 text capability on all 201 conversations. The user then confirmed that one
 native text appeared on the phone and reached the recipient. The daemon
 recorded the operation as unknown without an assigned message ID. Recipient
-arrival is verified; native send-reply correlation remains unresolved.
+arrival is verified. A later diagnostic received explicit success without an
+assigned message ID, which the parser incorrectly rejected. The parser now
+accepts that response without an ID. The shared-receiver regression test covers
+publication and acknowledgement of this reply; the fix still needs a live test.
+Delivery-status correlation remains unverified.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

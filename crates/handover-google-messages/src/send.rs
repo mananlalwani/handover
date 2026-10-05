@@ -42,7 +42,7 @@ pub(crate) fn request(
     Ok(Zeroizing::new(request.encode_to_vec()))
 }
 pub(crate) enum Reply {
-    Accepted(String),
+    Accepted(Option<String>),
     Rejected,
 }
 pub(crate) fn reply(bytes: &[u8]) -> Result<Reply, ProbeError> {
@@ -54,8 +54,11 @@ pub(crate) fn reply(bytes: &[u8]) -> Result<Reply, ProbeError> {
         Response::decode(bytes).map_err(|_| error(SessionError::SendReplyEncoding))?;
     match response.result {
         Some(1) => {
+            if response.message.is_empty() {
+                return Ok(Reply::Accepted(None));
+            }
             identifier(&response.message).map_err(|_| error(SessionError::SendReplyIdentity))?;
-            Ok(Reply::Accepted(std::mem::take(&mut response.message)))
+            Ok(Reply::Accepted(Some(std::mem::take(&mut response.message))))
         }
         Some(2..=4) => Ok(Reply::Rejected),
         None => Err(error(SessionError::MissingSendResult)),
@@ -159,7 +162,7 @@ mod tests {
             (&[][..], SessionError::MissingSendResult),
             (&[0x18, 0][..], SessionError::UnknownSendResult),
             (&[0x18, 5][..], SessionError::UnknownSendResult),
-            (&[0x18, 1][..], SessionError::SendReplyIdentity),
+            (&[0x12, 1, 0, 0x18, 1][..], SessionError::SendReplyIdentity),
         ] {
             assert!(
                 matches!(reply(bytes), Err(ProbeError::SessionProtocol(actual)) if actual == category)
@@ -167,17 +170,14 @@ mod tests {
         }
     }
     #[test]
-    fn response_requires_explicit_known_result_and_success_identity() {
-        for bytes in [
-            &[][..],
-            &[0x18, 0],
-            &[0x18, 5],
-            &[0x18, 1],
-            &[0x12, 1, 0, 0x18, 1],
-        ] {
+    fn response_requires_explicit_known_result_and_valid_optional_identity() {
+        for bytes in [&[][..], &[0x18, 0], &[0x18, 5], &[0x12, 1, 0, 0x18, 1]] {
             assert!(reply(bytes).is_err());
         }
-        assert!(matches!(reply(&[0x12,1,b'm',0x18,1]).unwrap(), Reply::Accepted(id) if id=="m"));
+        assert!(
+            matches!(reply(&[0x12,1,b'm',0x18,1]).unwrap(), Reply::Accepted(Some(id)) if id=="m")
+        );
+        assert!(matches!(reply(&[0x18, 1]).unwrap(), Reply::Accepted(None)));
         for code in 2..=4 {
             assert!(matches!(reply(&[0x18, code]).unwrap(), Reply::Rejected));
         }
