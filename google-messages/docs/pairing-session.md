@@ -99,11 +99,13 @@ helper pipe. Handoverd does not inspect or persist its payload, and routes it
 only to the in-tree helper. These values never enter daemon snapshots or
 client-facing IPC. The AGPL adapter's stored sessions will not be imported.
 
-Browser service cookies remain transient. A restricted session-record store
+Browser service cookies stay outside session-record files. With the user-approved
+desktop persistence policy below, the helper stores verified authentication in
+Secret Service. A restricted session-record store
 persists the mode-0 unpaired registration and a random Handover account alias;
 the alias contains no email. Older pending records are upgraded in place when
-restored. The helper uses browser proof transiently for explicit account lookup
-or pairing and saves confirmed keys separately. Saved registrations and pairings
+restored. The helper uses browser proof for explicit account lookup or pairing, then saves
+verified authentication in Secret Service and confirmed keys separately. Saved registrations and pairings
 remain offline and unauthenticated. Native refresh and usable messaging-session
 recovery still need implementation.
 
@@ -453,21 +455,21 @@ a session before conversation access. Google's current Gaia provider `c5a.Ba`
 obtains account authorization for normal requests. This establishes a credential
 lifecycle requirement, not proof that native browser-free refresh already works.
 
-Two implementation policies are available. Retaining browser proof only in RAM
-preserves the existing transient-only policy but requires another browser
-bootstrap after the helper restarts. The proposed low-friction policy stores
-required Google authentication in the desktop Secret Service. The local desktop
-currently provides `org.freedesktop.secrets` through gnome-keyring. No secret was
-read or stored while checking that service's availability.
+The user approved desktop Secret Service persistence on 2026-10-05. The protocol
+helper saves validated Google authentication after account verification or phone
+confirmation. It binds the encrypted secret to the random Handover account alias.
+Credential values and provider identity remain below the normalized model and do
+not enter snapshots, history, exports, or logs. Session-record files contain no
+cookies. There is no plaintext file fallback or automatic unlock prompt.
 
-If approved, the protocol helper will own credential-store access. Opaque account
-aliases remain unchanged. Credential values and provider identity stay below the
-normalized model and do not enter snapshots, message history, exports, or logs.
-There will be no plaintext cookie-file fallback. A locked or unavailable store
-requires unlock or browser sign-in; remote authentication failure must not cause
-automatic re-pairing. Credential-store deletion will accompany local logout.
-Native refresh still needs its own protocol implementation and live verification.
+Store operations have a ten-second limit. Locked, unavailable, malformed, or
+ambiguous entries produce fixed errors. A failed save after phone confirmation
+preserves the confirmed keys and asks for sign-in rather than pairing again.
+Logout deletes the desktop credential before removing local pairing records;
+failed credential deletion leaves those records intact for a later attempt.
 
-This proposal changes the earlier transient-only authentication policy and is
-awaiting the user's decision. No credential persistence or online-session
-implementation was added during this review.
+The desktop store passed a live synthetic save, update, load, and deletion test.
+Real Google authentication has not yet been saved through this path. Startup,
+credential refresh, and browser-free messaging restoration remain unimplemented
+and require separate live verification. Paired keys or stored authentication alone
+do not establish an online account.

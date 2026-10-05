@@ -36,5 +36,7 @@ aes = { version = "0.8.4", features = ["zeroize"] }
 ctr = "0.9.2"
 hmac = "0.12.1"
 
+secret-service = { version = "4.0.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+
 [dev-dependencies]
 ukey2_proto = { path = "../../third_party/ukey2/connections/ukey2/ukey2_proto" }

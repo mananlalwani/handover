@@ -605,6 +605,7 @@ async fn pairing_runs_over_http_with_a_mock_phone_and_only_validated_acknowledge
     let LoginOutcome::PhoneConfirmed {
         pairing: confirmed,
         acknowledgement_accepted: true,
+        ..
     } = result.unwrap()
     else {
         panic!("phone did not confirm");

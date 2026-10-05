@@ -97,6 +97,15 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             helper.login_active = None;
                             helper.pending_login = None;
                         }
+                        if control.kind == "logout" && helper.desktop_credentials {
+                            if let Some(account) = control.account.as_deref().filter(|account| helper.accounts.contains(*account)) {
+                                if handover_google_messages::credential_store::DesktopCredentialStore::delete(account).await.is_err() {
+                                    publish(writer, HelperEvent::Error { message: "desktop credentials could not be forgotten".into() }).await?;
+                                    line.zeroize();
+                                    continue;
+                                }
+                            }
+                        }
                     }
                 }
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
@@ -159,7 +168,10 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 active_account = None;
                 match result {
                     Ok(LoginOutcome::Ready) => {}
-                    Ok(LoginOutcome::PhoneConfirmed { pairing, acknowledgement_accepted }) => {
+                    Ok(LoginOutcome::CredentialsSaved) => {
+                        publish(writer, HelperEvent::Pairing { account, prompt: "Native account verified. Google authentication saved in the desktop credential store. Messaging startup is pending.".into() }).await?;
+                    }
+                    Ok(LoginOutcome::PhoneConfirmed { pairing, acknowledgement_accepted, credential_error }) => {
                         helper.confirmed.insert(account.clone(), *pairing);
                         publish(writer, HelperEvent::Account {
                             account: account.clone(), label: "Google Messages (offline)".into(),
@@ -170,7 +182,10 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         } else {
                             "Phone confirmed native pairing and its keys were saved. Acknowledgement failed; do not pair again."
                         };
-                        publish(writer, HelperEvent::Pairing { account, prompt: prompt.into() }).await?;
+                        let prompt = if let Some(error) = credential_error {
+                            format!("{prompt} Google authentication was not saved ({error:?}); sign in again, do not pair again.")
+                        } else { prompt.into() };
+                        publish(writer, HelperEvent::Pairing { account, prompt }).await?;
                     }
                     Err(error) => {
                         publish(writer, HelperEvent::Pairing {
@@ -197,6 +212,11 @@ fn login_failure_prompt(error: &handover_google_messages::ProbeError) -> String 
     }
     if let handover_google_messages::ProbeError::ReceiveProtocol(cause) = error {
         diagnostic.push_str(&format!(", framing {cause:?}"));
+    }
+    if let handover_google_messages::ProbeError::CredentialStore(cause) = error {
+        return format!(
+            "Native account verified, but Google authentication was not saved ({cause:?}). Sign in again; do not pair again."
+        );
     }
     format!("Native login failed ({diagnostic}). Check phone pairing state before retrying.")
 }
@@ -249,6 +269,7 @@ struct NativeHelper {
     pending_login: Option<(String, LoginBootstrap)>,
     login_active: Option<String>,
     confirmed: BTreeMap<String, ConfirmedPairing>,
+    desktop_credentials: bool,
 }
 
 impl NativeHelper {
@@ -260,6 +281,7 @@ impl NativeHelper {
             pending_login: None,
             login_active: None,
             confirmed: BTreeMap::new(),
+            desktop_credentials: true,
         }
     }
 
@@ -397,7 +419,7 @@ impl NativeHelper {
                 message: "login rejected: invalid account name".into(),
             }];
         }
-        if self.login_active.is_some() || self.confirmed.contains_key(account) {
+        if self.login_active.is_some() {
             return vec![HelperEvent::Error {
                 message: "native login already active for an account".into(),
             }];
@@ -509,9 +531,21 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn credential_failure_does_not_invite_pairing_again() {
+        let prompt = login_failure_prompt(&handover_google_messages::ProbeError::CredentialStore(
+            handover_google_messages::credential_store::CredentialError::Locked,
+        ));
+        assert_eq!(
+            prompt,
+            "Native account verified, but Google authentication was not saved (Locked). Sign in again; do not pair again."
+        );
+    }
+
     fn helper_with_store(directory: &std::path::Path) -> NativeHelper {
         let mut helper = NativeHelper::new();
         helper.store = Some(SessionStore::new(directory.join("sessions")));
+        helper.desktop_credentials = false;
         helper
     }
 

@@ -4,6 +4,7 @@
 //! primitives. Network effects are explicit; the helper does not yet run a
 //! completed phone-pairing or messaging session.
 
+pub mod credential_store;
 pub mod login;
 pub mod native;
 pub mod pairing;
@@ -169,6 +170,7 @@ pub enum ProbeError {
     NoPendingRegistration,
     RegistrationAccountMismatch,
     SessionStoreFailed,
+    CredentialStore(credential_store::CredentialError),
     AmbiguousRegistration,
     DaemonUnavailable,
     SessionExpired,
@@ -212,6 +214,7 @@ impl ProbeError {
             Self::NoPendingRegistration => "no_pending_registration",
             Self::RegistrationAccountMismatch => "registration_account_mismatch",
             Self::SessionStoreFailed => "session_store_failed",
+            Self::CredentialStore(_) => "credential_store_failed",
             Self::AmbiguousRegistration => "ambiguous_registration",
             Self::DaemonUnavailable => "daemon_unavailable",
             Self::SessionExpired => "session_expired",

@@ -146,9 +146,11 @@ impl ConfirmedPairing {
 #[derive(Debug)]
 pub enum LoginOutcome {
     Ready,
+    CredentialsSaved,
     PhoneConfirmed {
         pairing: Box<ConfirmedPairing>,
         acknowledgement_accepted: bool,
+        credential_error: Option<crate::credential_store::CredentialError>,
     },
 }
 
@@ -234,9 +236,34 @@ impl LoginBootstrap {
                 .remaining_lifetime()
                 .map_err(|_| ProbeError::SessionExpired)?,
         );
-        tokio::time::timeout(deadline, self.run_with_transport(transport, progress))
+        // Prepare a zeroizing copy before consuming the transient proof. Only
+        // persist it after the network operation verifies the account binding.
+        let account = self.registration.handover_account_id().to_owned();
+        let proof_bytes = Zeroizing::new(
+            serde_json::to_vec(&self.proof).map_err(|_| ProbeError::InvalidCredentials)?,
+        );
+        let outcome = tokio::time::timeout(deadline, self.run_with_transport(transport, progress))
             .await
-            .map_err(|_| ProbeError::Timeout)?
+            .map_err(|_| ProbeError::Timeout)??;
+        let proof: BrowserProof =
+            serde_json::from_slice(&proof_bytes).map_err(|_| ProbeError::InvalidCredentials)?;
+        let saved = crate::credential_store::DesktopCredentialStore::save(&account, &proof).await;
+        match outcome {
+            LoginOutcome::Ready => {
+                saved.map_err(ProbeError::CredentialStore)?;
+                Ok(LoginOutcome::CredentialsSaved)
+            }
+            LoginOutcome::PhoneConfirmed {
+                pairing,
+                acknowledgement_accepted,
+                ..
+            } => Ok(LoginOutcome::PhoneConfirmed {
+                pairing,
+                acknowledgement_accepted,
+                credential_error: saved.err(),
+            }),
+            LoginOutcome::CredentialsSaved => unreachable!(),
+        }
     }
 
     async fn run_with_transport(
@@ -367,6 +394,7 @@ impl LoginBootstrap {
         Ok(LoginOutcome::PhoneConfirmed {
             pairing: Box::new(confirmed),
             acknowledgement_accepted,
+            credential_error: None,
         })
     }
 }
