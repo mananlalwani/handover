@@ -952,11 +952,21 @@ async fn ingest_event(
                     .conversation(&conversation_id)
                     .cloned()
             };
+            let refresh_inside_window = !full
+                && public_cursor.as_deref().is_some_and(|cursor| {
+                    state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .messaging()
+                        .history_cursor_is_inside_window(&conversation_id, cursor)
+                });
             if let Some(mut record) = conversation_record {
                 // Only page events move the history cursor. A live
                 // message carries no cursor_next and must not clear
                 // the older-history position readers depend on.
-                if is_page {
+                // Refreshing a newer subset does not replace the older
+                // boundary of the retained window, including known exhaustion.
+                if is_page && !refresh_inside_window {
                     record.cursor = public_cursor;
                     apply_backend_event(
                         state,
@@ -1859,6 +1869,84 @@ mod tests {
             .conversation(&conversation)
             .and_then(|conversation| conversation.cursor.clone());
         assert_eq!(cursor.as_deref(), Some("m3"));
+    }
+
+    #[tokio::test]
+    async fn newest_page_refresh_preserves_older_history_boundary() {
+        for exhausted in [false, true] {
+            let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+            let (events, _) = broadcast::channel(64);
+            let hub = MessagingHub::new();
+            let mut seen = HashSet::new();
+            let id = ConversationId::new(MessagingAccountId::new("personal"), "thread");
+            for event in [
+                HelperEvent::Account {
+                    account: "personal".into(),
+                    label: "Messages".into(),
+                    connected: true,
+                    authenticated: true,
+                },
+                HelperEvent::Conversations {
+                    account: "personal".into(),
+                    conversations: vec![wire_conversation("thread")],
+                    full: true,
+                    generation: Some(1),
+                },
+            ] {
+                ingest_event(&state, &events, &hub, &mut seen, event).await;
+            }
+            for (start, cursor_next) in [
+                (1, (!exhausted).then(|| "private-oldest".into())),
+                (4, Some("private-newest".into())),
+            ] {
+                let messages = (start..=6)
+                    .map(|n| {
+                        let mut message = wire_message(&format!("m{n}"));
+                        message.sent_at = Some(n);
+                        message
+                    })
+                    .collect();
+                ingest_event(
+                    &state,
+                    &events,
+                    &hub,
+                    &mut seen,
+                    HelperEvent::Messages {
+                        account: "personal".into(),
+                        conversation: "thread".into(),
+                        messages,
+                        cursor_next,
+                        page_complete: true,
+                        full: false,
+                        generation: None,
+                        fetch_id: None,
+                    },
+                )
+                .await;
+            }
+            let guard = state.read().unwrap();
+            let store = guard.messaging();
+            let (newest, cursor) = store.history(&id, 3, None).unwrap();
+            assert_eq!(
+                newest
+                    .iter()
+                    .map(|m| m.id.local_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["m4", "m5", "m6"]
+            );
+            let (older, cursor) = store.history(&id, 3, cursor.as_deref()).unwrap();
+            assert_eq!(
+                older
+                    .iter()
+                    .map(|m| m.id.local_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["m1", "m2", "m3"]
+            );
+            assert_eq!(cursor.as_deref(), (!exhausted).then_some("m1"));
+            if !exhausted {
+                assert!(store.history(&id, 3, cursor.as_deref()).is_err());
+            }
+        }
     }
 
     #[tokio::test]

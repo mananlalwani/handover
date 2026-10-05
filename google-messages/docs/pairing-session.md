@@ -600,3 +600,18 @@ cache eviction, account filtering, restart recovery, and logout cleanup. On
 helper, then read 20 older messages with no overlap. Counts exclude known system
 notices. The production relay was restored afterward. Text, timestamps, sender
 alignment, attachment display, and coverage still need comparison with the phone.
+
+The next visual check exposed older-page loading stopping in the newest thread.
+A newest-page refresh replaced the daemon's oldest history boundary with a
+cursor inside its larger retained window. Paging then repeated cached records.
+Incremental refreshes now preserve the older boundary, including known
+exhaustion. Local history also recovers an internal boundary saved by earlier
+versions, so clearing the message cache is unnecessary. Authoritative window
+replacement still updates its boundary.
+
+Regression tests cover the refresh sequence and recovery of the saved cursor.
+On 2026-10-05, a direct native read of the same thread reached 84 ordinary
+messages. The repaired daemon reached those same 84 messages across three IPC
+pages, with no overlapping IDs and no remaining older cursor. The production
+relay was restored. This verifies paging through that thread, not message
+content or coverage across every conversation. Another visual check remains.

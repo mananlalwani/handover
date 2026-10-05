@@ -188,6 +188,19 @@ impl MessagingStore {
         self.statuses.get(id)
     }
 
+    pub(crate) fn history_cursor_is_inside_window(
+        &self,
+        conversation_id: &ConversationId,
+        cursor: &str,
+    ) -> bool {
+        self.messages.get(conversation_id).is_some_and(|window| {
+            window
+                .iter()
+                .skip(1)
+                .any(|message| message.id.local_id == cursor)
+        })
+    }
+
     /// Serve the local window newest-last, honoring an opaque cursor.
     /// `cursor` is a message local id: the page ends before it. Returns the
     /// page and the cursor for the next older page (`None` at the start).
@@ -208,6 +221,22 @@ impl MessagingStore {
             // fetched yet, not that the conversation is unknown.
             return Err(HistoryGap::CursorOutsideWindow);
         };
+        // Older versions could persist a newest-page cursor inside a larger
+        // retained window. Continue from the oldest cached message instead of
+        // sending readers backward through records they have already loaded.
+        let boundary = self
+            .conversations
+            .get(conversation_id)
+            .and_then(|conversation| conversation.cursor.as_deref())
+            .map(|saved| {
+                if self.history_cursor_is_inside_window(conversation_id, saved) {
+                    window
+                        .front()
+                        .map_or(saved, |message| message.id.local_id.as_str())
+                } else {
+                    saved
+                }
+            });
         let end = match cursor {
             None => window.len(),
             Some(cursor) => window
@@ -215,14 +244,7 @@ impl MessagingStore {
                 .position(|message| message.id.local_id == cursor)
                 .ok_or(HistoryGap::CursorOutsideWindow)?,
         };
-        if end == 0
-            && cursor.is_some()
-            && self
-                .conversations
-                .get(conversation_id)
-                .and_then(|conversation| conversation.cursor.as_deref())
-                == cursor
-        {
+        if end == 0 && cursor.is_some() && boundary == cursor {
             return Err(HistoryGap::CursorOutsideWindow);
         }
         let start = end.saturating_sub(limit.max(1));
@@ -235,9 +257,7 @@ impl MessagingStore {
         let next = if start > 0 {
             page.first().map(|message| message.id.local_id.clone())
         } else {
-            self.conversations
-                .get(conversation_id)
-                .and_then(|conversation| conversation.cursor.clone())
+            boundary.map(str::to_owned)
         };
         Ok((page, next))
     }
@@ -773,6 +793,31 @@ mod tests {
             .expect("stored");
         assert_eq!(stored.sender.display_name.as_deref(), Some("Name peer"));
         assert!(!stored.sender.is_self);
+    }
+
+    #[test]
+    fn history_recovers_a_cached_cursor_inside_the_window() {
+        let mut store = live_store();
+        for n in 1..=6 {
+            store.apply(MessagingEvent::Message(MessageEvent::Added(message(
+                &format!("m{n}"),
+                "peer",
+                n,
+                "message",
+            ))));
+        }
+        store
+            .conversations
+            .get_mut(&conversation_id())
+            .unwrap()
+            .cursor = Some("m4".into());
+        let (older, boundary) = store.history(&conversation_id(), 3, Some("m4")).unwrap();
+        assert_eq!(older.len(), 3);
+        assert_eq!(boundary.as_deref(), Some("m1"));
+        assert_eq!(
+            store.history(&conversation_id(), 3, boundary.as_deref()),
+            Err(HistoryGap::CursorOutsideWindow)
+        );
     }
 
     #[test]
