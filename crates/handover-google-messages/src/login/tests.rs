@@ -959,6 +959,9 @@ fn synthetic_conversation_page(count: usize) -> Vec<u8> {
 }
 
 fn synthetic_history_page() -> Vec<u8> {
+    synthetic_history_page_with_content(true)
+}
+fn synthetic_history_page_with_content(include_content: bool) -> Vec<u8> {
     #[derive(prost::Message)]
     struct Text {
         #[prost(string, tag = "1")]
@@ -998,11 +1001,15 @@ fn synthetic_history_page() -> Vec<u8> {
             id: "message".into(),
             conversation: "thread-0".into(),
             sender: "fixture-peer".into(),
-            parts: vec![Part {
-                text: Some(Text {
-                    text: "Synthetic content".into(),
-                }),
-            }],
+            parts: if include_content {
+                vec![Part {
+                    text: Some(Text {
+                        text: "Synthetic content".into(),
+                    }),
+                }]
+            } else {
+                Vec::new()
+            },
         }],
     }
     .encode_to_vec()
@@ -1192,6 +1199,15 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         prost::encoding::encode_varint(records.len() as u64, &mut payload);
         payload.extend_from_slice(&records);
         let pushed = pairing.encrypt(&payload).unwrap().as_bytes().to_vec();
+        let records = synthetic_history_page_with_content(false);
+        let mut unsupported_payload = vec![0x1a];
+        prost::encoding::encode_varint(records.len() as u64, &mut unsupported_payload);
+        unsupported_payload.extend_from_slice(&records);
+        let unsupported = pairing
+            .encrypt(&unsupported_payload)
+            .unwrap()
+            .as_bytes()
+            .to_vec();
         let session =
             crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
                 .unwrap();
@@ -1261,6 +1277,21 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             )
             .await;
             expect_ack(&listener, "capabilities").await;
+            rpc_push(
+                &mut receive,
+                &session_id,
+                16,
+                unsupported,
+                "unsupported-content",
+                true,
+            )
+            .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "unsupported content must stay unacknowledged"
+            );
             rpc_push(&mut receive, &session_id, 16, pushed, "message-push", true).await;
             assert!(
                 tokio::time::timeout(Duration::from_millis(50), listener.accept())

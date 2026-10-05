@@ -85,7 +85,20 @@ pub(crate) fn decode(
                     .ok_or(ProbeError::SessionProtocol(
                         SessionError::UnknownUpdateConversation,
                     ))?;
-                for record in crate::history::decode_records(conversation, vec![bytes.to_vec()])? {
+                let records =
+                    match crate::history::decode_records(conversation, vec![bytes.to_vec()]) {
+                        Ok(records) => records,
+                        // This authenticated batch cannot be projected completely.
+                        // Leave the whole update in the inbox, like other unsupported
+                        // families, without discarding it or terminating receive.
+                        Err(ProbeError::SessionProtocol(
+                            SessionError::UnsupportedHistoryContent,
+                        )) => {
+                            return Ok(Update::Unsupported(3));
+                        }
+                        Err(error) => return Err(error),
+                    };
+                for record in records {
                     let outgoing = record.sender.is_self;
                     let id = record.id.clone();
                     if let Some(previous) = messages.iter().find(|item| item.id == record.id) {
@@ -308,6 +321,36 @@ mod tests {
         let (conversation, first) = fixture(1);
         let (_, second) = fixture(2);
         assert!(decode("fixture", &[conversation], &push(vec![first, second]), true).is_err());
+    }
+    #[test]
+    fn unsupported_content_leaves_the_whole_batch_unprojected() {
+        let (conversation, supported) = fixture(100);
+        let mut unsupported = supported.clone();
+        // Remove the final text part, retaining valid identity and thread fields.
+        unsupported.truncate(unsupported.len() - 7);
+        let mut unknown_part = unsupported.clone();
+        unknown_part.extend_from_slice(&[0x52, 0]);
+        let (_, unknown_status) = fixture(0);
+        for records in [
+            vec![unsupported.clone()],
+            vec![unknown_part],
+            vec![unknown_status],
+            vec![supported.clone(), unsupported],
+        ] {
+            assert!(matches!(
+                decode(
+                    "fixture",
+                    std::slice::from_ref(&conversation),
+                    &push(records),
+                    true
+                )
+                .unwrap(),
+                Update::Unsupported(3)
+            ));
+        }
+        let mut malformed = supported;
+        malformed.pop();
+        assert!(decode("fixture", &[conversation], &push(vec![malformed]), true).is_err());
     }
     #[test]
     fn session_control_requires_the_current_session() {

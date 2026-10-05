@@ -245,7 +245,15 @@ restored after the test. A later RCS test emitted acceptance, then authenticated
 `sent` and `delivered` message statuses. The diagnostic retained no message IDs,
 so these events verify the native status path, not operation correlation.
 Displayed remains unverified. A subsequent unsupported-content update ended the
-native receive session; production was restored, and that failure needs diagnosis.
+native receive session. A synthetic stream reproduced this failure with a valid
+message containing no supported content parts. Live message batches with
+unsupported content now follow the existing unsupported-update policy: no
+partial publication, no acknowledgement, and receive continues for later
+supported updates. The shared-receiver regression covers a later message,
+history request, send, and presence check on the same stream. Malformed records
+and authentication failures still fail closed; history-page decoding still
+rejects unsupported content. The live payload was not retained, so this fix
+needs live verification against the original failure.
 
 An accepted send without an assigned ID is not yet linked to a later message
 push. Operation delivery-status correlation therefore remains unimplemented;
