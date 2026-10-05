@@ -652,7 +652,14 @@ A live startup initially overflowed that queue while accepting updates for other
 sessions. A regression test reproduced the missing session filter. With the
 filter applied, the live observer stayed open for the full sixty seconds and
 received three authenticated pushes: current-session activation, a user alert,
-and settings. A real incoming-message comparison
-remains necessary before daemon integration. Mock HTTP tests cover message
+and settings. Mock HTTP tests cover message
 projection, foreign senders and sessions, invalid MACs, inactivity, callback
 failure, stream closure, and absence of ACKs or retries.
+
+The next sixty-second live test received five authenticated pushes, including
+one conversation update and one normalized message update while the user
+confirmed an incoming message arrived on the phone. The observer completed
+without ACKs, retries, or printing contents and identifiers. The production
+relay was restored. This validates real message-update decoding; it does not
+verify text equality, delivery status, or live publication through Handover.
+Daemon integration and presence handling remain unfinished.
