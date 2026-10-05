@@ -22,6 +22,8 @@ pub enum SessionError {
     OversizedConversation,
     ConversationCursor,
     PaginationLimit,
+    HistoryModel,
+    UnsupportedHistoryContent,
     ConversationModel,
     ParticipantIdentity,
     ParticipantAddressConflict,
@@ -42,6 +44,12 @@ fn stage(error: ProbeError, category: SessionError) -> ProbeError {
     } else {
         error
     }
+}
+
+enum ReadResult {
+    Startup,
+    Conversations(Vec<handover_core::messaging::Conversation>),
+    History(crate::history::HistoryPage),
 }
 
 fn unique_conversations(
@@ -126,6 +134,79 @@ impl RecoveredSession {
         stream: reqwest::Client,
         conversations: bool,
     ) -> Result<Option<Vec<handover_core::messaging::Conversation>>, ProbeError> {
+        match self
+            .run_at(endpoint, short, stream, conversations, None)
+            .await?
+        {
+            ReadResult::Startup => Ok(None),
+            ReadResult::Conversations(records) => Ok(Some(records)),
+            ReadResult::History(_) => Err(ProbeError::UnexpectedResponse),
+        }
+    }
+
+    pub async fn read_history(
+        &self,
+        conversation: &handover_core::messaging::Conversation,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<crate::history::HistoryPage, ProbeError> {
+        if conversation.id.account_id.as_str() != self.account_id() {
+            return Err(ProbeError::RegistrationAccountMismatch);
+        }
+        let payload = crate::history::request(conversation, cursor, limit)?;
+        let result = self
+            .run_at(
+                &self.proof.endpoint,
+                crate::client(true)?,
+                crate::streaming_client()?,
+                false,
+                Some((conversation, payload)),
+            )
+            .await?;
+        match result {
+            ReadResult::History(page) => Ok(page),
+            _ => Err(ProbeError::UnexpectedResponse),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn history_at(
+        &self,
+        endpoint: &str,
+        http: reqwest::Client,
+        conversation: &handover_core::messaging::Conversation,
+    ) -> Result<crate::history::HistoryPage, ProbeError> {
+        let payload = crate::history::request(conversation, None, 20)?;
+        match self
+            .run_at(
+                endpoint,
+                http.clone(),
+                http,
+                false,
+                Some((conversation, payload)),
+            )
+            .await?
+        {
+            ReadResult::History(page) => Ok(page),
+            _ => Err(ProbeError::UnexpectedResponse),
+        }
+    }
+
+    async fn run_at(
+        &self,
+        endpoint: &str,
+        short: reqwest::Client,
+        stream: reqwest::Client,
+        conversations: bool,
+        history: Option<(&handover_core::messaging::Conversation, Zeroizing<Vec<u8>>)>,
+    ) -> Result<ReadResult, ProbeError> {
+        let action = if history.is_some() {
+            2
+        } else if conversations {
+            1
+        } else {
+            0
+        };
         let sources = Zeroizing::new(
             crate::query_response(
                 &short,
@@ -159,13 +240,13 @@ impl RecoveredSession {
             self.proof.validate_messaging()?,
             &request,
             |event| {
-                if conversations {
+                if action != 0 {
                     if let crate::receive::ReceiveEvent::Record(record) = event {
                         if let Some(reply) = record.session_reply(
                             &list_id
                                 .lock()
                                 .map_err(|_| crate::receive::ReceiveError::TooLarge)?,
-                            1,
+                            action,
                             self.pairing.pairing.peer(),
                         )? {
                             reply_tx
@@ -190,8 +271,24 @@ impl RecoveredSession {
                 self.post_request(&short, endpoint, &activation)
                     .await
                     .map_err(|error| stage(error, SessionError::ActivationTransport))?;
+                if let Some((conversation, payload)) = history {
+                    let request_id = Uuid::new_v4().to_string();
+                    **list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? = request_id.clone();
+                    let request =
+                        self.build_request(&request_id, 2, &payload, 2, Some(86_400_000_000))?;
+                    self.post_request(&short, endpoint, &request).await?;
+                    let reply = reply_rx.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+                    let plaintext = self
+                        .pairing
+                        .pairing
+                        .decrypt_payload(&reply.ciphertext)
+                        .map_err(|_| ProbeError::ReceiveFailed)?;
+                    let page = crate::history::decode(conversation, plaintext.as_bytes())?;
+                    self.acknowledge(&short, endpoint, reply.message_id).await?;
+                    return Ok(ReadResult::History(page));
+                }
                 if !conversations {
-                    return Ok(None);
+                    return Ok(ReadResult::Startup);
                 }
                 let mut next_cursor = None;
                 let mut cursors = Vec::new();
@@ -282,26 +379,9 @@ impl RecoveredSession {
                         });
                     }
 
-                    let mut batch = crate::receive::AckBatch::default();
-                    batch
-                        .push(crate::receive::Acknowledgement::processed_session_reply(
-                            reply.message_id,
-                        ))
-                        .map_err(|_| ProbeError::ReceiveFailed)?;
-                    let ack = self
-                        .pairing
-                        .registration
-                        .acknowledgement_request(&batch)
-                        .map_err(|_| ProbeError::SessionExpired)?;
-                    crate::post_acknowledgements(
-                        &short,
-                        &format!("{endpoint}{}", crate::ACK_MESSAGES_PATH),
-                        self.proof.validate_messaging()?,
-                        &ack,
-                    )
-                    .await?;
+                    self.acknowledge(&short, endpoint, reply.message_id).await?;
                     if next_cursor.is_none() {
-                        return Ok(Some(all));
+                        return Ok(ReadResult::Conversations(all));
                     }
                 }
                 Err(ProbeError::SessionProtocol(SessionError::PaginationLimit))
@@ -339,6 +419,31 @@ impl RecoveredSession {
         .await
         .map_err(|_| ProbeError::Timeout)??
         .ok_or(ProbeError::UnexpectedResponse)
+    }
+
+    async fn acknowledge(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        id: Zeroizing<String>,
+    ) -> Result<(), ProbeError> {
+        let mut batch = crate::receive::AckBatch::default();
+        batch
+            .push(crate::receive::Acknowledgement::processed_session_reply(id))
+            .map_err(|_| ProbeError::ReceiveFailed)?;
+        let request = self
+            .pairing
+            .registration
+            .acknowledgement_request(&batch)
+            .map_err(|_| ProbeError::SessionExpired)?;
+        crate::post_acknowledgements(
+            http,
+            &format!("{endpoint}{}", crate::ACK_MESSAGES_PATH),
+            self.proof.validate_messaging()?,
+            &request,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn post_request(

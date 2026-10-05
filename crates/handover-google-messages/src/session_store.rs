@@ -100,6 +100,12 @@ impl SessionStore {
         Ok(Self::new(self.directory.join("confirmed")))
     }
 
+    /// Restricted metadata store for bounded history cursor recovery.
+    pub fn history_cursor_store(&self) -> Result<Self, SessionStoreError> {
+        ensure_directory(&self.directory)?;
+        Ok(Self::new(self.directory.join("history-cursors")))
+    }
+
     pub fn store(
         &self,
         account_key: &str,

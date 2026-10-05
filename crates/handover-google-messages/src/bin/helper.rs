@@ -15,7 +15,7 @@
 //! It never logs bundles, tokens, keys, account email, message bodies, or
 //! media bytes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[cfg(test)]
 use base64::Engine as _;
@@ -50,7 +50,7 @@ async fn main() {
     let operation = std::env::args().nth(1);
     if matches!(
         operation.as_deref(),
-        Some("--probe-startup" | "--check-recovery" | "--probe-conversations")
+        Some("--probe-startup" | "--check-recovery" | "--probe-conversations" | "--probe-history")
     ) {
         let result = async {
             let store = SessionStore::default_store()
@@ -64,6 +64,40 @@ async fn main() {
                     .await?;
             if operation.as_deref() == Some("--check-recovery") {
                 Ok(None)
+            } else if operation.as_deref() == Some("--probe-history") {
+                let conversation = session
+                    .read_conversations()
+                    .await?
+                    .into_iter()
+                    .filter(|record| {
+                        record
+                            .participants
+                            .iter()
+                            .any(|participant| participant.is_self)
+                            && record
+                                .participants
+                                .iter()
+                                .any(|participant| !participant.is_self)
+                    })
+                    .max_by_key(|record| record.last_activity_at)
+                    .ok_or(handover_google_messages::ProbeError::UnexpectedResponse)?;
+                let first = session.read_history(&conversation, None, 20).await?;
+                println!(
+                    "Native history first page decoded and acknowledged: {} message(s).",
+                    first.messages.len()
+                );
+                let mut count = first.messages.len();
+                if let Some(cursor) = first.cursor_next.as_deref() {
+                    let second = session
+                        .read_history(&conversation, Some(cursor), 20)
+                        .await?;
+                    count += second.messages.len();
+                    println!(
+                        "Native older history page decoded and acknowledged: {} message(s).",
+                        second.messages.len()
+                    );
+                }
+                Ok(Some(count))
             } else if operation.as_deref() == Some("--probe-conversations") {
                 session.probe_conversations().await.map(Some)
             } else {
@@ -75,6 +109,9 @@ async fn main() {
         match result {
             Ok(None) if operation.as_deref() == Some("--check-recovery") => println!(
                 "Native keys and desktop authentication restored; registration token is locally valid. No network request was sent."
+            ),
+            Ok(Some(count)) if operation.as_deref() == Some("--probe-history") => println!(
+                "Native history decoded and acknowledged: {count} normalized message(s). No content or identifiers were printed."
             ),
             Ok(Some(count)) => println!(
                 "Native conversations decoded and acknowledged: {count} normalized record(s). Full snapshot and ongoing messaging remain unverified."
@@ -105,6 +142,11 @@ async fn main() {
 enum WorkOutcome {
     Login(LoginOutcome),
     ConversationPage(Vec<handover_core::messaging::Conversation>),
+    History {
+        conversation: String,
+        fetch_id: Option<u64>,
+        page: handover_google_messages::history::HistoryPage,
+    },
 }
 
 fn wire_conversation(
@@ -138,6 +180,128 @@ fn wire_conversation(
         cursor: None,
         capabilities: Vec::new(),
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorLink {
+    account: String,
+    conversation: String,
+    message: String,
+    native: String,
+}
+impl Drop for CursorLink {
+    fn drop(&mut self) {
+        self.account.zeroize();
+        self.conversation.zeroize();
+        self.message.zeroize();
+        self.native.zeroize();
+    }
+}
+const MAX_CURSOR_LINKS: usize = 128;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedCursorLinks {
+    version: u32,
+    links: VecDeque<CursorLink>,
+}
+const MAX_CURSOR_BYTES: usize = 512 * 1024;
+
+struct HistoryRequest {
+    account: String,
+    conversation: String,
+    limit: u32,
+    cursor: Option<String>,
+    fetch_id: Option<u64>,
+}
+
+async fn publish_history<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    account: String,
+    conversation: String,
+    fetch_id: Option<u64>,
+    page: handover_google_messages::history::HistoryPage,
+) -> std::io::Result<()> {
+    use handover_gmessages::contract::{WireAttachment, WireMessage};
+    let mut event = HelperEvent::Messages {
+        account,
+        conversation,
+        messages: Vec::new(),
+        cursor_next: None,
+        page_complete: false,
+        full: false,
+        generation: None,
+        fetch_id,
+    };
+    for message in page.messages {
+        let wire = WireMessage {
+            local_id: message.id.local_id,
+            sender: message.sender.local_id,
+            transport: None,
+            sent_at: message.sent_at,
+            text: message.text,
+            attachments: message
+                .attachments
+                .into_iter()
+                .map(|item| WireAttachment {
+                    local_id: item.local_id,
+                    mime: item.mime,
+                    name: item.name,
+                    size_bytes: item.size_bytes,
+                    staged_path: None,
+                })
+                .collect(),
+            reply_to: None,
+            reactions: Vec::new(),
+            deleted: false,
+        };
+        let HelperEvent::Messages { messages, .. } = &mut event else {
+            unreachable!()
+        };
+        messages.push(wire);
+        if encode(&event).len() > MAX_HELPER_LINE_BYTES {
+            let HelperEvent::Messages { messages, .. } = &mut event else {
+                unreachable!()
+            };
+            let last = messages.pop().expect("just added");
+            if messages.is_empty() {
+                return publish(
+                    writer,
+                    HelperEvent::Error {
+                        message: "native history record exceeds helper contract bound".into(),
+                    },
+                )
+                .await;
+            }
+            publish(writer, event.clone()).await?;
+            let HelperEvent::Messages { messages, .. } = &mut event else {
+                unreachable!()
+            };
+            messages.clear();
+            messages.push(last);
+        }
+    }
+    let HelperEvent::Messages {
+        page_complete,
+        cursor_next,
+        ..
+    } = &mut event
+    else {
+        unreachable!()
+    };
+    *page_complete = true;
+    *cursor_next = page.cursor_next;
+    if encode(&event).len() > MAX_HELPER_LINE_BYTES {
+        return publish(
+            writer,
+            HelperEvent::Error {
+                message: "native history page exceeds helper contract bound".into(),
+            },
+        )
+        .await;
+    }
+    publish(writer, event).await
 }
 
 async fn publish_page<W: AsyncWrite + Unpin>(
@@ -221,7 +385,53 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let mut line = Zeroizing::new(Vec::new());
     loop {
         if jobs.is_empty() {
-            if let Some(account) = helper.pending_sync.take() {
+            if let Some(request) = helper.pending_history.take() {
+                let model = helper
+                    .conversations
+                    .get(&(request.account.clone(), request.conversation.clone()))
+                    .cloned();
+                if let Some(store) = helper.store.clone() {
+                    generation = generation.wrapping_add(1);
+                    let expected = generation;
+                    active_account = Some(request.account.clone());
+                    active_sync = true;
+                    helper.login_active = Some(request.account.clone());
+                    jobs.spawn(async move {
+                        let result = async {
+                            let pairing = ConfirmedPairing::restore_all(&store)?
+                                .into_iter()
+                                .find(|pairing| pairing.account_id() == request.account)
+                                .ok_or(handover_google_messages::ProbeError::InvalidBootstrap)?;
+                            let session =
+                                handover_google_messages::session::RecoveredSession::restore(
+                                    pairing,
+                                )
+                                .await?;
+                            let model = match model {
+                                Some(model) => model,
+                                None => session
+                                    .read_conversations()
+                                    .await?
+                                    .into_iter()
+                                    .find(|record| record.id.local_id == request.conversation)
+                                    .ok_or(
+                                        handover_google_messages::ProbeError::UnexpectedResponse,
+                                    )?,
+                            };
+                            let page = session
+                                .read_history(&model, request.cursor.as_deref(), request.limit)
+                                .await?;
+                            Ok(WorkOutcome::History {
+                                conversation: request.conversation,
+                                fetch_id: request.fetch_id,
+                                page,
+                            })
+                        }
+                        .await;
+                        (expected, request.account, result)
+                    });
+                }
+            } else if let Some(account) = helper.pending_sync.take() {
                 if let Some(store) = helper.store.clone() {
                     generation = generation.wrapping_add(1);
                     let expected = generation;
@@ -276,6 +486,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             helper.login_active = None;
                             helper.pending_login = None;
                             helper.pending_sync = None;
+                            helper.pending_history = None;
                         }
                         if control.kind == "logout" && helper.desktop_credentials {
                             if let Some(account) = control.account.as_deref().filter(|account| helper.accounts.contains(*account)) {
@@ -356,7 +567,21 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 helper.login_active = None;
                 active_account = None;
                 match result {
-                    Ok(WorkOutcome::ConversationPage(page)) => publish_page(writer, account, page).await?,
+                    Ok(WorkOutcome::ConversationPage(page)) => {
+                        helper.conversations.retain(|(owner, _), _| owner != &account);
+                        for record in &page {
+                            helper.conversations.insert((account.clone(), record.id.local_id.clone()), record.clone());
+                        }
+                        publish_page(writer, account, page).await?;
+                    }
+                    Ok(WorkOutcome::History { conversation, fetch_id, page }) => {
+                        helper.remember_cursor(&account, &conversation, &page);
+                        if helper.save_cursor_links().is_err() {
+                            publish(writer, HelperEvent::Error { message: "native history cursor storage failed".into() }).await?;
+                            continue;
+                        }
+                        publish_history(writer, account, conversation, fetch_id, page).await?;
+                    }
                     Ok(WorkOutcome::Login(LoginOutcome::Ready)) => {}
                     Ok(WorkOutcome::Login(LoginOutcome::CredentialsSaved)) => {
                         publish(writer, HelperEvent::Pairing { account, prompt: "Native account verified. Google authentication saved in the desktop credential store. Messaging startup is pending.".into() }).await?;
@@ -381,7 +606,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         let category = if let handover_google_messages::ProbeError::SessionProtocol(category) = &error {
                             format!("{}, {category:?}", error.code())
                         } else { error.code().to_owned() };
-                        publish(writer, HelperEvent::Error { message: format!("native conversation sync failed ({category})") }).await?;
+                        publish(writer, HelperEvent::Error { message: format!("native read failed ({category})") }).await?;
                     }
                     Err(error) => {
                         publish(writer, HelperEvent::Pairing {
@@ -464,6 +689,10 @@ struct NativeHelper {
     shutdown: bool,
     pending_login: Option<(String, LoginBootstrap)>,
     pending_sync: Option<String>,
+    pending_history: Option<HistoryRequest>,
+    cursor_links: VecDeque<CursorLink>,
+    cursor_links_loaded: bool,
+    conversations: BTreeMap<(String, String), handover_core::messaging::Conversation>,
     login_active: Option<String>,
     confirmed: BTreeMap<String, ConfirmedPairing>,
     desktop_credentials: bool,
@@ -477,6 +706,10 @@ impl NativeHelper {
             shutdown: false,
             pending_login: None,
             pending_sync: None,
+            pending_history: None,
+            cursor_links: VecDeque::new(),
+            cursor_links_loaded: false,
+            conversations: BTreeMap::new(),
             login_active: None,
             confirmed: BTreeMap::new(),
             desktop_credentials: true,
@@ -527,8 +760,8 @@ impl NativeHelper {
                 Vec::new()
             }
             // One pending read coalesces repeated requests while network work
-            // is active. Pages remain incremental until complete snapshot
-            // paging is implemented.
+            // is active. Conversation reads remain incremental until atomic
+            // snapshot reconciliation is implemented.
             HelperCommand::ListConversations { account } | HelperCommand::Sync { account } => {
                 if self.desktop_credentials && self.confirmed.contains_key(&account) {
                     self.pending_sync = Some(account);
@@ -536,11 +769,50 @@ impl NativeHelper {
                 Vec::new()
             }
             HelperCommand::MarkRead { .. } | HelperCommand::Typing { .. } => Vec::new(),
-            // A history request has a waiter the daemon would otherwise hold
-            // until timeout, so fail it instead.
-            HelperCommand::FetchHistory { .. } => vec![HelperEvent::Error {
-                message: UNAVAILABLE.into(),
-            }],
+            // Keep one pending history request. Unsupported or excess work
+            // fails explicitly instead of leaving a daemon waiter open.
+            HelperCommand::FetchHistory {
+                account,
+                conversation,
+                limit,
+                cursor,
+                fetch_id,
+            } => {
+                if self.desktop_credentials
+                    && self.confirmed.contains_key(&account)
+                    && self.pending_history.is_none()
+                    && (1..=200).contains(&limit)
+                    && cursor.as_ref().is_none_or(|value| value.len() <= 2048)
+                {
+                    let cursor = match cursor {
+                        Some(public) => match self.cursor_links.iter().rev().find(|link| {
+                            link.account == account
+                                && link.conversation == conversation
+                                && link.message == public
+                        }) {
+                            Some(link) => Some(link.native.clone()),
+                            None => {
+                                return vec![HelperEvent::Error {
+                                    message: "native history cursor is no longer available".into(),
+                                }];
+                            }
+                        },
+                        None => None,
+                    };
+                    self.pending_history = Some(HistoryRequest {
+                        account,
+                        conversation,
+                        limit: limit.min(50),
+                        cursor,
+                        fetch_id,
+                    });
+                    Vec::new()
+                } else {
+                    vec![HelperEvent::Error {
+                        message: UNAVAILABLE.into(),
+                    }]
+                }
+            }
             HelperCommand::SendText { request_id, .. }
             | HelperCommand::SendMedia { request_id, .. }
             | HelperCommand::React { request_id, .. }
@@ -610,6 +882,11 @@ impl NativeHelper {
                 message: "native session store is unreadable".into(),
             }),
         }
+        if self.restore_cursor_links().is_err() {
+            events.push(HelperEvent::Error {
+                message: "native history cursor cache unavailable".into(),
+            });
+        }
         events
     }
 
@@ -643,15 +920,130 @@ impl NativeHelper {
         vec![announcement(account)]
     }
 
+    fn save_cursor_links(&self) -> Result<(), ()> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(())?
+            .history_cursor_store()
+            .map_err(|_| ())?;
+        // Serialize borrowed entries so the in-memory index stays redacted and
+        // each dropped disk buffer is erased.
+        #[derive(serde::Serialize)]
+        struct Borrowed<'a> {
+            version: u32,
+            links: &'a VecDeque<CursorLink>,
+        }
+        let bytes = Zeroizing::new(
+            serde_json::to_vec(&Borrowed {
+                version: 1,
+                links: &self.cursor_links,
+            })
+            .map_err(|_| ())?,
+        );
+        if bytes.len() > MAX_CURSOR_BYTES {
+            return Err(());
+        }
+        let record = handover_google_messages::session_store::SessionRecord::new(bytes.to_vec())
+            .map_err(|_| ())?;
+        store.store("index", &record).map_err(|_| ())
+    }
+
+    fn restore_cursor_links(&mut self) -> Result<(), ()> {
+        if self.cursor_links_loaded {
+            return Ok(());
+        }
+        self.cursor_links_loaded = true;
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(())?
+            .history_cursor_store()
+            .map_err(|_| ())?;
+        let Some(record) = store.load("index").map_err(|_| ())? else {
+            return Ok(());
+        };
+        if record.as_bytes().len() > MAX_CURSOR_BYTES {
+            return Err(());
+        }
+        let mut saved: SavedCursorLinks =
+            serde_json::from_slice(record.as_bytes()).map_err(|_| ())?;
+        if saved.version != 1 || saved.links.len() > MAX_CURSOR_LINKS {
+            return Err(());
+        }
+        for link in &saved.links {
+            if handover_core::messaging::check_account_id(&link.account).is_err()
+                || [&link.conversation, &link.message].iter().any(|value| {
+                    value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
+                })
+                || link.native.is_empty()
+                || link.native.len() > 2048
+            {
+                return Err(());
+            }
+        }
+        saved
+            .links
+            .retain(|link| self.confirmed.contains_key(&link.account));
+        self.cursor_links = saved.links;
+        Ok(())
+    }
+
+    fn remember_cursor(
+        &mut self,
+        account: &str,
+        conversation: &str,
+        page: &handover_google_messages::history::HistoryPage,
+    ) {
+        if let (Some(native), Some(floor)) = (
+            page.cursor_next.as_ref(),
+            page.messages.iter().min_by(|first, second| {
+                (first.sent_at, &first.id.local_id).cmp(&(second.sent_at, &second.id.local_id))
+            }),
+        ) {
+            self.cursor_links.retain(|link| {
+                !(link.account == account
+                    && link.conversation == conversation
+                    && link.message == floor.id.local_id)
+            });
+            if self.cursor_links.len() == MAX_CURSOR_LINKS {
+                self.cursor_links.pop_front();
+            }
+            self.cursor_links.push_back(CursorLink {
+                account: account.into(),
+                conversation: conversation.into(),
+                message: floor.id.local_id.clone(),
+                native: native.clone(),
+            });
+        }
+    }
+
     fn logout(&mut self, account: &str) -> Vec<HelperEvent> {
         if !self.accounts.contains(account) {
             return Vec::new();
         }
+        if self
+            .pending_history
+            .as_ref()
+            .is_some_and(|request| request.account == account)
+        {
+            self.pending_history = None;
+        }
+        if self.pending_sync.as_deref() == Some(account) {
+            self.pending_sync = None;
+        }
+        self.conversations.retain(|(owner, _), _| owner != account);
+        self.cursor_links.retain(|link| link.account != account);
         // Stop this account's transient work before forgetting local credentials.
         // No remote revocation has been implemented.
         if self.login_active.as_deref() == Some(account) {
             self.login_active = None;
             self.pending_login = None;
+        }
+        if self.save_cursor_links().is_err() {
+            return vec![HelperEvent::Error {
+                message: "native history cursor cleanup failed".into(),
+            }];
         }
         let forgotten = (|| {
             let store = self.store.as_ref().ok_or(())?;
@@ -929,6 +1321,44 @@ mod tests {
             connected: false, authenticated: false, label, ..
         } if label == "Google Messages (offline)"))
         );
+        helper.cursor_links.push_back(CursorLink {
+            account: account.clone(),
+            conversation: "thread".into(),
+            message: "oldest".into(),
+            native: "private-cursor".into(),
+        });
+        helper.save_cursor_links().unwrap();
+        let mut recovered = helper_with_store(directory.path());
+        hello_events(&mut recovered);
+        assert_eq!(recovered.cursor_links.len(), 1);
+        recovered.desktop_credentials = true;
+        assert!(
+            recovered
+                .dispatch(HelperCommand::FetchHistory {
+                    account: account.clone(),
+                    conversation: "thread".into(),
+                    limit: 100,
+                    cursor: Some("oldest".into()),
+                    fetch_id: Some(8),
+                })
+                .is_empty()
+        );
+        let queued = recovered.pending_history.as_ref().unwrap();
+        assert_eq!(queued.cursor.as_deref(), Some("private-cursor"));
+        assert_eq!(queued.limit, 50);
+        assert_eq!(queued.fetch_id, Some(8));
+        assert!(matches!(
+            recovered
+                .dispatch(HelperCommand::FetchHistory {
+                    account: account.clone(),
+                    conversation: "other-thread".into(),
+                    limit: 20,
+                    cursor: Some("oldest".into()),
+                    fetch_id: Some(9),
+                })
+                .as_slice(),
+            [HelperEvent::Error { .. }]
+        ));
         assert_eq!(
             line(
                 &mut helper,
@@ -942,6 +1372,7 @@ mod tests {
         assert!(confirmed_store.load_all().unwrap().is_empty());
         let mut restarted = helper_with_store(directory.path());
         assert!(account_ids(&hello_events(&mut restarted)).is_empty());
+        assert!(restarted.cursor_links.is_empty());
     }
 
     #[test]
@@ -1336,6 +1767,162 @@ mod tests {
                 helper_protocol: HELPER_PROTOCOL,
                 name: HELPER_NAME.into(),
             }]
+        );
+    }
+    #[tokio::test]
+    async fn history_chunks_preserve_fetch_correlation_and_close_empty_pages() {
+        use handover_core::messaging::{
+            ConversationId, Message, MessageId, MessagingAccountId, Participant,
+        };
+        let conversation = ConversationId::new(MessagingAccountId::new("fixture"), "thread");
+        let records = (0..30)
+            .map(|index| Message {
+                id: MessageId::new(conversation.clone(), format!("message-{index}")),
+                sender: Participant {
+                    local_id: "peer".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: false,
+                },
+                transport: None,
+                sent_at: Some(1),
+                text: Some("x".repeat(60_000)),
+                attachments: Vec::new(),
+                reply_to: None,
+                reactions: Vec::new(),
+                deleted: false,
+            })
+            .collect();
+        let mut output = Vec::new();
+        publish_history(
+            &mut output,
+            "fixture".into(),
+            "thread".into(),
+            Some(7),
+            handover_google_messages::history::HistoryPage {
+                messages: records,
+                cursor_next: Some("opaque-cursor".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let lines: Vec<_> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert!(lines.len() > 1);
+        let mut count = 0;
+        for (index, line) in lines.iter().enumerate() {
+            assert!(line.len() <= MAX_HELPER_LINE_BYTES);
+            let HelperEvent::Messages {
+                messages,
+                fetch_id,
+                page_complete,
+                cursor_next,
+                full,
+                generation,
+                ..
+            } = serde_json::from_slice(line).unwrap()
+            else {
+                panic!("history event required")
+            };
+            count += messages.len();
+            assert_eq!(fetch_id, Some(7));
+            assert_eq!(page_complete, index + 1 == lines.len());
+            assert!(!full);
+            assert_eq!(generation, None);
+            assert_eq!(
+                cursor_next.as_deref(),
+                if page_complete {
+                    Some("opaque-cursor")
+                } else {
+                    None
+                }
+            );
+        }
+        assert_eq!(count, 30);
+        output.clear();
+        publish_history(
+            &mut output,
+            "fixture".into(),
+            "thread".into(),
+            Some(8),
+            handover_google_messages::history::HistoryPage {
+                messages: Vec::new(),
+                cursor_next: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<HelperEvent>(&output).unwrap(),
+            HelperEvent::Messages {
+                page_complete: true,
+                fetch_id: Some(8),
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn cursor_links_evict_old_entries_without_crossing_account_or_thread() {
+        use handover_core::messaging::{
+            ConversationId, Message, MessageId, MessagingAccountId, Participant,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        for index in 0..=MAX_CURSOR_LINKS {
+            let message = Message {
+                id: MessageId::new(
+                    ConversationId::new(MessagingAccountId::new("fixture"), "thread"),
+                    format!("message-{index}"),
+                ),
+                sender: Participant {
+                    local_id: "peer".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: false,
+                },
+                transport: None,
+                sent_at: Some(index as i64),
+                text: Some("Fixture".into()),
+                attachments: Vec::new(),
+                reply_to: None,
+                reactions: Vec::new(),
+                deleted: false,
+            };
+            helper.remember_cursor(
+                "fixture",
+                "thread",
+                &handover_google_messages::history::HistoryPage {
+                    messages: vec![message],
+                    cursor_next: Some(format!("cursor-{index}")),
+                },
+            );
+        }
+        assert_eq!(helper.cursor_links.len(), MAX_CURSOR_LINKS);
+        assert_eq!(helper.cursor_links.front().unwrap().message, "message-1");
+        helper.save_cursor_links().unwrap();
+        let record = helper
+            .store
+            .as_ref()
+            .unwrap()
+            .history_cursor_store()
+            .unwrap()
+            .load("index")
+            .unwrap()
+            .unwrap();
+        assert!(record.as_bytes().len() < MAX_CURSOR_BYTES);
+        assert!(
+            !record
+                .as_bytes()
+                .windows(b"Fixture".len())
+                .any(|bytes| bytes == b"Fixture")
+        );
+        let mut recovered = helper_with_store(directory.path());
+        recovered.restore_cursor_links().unwrap();
+        assert!(
+            recovered.cursor_links.is_empty(),
+            "unpaired accounts cannot recover cursor state"
         );
     }
 }

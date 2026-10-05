@@ -749,13 +749,15 @@ struct ActivationTimestamp {
 
 #[tokio::test]
 async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_account() {
-    for (wrong, conversations, corrupt, paged, cycle) in [
-        (false, false, false, false, false),
-        (true, false, false, false, false),
-        (false, true, false, false, false),
-        (false, true, true, false, false),
-        (false, true, false, true, false),
-        (false, true, false, true, true),
+    for (wrong, conversations, corrupt, paged, cycle, history) in [
+        (false, false, false, false, false, false),
+        (true, false, false, false, false, false),
+        (false, true, false, false, false, false),
+        (false, true, true, false, false, false),
+        (false, true, false, true, false, false),
+        (false, true, false, true, true, false),
+        (false, true, false, false, false, true),
+        (false, true, true, false, false, true),
     ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
@@ -763,7 +765,11 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
         };
         let mut pages = Vec::new();
         for index in 0..if paged { 2 } else { 1 } {
-            let mut bytes = synthetic_conversation_page(26 + index);
+            let mut bytes = if history {
+                synthetic_history_page()
+            } else {
+                synthetic_conversation_page(26 + index)
+            };
             if paged && (index == 0 || cycle) {
                 // First-party cursor: conversation ID field 1, timestamp field 2.
                 bytes.extend_from_slice(&[0x2a, 8, 0x0a, 4, b'n', b'e', b'x', b't', 0x10, 1]);
@@ -822,7 +828,7 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                     let (path, body) = request(&mut list).await;
                     assert_eq!(path, crate::SEND_MESSAGE_PATH);
                     let body: Value = serde_json::from_slice(&body).unwrap();
-                    assert_eq!(body[1][22][1], if index == 0 { 16 } else { 2 });
+                    assert_eq!(body[1][22][1], if index == 0 && !history { 16 } else { 2 });
                     let wrapper = ActivationWrapper::decode(
                         STANDARD
                             .decode(body[1][11].as_str().unwrap())
@@ -830,11 +836,11 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                             .as_slice(),
                     )
                     .unwrap();
-                    assert_eq!(wrapper.action, 1);
+                    assert_eq!(wrapper.action, if history { 2 } else { 1 });
                     response(&mut list, "application/json+protobuf", b"[]").await;
                     let rpc_reply = SessionResponse {
                         request_id: wrapper.request_id,
-                        action: 1,
+                        action: if history { 2 } else { 1 },
                         encrypted: encrypted_page,
                     };
                     let mut message = vec![Value::Null; 17];
@@ -874,15 +880,26 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                 "probe must cancel receive before returning"
             );
         });
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            session.probe_startup_at(
-                &endpoint,
-                crate::client(false).unwrap(),
-                crate::client(false).unwrap(),
-                conversations,
-            ),
-        )
+        let fixture = synthetic_conversation_page(1);
+        let model = crate::conversation::decode(session.account_id(), &fixture[2..]).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            if history {
+                session
+                    .history_at(&endpoint, crate::client(false).unwrap(), &model)
+                    .await
+                    .map(|page| Some(page.messages.len()))
+            } else {
+                session
+                    .probe_startup_at(
+                        &endpoint,
+                        crate::client(false).unwrap(),
+                        crate::client(false).unwrap(),
+                        conversations,
+                    )
+                    .await
+                    .map(|page| page.map(|page| page.len()))
+            }
+        })
         .await
         .unwrap();
         if wrong {
@@ -901,8 +918,14 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
             ));
         } else {
             assert_eq!(
-                result.unwrap().map(|page| page.len()),
-                conversations.then_some(if paged { 27 } else { 26 })
+                result.unwrap(),
+                conversations.then_some(if history {
+                    1
+                } else if paged {
+                    27
+                } else {
+                    26
+                })
             );
         }
         tokio::time::timeout(Duration::from_secs(5), server)
@@ -933,4 +956,54 @@ fn synthetic_conversation_page(count: usize) -> Vec<u8> {
         page.extend(record);
     }
     page
+}
+
+fn synthetic_history_page() -> Vec<u8> {
+    #[derive(prost::Message)]
+    struct Text {
+        #[prost(string, tag = "1")]
+        text: String,
+    }
+    #[derive(prost::Message)]
+    struct Part {
+        #[prost(message, optional, tag = "2")]
+        text: Option<Text>,
+    }
+    #[derive(prost::Message)]
+    struct Status {
+        #[prost(int32, tag = "2")]
+        code: i32,
+    }
+    #[derive(prost::Message)]
+    struct Record {
+        #[prost(message, optional, tag = "4")]
+        status: Option<Status>,
+        #[prost(string, tag = "1")]
+        id: String,
+        #[prost(string, tag = "7")]
+        conversation: String,
+        #[prost(string, tag = "9")]
+        sender: String,
+        #[prost(message, repeated, tag = "10")]
+        parts: Vec<Part>,
+    }
+    #[derive(prost::Message)]
+    struct Page {
+        #[prost(message, repeated, tag = "2")]
+        records: Vec<Record>,
+    }
+    Page {
+        records: vec![Record {
+            status: Some(Status { code: 100 }),
+            id: "message".into(),
+            conversation: "thread-0".into(),
+            sender: "fixture-peer".into(),
+            parts: vec![Part {
+                text: Some(Text {
+                    text: "Synthetic content".into(),
+                }),
+            }],
+        }],
+    }
+    .encode_to_vec()
 }

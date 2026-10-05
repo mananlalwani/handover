@@ -556,3 +556,47 @@ The second visual comparison on 2026-10-05 confirmed that conversation names in
 the expanded list looked correct. It did not separately verify membership,
 unread counts, or the active-status filter's coverage. The production relay was
 restored after the comparison.
+
+## Bounded native message history
+
+`FetchHistory` now uses the existing helper contract to read one native history
+page. First-party `wW`, `aya`, and `cya` establish action 2, conversation field 2,
+requested count field 3, and cursor field 5. The independent reply projection
+uses `fya`, `sw`, `Q2a`, `iw`, and `Iv`. `Iv` stores its status code in field 2.
+The code opens receive before activation, correlates the reply with the request
+and paired phone, authenticates and decrypts it, checks every message's thread
+binding, and acknowledges only a validated page. The network attempt has a
+thirty-second limit. Unsupported content, unknown direction, or malformed data
+fails explicitly without an ACK or automatic retry.
+
+The projection retains message IDs, text parts in order, microsecond timestamps,
+sender identity, and attachment metadata. First-party outgoing status ranges
+identify the account's attested self participant. Incoming sender keys reuse
+conversation participants when known. Transport and delivery status remain
+unknown. Attachment bytes are not downloaded. Replies, reactions, rich cards,
+and other content families remain unfinished. Known system notices are omitted
+from ordinary message windows; pages remain incremental and never claim an
+authoritative replacement window.
+
+Requests are bounded to fifty records as a count hint, with independent limits
+of 500 returned records, 64 KiB per message, and the existing 512-KiB receive
+frame. The helper keeps one pending history request. It emits size-bounded
+chunks, echoes `fetch_id`, and sets `page_complete` only on the closing chunk,
+including an empty page. Logout and pipe closure cancel outstanding work.
+
+The daemon's public cursor is the oldest normalized message ID. The helper maps
+it to the phone's validated cursor within the account and conversation. This
+index retains at most 128 entries and 512 KiB under the restricted
+`gmessages-native/history-cursors` store. It contains cursor metadata, without
+message text or new authentication material. Writes use the existing atomic
+0600-record store. Restart recovery filters entries to confirmed accounts;
+logout removes that account's entries. Missing or evicted cursor mappings fail
+explicitly. The IPC contract and public models are unchanged.
+
+Local tests cover request encoding, reply correlation, invalid MACs without ACKs,
+thread binding, text and attachment projection, cursor bounds, chunk completion,
+cache eviction, account filtering, restart recovery, and logout cleanup. On
+2026-10-05, the final live daemon test read 48 ordinary messages, restarted the
+helper, then read 20 older messages with no overlap. Counts exclude known system
+notices. The production relay was restored afterward. Text, timestamps, sender
+alignment, attachment display, and coverage still need comparison with the phone.
