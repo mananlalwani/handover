@@ -614,4 +614,9 @@ On 2026-10-05, a direct native read of the same thread reached 84 ordinary
 messages. The repaired daemon reached those same 84 messages across three IPC
 pages, with no overlapping IDs and no remaining older cursor. The production
 relay was restored. This verifies paging through that thread, not message
-content or coverage across every conversation. Another visual check remains.
+content or coverage across every conversation.
+
+The following phone comparison confirmed that both views matched in the newest
+thread, including older pages beyond the previous stopping point. This closes
+that thread's visual paging check. Other conversations and attachment rendering
+were not separately verified. The production relay was restored afterward.
