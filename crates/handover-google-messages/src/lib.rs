@@ -1,8 +1,8 @@
 //! Independently authored Google Messages protocol client for Handover.
 //!
 //! It contains bounded authentication, registration, pairing, and receive
-//! primitives and read-only conversation projection. Network effects are
-//! explicit; persistent messaging and chat sends remain unavailable.
+//! primitives, normalized conversation/history projection, and a shared live
+//! receiver with bounded text sends. Network effects are explicit.
 
 mod conversation;
 pub mod credential_store;
@@ -12,6 +12,7 @@ pub mod native;
 pub mod pairing;
 pub mod receive;
 pub mod registration;
+mod send;
 pub mod session;
 pub mod session_store;
 pub mod sources;

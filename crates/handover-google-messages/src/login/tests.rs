@@ -1145,13 +1145,25 @@ async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
 #[tokio::test]
 async fn live_session_shares_receive_with_history_and_requires_push_publication_before_ack() {
     use crate::session::{LiveCommand, LiveEvent};
-    for reject_push in [false, true] {
+    for (reject_push, send_code) in [
+        (false, 1_i32),
+        (false, 2),
+        (false, 0),
+        (false, -1),
+        (true, 1),
+    ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
             panic!("pairing");
         };
         let inventory = pairing
             .encrypt(&synthetic_conversation_page(1))
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let capability = pairing.encrypt(&[8, 1]).unwrap().as_bytes().to_vec();
+        let sent = pairing
+            .encrypt(&[0x12, 1, b's', 0x18, send_code.max(0) as u8])
             .unwrap()
             .as_bytes()
             .to_vec();
@@ -1184,6 +1196,8 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (checked_tx, checked_rx) = tokio::sync::oneshot::channel();
         let (presence_tx, presence_rx) = tokio::sync::oneshot::channel();
+        let (send_checked_tx, send_checked_rx) = tokio::sync::oneshot::channel();
+        let (gate_checked_tx, gate_checked_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut lookup, _) = listener.accept().await.unwrap();
             assert_eq!(request(&mut lookup).await.0, crate::SIGN_IN_PATH);
@@ -1220,8 +1234,28 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             )
             .await;
             expect_ack(&listener, "inventory").await;
+            let (mut capabilities, _) = listener.accept().await.unwrap();
+            let wrapper = rpc_request(&request(&mut capabilities).await.1);
+            assert_eq!(wrapper.action, 31);
+            assert!(
+                wrapper.encrypted.is_empty(),
+                "the first-party capability request has an empty payload, not an encrypted empty envelope"
+            );
+            response(&mut capabilities, "application/json+protobuf", b"[]").await;
             rpc_push(&mut receive, &session_id, 16, active, "active", true).await;
-            expect_ack(&listener, "active").await;
+            tokio::time::timeout(Duration::from_secs(1), expect_ack(&listener, "active"))
+                .await
+                .expect("startup activation must not wait for the capability reply");
+            rpc_push(
+                &mut receive,
+                &wrapper.request_id,
+                31,
+                capability,
+                "capabilities",
+                true,
+            )
+            .await;
+            expect_ack(&listener, "capabilities").await;
             rpc_push(&mut receive, &session_id, 16, pushed, "message-push", true).await;
             assert!(
                 tokio::time::timeout(Duration::from_millis(50), listener.accept())
@@ -1252,22 +1286,58 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 )
                 .await;
                 expect_ack(&listener, "history-page").await;
-                rpc_push(
-                    &mut receive,
-                    &session_id,
-                    16,
-                    presence,
-                    "presence-check",
-                    true,
-                )
-                .await;
-                let (mut response_socket, _) = listener.accept().await.unwrap();
-                let (path, body) = request(&mut response_socket).await;
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                        .await
+                        .is_err(),
+                    "a send must wait for helper acceptance publication"
+                );
+                gate_checked_tx.send(()).unwrap();
+                let (mut send, _) = listener.accept().await.unwrap();
+                let (path, body) = request(&mut send).await;
                 assert_eq!(path, crate::SEND_MESSAGE_PATH);
-                assert_eq!(rpc_request(&body).action, 17);
-                response(&mut response_socket, "application/json+protobuf", b"[]").await;
-                expect_ack(&listener, "presence-check").await;
-                presence_tx.send(()).unwrap();
+                let wrapper = rpc_request(&body);
+                assert_eq!(wrapper.action, 3);
+                if send_code == -1 {
+                    send.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                } else {
+                    response(&mut send, "application/json+protobuf", b"[]").await;
+                    rpc_push(
+                        &mut receive,
+                        &wrapper.request_id,
+                        3,
+                        sent,
+                        "send-reply",
+                        true,
+                    )
+                    .await;
+                    if send_code > 0 {
+                        assert!(
+                            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                                .await
+                                .is_err(),
+                            "send reply must wait for normalized outcome publication before ACK"
+                        );
+                        send_checked_tx.send(()).unwrap();
+                        expect_ack(&listener, "send-reply").await;
+                        rpc_push(
+                            &mut receive,
+                            &session_id,
+                            16,
+                            presence,
+                            "presence-check",
+                            true,
+                        )
+                        .await;
+                        let (mut response_socket, _) = listener.accept().await.unwrap();
+                        let (path, body) = request(&mut response_socket).await;
+                        assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                        assert_eq!(rpc_request(&body).action, 17);
+                        response(&mut response_socket, "application/json+protobuf", b"[]").await;
+                        expect_ack(&listener, "presence-check").await;
+                        presence_tx.send(()).unwrap();
+                    }
+                }
             }
             let mut byte = [0];
             assert_eq!(
@@ -1299,10 +1369,18 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         assert!(
             matches!(inventory.event, LiveEvent::Conversations(ref records) if records.len() == 1)
         );
+        assert!(
+            matches!(inventory.event, LiveEvent::Conversations(ref records) if records[0].capabilities.is_empty())
+        );
         inventory.accepted.send(()).unwrap();
         let active = outgoing.recv().await.unwrap();
         assert!(matches!(active.event, LiveEvent::Online));
         active.accepted.send(()).unwrap();
+        let capability_update = outgoing.recv().await.unwrap();
+        assert!(
+            matches!(capability_update.event, LiveEvent::ConversationUpdates(ref records) if records[0].capabilities.contains(&handover_core::messaging::MessagingCapability::Text))
+        );
+        capability_update.accepted.send(()).unwrap();
         let message = outgoing.recv().await.unwrap();
         assert!(matches!(message.event, LiveEvent::Messages(ref records) if records.len() == 1));
         checked_rx.await.unwrap();
@@ -1324,14 +1402,50 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 matches!(page.event, LiveEvent::History { fetch_id: Some(77), ref page, .. } if page.messages.len() == 1)
             );
             page.accepted.send(()).unwrap();
-            presence_rx.await.unwrap();
+            let (accepted, gate) = tokio::sync::oneshot::channel();
+            commands
+                .send(LiveCommand::SendText {
+                    request_id: "send-test".into(),
+                    conversation: "thread-0".into(),
+                    text: zeroize::Zeroizing::new("hello".into()),
+                    accepted: gate,
+                })
+                .await
+                .unwrap();
+            gate_checked_rx.await.unwrap();
+            accepted.send(()).unwrap();
+            if send_code > 0 {
+                let result = outgoing.recv().await.unwrap();
+                if send_code == 1 {
+                    assert!(
+                        matches!(result.event, LiveEvent::SendResult { ref request_id, ref message, status: "accepted", .. } if request_id == "send-test" && message.as_deref()==Some("s"))
+                    );
+                } else {
+                    assert!(matches!(
+                        result.event,
+                        LiveEvent::SendResult {
+                            message: None,
+                            status: "failed:rejected",
+                            ..
+                        }
+                    ));
+                }
+                send_checked_rx.await.unwrap();
+                result.accepted.send(()).unwrap();
+                presence_rx.await.unwrap();
+            } else {
+                assert!(
+                    outgoing.recv().await.is_none(),
+                    "uncertain send must not invent a result"
+                );
+            }
         }
         drop(commands);
         let result = tokio::time::timeout(Duration::from_secs(2), network)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result.is_err(), reject_push);
+        assert_eq!(result.is_err(), reject_push || send_code <= 0);
         tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .unwrap()

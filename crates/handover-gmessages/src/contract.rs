@@ -202,6 +202,8 @@ pub enum HelperEvent {
     /// Send lifecycle update correlated to the originating send command.
     /// `accepted` means queued by the helper; later states come from the
     /// relay. `message` may be absent until the relay assigns an id.
+    /// `unknown` is an uncertain operation outcome, never a delivery status;
+    /// it must not cause automatic replay.
     SendStatus {
         request_id: String,
         account: String,

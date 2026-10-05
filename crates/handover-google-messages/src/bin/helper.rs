@@ -300,7 +300,12 @@ fn wire_conversation(
         last_activity_at: conversation.last_activity_at,
         unread_count: conversation.unread_count,
         cursor: None,
-        capabilities: Vec::new(),
+        capabilities: conversation
+            .capabilities
+            .contains(&handover_core::messaging::MessagingCapability::Text)
+            .then(|| "text".to_owned())
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -526,6 +531,92 @@ async fn publish<W: AsyncWrite + Unpin>(writer: &mut W, event: HelperEvent) -> s
     writer.flush().await
 }
 
+struct TextSend {
+    request_id: String,
+    account: String,
+    conversation: String,
+    text: Zeroizing<String>,
+    reply_to: Option<String>,
+}
+async fn queue_send<W: AsyncWrite + Unpin>(
+    helper: &NativeHelper,
+    workers: &BTreeMap<String, LiveWorker>,
+    sends: &mut BTreeMap<String, (String, String)>,
+    writer: &mut W,
+    send: TextSend,
+) -> std::io::Result<()> {
+    use handover_core::messaging::{MAX_ID_LEN, MAX_TEXT_CHARS, MessagingCapability};
+    let TextSend {
+        request_id,
+        account,
+        conversation,
+        text,
+        reply_to,
+    } = send;
+    let allowed = helper.online.contains(&account)
+        && !sends.contains_key(&account)
+        && reply_to.is_none()
+        && !request_id.is_empty()
+        && request_id.len() <= MAX_ID_LEN
+        && !request_id.chars().any(char::is_control)
+        && !text.trim().is_empty()
+        && !text.contains('\0')
+        && text.chars().count() <= MAX_TEXT_CHARS
+        && helper
+            .conversations
+            .get(&(account.clone(), conversation.clone()))
+            .is_some_and(|model| model.capabilities.contains(&MessagingCapability::Text));
+    let (accepted, gate) = tokio::sync::oneshot::channel();
+    let queued = allowed
+        && workers.get(&account).is_some_and(|worker| {
+            worker
+                .commands
+                .try_send(LiveCommand::SendText {
+                    request_id: request_id.clone(),
+                    conversation: conversation.clone(),
+                    text,
+                    accepted: gate,
+                })
+                .is_ok()
+        });
+    if queued {
+        sends.insert(account.clone(), (request_id.clone(), conversation));
+    }
+    publish(
+        writer,
+        HelperEvent::CommandResult {
+            request_id,
+            ok: queued,
+            error: (!queued).then(|| UNAVAILABLE.into()),
+        },
+    )
+    .await?;
+    // Never submit before the normalized acceptance has reached the daemon pipe.
+    if queued {
+        let _ = accepted.send(());
+    }
+    Ok(())
+}
+async fn abandon_send<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    sends: &mut BTreeMap<String, (String, String)>,
+    account: &str,
+) -> std::io::Result<()> {
+    if let Some((request_id, conversation)) = sends.remove(account) {
+        publish(
+            writer,
+            HelperEvent::SendStatus {
+                request_id,
+                account: account.into(),
+                conversation,
+                message: None,
+                status: "unknown".into(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
 /// The command reader stays responsive throughout pairing. One ceremony and
 /// eight progress events are allowed; pipe closure and logout cancel its I/O.
 async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
@@ -541,6 +632,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let mut workers = BTreeMap::<String, LiveWorker>::new();
     let mut retries = BTreeMap::<String, tokio::time::Instant>::new();
     let mut attempts = BTreeMap::<String, u8>::new();
+    let mut sends = BTreeMap::<String, (String, String)>::new();
     let mut line = Zeroizing::new(Vec::new());
     loop {
         if jobs.is_empty() {
@@ -668,6 +760,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     if let Ok(control) = serde_json::from_slice::<Control>(&line) {
                         if control.kind == "logout" {
                             if let Some(account) = control.account.as_deref() {
+                                abandon_send(writer, &mut sends, account).await?;
                                 retries.remove(account);
                                 attempts.remove(account);
                                 if let Some(worker) = workers.remove(account) {
@@ -702,11 +795,15 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     }
                 }
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
+                    if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendText { request_id, account, conversation, text, reply_to }) = serde_json::from_slice::<HelperCommand>(&line) {
+                        queue_send(helper, &workers, &mut sends, writer, TextSend { request_id, account, conversation, text: Zeroizing::new(text), reply_to }).await?;
+                    } else {
                     for response in helper.handle_line(&line) {
                         writer.write_all(response.as_bytes()).await?;
                         writer.write_all(b"\n").await?;
                     }
                     writer.flush().await?;
+                    }
                 }
                 line.zeroize();
                 if helper.shutdown_requested() || !terminated {
@@ -715,6 +812,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     return Ok(());
                 }
                 if let Some((account, bootstrap)) = helper.pending_login.take() {
+                    abandon_send(writer, &mut sends, &account).await?;
                     retries.remove(&account);
                     attempts.remove(&account);
                     if let Some(worker) = workers.remove(&account) {
@@ -752,6 +850,12 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 match signal {
                     LiveSignal::Output(output) => {
                         match output.event {
+                            LiveEvent::SendResult { request_id, conversation, message, status } => {
+                                if sends.get(&account).is_some_and(|pending| pending.0 == request_id && pending.1 == conversation) {
+                                    publish(writer, HelperEvent::SendStatus { request_id, account: account.clone(), conversation, message, status: status.into() }).await?;
+                                    sends.remove(&account);
+                                } else { continue; }
+                            }
                             LiveEvent::Online => {
                                 helper.online.insert(account.clone());
                                 attempts.remove(&account);
@@ -780,6 +884,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         let _ = output.accepted.send(());
                     }
                     LiveSignal::Ended(result) => {
+                        abandon_send(writer, &mut sends, &account).await?;
                         if let Some(worker) = workers.remove(&account) { worker.stop().await; }
                         helper.end_live_session(&account);
                         publish(writer, disconnected(&account)).await?;
@@ -1407,6 +1512,138 @@ mod tests {
             prompt,
             "Native account verified, but Google authentication was not saved (Locked). Sign in again; do not pair again."
         );
+    }
+
+    #[tokio::test]
+    async fn text_send_admission_and_abandonment_are_bounded_and_explicit() {
+        use handover_core::messaging::{
+            Conversation, ConversationId, ConversationKind, MessagingAccountId,
+            MessagingCapability, Participant, TransportKind,
+        };
+        for case in [
+            "accepted",
+            "busy",
+            "offline",
+            "no_capability",
+            "reply",
+            "empty",
+            "nul",
+            "full",
+            "closed",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut helper = helper_with_store(directory.path());
+            helper.online.insert("work".into());
+            let model = Conversation {
+                id: ConversationId::new(MessagingAccountId::new("work"), "thread"),
+                kind: ConversationKind::Direct,
+                transport: TransportKind::Unknown,
+                title: None,
+                participants: vec![Participant {
+                    local_id: "peer".into(),
+                    display_name: None,
+                    address: None,
+                    is_self: false,
+                }],
+                latest_message_id: None,
+                last_activity_at: None,
+                unread_count: None,
+                cursor: None,
+                capabilities: BTreeSet::from([MessagingCapability::Text]),
+            };
+            helper
+                .conversations
+                .insert(("work".into(), "thread".into()), model);
+            let (commands, mut incoming) = mpsc::channel(1);
+            let mut workers = BTreeMap::new();
+            workers.insert(
+                "work".into(),
+                LiveWorker {
+                    generation: 1,
+                    ready: true,
+                    commands,
+                    task: None,
+                },
+            );
+            let mut sends = BTreeMap::new();
+            if case == "busy" {
+                sends.insert("work".into(), ("previous".into(), "thread".into()));
+            }
+            if case == "offline" {
+                helper.online.clear();
+            }
+            if case == "no_capability" {
+                helper
+                    .conversations
+                    .values_mut()
+                    .next()
+                    .unwrap()
+                    .capabilities
+                    .clear();
+            }
+            if case == "full" {
+                workers["work"]
+                    .commands
+                    .try_send(LiveCommand::Conversations)
+                    .unwrap_or_else(|_| panic!("fixture queue"));
+            }
+            if case == "closed" {
+                incoming.close();
+            }
+            let mut output = Vec::new();
+            queue_send(
+                &helper,
+                &workers,
+                &mut sends,
+                &mut output,
+                TextSend {
+                    request_id: "send-test".into(),
+                    account: "work".into(),
+                    conversation: "thread".into(),
+                    text: Zeroizing::new(
+                        match case {
+                            "empty" => " ",
+                            "nul" => "a\0b",
+                            _ => "hello",
+                        }
+                        .into(),
+                    ),
+                    reply_to: (case == "reply").then(|| "message".into()),
+                },
+            )
+            .await
+            .unwrap();
+            let event: HelperEvent = serde_json::from_slice(&output).unwrap();
+            assert!(
+                matches!(event, HelperEvent::CommandResult { ok, .. } if ok == (case=="accepted")),
+                "case {case}"
+            );
+            if case == "accepted" {
+                let LiveCommand::SendText { accepted, .. } = incoming.recv().await.unwrap() else {
+                    panic!("queued send");
+                };
+                accepted.await.unwrap();
+                output.clear();
+                abandon_send(&mut output, &mut sends, "work").await.unwrap();
+                let event: HelperEvent = serde_json::from_slice(&output).unwrap();
+                assert!(
+                    matches!(event, HelperEvent::SendStatus { status, message: None, .. } if status=="unknown")
+                );
+                assert!(sends.is_empty());
+                output.clear();
+                abandon_send(&mut output, &mut sends, "work").await.unwrap();
+                assert!(output.is_empty(), "abandonment is reported once");
+            } else {
+                assert!(
+                    sends
+                        .get("work")
+                        .is_none_or(|pending| pending.0 == "previous")
+                );
+                if case != "full" {
+                    assert!(incoming.try_recv().is_err());
+                }
+            }
+        }
     }
 
     #[tokio::test]

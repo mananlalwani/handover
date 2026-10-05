@@ -5,23 +5,27 @@ mautrix-gmessages. The target is Google Messages companion access, including RCS
 it still requires Google Messages on the phone and Google's service.
 
 The Rust client lives in [`crates/handover-google-messages`](../crates/handover-google-messages).
-It has independently authored source lookup, registration preparation,
-correlated UKEY2 pairing, receive framing, pairing-reply validation, payload
-encryption, and acknowledgement payload construction. A live read-only
-authentication test returned four registered sources using matched browser
-service cookies and a request constructed by Rust. The user completed live registration and native phone pairing. On 2026-10-05, the native client received the initial phone handshake, derived the matching emoji, received explicit phone confirmation, saved the paired credentials, and completed the final acknowledgement. It does not yet read conversations or send user messages. The production adapter remains in use during development.
+It has independently authored source lookup, registration, correlated UKEY2
+pairing, encrypted receive, and normalized conversation/history projection.
+On 2026-10-05, live tests verified phone confirmation, credential recovery after
+restart, all 201 conversations, older message pages, and automatic incoming
+message display in Handover. The production adapter remains the default during
+development.
 
-The native crate includes a restricted local session-record store for pending registrations and confirmed pairing keys. Confirmed-session restore has mock coverage; online messaging startup remains unimplemented. The registration was created on 2026-10-03 and its paired credentials were saved after phone confirmation on 2026-10-05. Send and acknowledgement transports use the JSON-protobuf outer format observed in Google's web client; embedded Ditto and UKEY2 payloads stay binary. HTTP acceptance alone does not establish phone confirmation.
+`handover-google-messages-helper` runs this client through the existing normalized
+helper contract. It keeps one receive stream per active account for updates,
+reads, and bounded text sends. A phone capability response gates sending; an
+accepted send never claims delivery, and interrupted sends remain unknown
+without automatic retries. Native text sending has mock coverage and still
+needs a recipient test. Attachments, replies, reactions, token renewal, and
+remote logout remain unfinished. See
+[`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for the helper contract.
 
-
-The crate also builds `handover-google-messages-helper`, the daemon-supervised
-process for this client. It speaks the existing normalized helper contract,
-restores locally saved pending registrations, and rejects every capability it
-cannot yet serve. Explicit login operations run account-binding lookup or a
-bounded phone-pairing ceremony. Confirmed keys are saved privately; messaging
-startup and browser-free token refresh remain unimplemented. See
-[`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for how it relates to
-the loopback helper and the production adapter.
+Confirmed pairing records stay in the restricted local session store. Required
+Google authentication is saved in desktop Secret Service with the user's
+approval. Protocol envelopes use the independently observed JSON-protobuf outer
+format and binary encrypted payloads. HTTP acceptance alone does not prove
+pairing or message delivery.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.

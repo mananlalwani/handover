@@ -14,8 +14,9 @@ Handover's independently authored replacement lives in
 in this repository. Its native registration, phone pairing, and acknowledgements were live-tested
 through explicit phone confirmation on 2026-10-05. Bounded browser-free
 conversation and history reads also passed live tests. The native helper now
-keeps a shared receive stream for live updates and reads. Chat sends remain
-unimplemented. It must not import or copy the AGPL adapter or mautrix
+keeps a shared receive stream for live updates, reads, and text sends. Native
+text sending has mock coverage and still needs a recipient test.
+It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
 backend-independent.
@@ -165,8 +166,18 @@ bounded conversation and history reads through contract v1 on one receive stream
 per active account. Accounts start offline and become connected and authenticated
 only after the paired phone's encrypted activation alert matches that session.
 Live conversation and message updates use the same normalized events. Message
-pushes do not close history pages or change their cursors. Send capabilities
-remain unavailable. Standalone read probes still close receive after each read.
+pushes do not close history pages or change their cursors. Text capability is
+advertised only after an authenticated phone response permits sending. One
+text send per account may be queued; replies, attachments, and new conversations
+remain unsupported. Standalone read probes still close receive after each read.
+
+The helper flushes `command_result ok` before submitting a queued send. That
+confirms helper acceptance only. An authenticated successful phone reply adds
+the assigned message ID with `send_status accepted`; it does not claim delivery.
+An explicit phone rejection reports `failed:rejected`. Session loss or
+cancellation reports `send_status unknown`, preserving the daemon's normalized
+unknown outgoing outcome. Unknown is valid only for an outgoing operation,
+not an ordinary message status. It never triggers automatic resend.
 
 The Native Messaging host passes a marked, versioned browser-proof bundle through
 the existing Login command. The daemon checks the helper identity when it selects
@@ -206,7 +217,9 @@ passed phone comparison. A live diagnostic decoded an incoming message update.
 The shared daemon receiver also served two history pages without overlap and
 remained connected afterward. On 2026-10-05, the user confirmed that a new
 incoming message appeared automatically in an open Handover conversation
-without refreshing or reopening it. Chat sends remain unimplemented.
+without refreshing or reopening it. A separate live permission query enabled
+text capability on all 201 conversations. Native text sends have local mock coverage;
+recipient arrival and outgoing display still need live tests.
 The old adapter remains the active production implementation.
 
 Capabilities are available only when the helper advertises them: listing, paged history, live updates,

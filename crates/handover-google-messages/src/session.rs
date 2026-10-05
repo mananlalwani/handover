@@ -16,6 +16,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionError {
+    SendModel,
     ActivationTransport,
     UpdateModel,
     UpdateAuthentication,
@@ -671,14 +672,21 @@ impl RecoveredSession {
         delivery_class: i32,
         ttl: Option<i64>,
     ) -> Result<SessionRequest, ProbeError> {
-        let encrypted = self
-            .pairing
-            .encrypt(payload)
-            .map_err(|_| ProbeError::InvalidBootstrap)?;
+        // First-party c6 preserves an empty request. It does not manufacture
+        // a ciphertext envelope for capability and presence requests.
+        let encrypted = if payload.is_empty() {
+            Vec::new()
+        } else {
+            self.pairing
+                .encrypt(payload)
+                .map_err(|_| ProbeError::InvalidBootstrap)?
+                .as_bytes()
+                .to_vec()
+        };
         let wrapper = EncryptedRequest {
             request_id: request_id.to_owned(),
             action,
-            encrypted: encrypted.as_bytes().to_vec(),
+            encrypted,
             session_id: self.session_id.to_string(),
         };
         let wrapper = Zeroizing::new(wrapper.encode_to_vec());

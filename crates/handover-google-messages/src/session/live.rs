@@ -4,6 +4,13 @@ use handover_core::messaging::Conversation;
 use tokio::sync::{mpsc, oneshot};
 
 pub enum LiveCommand {
+    SendingCapability,
+    SendText {
+        request_id: String,
+        conversation: String,
+        text: Zeroizing<String>,
+        accepted: oneshot::Receiver<()>,
+    },
     Conversations,
     History {
         conversation: Box<Conversation>,
@@ -13,6 +20,12 @@ pub enum LiveCommand {
     },
 }
 pub enum LiveEvent {
+    SendResult {
+        request_id: String,
+        conversation: String,
+        message: Option<String>,
+        status: &'static str,
+    },
     Online,
     Conversations(Vec<Conversation>),
     ConversationUpdates(Vec<Conversation>),
@@ -66,6 +79,48 @@ fn merge(known: &mut Vec<Conversation>, records: &[Conversation]) -> Result<(), 
     Ok(())
 }
 impl RecoveredSession {
+    async fn sending_capability(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        correlation: &std::sync::Mutex<(Zeroizing<String>, i32)>,
+        replies: &mut mpsc::Receiver<crate::receive::session_reply::SessionReply>,
+    ) -> Result<bool, ProbeError> {
+        let id = Uuid::new_v4().to_string();
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(id.clone()), 31);
+        let request = self.build_request(&id, 31, &[], 2, Some(86_400_000_000))?;
+        self.post_request(http, endpoint, &request).await?;
+        let reply = replies.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+        let plain = self
+            .pairing
+            .pairing
+            .decrypt_payload(&reply.ciphertext)
+            .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
+        let allowed = crate::send::capability(plain.as_bytes())?;
+        self.acknowledge(http, endpoint, reply.message_id).await?;
+        Ok(allowed)
+    }
+    async fn send_on_stream(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        payload: &[u8],
+        correlation: &std::sync::Mutex<(Zeroizing<String>, i32)>,
+        replies: &mut mpsc::Receiver<crate::receive::session_reply::SessionReply>,
+    ) -> Result<(crate::send::Reply, Zeroizing<String>), ProbeError> {
+        let id = Uuid::new_v4().to_string();
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? = (Zeroizing::new(id.clone()), 3);
+        let request = self.build_request(&id, 3, payload, 2, Some(60_000_000))?;
+        self.post_request(http, endpoint, &request).await?;
+        let reply = replies.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+        let plain = self
+            .pairing
+            .pairing
+            .decrypt_payload(&reply.ciphertext)
+            .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
+        Ok((crate::send::reply(plain.as_bytes())?, reply.message_id))
+    }
     pub async fn run_live(
         &self,
         commands: mpsc::Receiver<LiveCommand>,
@@ -163,12 +218,79 @@ impl RecoveredSession {
             .map_err(|_| ProbeError::SessionExpired)?;
         let expiry = tokio::time::sleep(lifetime);
         tokio::pin!(expiry);
-        let mut known = Vec::new();
+        let mut known = Vec::<Conversation>::new();
         let mut pending = Some(LiveCommand::Conversations);
         let mut online = false;
+        let mut can_send = false;
         loop {
             if let Some(command) = pending.take() {
+                if let LiveCommand::SendText {
+                    request_id,
+                    conversation,
+                    text,
+                    accepted,
+                } = command
+                {
+                    accepted.await.map_err(|_| ProbeError::NativeError)?;
+                    if !online
+                        || !can_send
+                        || !known.iter().any(|model| model.id.local_id == conversation)
+                    {
+                        publish(
+                            &events,
+                            LiveEvent::SendResult {
+                                request_id,
+                                conversation,
+                                message: None,
+                                status: "failed:rejected",
+                            },
+                        )
+                        .await?;
+                        continue;
+                    }
+                    let payload =
+                        crate::send::request(&conversation, &text, &Uuid::new_v4().to_string())?;
+                    let send = tokio::time::timeout(
+                        Duration::from_secs(60),
+                        self.send_on_stream(
+                            &short,
+                            endpoint,
+                            &payload,
+                            &correlation,
+                            &mut reply_rx,
+                        ),
+                    );
+                    tokio::pin!(send);
+                    let (reply, inbox_id) = loop {
+                        tokio::select! {
+                            result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
+                            _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                            result = &mut send => break result.map_err(|_| ProbeError::Timeout)??,
+                            push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                        }
+                    };
+                    let (message, status) = match reply {
+                        crate::send::Reply::Accepted(id) => (Some(id), "accepted"),
+                        crate::send::Reply::Rejected => (None, "failed:rejected"),
+                    };
+                    publish(
+                        &events,
+                        LiveEvent::SendResult {
+                            request_id,
+                            conversation,
+                            message,
+                            status,
+                        },
+                    )
+                    .await?;
+                    self.acknowledge(&short, endpoint, inbox_id).await?;
+                    *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+                        (Zeroizing::new(String::new()), 0);
+                    continue;
+                }
                 let (conversations, history, fetch_id) = match &command {
+                    LiveCommand::SendText { .. } => unreachable!(),
+                    LiveCommand::SendingCapability => (false, None, None),
                     LiveCommand::Conversations => (true, None, None),
                     LiveCommand::History {
                         conversation,
@@ -195,14 +317,32 @@ impl RecoveredSession {
                 };
                 let read = tokio::time::timeout(
                     Duration::from_secs(if conversations { 120 } else { 30 }),
-                    self.read_on_stream(
-                        &short,
-                        endpoint,
-                        conversations,
-                        history,
-                        &correlation,
-                        &mut reply_rx,
-                    ),
+                    async {
+                        let result = self
+                            .read_on_stream(
+                                &short,
+                                endpoint,
+                                conversations,
+                                history,
+                                &correlation,
+                                &mut reply_rx,
+                            )
+                            .await?;
+                        let allowed = if matches!(command, LiveCommand::SendingCapability) {
+                            Some(
+                                self.sending_capability(
+                                    &short,
+                                    endpoint,
+                                    &correlation,
+                                    &mut reply_rx,
+                                )
+                                .await?,
+                            )
+                        } else {
+                            None
+                        };
+                        Ok::<_, ProbeError>((result, allowed))
+                    },
                 );
                 tokio::pin!(read);
                 let result = loop {
@@ -217,10 +357,21 @@ impl RecoveredSession {
                         }
                     }
                 };
-                match result {
-                    ReadResult::Conversations(records) => {
+                if let Some(allowed) = result.1 {
+                    can_send = allowed;
+                }
+                match result.0 {
+                    ReadResult::Conversations(mut records) => {
+                        for record in &mut records {
+                            if can_send {
+                                record
+                                    .capabilities
+                                    .insert(handover_core::messaging::MessagingCapability::Text);
+                            }
+                        }
                         merge(&mut known, &records)?;
                         publish(&events, LiveEvent::Conversations(records)).await?;
+                        pending = Some(LiveCommand::SendingCapability);
                     }
                     ReadResult::History(page) => {
                         let LiveCommand::History { conversation, .. } = &command else {
@@ -235,6 +386,20 @@ impl RecoveredSession {
                             },
                         )
                         .await?;
+                    }
+                    ReadResult::Startup if matches!(command, LiveCommand::SendingCapability) => {
+                        for model in &mut known {
+                            if can_send {
+                                model
+                                    .capabilities
+                                    .insert(handover_core::messaging::MessagingCapability::Text);
+                            } else {
+                                model
+                                    .capabilities
+                                    .remove(&handover_core::messaging::MessagingCapability::Text);
+                            }
+                        }
+                        publish(&events, LiveEvent::ConversationUpdates(known.clone())).await?;
                     }
                     ReadResult::Startup => return Err(ProbeError::UnexpectedResponse),
                 }
@@ -264,6 +429,11 @@ impl RecoveredSession {
         online: &mut bool,
         push: crate::receive::session_reply::SessionReply,
     ) -> Result<(), ProbeError> {
+        let can_send = known.iter().any(|model| {
+            model
+                .capabilities
+                .contains(&handover_core::messaging::MessagingCapability::Text)
+        });
         let plaintext = self
             .pairing
             .pairing
@@ -281,7 +451,14 @@ impl RecoveredSession {
                     crate::receive::ReceiveError::SessionPreempted,
                 ));
             }
-            crate::updates::Update::Conversations(records) => {
+            crate::updates::Update::Conversations(mut records) => {
+                for record in &mut records {
+                    if can_send {
+                        record
+                            .capabilities
+                            .insert(handover_core::messaging::MessagingCapability::Text);
+                    }
+                }
                 merge(known, &records)?;
                 publish(events, LiveEvent::ConversationUpdates(records)).await?;
             }

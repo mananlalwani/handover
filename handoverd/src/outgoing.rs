@@ -379,6 +379,55 @@ mod tests {
     }
 
     #[test]
+    fn local_acceptance_cannot_erase_unknown_send_outcome() {
+        let state = Arc::new(RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(8);
+        crate::apply_backend_event(
+            &state,
+            &events,
+            StateEvent::Messaging(MessagingEvent::Outgoing(operation(
+                "send",
+                OutgoingOutcome::Unknown,
+            ))),
+        );
+        update(
+            &state,
+            &events,
+            "send",
+            OutgoingOutcome::Provider(MessageStatus::Accepted),
+            None,
+        );
+        assert_eq!(
+            state
+                .read()
+                .unwrap()
+                .messaging()
+                .outgoing("send")
+                .unwrap()
+                .outcome,
+            OutgoingOutcome::Unknown
+        );
+        let message = handover_core::MessageId::new(
+            operation("send", OutgoingOutcome::Unknown).conversation_id,
+            "phone-message",
+        );
+        update(
+            &state,
+            &events,
+            "send",
+            OutgoingOutcome::Provider(MessageStatus::Accepted),
+            Some(message.clone()),
+        );
+        let guard = state.read().unwrap();
+        let restored = guard.messaging().outgoing("send").unwrap();
+        assert_eq!(
+            restored.outcome,
+            OutgoingOutcome::Provider(MessageStatus::Accepted)
+        );
+        assert_eq!(restored.message_id, Some(message));
+    }
+
+    #[test]
     fn restart_restores_uncertainty_without_changing_delivery_evidence() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("journal.json");

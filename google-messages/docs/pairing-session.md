@@ -1,7 +1,9 @@
 # Source selection and pairing session
 
 The independent Rust lookup succeeded on 2026-10-02 using one-time matched
-browser credentials. Native phone pairing completed a live test on 2026-10-05, including saved keys and final acknowledgement. Usable messaging-session restoration remains unverified.
+browser credentials. Native phone pairing, session restoration, conversation
+and history reads, and automatic incoming display passed live tests on
+2026-10-05. Text sends have local mock coverage and need a recipient test.
 This document separates the observed wire contract from implementation policy.
 
 ## Registered phone selection
@@ -709,3 +711,59 @@ appeared automatically in an open Handover conversation without refreshing or
 reopening it. This verifies live publication through the native helper and
 desktop client; it does not verify every message type or delivery status.
 The production relay was restored after the tests.
+
+## Native text sends
+
+The same retained first-party web bundle establishes the minimal text request.
+`BugleBackendService.yj` near offset 1044987 sends action 3 with conversation
+field 2, message field 3, and temporary ID field 5. `T2a` near 1014618 constructs
+message ID field 1, conversation field 7, parts field 10, and temporary ID field
+12. A text part has text wrapper field 2 and string field 1. The legacy text
+projection uses message field 6, wrapper field 1, and string field 1. The Rust
+implementation independently encodes these fields, with a fresh UUID shared by
+the temporary-ID fields. It leaves optional sender, SIM, transport, and reply
+fields absent; it does not choose a SIM or invent a provider participant ID.
+
+`getCapabilities` near 1044210 uses action 31 with an empty request and response
+boolean field 1. A validated positive reply permits the helper to advertise
+normalized text capability; a missing boolean leaves it unavailable. Action-3
+replies use string field 2 for the assigned message ID and result field 3.
+The first-party `bqa` maps results 1 through 4 and leaves other results unknown.
+The existing libgm behavior was inspected for the success/rejection distinction
+and temporary-ID concept only. No AGPL implementation or generated definitions
+were copied or imported. Result 1 requires a bounded nonempty message ID;
+results 2 through 4 are explicit rejection. Missing, unknown, or malformed
+results cannot be reported as successful or safely retried.
+
+First-party `c6` at 1060113 preserves empty request bytes instead of encrypting
+them. Encrypting the empty action-31 payload caused the live permission query
+to time out. A failing wire-format test caught that discrepancy. After the fix,
+the live daemon recovered online and published all 201 conversations with
+phone-attested text capability. The production relay was restored afterward;
+no chat message was sent in this permission check.
+
+The initial inventory is published before the permission query, allowing
+activation alerts and presence checks to be serviced while its reply is pending.
+A regression test requires activation acknowledgement before the mock phone
+replies to the permission query. Capability changes then update the existing
+normalized conversation models without closing their history pages.
+
+Each account accepts at most one queued send, through its existing bounded
+command channel. Unsupported replies, missing capability, offline accounts,
+invalid text, and full queues are rejected before submission. The receiver
+waits for the helper to flush normalized command acceptance before posting the
+encrypted action-3 request. Sends have a sixty-second deadline and transport
+TTL. They are never included in reconnect work or persisted for replay.
+
+A validated phone reply is published through `SendStatus` before its inbox
+record is acknowledged. Success links the assigned message ID to the durable
+outgoing operation as accepted, without claiming sent, delivered, or displayed.
+Connection loss, timeout, malformed replies, logout, and account replacement
+leave accepted work unknown. The helper contract's `unknown` token updates only
+the matching normalized outgoing operation. A late local acknowledgement cannot
+erase that uncertainty; an authenticated assigned message ID can resolve it.
+
+Mock tests cover capability gating, queue limits, acceptance before submission,
+authenticated success and rejection, publication before ACK, malformed replies,
+HTTP failure without retries, and operation-scope checks. Phone arrival and
+outgoing display remain unverified. The production adapter remains the default.

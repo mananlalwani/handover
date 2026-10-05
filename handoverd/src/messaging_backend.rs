@@ -1096,7 +1096,15 @@ async fn ingest_event(
                             && !id.chars().any(char::is_control)
                     })
                 {
-                    if let Ok(status) = parse_status(&status) {
+                    if status == "unknown" {
+                        crate::outgoing::update(
+                            state,
+                            events,
+                            &request_id,
+                            handover_core::OutgoingOutcome::Unknown,
+                            None,
+                        );
+                    } else if let Ok(status) = parse_status(&status) {
                         let message_id =
                             message.map(|id| MessageId::new(operation.conversation_id, id));
                         crate::outgoing::update(
@@ -2040,6 +2048,62 @@ mod tests {
                 .1
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn unknown_send_outcome_requires_matching_operation_scope() {
+        use handover_core::{OutgoingOperation, OutgoingOperationKind, OutgoingOutcome};
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(16);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        crate::apply_backend_event(
+            &state,
+            &events,
+            StateEvent::Messaging(MessagingEvent::Outgoing(OutgoingOperation {
+                id: "send-test".into(),
+                conversation_id: ConversationId::new(MessagingAccountId::new("personal"), "thread"),
+                kind: OutgoingOperationKind::Text,
+                created_at: 1,
+                updated_at: 1,
+                outcome: OutgoingOutcome::Provider(handover_core::MessageStatus::Accepted),
+                message_id: None,
+            })),
+        );
+        for (account, conversation, expected) in [
+            ("other", "thread", false),
+            ("personal", "other", false),
+            ("personal", "thread", true),
+        ] {
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::SendStatus {
+                    request_id: "send-test".into(),
+                    account: account.into(),
+                    conversation: conversation.into(),
+                    message: None,
+                    status: "unknown".into(),
+                },
+            )
+            .await;
+            assert_eq!(
+                state
+                    .read()
+                    .unwrap()
+                    .messaging()
+                    .outgoing("send-test")
+                    .unwrap()
+                    .outcome,
+                if expected {
+                    OutgoingOutcome::Unknown
+                } else {
+                    OutgoingOutcome::Provider(handover_core::MessageStatus::Accepted)
+                }
+            );
+        }
     }
 
     #[tokio::test]

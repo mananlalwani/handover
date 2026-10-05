@@ -92,6 +92,14 @@ impl MessagingStore {
             }
             // Late evidence may resolve Unknown, but local acknowledgement must
             // never overwrite an already attested provider outcome.
+            if matches!(
+                previous.outcome,
+                OutgoingOutcome::Unknown | OutgoingOutcome::Rejected
+            ) && operation.outcome == OutgoingOutcome::Provider(MessageStatus::Accepted)
+                && operation.message_id.is_none()
+            {
+                return MessagingOutcome::unchanged();
+            }
             if let OutgoingOutcome::Provider(current) = &previous.outcome {
                 if let OutgoingOutcome::Provider(next) = &operation.outcome {
                     if matches!(current, MessageStatus::Failed(_))
