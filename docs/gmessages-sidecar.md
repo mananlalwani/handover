@@ -15,7 +15,7 @@ in this repository. Its native registration, phone pairing, and acknowledgements
 through explicit phone confirmation on 2026-10-05. Bounded browser-free
 conversation and history reads also passed live tests. The native helper now
 keeps a shared receive stream for live updates, reads, and text sends. Native
-text sending passed a recipient test; acceptance without an assigned ID needs live verification.
+text sending passed recipient tests and live acceptance without an assigned ID.
 It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
@@ -226,7 +226,9 @@ recorded the operation as unknown without an assigned message ID. Recipient
 arrival is verified. A later diagnostic received explicit success without an
 assigned message ID, which the parser incorrectly rejected. The parser now
 accepts that response without an ID. The shared-receiver regression test covers
-publication and acknowledgement of this reply; the fix still needs a live test.
+publication and acknowledgement of this reply. A subsequent live native send
+reported `send_status accepted` without an ID, and the daemon retained the
+provider-accepted outcome instead of unknown. Production was restored afterward.
 Delivery-status correlation remains unverified.
 The old adapter remains the active production implementation.
 
