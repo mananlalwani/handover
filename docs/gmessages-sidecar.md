@@ -318,12 +318,14 @@ private permissions, content reuse, temporary-file cleanup, and symlink rejectio
 
 The read-only `--probe-media` command checks the newest attachment in the
 newest self-only conversation, keeps bytes in transient memory, and prints
-only counts, sizes, and fixed error categories. A live probe successfully
-downloaded and GCM-authenticated an older attachment. The stricter newest-item
-check initially lacked a supported reference; alternate and unencrypted
-references were then added. That follow-up timed out reading from the phone.
-The new fixture, daemon staging, and attachment opening still need live
-verification. Production was restored after each probe.
+only counts, sizes, and fixed error categories. A live newest-item probe
+downloaded and GCM-authenticated the self-conversation image. A subsequent
+native daemon history request staged that same newest attachment, imported
+it into the daemon-owned cache, and published its path. The imported file was
+regular, had mode 0600, matched the downloaded byte count, and had a recognized
+image signature. Opening the attachment from Quickshell still needs visual
+verification. The standalone probes restored production afterward; the daemon
+UI test uses a timed automatic production restore.
 
 Media framing was observed in the public web client's SVb/TVb, PVb/QVb, and
 NVb functions. The modules were fetched anonymously from Google's public
