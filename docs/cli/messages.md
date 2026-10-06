@@ -5,6 +5,9 @@ and conversations. Sends are accepted with a request id. Delivery,
 display, and failure arrive later as attested status events visible in
 `handoverctl monitor`. This CLI never invents delivery state.
 
+Commands depend on capabilities advertised by the selected provider. The native
+helper supports a subset of this contract; see [known limitations](../KNOWN_LIMITATIONS.md).
+
 Selectors:
 
 - Conversations: `ACCOUNT:THREAD`, or a bare `THREAD` when it is
@@ -84,7 +87,7 @@ message. Queued, not confirmed.
 ## typing
 
 Sends a typing-start ping for a conversation. No typing-stop command
-exists because the upstream relay cannot send typing-stop.
+exists in the public contract.
 
 ## delete
 
@@ -109,12 +112,14 @@ helper. Bundles never travel through argv, shell history, logs, or
 crash reports. There is no password, token, or bundle argument. The
 bundle is bounded at 192 KiB raw (256 KiB encoded). Accepted means the helper took the
 bundle. Confirm pairing on the phone. See
-`docs/gmessages-sidecar.md` for the adapter runbook and storage rules.
+the [helper contract](../gmessages-sidecar.md) for storage rules. For normal native
+setup, use the [browser setup flow](../user-guide.md#browser-setup).
 
 ## logout
 
 Logs out and revokes helper access. Queued. Access ends when the helper
-revokes the session.
+revokes the session. The native helper requires confirmed phone unpairing before
+removing a confirmed account; offline or uncertain attempts retain credentials.
 
 ## sync
 

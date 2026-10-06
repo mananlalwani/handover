@@ -136,11 +136,6 @@ apps access. It filters `ClipboardService` output for its package name, opens a
 transient activity for one permitted read, and does not retain log lines.
 Clipboard clips marked sensitive by Android are excluded from automatic sends.
 
-For future work that needs daemon-owned Wayland clipboard access, the platform
-boundary belongs outside `handover-core`. The current Wayland options are the
-event-driven `ext-data-control-v1` protocol, with `wlr-data-control` as a
-compatibility path. No such Handover provider is implemented yet.
-
 ## Runtime state
 
 `handoverd` owns the authoritative in-memory device and active notification
@@ -335,10 +330,8 @@ notifications.
 KDE Connect already exports remote Android players through standard MPRIS
 services named `org.mpris.MediaPlayer2.kdeconnect.mpris_<id>`. Handover should
 not expose another MPRIS player for the same sessions because that would
-duplicate players in desktop media menus. The current public integration is
-the Handover IPC API and its CLI/Quickshell clients; a future MPRIS bridge, if
-needed for a backend-independent use case, should be a separate deliberate
-integration rather than daemon-owned duplicate export.
+duplicate players in desktop media menus. The public integration uses
+the Handover IPC API and its CLI/Quickshell clients.
 
 ## Messaging
 
@@ -371,8 +364,9 @@ conversations, history with cursor paging, send/send-file, react/unreact,
 read, typing-start, delete, open, login/logout, sync) with an opt-in
 `messages` subscribe flag, following the same snapshot-recovery and
 bounded-channel rules as devices, notifications, and media. Login bundles
-travel file/stdin → local socket → local helper pipe only, rest in
-helper-owned 0600 files, and are revoked with an explicit logout.
+travel file/stdin → local socket → local helper pipe only. Native authentication
+uses desktop Secret Service; pairing records use private helper-owned files.
+Confirmed native logout waits for phone unpairing before deleting credentials.
 
 ## User service
 

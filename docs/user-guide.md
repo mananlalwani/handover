@@ -28,17 +28,10 @@ quickshell --path ~/.local/share/handover/quickshell/example.qml
 
 ## Native Android connection
 
-The native connection is the primary connection path. Build the companion from
-the repository:
-
-```sh
-cd android
-./gradlew assembleDebug
-```
-
-Install `android/app/build/outputs/apk/debug/app-debug.apk` on the phone. Open
-Handover and enable the connection while the phone and Linux machine can reach
-each other.
+The native connection is the primary connection path. Install the signed Android
+APK from the [latest release](https://github.com/mananlalwani/handover/releases/latest).
+Open Handover and enable the connection while the phone and Linux machine can
+reach each other. For source builds, see [Contributing](../CONTRIBUTING.md).
 
 On Linux, get the pending pairing request:
 
@@ -143,46 +136,17 @@ Cancellation resumes the helper. A crashed setup's pause expires after fifteen
 minutes. Interrupted registration or pairing is not retried automatically.
 Check your phone's linked devices before repeating a failed attempt.
 
-Using Helium, the installed setup flow passed user-confirmed live checks for fresh phone
-pairing, restart recovery, and disconnect/reconnect. Official Chrome passkey
-sign-in and the read-only native handoff also passed. Other detected browsers
-remain unverified.
 An account is shown connected only after the daemon reports a usable session.
 
 To disconnect a confirmed native account, select it while online and click
 **Disconnect**, then confirm **Disconnect and unpair**. Handover asks the phone
 to unpair before removing saved credentials. If unpairing is not confirmed,
 credentials remain. Check the phone's linked devices before retrying an uncertain
-attempt. The user confirmed that native Disconnect removed Handover from the
-phone's linked devices.
+attempt.
 
 For terminal setup, run `handover-google-messages-setup`. It prints setup progress
 and the confirmation symbol. `--browser /path/to/browser` selects an executable;
 `--list-browsers` lists detected choices without changing account state.
-
-### Development extension
-
-The included extension remains available for protocol diagnostics and the earlier
-pairing flow. For a user installation, register its host with:
-
-```sh
-python3 "${XDG_DATA_HOME:-$HOME/.local/share}/handover/google-messages/tools/install_native_probe.py" \
-  --binary "$HOME/.local/bin/handover-google-messages-auth-probe"
-```
-
-For a system package, use `/usr/share/handover/google-messages/tools/install_native_probe.py`
-and `/usr/bin/handover-google-messages-auth-probe` instead. Load the adjacent
-`chrome-observer` directory with Chrome's **Load unpacked** action, then follow
-its [native registration and pairing instructions](../google-messages/tools/chrome-observer/README.md#register-one-native-device).
-The phone confirmation is required once. Keep Google Messages web tabs closed
-while using Handover's connected native session.
-
-The daemon receives normalized conversations, messages, statuses, capabilities,
-and opaque identifiers. Google authentication and keys stay inside the native
-helper and desktop credential store. Login bundles are sensitive; never put
-one in command arguments, shell history, logs, or a committed file. Native
-logout removes local credentials; removing the linked device on the phone is
-still a separate step.
 
 ### Optional legacy relay
 
@@ -241,8 +205,10 @@ claim that the presentation or volume changed.
 - The Android identity private key stays in Android Keystore.
 - Native received files are size-limited and written through controlled storage
   paths.
-- Google Messages credentials stay with the separate adapter. They do not cross
-  into Handover's normalized state.
+- Google Messages authentication stays inside the native helper and desktop
+  credential store, or the optional legacy adapter. It does not enter
+  Handover's normalized state. Never put login bundles in command arguments,
+  shell history, logs, or committed files.
 - Handover logs identifiers, counts, and state transitions, not message bodies,
   notification text, URLs, tokens, keys, or file contents.
 

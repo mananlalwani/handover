@@ -58,7 +58,7 @@ Run the Android checks from `android/`:
 Run the QML check from the repository root:
 
 ```sh
-qmllint quickshell/*.qml
+qmllint -I /usr/lib/qt6/qml quickshell/HandoverService.qml quickshell/example.qml quickshell/pages/*.qml
 ```
 
 Run all checks affected by a change. Report checks that are unavailable on the

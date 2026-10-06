@@ -12,6 +12,7 @@ before installing the Arch package:
 systemctl --user disable --now handoverd.service
 rm -f ~/.local/bin/handoverd ~/.local/bin/handoverctl
 rm -f ~/.local/bin/handover-google-messages-helper ~/.local/bin/handover-google-messages-auth-probe
+rm -f ~/.local/bin/handover-google-messages-setup
 rm -f ~/.local/share/systemd/user/handoverd.service
 systemctl --user daemon-reload
 ```
@@ -29,7 +30,7 @@ systemctl --user enable --now handoverd.service
 
 `handover-git` builds the current Git checkout from GitHub. `handover` builds
 the `v0.3.4` source tarball. They provide and conflict with the same package,
-so use `handover-git` during development and remove the other package first.
+so choose one and remove the other package first.
 
 Follow the [user guide](../../docs/user-guide.md#native-android-connection)
 to pair the phone. The

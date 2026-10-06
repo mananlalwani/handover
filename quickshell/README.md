@@ -76,10 +76,12 @@ the additive protocol-1 `messages.*` methods.
 `messagingFinished`/`messagingAccepted` report acceptance, never delivery. The
 example Messages card has an account picker, conversation list with unread
 counts, paged history, compose with attachments, reply targeting, reaction
-toggles, typing display, read state, and conversation creation. Pairing stays
-in `handoverctl messages login`; see the [messaging command
-reference](../docs/cli/messages.md). The UI only shows the helper's
-verification prompt.
+toggles, typing display, read state, and conversation creation where supported.
+Account setup uses the Messages view's **Connect** action and an installed
+Chromium browser. The view retains the phone verification symbol until pairing
+finishes. **Disconnect** asks the native provider to unpair the phone before
+removing saved credentials. Commands remain capability-dependent; see the
+[messaging command reference](../docs/cli/messages.md).
 
 `refreshContacts()` reads the contacts snapshot held by the daemon.
 `syncContacts(device)` asks one connected native phone for a fresh snapshot.

@@ -36,7 +36,7 @@ Split a file when it has separate responsibilities. Keep a connection loop
 together when splitting it would make its state harder to follow. Tests can
 live next to the code they cover.
 
-Native transport now looks like this:
+Native transport is organized as follows:
 
 ```text
 crates/handover-native/src/
@@ -66,7 +66,7 @@ Do not invent a crate-wide abstraction the first time two functions look similar
 
 First-party apps use the same daemon state and documented IPC as everyone else. A Messages app does not open its own Google session. A Calls app does not grow a second phone connection. Contacts do not keep a private database unless it is a cache of the public model.
 
-Quickshell already reconnects and rebuilds from `handoverd`. If the public model cannot express a need, extend the model. Do not add an app-only backdoor.
+Quickshell reconnects and rebuilds from `handoverd`. If the public model cannot express a need, extend the model. Do not add an app-only backdoor.
 
 Unix-socket IPC is still experimental until a versioned 1.0.
 

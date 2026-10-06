@@ -6,11 +6,6 @@ overrides take precedence. Otherwise, discovery checks beside the daemon for
 the native helper, then `PATH`; only installations without a native binary
 fall back to the legacy helper on `PATH`. A native authentication or session
 failure never silently selects the legacy relay or retries a send through it.
-The installed native helper passed live cutover checks with no explicit helper
-override: saved authentication restored, all 201 conversations returned, and
-two 20-message history pages had correct thread binding and no overlap. A
-second service restart recovered the native connection without browser or
-phone interaction. The legacy binary remains installed but is not running.
 
 The optional legacy Google Messages adapter lives in
 [handover-gmessages](https://github.com/mananlalwani/handover-gmessages) and is
@@ -23,13 +18,7 @@ client.
 Handover's independently authored replacement lives in
 [`google-messages/`](../google-messages/README.md) and
 [`crates/handover-google-messages`](../crates/handover-google-messages/src/lib.rs)
-in this repository. Its native registration, phone pairing, and acknowledgements were live-tested
-through explicit phone confirmation on 2026-10-05. Bounded browser-free
-conversation and history reads also passed live tests. The native helper now
-keeps a shared receive stream for live updates, reads, and text sends. Native
-text sending passed recipient tests and live acceptance without an assigned ID.
-Image download, daemon staging, and image sending also passed live checks.
-It must not import or copy the AGPL adapter or mautrix
+in this repository. It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
 backend-independent.
@@ -129,8 +118,8 @@ restarted daemon can restore its account list.
 ## Running the helper
 
 The helper is optional. `HANDOVER_GMESSAGES_HELPER` selects an explicit binary.
-Otherwise the daemon searches `PATH` for `handover-gmessages`.
-If it is absent, messaging stays disabled. Other backends keep working.
+Otherwise discovery follows the native-first order described above.
+If no helper is available, messaging stays disabled. Other backends keep working.
 
 Reconnect backoff ranges from 1 to 60 seconds. After connecting, the daemon
 syncs known accounts and requests catch-up syncs for accounts the helper
@@ -187,223 +176,42 @@ cargo build -p handover-google-messages --bin handover-google-messages-helper
 HANDOVER_GMESSAGES_HELPER=target/debug/handover-google-messages-helper handoverd
 ```
 
-The helper owns native pairing attempts and saved credentials. It serves
-bounded conversation and history reads through contract v1 on one receive stream
-per active account. Accounts start offline and become connected and authenticated
-only after the paired phone's encrypted activation alert matches that session.
-Live conversation and message updates use the same normalized events. Message
-pushes do not close history pages or change their cursors. Text and media
-capabilities are advertised only after an authenticated phone response permits
-sending. One text or media send per account may be queued; replies and new
-conversations remain unsupported. Standalone read probes still close receive
-after each read.
+The helper owns pairing attempts and saved credentials. One receive stream per
+active account carries updates, reads, and bounded sends. Accounts become online
+only after authenticated phone activation. Sending capabilities require an
+authenticated phone permission response.
 
-The helper flushes `command_result ok` before submitting a queued send. That
-confirms helper acceptance only. An authenticated successful phone reply reports
-`send_status accepted`, with an assigned message ID when the phone supplies one.
-Success without an ID remains accepted; it does not claim delivery or invent an
-identity. A supplied invalid ID still fails validation.
-An explicit phone rejection reports `failed:rejected`. Session loss or
-cancellation reports `send_status unknown`, preserving the daemon's normalized
-unknown outgoing outcome. Unknown is valid only for an outgoing operation,
-not an ordinary message status. It never triggers automatic resend.
+A successful command result reports acceptance. Phone-attested status events
+report sent, delivered, or displayed outcomes. The native helper uses the daemon's
+outgoing operation ID as a temporary protocol identifier, allowing an exact
+account and conversation match to bind the phone-assigned message ID. Message
+contents and timestamps are never used to guess an identity. Late evidence can
+resolve an unknown send without replaying it.
 
-The Native Messaging host passes a marked, versioned browser-proof bundle through
-the existing Login command. The daemon checks the helper identity when it selects
-the sender, so a supervisor replacement cannot forward that proof to the
-production adapter. Handoverd neither interprets nor persists the proof.
+Pairing records use random persisted Handover account aliases and restricted
+files under `gmessages-native/confirmed`. Google authentication is kept in desktop
+Secret Service. The daemon neither interprets nor persists browser proof. A
+confirmed account's logout requires a positive correlated phone unpair result;
+offline, rejected, or uncertain attempts preserve its credentials.
 
-Pending registrations use random persisted Handover account aliases. Older
-records migrate in place. The alias contains no Google email or server identity.
-The helper requires the supplied alias to match a saved registration, then makes
-one read-only source lookup to verify that the signed-in account owns that web
-registration. Google's `a5a` implements the same identity comparison.
+Native media uses authenticated chunked AES-256-GCM framing and bounded service
+uploads. Files are limited to 50 MiB. Redirects and automatic send retries are
+forbidden. Downloaded originals are authenticated before staging; missing
+originals retain attachment metadata without substituting a preview.
 
-Two explicit operations share that private bundle:
+Helper media staging retains at most 1,024 files, 512 MiB total, for 30 days.
+The daemon imports attachments into its own private cache before publishing
+normalized paths. Keys and blob references remain below helper IPC.
 
-- `gaia_login` checks account binding and phone selection only. It sends no phone
-  pairing request.
-- `gaia_pairing_start` opens receive before submitting types 44 and 45, correlates
-  both replies, displays the verification emoji through the existing Pairing
-  event, and acknowledges only replies it has validated. There is one bounded
-  attempt and no automatic retry.
+Capabilities are available only when advertised by the selected helper. The
+contract has no message edits, membership changes, or disappearing messages.
+The native helper does not implement every operation supported by the legacy
+adapter. See [known limitations](KNOWN_LIMITATIONS.md).
 
-Confirmed keys and the registration are saved in a versioned private record under
-`gmessages-native/confirmed`, before acknowledging the final phone reply. Browser
-cookies, authorization headers, and email are absent. A failed final ACK retains
-confirmed evidence and cannot silently trigger another pairing. Restore retains
-an expired transport token as expired. It does not claim a usable connection.
-Local logout cancels and joins active work before deleting credentials; remote
-revocation remains unimplemented.
-
-Offline tests exercise a local HTTP server and UKEY2 mock phone, matching symbols,
-account mismatch, stale replies, send/receive failure, cancellation, ACK failure,
-key recovery, and helper replacement. Native phone pairing completed a live
-test on 2026-10-05, including saved credentials and final acknowledgement.
-Live tests also published 201 conversations and paged message history across a
-helper restart. Conversation names and older-page coverage in the newest thread
-passed phone comparison. A live diagnostic decoded an incoming message update.
-The shared daemon receiver also served two history pages without overlap and
-remained connected afterward. On 2026-10-05, the user confirmed that a new
-incoming message appeared automatically in an open Handover conversation
-without refreshing or reopening it. A separate live permission query enabled
-text capability on all 201 conversations. The user then confirmed that one
-native text appeared on the phone and reached the recipient. The daemon
-recorded the operation as unknown without an assigned message ID. Recipient
-arrival is verified. A later diagnostic received explicit success without an
-assigned message ID, which the parser incorrectly rejected. The parser now
-accepts that response without an ID. The shared-receiver regression test covers
-publication and acknowledgement of this reply. A subsequent live native send
-reported `send_status accepted` without an ID, and the daemon retained the
-provider-accepted outcome instead of unknown. Production was restored afterward.
-The native push decoder now publishes explicit sent, delivered, and displayed
-states for validated outgoing messages through the existing normalized `status`
-event. Field layout follows the first-party Q2a/M2a projection; outgoing state
-names were cross-checked against the public
-[libgm API documentation](https://pkg.go.dev/go.mau.fi/mautrix-gmessages@v0.2609.0/pkg/libgm/gmproto#MessageStatusType).
-Content is published before status, and the phone update is acknowledged
-only after both reach the daemon. Draft, incoming, and unsupported status codes
-produce no delivery assertion. Conflicting statuses for a duplicated message in
-one update are rejected. This path has synthetic decoder and helper-contract
-coverage. A subsequent native SMS test reported acceptance without an assigned
-ID, followed by an authenticated `sent` message status. No delivered or displayed
-status was observed; those paths still need live verification. Production was
-restored after the test. A later RCS test emitted acceptance, then authenticated
-`sent` and `delivered` message statuses. The diagnostic retained no message IDs,
-so these events verify the native status path, not operation correlation.
-Displayed remains unverified. A subsequent unsupported-content update ended the
-native receive session. A synthetic stream reproduced this failure with a valid
-message containing no supported content parts. Live message batches with
-unsupported content now follow the existing unsupported-update policy: no
-partial publication, no acknowledgement, and receive continues for later
-supported updates. The shared-receiver regression covers a later message,
-history request, send, and presence check on the same stream. Malformed records
-and authentication failures still fail closed; history-page decoding still
-rejects unsupported content. The live payload was not retained, so this fix
-was followed by a live RCS test that emitted accepted, sent, and delivered and
-remained connected for 80 seconds after acceptance, beyond the previous failure
-interval. No receiver error or disconnect was observed. The exact unsupported
-payload was not confirmed to recur, so replay coverage is synthetic rather than
-an attested reproduction of that payload. Production was restored afterward.
-
-For new native sends, the helper represents the daemon's random 128-bit outgoing
-operation ID as the protocol temporary UUID. An authenticated outgoing message
-update carrying that same temporary identifier can bind its phone-assigned ID
-and attested sent, delivered, or displayed state to the existing operation.
-The daemon requires an exact account and conversation match, ignores unknown
-operation IDs, and rejects attempts to change an assigned message ID. A late
-acceptance cannot downgrade a later status.
-
-This reversible identity representation requires no helper-side mapping store;
-a later push can resolve a journal-restored unknown operation without replaying
-the send. Incoming, draft, and unsupported status updates never establish a
-link. Updates missing the temporary identifier still update messages but cannot
-resolve an unassigned outgoing operation. The field follows first-party Q2a's
-message field 12. Synthetic projection, helper-contract, and daemon recovery
-checks cover this path. A live self-conversation test advanced the exact outgoing
-operation from accepted without an ID to delivered with a phone-assigned ID.
-The same assigned message appeared in daemon live events. After production was
-restored and the daemon restarted, the delivered outcome and assigned ID remained
-in the outgoing journal snapshot. A subsequent read-receipt test emitted authenticated correlated sent, delivered,
-and displayed statuses. The one new outgoing operation retained its displayed
-outcome and assigned ID after production restoration and daemon restart.
-Displayed is now live-verified; late-push recovery from unknown still needs a
-controlled live interruption test. Local recovery coverage now writes an accepted
-operation to disk, restores it as unknown, applies late delivery evidence,
-rejects a late acceptance downgrade, and restores the delivered result through
-a second journal reload. The daemon ingestion test also asserts that late
-recovery emits no helper command. The controlled live interruption test is
-deferred. The offline-first attempt never submitted a send, so it did not
-exercise outgoing recovery. A future test must interrupt after submission
-and observe the same operation without resubmitting it. Older native sends
-used unrelated random temporary identifiers and cannot gain this link.
-Message contents and timestamps are never used to guess an identity.
-The old adapter remains the active production implementation.
-
-The native media codec now implements the first-party chunked AES-256-GCM
-file envelope with the existing 50 MiB staging limit. It authenticates chunk
-order and finality before returning plaintext and wipes intermediate buffers
-on failure. Local tests compare single- and multiple-chunk outputs with
-independent Node WebCrypto fixtures and reject changed keys, tampering,
-reordered chunks, truncation, and appended chunks.
-
-Native media sends encrypt the daemon's private staged copy before a bounded
-two-request resumable upload. The helper checks the opened file descriptor,
-rejects paths outside daemon staging, and bounds files to 50 MiB. Upload URLs
-must stay on the observed service origin and path, without user credentials or
-fragments; neither HTTP redirects nor automatic retries are allowed. Upload
-metadata uses the native registration token, without browser cookies. Blob
-references and encryption keys stay inside the native client. The phone send
-uses the existing outgoing-operation identity and optional caption. Upload
-failures report a known failure before any phone send request. A lost phone
-send reply retains the existing unknown outcome. Local tests exercise the
-upload exchange, full ciphertext decryption, unsafe paths, rejected URLs,
-malformed responses, acceptance gating, and failure recovery. A live image
-send from Handover to the user's self-conversation succeeded through the native
-helper. The user confirmed it arrived and opened on the phone; native status
-events reported accepted, then sent and delivered with a phone-assigned ID.
-This verifies that image send, not every file type or size. Production was
-restored after the test.
-
-Explicit native history requests now enrich up to eight attachment references
-within an eight-second download budget. Download failures leave metadata
-available with no staged path. Only primary blob references and their own keys
-can become staged attachments. Alternate references are display previews.
-When history lacks an original, an action-36 request asks the phone for it by
-message and part ID. Its reply must match the requested conversation, message,
-and attachment. Up to eight requests share an eight-second budget inside the
-existing history deadline, starting with the newest messages. Failure keeps
-metadata available and never substitutes a preview. Missing keys permit the web client's explicit
-unencrypted-file case, but encrypted framing without a key is rejected.
-Download requests use the registration token in sensitive protobuf metadata,
-with no browser cookies and no HTTP redirects. Keys stay below helper IPC.
-
-Downloaded files use the existing content-addressed staging policy under the
-helper's private `staged/native-media` directory: 50 MiB per file, 1,024 files,
-512 MiB total, and 30-day retention. The daemon imports each helper path into
-its own bounded attachment cache before publishing it. Staging tests cover
-private permissions, content reuse, temporary-file cleanup, and symlink rejection.
-
-The read-only `--probe-media` command checks the newest attachment in the
-newest self-only conversation, keeps bytes in transient memory, and prints
-only counts, sizes, and fixed error categories. The first live self-image
-test downloaded and staged a 53,362-byte display preview; opening it from
-Quickshell worked, but did not verify the original. The corrected client
-rejects previews. A subsequent original-reference probe downloaded and
-GCM-authenticated 698,621 bytes. The first original request was unavailable
-within the bounded check, so it preserved metadata without a path; the next
-explicit read found the original. Standalone probes restore production
-afterward, and daemon tests use a timed automatic production restore.
-A corrected native daemon history request staged that same 698,621-byte file
-and imported it into the daemon-owned attachment cache. The published file
-was regular, had mode 0600, and had a recognized image signature. All 201
-live native conversations advertised media capability after the phone's
-authenticated send-capability response. These checks did not send an attachment.
-
-Media framing was observed in the public web client's SVb/TVb, PVb/QVb, and
-NVb functions. The modules were fetched anonymously from Google's public
-asset URL using the module registry in the previously observed `mw_b` bundle.
-The combined public asset SHA-256 is
-`4120a43a939d8148df97560a1eabc74d00226c2cc21006effaaa5be52a812b05`.
-No adapter source or generated protocol definitions were used.
-
-Capabilities are available only when the helper advertises them: listing, paged history, live updates,
-SMS/MMS/RCS marks, text and attachments, DMs and groups, replies, reactions,
-typing-start, read receipts, status, own deletes, reconnect catch-up, logout.
-
-The contract does not advertise message edits, group membership changes or
-renaming, or disappearing messages. Per-participant group read state requires
-relay evidence. There is no persistent database of the complete message history.
-
-The daemon does keep a bounded cache of normalized accounts, conversations,
-message windows, and read state in `handover/messaging-cache.json` under the
-state directory. Set `HANDOVER_MESSAGING_CACHE=0` in the daemon environment to
-disable cache loading and writes. Cached accounts start disconnected and
-unauthenticated until the helper reports their current state.
-
-Workspace tests cover daemon ↔ loopback, helper-down, gaps, bundles,
-isolation, and malformed lines. One live RCS pass was done on a test
-account. That is not a guarantee about Google's protocol.
+The daemon caches bounded normalized accounts, conversations, message windows,
+and read state in `handover/messaging-cache.json`. Set `HANDOVER_MESSAGING_CACHE=0`
+to disable cache loading and writes. Cached accounts start disconnected until
+the helper reports their current state.
 
 ## Outgoing operation recovery
 
