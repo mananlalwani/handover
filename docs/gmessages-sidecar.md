@@ -312,8 +312,12 @@ uses the existing outgoing-operation identity and optional caption. Upload
 failures report a known failure before any phone send request. A lost phone
 send reply retains the existing unknown outcome. Local tests exercise the
 upload exchange, full ciphertext decryption, unsafe paths, rejected URLs,
-malformed responses, acceptance gating, and failure recovery. Live attachment
-sending remains unverified.
+malformed responses, acceptance gating, and failure recovery. A live image
+send from Handover to the user's self-conversation succeeded through the native
+helper. The user confirmed it arrived and opened on the phone; native status
+events reported accepted, then sent and delivered with a phone-assigned ID.
+This verifies that image send, not every file type or size. Production was
+restored after the test.
 
 Explicit native history requests now enrich up to eight attachment references
 within an eight-second download budget. Download failures leave metadata
