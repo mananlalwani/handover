@@ -30,6 +30,7 @@ pub enum RegistrationError {
     Acknowledgement(crate::receive::ReceiveError),
     SessionStore(crate::session_store::SessionStoreError),
     InvalidStoredRegistration,
+    IdentityChanged,
 }
 
 /// One fresh device identity and transport key, for one registration attempt.
@@ -40,6 +41,7 @@ pub struct RegistrationAttempt {
     transport_key: Zeroizing<[u8; 32]>,
     request: Zeroizing<Vec<u8>>,
     started: Instant,
+    expected_identity: Option<Zeroizing<Vec<u8>>>,
 }
 
 impl fmt::Debug for RegistrationAttempt {
@@ -53,6 +55,27 @@ impl RegistrationAttempt {
         let device_id = format!("messages-web-{}", Uuid::new_v4().simple());
         let mut transport_key = Zeroizing::new([0; 32]);
         OsRng.fill_bytes(transport_key.as_mut());
+        Self::prepare_for(device_id, new_handover_account_id(), transport_key, None)
+    }
+
+    /// Prepare an in-place mode-0 renewal. Reuse the exact Google device ID and
+    /// transport metadata, and pin the returned server identity before callers
+    /// can replace saved credentials.
+    pub(crate) fn renew(registration: &UnpairedRegistration) -> Result<Self, RegistrationError> {
+        Self::prepare_for(
+            registration._device_id.clone(),
+            registration.handover_account_id.clone(),
+            Zeroizing::new(*registration._transport_key),
+            Some(Zeroizing::new(registration._identity.to_vec())),
+        )
+    }
+
+    fn prepare_for(
+        device_id: String,
+        handover_account_id: String,
+        transport_key: Zeroizing<[u8; 32]>,
+        expected_identity: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<Self, RegistrationError> {
         let mut metadata = DeviceMetadata {
             transport_key: transport_key.to_vec(),
         };
@@ -61,8 +84,7 @@ impl RegistrationAttempt {
         let mut device = vec![Value::Null; 36];
         device[0] = json!([3, device_id]);
         device[35] = json!(general_purpose::STANDARD.encode(encoded.as_slice()));
-        // gs sets mode 0 with the default omitted. Field 4 keeps the array at
-        // four positions; the mode slot is null, not a populated mode-1 lookup.
+        // The fourth array slot is required; omitted mode selects mode 0.
         let mut body = json!([request_header(), device, null, "GDitto"]);
         let bytes = serde_json::to_vec(&body).map_err(|_| RegistrationError::Encoding);
         if let Some(Value::String(secret)) = body.get_mut(1).and_then(|v| v.get_mut(35)) {
@@ -70,10 +92,11 @@ impl RegistrationAttempt {
         }
         Ok(Self {
             device_id,
-            handover_account_id: new_handover_account_id(),
+            handover_account_id,
             transport_key,
             request: Zeroizing::new(bytes?),
             started: Instant::now(),
+            expected_identity,
         })
     }
 
@@ -106,6 +129,13 @@ impl RegistrationAttempt {
             let identity = decode_bytes(&fields[1], ID_LIMIT)?;
             if identity.is_empty() {
                 return Err(RegistrationError::InvalidResponse);
+            }
+            if self
+                .expected_identity
+                .as_ref()
+                .is_some_and(|expected| expected.as_slice() != identity.as_slice())
+            {
+                return Err(RegistrationError::IdentityChanged);
             }
             let token_fields = fields[3]
                 .as_array()
@@ -874,6 +904,58 @@ mod tests {
         assert!(a.device_id != b.device_id);
         assert!(*a.transport_key != *b.transport_key);
         assert_eq!(format!("{a:?}"), "RegistrationAttempt { redacted }");
+    }
+
+    #[test]
+    fn renewal_reuses_device_metadata_and_rejects_identity_changes() {
+        let mut original = RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                br#"[[],"c3ludGhldGljLWlk",null,["b2xkLXRva2Vu","3600000000"]]"#,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+        original.lifetime = Duration::ZERO;
+        assert_eq!(
+            original.remaining_lifetime(),
+            Err(RegistrationError::Expired)
+        );
+        let attempt = RegistrationAttempt::renew(&original).unwrap();
+        let request: Value = serde_json::from_slice(attempt.request_bytes()).unwrap();
+        let saved =
+            StoredUnpairedRegistration::decode(original.stored_record().unwrap().as_slice())
+                .unwrap();
+        assert_eq!(request[1][0][1], saved.device_id);
+        let metadata = DeviceMetadata::decode(
+            general_purpose::STANDARD
+                .decode(request[1][35].as_str().unwrap())
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.transport_key.as_slice(),
+            original._transport_key.as_slice()
+        );
+        assert_eq!(attempt.handover_account_id, original.handover_account_id);
+        assert_eq!(
+            attempt
+                .accept_response(
+                    br#"[[],"c3ludGhldGljLWlk",null,["bmV3LXRva2Vu","3600000000"]]"#,
+                    Duration::from_secs(3600),
+                )
+                .unwrap()
+                ._token
+                .as_slice(),
+            b"new-token"
+        );
+        let changed = RegistrationAttempt::renew(&original)
+            .unwrap()
+            .accept_response(
+                br#"[[],"b3RoZXItaWQ",null,["bmV3LXRva2Vu","3600000000"]]"#,
+                Duration::from_secs(3600),
+            );
+        assert_eq!(changed.unwrap_err(), RegistrationError::IdentityChanged);
     }
 
     #[test]

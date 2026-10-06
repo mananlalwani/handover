@@ -114,12 +114,81 @@ impl RecoveredSession {
         let bytes = reference.fetch(&self.pairing.registration).await?;
         Ok((bytes.len(), reference.encrypted()))
     }
-    /// Loading secrets does not contact Google or establish an online account.
+    /// Restore saved credentials. Registrations within 24 hours of expiry are
+    /// renewed once and re-attested before this session can start.
     pub async fn restore(pairing: ConfirmedPairing) -> Result<Self, ProbeError> {
         let proof = DesktopCredentialStore::load(pairing.account_id())
             .await
             .map_err(ProbeError::CredentialStore)?
             .ok_or(ProbeError::InvalidCredentials)?;
+        Self::restore_with_proof(pairing, proof, false).await
+    }
+
+    /// Force the normal in-place renewal and read-only re-attestation flow.
+    /// This is exposed only to the helper's explicit diagnostic operation.
+    pub async fn probe_registration_renewal(pairing: ConfirmedPairing) -> Result<(), ProbeError> {
+        let proof = DesktopCredentialStore::load(pairing.account_id())
+            .await
+            .map_err(ProbeError::CredentialStore)?
+            .ok_or(ProbeError::InvalidCredentials)?;
+        Self::restore_with_proof(pairing, proof, true).await?;
+        Ok(())
+    }
+
+    /// Check saved proof and token lifetime without making a network request.
+    pub async fn check_recovery(pairing: &ConfirmedPairing) -> Result<(), ProbeError> {
+        let proof = DesktopCredentialStore::load(pairing.account_id())
+            .await
+            .map_err(ProbeError::CredentialStore)?
+            .ok_or(ProbeError::InvalidCredentials)?;
+        proof.validate_pairing()?;
+        pairing
+            .registration
+            .remaining_lifetime()
+            .map_err(|_| ProbeError::SessionExpired)?;
+        Ok(())
+    }
+
+    async fn restore_with_proof(
+        mut pairing: ConfirmedPairing,
+        proof: BrowserProof,
+        force_renewal: bool,
+    ) -> Result<Self, ProbeError> {
+        let renewal_window = Duration::from_secs(24 * 60 * 60);
+        let renewal_due = force_renewal
+            || match pairing.registration.remaining_lifetime() {
+                Ok(remaining) => remaining <= renewal_window,
+                Err(_) => true,
+            };
+        if renewal_due {
+            let renewed = crate::renew_registration(&proof, &pairing.registration).await?;
+            pairing.registration = renewed;
+            let store = crate::session_store::SessionStore::default_store()
+                .map_err(|_| ProbeError::SessionStoreFailed)?;
+            // The server identity is already pinned by renew_registration.
+            // Save its fresh token before the read-only source check so a
+            // lookup outage cannot trigger another remote registration.
+            pairing.persist(&store)?;
+            let sources = Zeroizing::new(
+                crate::query_response(
+                    &crate::client(true)?,
+                    &format!("{}{}", proof.endpoint, crate::SIGN_IN_PATH),
+                    proof.validate_pairing()?,
+                    &pairing.registration.lookup_request(),
+                    false,
+                )
+                .await
+                .map_err(|_| ProbeError::RegistrationFailed)?,
+            );
+            let sources = crate::sources::RegisteredSources::from_lookup_response(&sources)
+                .map_err(|_| ProbeError::RegistrationFailed)?;
+            if !sources.contains_registration(&pairing.registration) {
+                return Err(ProbeError::RegistrationFailed);
+            }
+            if !sources.contains_paired_phone(pairing.pairing.peer()) {
+                return Err(ProbeError::RegistrationFailed);
+            }
+        }
         Self::from_credentials(pairing, proof)
     }
     pub(crate) fn from_credentials(

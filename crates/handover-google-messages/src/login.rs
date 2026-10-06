@@ -48,7 +48,7 @@ impl fmt::Debug for ConfirmedPairing {
 }
 
 impl ConfirmedPairing {
-    fn persist(&self, store: &SessionStore) -> Result<(), ProbeError> {
+    pub(crate) fn persist(&self, store: &SessionStore) -> Result<(), ProbeError> {
         let record = StoredConfirmedPairing {
             version: 1,
             registration: self
@@ -72,7 +72,7 @@ impl ConfirmedPairing {
     }
 
     /// Restore pairing evidence and keys without claiming a live connection.
-    /// An expired transport token remains expired and requires separate refresh.
+    /// Runtime session recovery owns any required one-shot token renewal.
     pub fn restore_all(store: &SessionStore) -> Result<Vec<Self>, ProbeError> {
         let mut restored = Vec::new();
         for (key, record) in store

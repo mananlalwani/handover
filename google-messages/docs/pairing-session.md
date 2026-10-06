@@ -108,15 +108,24 @@ Secret Service. A restricted session-record store
 persists the mode-0 unpaired registration and a random Handover account alias;
 the alias contains no email. Older pending records are upgraded in place when
 restored. The helper uses browser proof for explicit account lookup or pairing, then saves
-verified authentication in Secret Service and confirmed keys separately. Saved registrations and pairings
-remain offline and unauthenticated. Native refresh and usable messaging-session
-recovery still need implementation.
+verified authentication in Secret Service and confirmed keys separately. On restore,
+a registration with 24 hours or less remaining is renewed once in place using the
+same device ID and transport key. The helper accepts a replacement token only
+when Google returns the same server identity, then saves it before a read-only
+source check verifies the registration and existing paired phone. A failed or
+ambiguous registration request is never retried automatically. This path has
+offline tests. The helper's explicit `--probe-renew-registration` operation
+forces that same flow for a controlled live check; ordinary recovery renews
+only within the 24-hour window. A forced renewal and read-only source
+re-attestation succeeded live on 2026-10-05 with the existing device identity;
+the daemon was restarted with the rebuilt helper afterward.
 
 Google's restore path requires a complete set of registration and pairing data
 and applies a configuration-dependent pairing-age limit. A partial record must
 not become an authenticated account. The observed fallback of 21 days is not a
-fixed protocol guarantee. Token lifetime units, refresh behavior, signing keys,
-and expiry policy require verification before storage and recovery are enabled.
+fixed protocol guarantee. Registration lifetime units and response identity are
+bounded and tested locally. Google's `RefreshPhoneRelay` refreshes the short-lived
+pairing QR invitation; it is not used to renew a saved registration token.
 
 ## Handshake dependency
 
@@ -302,10 +311,13 @@ browser to pass one transient authentication bootstrap to Handover's native host
 Users should not need to copy cookies or prepare credential files. The existing
 diagnostic observer remains a development tool until the login component exists.
 
-Rust will own fresh registration, phone pairing, and messaging. Browser cookies
-will not be persisted. Confirmed pairing keys now have a private local record. Native token refresh and usable session recovery still need implementation and verification; the intended setup flow is browser sign-in,
-phone confirmation, then session management by Handover. This direction does not
-claim that unattended refresh or restart recovery already works.
+Rust owns registration, phone pairing, and messaging. The approved desktop
+Secret Service policy persists verified browser authentication for restart
+recovery; cookies remain outside session-record files. Confirmed pairing keys
+have a private local record. The intended setup flow is browser sign-in, phone
+confirmation, then session management by Handover. Registration renewal now has
+offline coverage and passed a forced live renewal plus source re-attestation;
+normal renewal at natural expiry remains untested.
 
 Google's [computer pairing guide](https://support.google.com/messages/answer/7611075?hl=en)
 describes Google-account sign-in and phone confirmation. The existing normal
@@ -431,10 +443,11 @@ joins the worker before deleting files, including confirmation saved before its
 completion event reached the actor. Local deletion does not prove remote
 revocation.
 
-Confirmed records restore as offline and unauthenticated. The bounded read-only
-conversation path below does not establish a persistent online session. History,
-ongoing updates, chat sends, native refresh, and remote logout remain unavailable.
-Confirmation alone must not advertise those capabilities.
+Confirmed records restore without claiming a live connection. Session recovery
+renews a registration when needed and performs bounded read-only inventory and
+activation checks. The helper also supports history, ongoing updates, and chat
+sends; those live paths require the saved Google authentication. Remote logout
+remains unavailable. Confirmation alone must not advertise these capabilities.
 
 Verified offline: a local HTTP service and UKEY2 mock phone complete types 44 and
 45 and derive the same symbol. Tests cover read-only operation, account mismatch,
@@ -475,18 +488,21 @@ The desktop store passed a live synthetic save, update, load, and deletion test.
 A fresh browser sign-in proof also passed the live native account check on
 2026-10-05, and the helper reported successful desktop authentication storage.
 The production relay was restored afterward. Bounded browser-free startup and
-conversation reads are implemented below. Token refresh, a persistent messaging
-connection, and complete snapshot recovery still require implementation and
-separate live verification. Paired keys or stored authentication alone
-do not establish an online account.
+conversation reads are implemented below. In-place registration renewal is
+implemented with offline coverage and passed a forced live renewal; waiting for
+natural expiry to trigger the automatic 24-hour renewal path remains unverified.
+A persistent messaging connection and complete snapshot recovery still require
+implementation and separate live verification. Paired keys or stored
+authentication alone do not establish an online account.
 
 
 ## Bounded native startup and conversation reads
 
 The helper can restore confirmed keys and desktop authentication without opening
 Google Messages in a browser. A local recovery check validates credential shape
-and token lifetime without contacting Google. Expired tokens remain expired; no
-registration, re-pairing, or chat-send retry follows a failed check.
+and token lifetime. Expired registrations and those within 24 hours of expiry
+are renewed once, then checked against Google's read-only source inventory. No
+phone re-pairing or chat-send retry follows a failed check.
 
 A startup attempt first checks that the saved registration and paired phone
 remain in the signed-in account's source inventory. It opens receive before
@@ -697,9 +713,13 @@ Transient transport failures reconnect after 1, 2, 4, 8, and 16 seconds, stoppin
 after five failed attempts. Successful attested activation resets that streak.
 Preemption, invalid authentication, protocol failures, and expiry are not retried.
 Failed queued reads are discarded before reconnect selection, so they cannot
-bypass backoff or resubmit themselves. Expired token renewal remains unfinished.
+bypass backoff or resubmit themselves. Registration renewal is a single bounded
+mode-0 request using the saved device identity and transport key. A changed
+server identity is rejected; an accepted token is persisted before read-only
+re-attestation so a lookup outage cannot repeat the registration request.
 
-Local HTTP tests verify one receive stream across inventory, live messages, and
+Local HTTP tests verify renewal request identity, rejection of a changed server
+identity, and bounded renewal lifetime, as well as one receive stream across inventory, live messages, and
 history; publication before push ACK; failed publication without ACK or retry;
 presence responses; and stream cancellation. Helper tests verify bounded
 reconnect policy, queued-read failure, current account snapshots, and message

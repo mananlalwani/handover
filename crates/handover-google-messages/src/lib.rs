@@ -646,6 +646,41 @@ pub async fn register_device(
     .await
 }
 
+/// Renew a confirmed device registration in place. The saved pairing proof is
+/// required. The response is returned only when Google preserves the exact
+/// opaque registration identity; callers must still re-attest the phone before
+/// replacing persisted session state.
+pub(crate) async fn renew_registration(
+    proof: &BrowserProof,
+    registration: &registration::UnpairedRegistration,
+) -> Result<registration::UnpairedRegistration, ProbeError> {
+    let headers = proof.validate_pairing()?;
+    let endpoint = format!("{}{}", proof.endpoint, SIGN_IN_PATH);
+    renew_registration_at(&endpoint, headers, &client(true)?, registration)
+        .await
+        // Registration changes remote state. A lost reply has an unknown
+        // outcome, so it must not enter the daemon's transient retry path.
+        .map_err(|_| ProbeError::RegistrationFailed)
+}
+
+async fn renew_registration_at(
+    endpoint: &str,
+    headers: HeaderMap,
+    http: &Client,
+    registration: &registration::UnpairedRegistration,
+) -> Result<registration::UnpairedRegistration, ProbeError> {
+    let attempt = registration::RegistrationAttempt::renew(registration)
+        .map_err(|_| ProbeError::RegistrationFailed)?;
+    post_registration(
+        http,
+        endpoint,
+        headers,
+        attempt,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .await
+}
+
 /// HTTP accepted the pairing envelope. This does not mean the phone received
 /// or confirmed the pairing request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1707,6 +1742,64 @@ mod tests {
             format!("{registered:?}"),
             "UnpairedRegistration { redacted }"
         );
+    }
+
+    #[tokio::test]
+    async fn renewal_transport_reuses_the_paired_device_identity_and_metadata() {
+        let first_attempt = registration::RegistrationAttempt::prepare().unwrap();
+        let first_request: Value = serde_json::from_slice(first_attempt.request_bytes()).unwrap();
+        let identity = "synthetic-registration-id";
+        let old_response = serde_json::to_vec(&json!([
+            [],
+            general_purpose::STANDARD.encode(identity),
+            null,
+            [general_purpose::STANDARD.encode("old-token"), "3600000000"]
+        ]))
+        .unwrap();
+        let original = first_attempt
+            .accept_response(&old_response, Duration::from_secs(3600))
+            .unwrap();
+        let body = serde_json::to_vec(&json!([
+            [],
+            general_purpose::STANDARD.encode(identity),
+            null,
+            [
+                general_purpose::STANDARD.encode("renewed-token"),
+                "2592000000000"
+            ]
+        ]))
+        .unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json+protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let (endpoint, server) = mock_server([response.as_bytes(), &body].concat()).await;
+        let mut proof = registration_proof();
+        proof.kind = "gaia_pairing".into();
+        proof.account_email = Some("person@example.test".into());
+        let renewed = renew_registration_at(
+            &format!("{endpoint}{SIGN_IN_PATH}"),
+            proof.validate_pairing().unwrap(),
+            &client(false).unwrap(),
+            &original,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            renewed.handover_account_id(),
+            original.handover_account_id()
+        );
+        assert!(renewed.matches_identity(identity.as_bytes()));
+        assert!(renewed.remaining_lifetime().unwrap() > Duration::from_secs(3600));
+
+        let request = server.await.unwrap();
+        let offset = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let sent: Value = serde_json::from_slice(&request[offset..]).unwrap();
+        assert_eq!(sent[2], Value::Null);
+        assert_eq!(sent[1][0][1], first_request[1][0][1]);
+        assert_eq!(sent[1][35], first_request[1][35]);
+        assert_eq!(sent[3], "GDitto");
+        assert!(!format!("{renewed:?}").contains("renewed-token"));
     }
 
     #[tokio::test]

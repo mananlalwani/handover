@@ -52,6 +52,7 @@ async fn main() {
         operation.as_deref(),
         Some(
             "--probe-startup"
+                | "--probe-renew-registration"
                 | "--check-recovery"
                 | "--probe-conversations"
                 | "--probe-history"
@@ -66,12 +67,22 @@ async fn main() {
             if pairings.len() != 1 {
                 return Err(handover_google_messages::ProbeError::AmbiguousRegistration);
             }
+            if operation.as_deref() == Some("--check-recovery") {
+                handover_google_messages::session::RecoveredSession::check_recovery(&pairings[0])
+                    .await?;
+                return Ok(None);
+            }
+            if operation.as_deref() == Some("--probe-renew-registration") {
+                handover_google_messages::session::RecoveredSession::probe_registration_renewal(
+                    pairings.remove(0),
+                )
+                .await?;
+                return Ok(Some(0));
+            }
             let session =
                 handover_google_messages::session::RecoveredSession::restore(pairings.remove(0))
                     .await?;
-            if operation.as_deref() == Some("--check-recovery") {
-                Ok(None)
-            } else if operation.as_deref() == Some("--probe-updates") {
+            if operation.as_deref() == Some("--probe-updates") {
                 let known = session.read_conversations().await?;
                 println!(
                     "Native update observer started for 60 seconds. No pushes will be acknowledged."
@@ -173,6 +184,9 @@ async fn main() {
         match result {
             Ok(None) if operation.as_deref() == Some("--check-recovery") => println!(
                 "Native keys and desktop authentication restored; registration token is locally valid. No network request was sent."
+            ),
+            Ok(Some(_)) if operation.as_deref() == Some("--probe-renew-registration") => println!(
+                "Native registration renewal and read-only account re-attestation completed. No message data or credentials were printed."
             ),
             Ok(Some(count)) if operation.as_deref() == Some("--probe-updates") => println!(
                 "Native update observer complete: {count} validated push(es). No contents or identifiers were printed, and no pushes were acknowledged."
@@ -2641,6 +2655,7 @@ mod tests {
         for error in [
             ProbeError::HttpError(401),
             ProbeError::SessionExpired,
+            ProbeError::RegistrationFailed,
             ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted),
             ProbeError::SessionProtocol(SessionError::UpdateAuthentication),
         ] {
