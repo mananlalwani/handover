@@ -29,7 +29,7 @@ systemctl --user enable --now handoverd.service
 ```
 
 `handover-git` builds the current Git checkout from GitHub. `handover` builds
-the `v0.3.4` source tarball. They provide and conflict with the same package,
+the `v0.4.0` source tarball. They provide and conflict with the same package,
 so choose one and remove the other package first.
 
 Follow the [user guide](../../docs/user-guide.md#native-android-connection)
@@ -37,6 +37,5 @@ to pair the phone. The
 Quickshell example is `/usr/share/handover/quickshell/example.qml`.
 
 The package files live in [`handover`](handover) and
-[`handover-git`](handover-git). Current source builds include the native MIT
-Google Messages helper. The published `v0.3.4` archive predates it; that stable
-package retains its existing build until a newer source release is selected.
+[`handover-git`](handover-git). Both packages include the native MIT Google
+Messages helper and optional browser setup component.

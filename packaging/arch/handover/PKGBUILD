@@ -1,7 +1,7 @@
 # Maintainer: Handover contributors
 
 pkgname=handover
-pkgver=0.3.4
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Android and Linux continuity daemon and CLI'
 arch=('x86_64' 'aarch64')
@@ -14,7 +14,6 @@ optdepends=(
   'playerctl: pause local MPRIS players during phone calls'
   'python: optional Google Messages setup with an installed Chromium browser'
   'kdeconnect: optional compatibility backend'
-  'handover-gmessages: legacy Google Messages compatibility backend (AGPL)'
 )
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
@@ -27,12 +26,7 @@ prepare() {
 
 build() {
   cd "$pkgname-$pkgver"
-  # The published v0.3.4 source archive predates the native helper crate.
-  if [[ -f crates/handover-google-messages/Cargo.toml ]]; then
-    cargo build --release --frozen --offline -p handoverd -p handoverctl -p handover-google-messages
-  else
-    cargo build --release --frozen --offline -p handoverd -p handoverctl
-  fi
+  cargo build --release --frozen --offline -p handoverd -p handoverctl -p handover-google-messages
 }
 
 package() {

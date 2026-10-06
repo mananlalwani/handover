@@ -1,7 +1,7 @@
 # Maintainer: Handover contributors
 
 pkgname=handover-git
-pkgver=0.3.4.r0.g0000000
+pkgver=0.4.0.r0.g0000000
 pkgrel=1
 pkgdesc='Android and Linux continuity daemon and CLI'
 arch=('x86_64' 'aarch64')
@@ -14,7 +14,6 @@ optdepends=(
   'playerctl: pause local MPRIS players during phone calls'
   'python: optional Google Messages setup with an installed Chromium browser'
   'kdeconnect: optional compatibility backend'
-  'handover-gmessages: legacy Google Messages compatibility backend (AGPL)'
 )
 provides=('handover')
 conflicts=('handover')
