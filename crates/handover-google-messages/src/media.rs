@@ -8,8 +8,270 @@ use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
+use prost::Message;
 use rand::{RngCore, rngs::OsRng};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+/// A native-only full-size blob reference. It cannot expose secrets through
+/// Debug or serialization, and never crosses the normalized helper contract.
+pub struct Download {
+    message: Zeroizing<String>,
+    part: Zeroizing<String>,
+    blob: Zeroizing<String>,
+    key: Option<Zeroizing<[u8; 32]>>,
+}
+
+impl Download {
+    pub(crate) fn apply_path(
+        &self,
+        messages: &mut [handover_core::messaging::Message],
+        path: String,
+    ) {
+        if let Some(message) = messages.iter_mut().find(|message| self.matches(message)) {
+            if let Some(part) = message
+                .attachments
+                .iter_mut()
+                .find(|part| part.local_id == *self.part)
+            {
+                part.staged_path = Some(path);
+            }
+        }
+    }
+    pub(crate) async fn fetch(
+        &self,
+        registration: &crate::registration::UnpairedRegistration,
+    ) -> Result<Zeroizing<Vec<u8>>, MediaError> {
+        let metadata = registration
+            .media_download_metadata(&self.blob)
+            .map_err(|_| MediaError::CredentialUnavailable)?;
+        let http = crate::client(true).map_err(|_| MediaError::Network)?;
+        download(&http, self, &metadata).await
+    }
+    pub(crate) fn from_part(message: &str, part: &str, blob: &str, key: &[u8]) -> Option<Self> {
+        if message.is_empty()
+            || part.is_empty()
+            || blob.is_empty()
+            || blob.len() > 1024
+            || blob.chars().any(char::is_control)
+        {
+            return None;
+        }
+        Some(Self {
+            message: Zeroizing::new(message.into()),
+            part: Zeroizing::new(part.into()),
+            blob: Zeroizing::new(blob.into()),
+            key: if key.is_empty() {
+                None
+            } else {
+                Some(Zeroizing::new(key.try_into().ok()?))
+            },
+        })
+    }
+
+    pub(crate) fn matches(&self, message: &handover_core::messaging::Message) -> bool {
+        message.id.local_id == *self.message
+            && message
+                .attachments
+                .iter()
+                .any(|part| part.local_id == *self.part)
+    }
+
+    pub(crate) fn encrypted(&self) -> bool {
+        self.key.is_some()
+    }
+}
+
+/// Reuse the normalized helper's bounded, content-addressed staging policy.
+/// Only this helper's private namespace is touched; the daemon imports the
+/// result into its own cache before publishing the path to clients.
+fn stage_bytes(bytes: &[u8], directory: &std::path::Path) -> Result<String, MediaError> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    if bytes.is_empty() {
+        return Err(MediaError::Empty);
+    }
+    if bytes.len() > MAX_MEDIA_BYTES {
+        return Err(MediaError::TooLarge);
+    }
+    std::fs::create_dir_all(directory).map_err(|_| MediaError::Staging)?;
+    let metadata = std::fs::symlink_metadata(directory).map_err(|_| MediaError::Staging)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(MediaError::Staging);
+    }
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| MediaError::Staging)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("native-download-")
+        .tempfile_in(directory)
+        .map_err(|_| MediaError::Staging)?;
+    file.write_all(bytes).map_err(|_| MediaError::Staging)?;
+    file.as_file().sync_all().map_err(|_| MediaError::Staging)?;
+    let path = file.path().to_str().ok_or(MediaError::Staging)?;
+    handover_gmessages::staging::import_staged_path(path, &[directory.to_owned()], directory)
+        .map_err(|_| MediaError::Staging)?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| MediaError::Staging)
+}
+
+pub(crate) async fn hydrate_page(
+    registration: &crate::registration::UnpairedRegistration,
+    page: &mut crate::history::HistoryPage,
+    budget: std::time::Duration,
+) {
+    let Ok(directory) = handover_gmessages::staging::adapter_staging_directory() else {
+        return;
+    };
+    let directory = directory.join("native-media");
+    // Enrichment is optional. Keep the validated history page even if a
+    // download fails, and bound work independently of the history page size.
+    let enrich = async {
+        for reference in page.downloads.iter().take(8) {
+            let Ok(bytes) = reference.fetch(registration).await else {
+                continue;
+            };
+            let directory = directory.clone();
+            let result = tokio::task::spawn_blocking(move || stage_bytes(&bytes, &directory)).await;
+            if let Ok(Ok(path)) = result {
+                reference.apply_path(&mut page.messages, path);
+            }
+        }
+    };
+    let _ = tokio::time::timeout(budget.min(std::time::Duration::from_secs(8)), enrich).await;
+}
+
+#[derive(Message)]
+#[prost(skip_debug)]
+struct DownloadMetadata {
+    #[prost(message, optional, tag = "1")]
+    media: Option<MediaIdentity>,
+    #[prost(message, optional, tag = "2")]
+    header: Option<RequestHeader>,
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct MediaIdentity {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(int32, tag = "2")]
+    kind: i32,
+}
+impl Drop for MediaIdentity {
+    fn drop(&mut self) {
+        self.id.zeroize();
+    }
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct RequestHeader {
+    #[prost(string, tag = "1")]
+    request: String,
+    #[prost(string, tag = "3")]
+    application: String,
+    #[prost(bytes = "vec", tag = "6")]
+    token: Vec<u8>,
+    #[prost(message, optional, tag = "7")]
+    client: Option<ClientInfo>,
+}
+impl Drop for RequestHeader {
+    fn drop(&mut self) {
+        self.token.zeroize();
+    }
+}
+#[derive(Message)]
+struct ClientInfo {
+    #[prost(uint32, tag = "3")]
+    major: u32,
+    #[prost(uint32, tag = "4")]
+    minor: u32,
+    #[prost(uint32, tag = "5")]
+    patch: u32,
+    #[prost(int32, tag = "7")]
+    platform: i32,
+    #[prost(int32, tag = "9")]
+    variant: i32,
+}
+
+pub(crate) fn download_metadata(blob: &str, token: &[u8]) -> Zeroizing<Vec<u8>> {
+    // iWb: MediaId field 1, kind 1; request header field 2.
+    let metadata = DownloadMetadata {
+        media: Some(MediaIdentity {
+            id: blob.into(),
+            kind: 1,
+        }),
+        header: Some(RequestHeader {
+            request: uuid::Uuid::new_v4().to_string(),
+            application: "GDitto".into(),
+            token: token.to_vec(),
+            client: Some(ClientInfo {
+                major: crate::OBSERVED_WIRE_VERSION[0],
+                minor: crate::OBSERVED_WIRE_VERSION[1],
+                patch: crate::OBSERVED_WIRE_VERSION[2],
+                platform: 4,
+                variant: 6,
+            }),
+        }),
+    };
+    Zeroizing::new(metadata.encode_to_vec())
+}
+
+pub(crate) async fn download(
+    http: &reqwest::Client,
+    reference: &Download,
+    metadata: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, MediaError> {
+    download_at(
+        http,
+        "https://instantmessaging-pa.googleapis.com/upload",
+        reference,
+        metadata,
+    )
+    .await
+}
+
+async fn download_at(
+    http: &reqwest::Client,
+    url: &str,
+    reference: &Download,
+    metadata: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, MediaError> {
+    let encoded = Zeroizing::new(STANDARD.encode(metadata));
+    let mut header =
+        reqwest::header::HeaderValue::from_str(&encoded).map_err(|_| MediaError::InvalidFraming)?;
+    header.set_sensitive(true);
+    let mut response = http
+        .get(url)
+        .header("X-Goog-Download-Metadata", header)
+        .send()
+        .await
+        .map_err(|_| MediaError::Network)?;
+    if !response.status().is_success() {
+        return Err(MediaError::Http(response.status().as_u16()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_ENCODED_BYTES as u64)
+    {
+        return Err(MediaError::TooLarge);
+    }
+    let mut body = Zeroizing::new(Vec::new());
+    while let Some(chunk) = response.chunk().await.map_err(|_| MediaError::Network)? {
+        if chunk.len() > MAX_ENCODED_BYTES - body.len() {
+            return Err(MediaError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    match &reference.key {
+        Some(key) => decrypt(&body, key),
+        None if body.is_empty() => Err(MediaError::Empty),
+        None if body.len() > MAX_MEDIA_BYTES => Err(MediaError::TooLarge),
+        // An encrypted-looking payload without a key must not be staged as
+        // if it were usable plaintext.
+        None if body.starts_with(&HEADER) => Err(MediaError::EncryptionKeyUnavailable),
+        None => Ok(body),
+    }
+}
 
 const HEADER: [u8; 2] = [0, 15];
 const CHUNK_BYTES: usize = 32 * 1024;
@@ -29,6 +291,12 @@ pub enum MediaError {
     InvalidFraming,
     Authentication,
     Randomness,
+    Network,
+    Http(u16),
+    CredentialUnavailable,
+    ReferenceUnavailable,
+    EncryptionKeyUnavailable,
+    Staging,
 }
 
 impl std::fmt::Display for MediaError {
@@ -133,6 +401,167 @@ fn chunk_aad(index: usize, final_chunk: bool) -> [u8; 5] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stages_privately_reuses_content_and_rejects_symlink_directory() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("native-media");
+        let path = stage_bytes(b"file fixture", &directory).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"file fixture");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(stage_bytes(b"file fixture", &directory).unwrap(), path);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        let link = root.path().join("symlink-cache");
+        symlink(&directory, &link).unwrap();
+        assert_eq!(
+            stage_bytes(b"other fixture", &link),
+            Err(MediaError::Staging)
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        assert_eq!(stage_bytes(&[], &directory), Err(MediaError::Empty));
+    }
+
+    async fn serve_once(
+        status: &str,
+        headers: &str,
+        body: Vec<u8>,
+    ) -> (String, tokio::task::JoinHandle<Vec<u8>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/upload", listener.local_addr().unwrap());
+        let prefix = format!("HTTP/1.1 {status}\r\n{headers}Connection: close\r\n\r\n");
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                socket.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 16 * 1024);
+            }
+            socket.write_all(prefix.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+            request
+        });
+        (url, task)
+    }
+
+    #[tokio::test]
+    async fn bounded_download_authenticates_without_browser_headers() {
+        let reference = Download::from_part("message", "part", "blob", &[7; 32]).unwrap();
+        let metadata = download_metadata("blob", b"private-fixture-token");
+        let encoded = encrypt(b"file fixture", &[7; 32]).unwrap();
+        let (url, task) = serve_once(
+            "200 OK",
+            &format!("Content-Length: {}\r\n", encoded.len()),
+            encoded.to_vec(),
+        )
+        .await;
+        assert_eq!(
+            &*download_at(&crate::client(false).unwrap(), &url, &reference, &metadata)
+                .await
+                .unwrap(),
+            b"file fixture"
+        );
+        let request = String::from_utf8(task.await.unwrap()).unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(!lower.contains("cookie:"));
+        assert!(!lower.contains("authorization:"));
+        assert!(!request.contains("private-fixture-token"));
+        let header = request
+            .lines()
+            .find(|line| {
+                line.to_ascii_lowercase()
+                    .starts_with("x-goog-download-metadata:")
+            })
+            .unwrap()
+            .split_once(':')
+            .unwrap()
+            .1
+            .trim();
+        let bytes = STANDARD.decode(header).unwrap();
+        let decoded = DownloadMetadata::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.media.as_ref().unwrap().id, "blob");
+        assert_eq!(decoded.media.as_ref().unwrap().kind, 1);
+        assert_eq!(
+            decoded.header.as_ref().unwrap().token,
+            b"private-fixture-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_rejects_http_redirect_size_and_authentication_failures() {
+        let reference = Download::from_part("message", "part", "blob", &[7; 32]).unwrap();
+        let http = crate::client(false).unwrap();
+        for (status, headers, body, expected) in [
+            (
+                "302 Found",
+                "Location: http://127.0.0.1:1/secret\r\nContent-Length: 0\r\n".into(),
+                Vec::new(),
+                MediaError::Http(302),
+            ),
+            (
+                "401 Unauthorized",
+                "Content-Length: 0\r\n".into(),
+                Vec::new(),
+                MediaError::Http(401),
+            ),
+            (
+                "200 OK",
+                format!("Content-Length: {}\r\n", MAX_ENCODED_BYTES + 1),
+                Vec::new(),
+                MediaError::TooLarge,
+            ),
+            (
+                "200 OK",
+                String::new(),
+                encrypt(b"fixture", &[8; 32]).unwrap().to_vec(),
+                MediaError::Authentication,
+            ),
+        ] {
+            let (url, task) = serve_once(status, &headers, body).await;
+            assert_eq!(
+                download_at(&http, &url, &reference, b"metadata").await,
+                Err(expected)
+            );
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_unencrypted_reference_does_not_bypass_gcm() {
+        let reference = Download::from_part("message", "part", "blob", &[]).unwrap();
+        assert!(!reference.encrypted());
+        assert!(Download::from_part("message", "part", "blob", &[7; 31]).is_none());
+        let http = crate::client(false).unwrap();
+        let (url, task) = serve_once("200 OK", "", b"clear file fixture".to_vec()).await;
+        assert_eq!(
+            &*download_at(&http, &url, &reference, b"metadata")
+                .await
+                .unwrap(),
+            b"clear file fixture"
+        );
+        task.await.unwrap();
+        let (url, task) = serve_once(
+            "200 OK",
+            "",
+            encrypt(b"encrypted", &[7; 32]).unwrap().to_vec(),
+        )
+        .await;
+        assert_eq!(
+            download_at(&http, &url, &reference, b"metadata").await,
+            Err(MediaError::EncryptionKeyUnavailable)
+        );
+        task.await.unwrap();
+    }
 
     #[test]
     fn matches_independent_webcrypto_fixture() {

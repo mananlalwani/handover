@@ -55,6 +55,7 @@ async fn main() {
                 | "--check-recovery"
                 | "--probe-conversations"
                 | "--probe-history"
+                | "--probe-media"
                 | "--probe-updates"
         )
     ) {
@@ -106,6 +107,24 @@ async fn main() {
                     })
                     .await?;
                 Ok(Some(count))
+            } else if operation.as_deref() == Some("--probe-media") {
+                let conversation = session.read_conversations().await?.into_iter()
+                    .filter(|record| !record.participants.is_empty() && record.participants.iter().all(|participant| participant.is_self))
+                    .max_by_key(|record| record.last_activity_at)
+                    .ok_or(handover_google_messages::ProbeError::UnexpectedResponse)?;
+                let page = session.read_history(&conversation, None, 50).await?;
+                println!("Native media history: {} message(s), {} attachment(s), {} download reference(s).",
+                    page.messages.len(), page.messages.iter().map(|message| message.attachments.len()).sum::<usize>(), page.downloads.len());
+                match session.probe_history_media(&page).await {
+                    Ok((size, encrypted)) => {
+                        println!("Native newest-media download complete: {size} plaintext byte(s), GCM authenticated: {encrypted}. Nothing saved.");
+                        Ok(Some(page.messages.len()))
+                    }
+                    Err(error) => {
+                        println!("Native media download failed ({error:?}). Nothing saved.");
+                        Err(handover_google_messages::ProbeError::NativeError)
+                    }
+                }
             } else if operation.as_deref() == Some("--probe-history") {
                 let conversation = session
                     .read_conversations()
@@ -157,6 +176,9 @@ async fn main() {
             ),
             Ok(Some(count)) if operation.as_deref() == Some("--probe-history") => println!(
                 "Native history decoded and acknowledged: {count} normalized message(s). No content or identifiers were printed."
+            ),
+            Ok(Some(_)) if operation.as_deref() == Some("--probe-media") => println!(
+                "Native media probe complete. No content, identifiers, or credentials were printed."
             ),
             Ok(Some(count)) => println!(
                 "Native conversations decoded and acknowledged: {count} normalized record(s). Full snapshot and ongoing messaging remain unverified."
@@ -387,7 +409,7 @@ async fn publish_messages<W: AsyncWrite + Unpin>(
                     mime: item.mime,
                     name: item.name,
                     size_bytes: item.size_bytes,
-                    staged_path: None,
+                    staged_path: item.staged_path,
                 })
                 .collect(),
             reply_to: None,
@@ -496,6 +518,7 @@ async fn publish_push_messages<W: AsyncWrite + Unpin>(
             handover_google_messages::history::HistoryPage {
                 messages,
                 cursor_next: None,
+                downloads: Vec::new(),
             },
             false,
         )
@@ -2542,6 +2565,7 @@ mod tests {
             handover_google_messages::history::HistoryPage {
                 messages: records,
                 cursor_next: Some("opaque-cursor".into()),
+                downloads: Vec::new(),
             },
         )
         .await
@@ -2590,6 +2614,7 @@ mod tests {
             handover_google_messages::history::HistoryPage {
                 messages: Vec::new(),
                 cursor_next: None,
+                downloads: Vec::new(),
             },
         )
         .await
@@ -2636,6 +2661,7 @@ mod tests {
                 &handover_google_messages::history::HistoryPage {
                     messages: vec![message],
                     cursor_next: Some(format!("cursor-{index}")),
+                    downloads: Vec::new(),
                 },
             );
         }

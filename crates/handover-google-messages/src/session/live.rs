@@ -322,10 +322,11 @@ impl RecoveredSession {
                         )
                     }
                 };
+                let read_started = tokio::time::Instant::now();
                 let read = tokio::time::timeout(
                     Duration::from_secs(if conversations { 120 } else { 30 }),
                     async {
-                        let result = self
+                        let mut result = self
                             .read_on_stream(
                                 &short,
                                 endpoint,
@@ -335,6 +336,15 @@ impl RecoveredSession {
                                 &mut reply_rx,
                             )
                             .await?;
+                        if let ReadResult::History(page) = &mut result {
+                            // Optional file enrichment must not turn a valid
+                            // slow history reply into a timed-out request.
+                            let budget = Duration::from_secs(30)
+                                .saturating_sub(read_started.elapsed())
+                                .saturating_sub(Duration::from_millis(500));
+                            crate::media::hydrate_page(&self.pairing.registration, page, budget)
+                                .await;
+                        }
                         let allowed = if matches!(command, LiveCommand::SendingCapability) {
                             Some(
                                 self.sending_capability(

@@ -10,6 +10,8 @@ use zeroize::{Zeroize, Zeroizing};
 pub struct HistoryPage {
     pub messages: Vec<CoreMessage>,
     pub cursor_next: Option<String>,
+    /// Private protocol references, never serialized into helper IPC.
+    pub downloads: Vec<crate::media::Download>,
 }
 impl std::fmt::Debug for HistoryPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,10 +65,43 @@ pub(crate) fn decode(conversation: &Conversation, bytes: &[u8]) -> Result<Histor
             Ok(URL_SAFE_NO_PAD.encode(cursor.encode_to_vec()))
         })
         .transpose()?;
+    let mut downloads = Vec::new();
+    for bytes in &page.messages {
+        if bytes.len() > 64 * 1024 {
+            return Err(invalid());
+        }
+        let wire = WireMessage::decode(bytes.as_slice()).map_err(|_| invalid())?;
+        for part in &wire.parts {
+            if let Some(part::Content::Media(media)) = &part.content {
+                // For video, nk is a preview. Hdc uses only Kd for the full
+                // file, so never publish that preview as the video payload.
+                if media.blob.is_empty()
+                    && (matches!(media.kind, 8..=13) || media.mime.starts_with("video/"))
+                {
+                    continue;
+                }
+                // The full-file download uses Kd/key11 when present. Hdc's
+                // alternate nk path pairs with key12. Never mix the keys.
+                let (blob, key) = if !media.blob.is_empty() {
+                    (&media.blob, &media.key)
+                } else {
+                    (&media.alternate_blob, &media.alternate_key)
+                };
+                if let Some(download) =
+                    crate::media::Download::from_part(&wire.id, &part.id, blob, key)
+                {
+                    downloads.push(download);
+                }
+            }
+        }
+    }
     let messages = decode_records(conversation, std::mem::take(&mut page.messages))?;
+    // Only retain references that survived normalized history validation.
+    downloads.retain(|download| messages.iter().any(|message| download.matches(message)));
     Ok(HistoryPage {
         messages,
         cursor_next,
+        downloads,
     })
 }
 
@@ -312,15 +347,29 @@ impl Drop for Text {
 #[derive(Message)]
 #[prost(skip_debug)]
 struct Media {
+    #[prost(int32, tag = "1")]
+    kind: i32,
+    #[prost(string, tag = "2")]
+    blob: String,
     #[prost(string, tag = "4")]
     name: String,
     #[prost(int64, optional, tag = "5")]
     size: Option<i64>,
+    #[prost(string, tag = "9")]
+    alternate_blob: String,
+    #[prost(bytes = "vec", tag = "11")]
+    key: Vec<u8>,
+    #[prost(bytes = "vec", tag = "12")]
+    alternate_key: Vec<u8>,
     #[prost(string, tag = "14")]
     mime: String,
 }
 impl Drop for Media {
     fn drop(&mut self) {
+        self.blob.zeroize();
+        self.key.zeroize();
+        self.alternate_blob.zeroize();
+        self.alternate_key.zeroize();
         self.name.zeroize();
         self.mime.zeroize();
     }
@@ -419,17 +468,69 @@ mod tests {
     fn preserves_media_metadata_without_download_or_staged_path() {
         let mut media = record();
         media.parts[0].content = Some(part::Content::Media(Media {
+            kind: 3,
             name: "fixture.png".into(),
             mime: "image/png".into(),
             size: Some(321),
+            blob: String::new(),
+            key: Vec::new(),
+            alternate_blob: String::new(),
+            alternate_key: Vec::new(),
         }));
         let decoded = decode(&conversation(), &page(media)).unwrap();
+        assert!(decoded.downloads.is_empty());
         assert_eq!(
             decoded.messages[0].attachments[0].mime.as_deref(),
             Some("image/png")
         );
         assert_eq!(decoded.messages[0].attachments[0].size_bytes, Some(321));
         assert_eq!(decoded.messages[0].attachments[0].staged_path, None);
+    }
+
+    #[test]
+    fn keeps_native_download_reference_out_of_normalized_history() {
+        let mut media = record();
+        media.parts[0].content = Some(part::Content::Media(Media {
+            kind: 3,
+            name: "fixture.png".into(),
+            mime: "image/png".into(),
+            size: Some(321),
+            blob: "private-blob-fixture".into(),
+            key: vec![7; 32],
+            alternate_blob: String::new(),
+            alternate_key: Vec::new(),
+        }));
+        let decoded = decode(&conversation(), &page(media)).unwrap();
+        assert_eq!(decoded.downloads.len(), 1);
+        let normalized = serde_json::to_string(&decoded.messages).unwrap();
+        assert!(!normalized.contains("private-blob-fixture"));
+        assert!(!normalized.contains("key"));
+        assert_eq!(decoded.messages[0].attachments[0].staged_path, None);
+        assert_eq!(format!("{decoded:?}"), "HistoryPage { redacted }");
+    }
+
+    #[test]
+    fn alternate_blob_uses_its_own_key_and_never_stages_video_preview() {
+        for (kind, alternate_key, expected) in [
+            (3, vec![8; 31], 0),
+            (3, vec![8; 32], 1),
+            (8, vec![8; 32], 0),
+        ] {
+            let mut wire = record();
+            wire.parts[0].content = Some(part::Content::Media(Media {
+                kind,
+                name: "fixture".into(),
+                mime: String::new(),
+                size: Some(321),
+                blob: String::new(),
+                key: vec![7; 32],
+                alternate_blob: "alternate-blob".into(),
+                alternate_key,
+            }));
+            let decoded = decode(&conversation(), &page(wire)).unwrap();
+            assert_eq!(decoded.downloads.len(), expected);
+            assert_eq!(decoded.messages[0].attachments[0].staged_path, None);
+        }
     }
     #[test]
     fn opaque_cursor_roundtrips_through_the_next_request_and_bounds_input() {

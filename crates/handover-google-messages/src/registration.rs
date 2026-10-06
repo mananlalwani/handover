@@ -316,6 +316,14 @@ impl UnpairedRegistration {
         Ok(header)
     }
 
+    pub(crate) fn media_download_metadata(
+        &self,
+        blob: &str,
+    ) -> Result<Zeroizing<Vec<u8>>, RegistrationError> {
+        self.remaining_lifetime()?;
+        Ok(crate::media::download_metadata(blob, &self._token))
+    }
+
     /// Build a fresh initial pairing envelope only while this registration
     /// token remains valid. The token never leaves this registration object.
     pub fn initial_pairing_envelope(

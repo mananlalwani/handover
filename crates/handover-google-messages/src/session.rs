@@ -94,6 +94,26 @@ impl fmt::Debug for RecoveredSession {
     }
 }
 impl RecoveredSession {
+    /// Download the newest validated encrypted attachment in this page into
+    /// transient memory. Return only size and whether GCM was authenticated.
+    pub async fn probe_history_media(
+        &self,
+        page: &crate::history::HistoryPage,
+    ) -> Result<(usize, bool), crate::media::MediaError> {
+        let newest = page
+            .messages
+            .iter()
+            .filter(|message| !message.attachments.is_empty())
+            .max_by_key(|message| message.sent_at)
+            .ok_or(crate::media::MediaError::ReferenceUnavailable)?;
+        let reference = page
+            .downloads
+            .iter()
+            .find(|download| download.matches(newest))
+            .ok_or(crate::media::MediaError::ReferenceUnavailable)?;
+        let bytes = reference.fetch(&self.pairing.registration).await?;
+        Ok((bytes.len(), reference.encrypted()))
+    }
     /// Loading secrets does not contact Google or establish an online account.
     pub async fn restore(pairing: ConfirmedPairing) -> Result<Self, ProbeError> {
         let proof = DesktopCredentialStore::load(pairing.account_id())

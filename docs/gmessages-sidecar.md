@@ -298,9 +298,32 @@ file envelope with the existing 50 MiB staging limit. It authenticates chunk
 order and finality before returning plaintext and wipes intermediate buffers
 on failure. Local tests compare single- and multiple-chunk outputs with
 independent Node WebCrypto fixtures and reject changed keys, tampering,
-reordered chunks, truncation, and appended chunks. Uploads, downloads, and
-native media sends are not connected yet, and no media capability is advertised.
-There has been no live native attachment test.
+reordered chunks, truncation, and appended chunks. Native media sends and
+uploads remain unsupported, and no media-send capability is advertised.
+
+Explicit native history requests now enrich up to eight attachment references
+within an eight-second download budget. Download failures leave metadata
+available with no staged path. Primary blob references use their own key;
+alternate references use the alternate key. Video preview references cannot
+replace a full video file. Missing keys permit the web client's explicit
+unencrypted-file case, but encrypted framing without a key is rejected.
+Download requests use the registration token in sensitive protobuf metadata,
+with no browser cookies and no HTTP redirects. Keys stay below helper IPC.
+
+Downloaded files use the existing content-addressed staging policy under the
+helper's private `staged/native-media` directory: 50 MiB per file, 1,024 files,
+512 MiB total, and 30-day retention. The daemon imports each helper path into
+its own bounded attachment cache before publishing it. Staging tests cover
+private permissions, content reuse, temporary-file cleanup, and symlink rejection.
+
+The read-only `--probe-media` command checks the newest attachment in the
+newest self-only conversation, keeps bytes in transient memory, and prints
+only counts, sizes, and fixed error categories. A live probe successfully
+downloaded and GCM-authenticated an older attachment. The stricter newest-item
+check initially lacked a supported reference; alternate and unencrypted
+references were then added. That follow-up timed out reading from the phone.
+The new fixture, daemon staging, and attachment opening still need live
+verification. Production was restored after each probe.
 
 Media framing was observed in the public web client's SVb/TVb, PVb/QVb, and
 NVb functions. The modules were fetched anonymously from Google's public
