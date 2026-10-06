@@ -135,7 +135,8 @@ Pairing events for the emoji and compare it on the phone.
 
 The helper saves confirmed pairing keys privately before acknowledging the final
 reply. Required Google authentication is saved in desktop Secret Service;
-email stays transient. The confirmed pairing can then restore a native messaging
+the Google email routing destination is saved there as well. It stays outside
+public account IDs and registration/pairing-record files. The confirmed pairing can then restore a native messaging
 session. The popup reports only that Handover queued the operation.
 If the attempt is interrupted, inspect the phone before trying again. There is
 no automatic retry and no chat message is sent by this operation.

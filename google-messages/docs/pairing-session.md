@@ -428,9 +428,10 @@ replacement by the production adapter cannot receive the proof.
 The read-only `gaia_login` operation verifies account ownership and phone
 selection. It matches the saved web registration identity against source field 1,
 as Google's `a5a` does at offset 1069043 in the public bootstrap captured above.
-An absent registration fails before receive or send. The account email remains
-transient and supplies only the account destination; it does not become the
-public Handover account alias.
+An absent registration fails before receive or send. The account email supplies
+the provider routing destination. After account verification, it is saved with
+authentication in desktop Secret Service for restored native requests; it does
+not become the public Handover account alias.
 
 The explicit `gaia_pairing_start` operation runs one five-minute attempt. It
 opens authenticated receive before type 44, correlates replies by type, request
@@ -484,6 +485,9 @@ lifecycle requirement, not proof that native browser-free refresh already works.
 The user approved desktop Secret Service persistence on 2026-10-05. The protocol
 helper saves validated Google authentication after account verification or phone
 confirmation. It binds the encrypted secret to the random Handover account alias.
+The secret includes the account email because ordinary native request envelopes
+use it as the provider destination. Earlier claims that the email was transient
+were incorrect. It is absent from the separate registration/pairing record.
 Credential values and provider identity remain below the normalized model and do
 not enter snapshots, history, exports, or logs. Session-record files contain no
 cookies. There is no plaintext file fallback or automatic unlock prompt.
