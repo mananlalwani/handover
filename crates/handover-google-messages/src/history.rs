@@ -2,7 +2,8 @@
 use crate::{ProbeError, session::SessionError};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use handover_core::messaging::{
-    Attachment, Conversation, Message as CoreMessage, MessageId, Participant, validate_message,
+    Attachment, Conversation, Message as CoreMessage, MessageId, Participant, TransportKind,
+    validate_message,
 };
 use prost::Message;
 use zeroize::{Zeroize, Zeroizing};
@@ -279,7 +280,12 @@ pub(crate) fn decode_records(
         let record = CoreMessage {
             id: MessageId::new(conversation.id.clone(), std::mem::take(&mut wire.id)),
             sender,
-            transport: None,
+            transport: match wire.kind {
+                1 => Some(TransportKind::Sms),
+                2 => Some(TransportKind::Mms),
+                4 => Some(TransportKind::Rcs),
+                _ => None,
+            },
             sent_at: wire.timestamp.filter(|value| *value > 0),
             text,
             attachments,
@@ -361,6 +367,8 @@ struct WireMessage {
     status: Option<Status>,
     #[prost(int64, optional, tag = "5")]
     timestamp: Option<i64>,
+    #[prost(int32, tag = "11")]
+    kind: i32,
     #[prost(string, tag = "7")]
     conversation: String,
     #[prost(string, tag = "9")]
@@ -485,6 +493,7 @@ mod tests {
             id: "message".into(),
             status: Some(Status { code: 100 }),
             timestamp: Some(1234000),
+            kind: 0,
             conversation: "thread".into(),
             sender: "person".into(),
             parts: vec![Part {
@@ -502,6 +511,28 @@ mod tests {
             cursor: None,
         }
         .encode_to_vec()
+    }
+    #[test]
+    fn preserves_each_messages_attested_transport_in_a_mixed_thread() {
+        for (kind, expected) in [
+            (1, Some(TransportKind::Sms)),
+            (2, Some(TransportKind::Mms)),
+            (4, Some(TransportKind::Rcs)),
+            (99, None),
+        ] {
+            let mut encoded = record().encode_to_vec();
+            // First-party sw.getType reads field 11; Q2a preserves its enum.
+            encoded.extend_from_slice(&[11 << 3, kind]);
+            let bytes = Page {
+                messages: vec![encoded],
+                cursor: None,
+            }
+            .encode_to_vec();
+            assert_eq!(
+                decode(&conversation(), &bytes).unwrap().messages[0].transport,
+                expected
+            );
+        }
     }
     #[test]
     fn projects_text_and_sender_without_inventing_transport_or_status() {

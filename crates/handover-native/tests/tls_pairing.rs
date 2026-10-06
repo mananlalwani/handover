@@ -368,6 +368,10 @@ fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
     // the next playback change to learn the current players.
     assert_eq!(recv(peer)["type"], "call_request");
     assert_eq!(recv(peer)["type"], "media_request");
+    let contacts = recv(peer);
+    assert_eq!(contacts["type"], "contacts_request");
+    assert_eq!(contacts["protocol"], 1);
+    assert_eq!(contacts["chunked"], true);
 }
 
 fn wait_share_result(harness: &Harness, id: &str) -> handover_core::ShareResult {

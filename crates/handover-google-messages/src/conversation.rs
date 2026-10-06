@@ -126,8 +126,20 @@ pub(crate) fn decode(account: &str, bytes: &[u8]) -> Result<Conversation, ProbeE
         } else {
             ConversationKind::Direct
         },
-        // Network family and send/history capabilities need their own evidence.
-        transport: TransportKind::Unknown,
+        // SI preserves type 22 and the SMS/MMS override at 18. The web
+        // composer uses SMS for direct fallback and MMS for group fallback.
+        // Unknown enum values remain unknown, including future preferences.
+        transport: match (wire.kind, wire.preference) {
+            (1 | 2, 1 | 2) | (1, 0) => {
+                if wire.group || participants.len() > 2 {
+                    TransportKind::Mms
+                } else {
+                    TransportKind::Sms
+                }
+            }
+            (2, 0) => TransportKind::Rcs,
+            _ => TransportKind::Unknown,
+        },
         title: (!title.is_empty()).then_some(title),
         participants,
         latest_message_id: None,
@@ -171,6 +183,10 @@ struct WireConversation {
     unread_count: Option<i32>,
     #[prost(bool, tag = "10")]
     group: bool,
+    #[prost(int32, tag = "18")]
+    preference: i32,
+    #[prost(int32, tag = "22")]
+    kind: i32,
     #[prost(message, repeated, tag = "20")]
     participants: Vec<WireParticipant>,
 }
@@ -225,6 +241,8 @@ mod tests {
             timestamp_micros: Some(1234000),
             unread_count: None,
             group: false,
+            preference: 0,
+            kind: 0,
             participants: vec![WireParticipant {
                 identity: Some(WireIdentity {
                     kind: 1,
@@ -414,6 +432,20 @@ mod tests {
         assert!(decode("gmessages-fixture", &duplicate.encode_to_vec()).is_err());
     }
 
+    #[test]
+    fn projects_phone_conversation_family_and_sms_override() {
+        for (kind, preference, expected) in [
+            (2, 0, TransportKind::Rcs),
+            (2, 1, TransportKind::Sms),
+            (1, 0, TransportKind::Sms),
+            (99, 0, TransportKind::Unknown),
+        ] {
+            let mut encoded = wire().encode_to_vec();
+            // First-party Wv.getType reads 22; SI reads the preference at 18.
+            encoded.extend_from_slice(&[0xb0, 1, kind, 0x90, 1, preference]);
+            assert_eq!(decode("fixture", &encoded).unwrap().transport, expected);
+        }
+    }
     #[test]
     fn projects_attested_fields_without_inventing_transport_or_capabilities() {
         let result = decode("gmessages-fixture", &wire().encode_to_vec()).unwrap();

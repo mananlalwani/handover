@@ -301,6 +301,15 @@ impl NativeBackend {
                 protocol: WIRE_VERSION,
             },
         );
+        // Contacts are daemon runtime state too. Recover the bounded snapshot
+        // on each authenticated connection instead of waiting for a manual sync.
+        let _ = write_frame(
+            &mut tls,
+            &Message::ContactsRequest {
+                protocol: WIRE_VERSION,
+                chunked: true,
+            },
+        );
         let mut last_received = Instant::now();
         let mut last_ping = Instant::now();
         let session_started = Instant::now();

@@ -774,3 +774,30 @@ or provider delivery-state reporting. No automatic retry was made. A local
 forwarding diagnostic is ready to capture only fixed helper error categories
 and normalized send-state tokens on the next test. It never saves payloads or
 identifiers. The production adapter remains the default.
+
+## Conversation names and transport, 2026-10-05
+
+The first-party `Wv.getType` reads conversation field 22. `SI` preserves that
+value through its 1/2 mapping and reads the SMS/MMS preference from field 18.
+The web composer uses type 2 with no fallback preference for RCS, and SMS or
+MMS for fallback according to direct or group membership. Native projection
+now preserves these known cases. Future enum values remain unknown.
+
+For individual messages, `sw.getType` reads field 11 and `Q2a` preserves types
+1, 2, and 4. The first-party status label identifies 1 as SMS and 2 as MMS;
+the RCS router identifies 4 as RCS. Native history and updates preserve each
+message's family through helper IPC, independently of the conversation's
+current family. No protocol fields enter the public Handover model.
+
+The desktop prefers the sole participant's resolved name over a numeric title
+in direct conversations. Custom text and group titles remain intact. Self
+senders display "You". Native phone sessions request a bounded contacts snapshot
+after authentication so daemon restarts recover the contact list automatically.
+
+Live verification after installing these changes found 201 conversations with
+68 RCS, 107 SMS, and 26 MMS projections. The phone restored 95 contacts after
+the daemon restart without a manual sync. Fresh history reads preserved SMS
+message types, including one older SMS in a currently RCS conversation. Existing
+cached messages without transport evidence retain their missing transport until
+refetched. Desktop checks verified the installed self label, but the user's
+remaining name or missing-message examples still need comparison in the UI.

@@ -79,9 +79,13 @@ Rectangle {
     function conversationLabel(conversation) {
         if (!conversation)
             return "Select a conversation";
-        if (conversation.title)
-            return conversation.title;
         const others = conversation.participants.filter(item => !item.is_self);
+        const title = String(conversation.title || "");
+        const numericTitle = /^[+0-9 ().-]+$/.test(title) && /[0-9]/.test(title);
+        const directNumberTitle = conversation.kind === "direct" && numericTitle
+            && others.length <= 1;
+        if (title && !directNumberTitle)
+            return title;
         if (others.length === 0 && conversation.participants.some(item => item.is_self))
             return "You";
         return others.map(item =>
@@ -276,7 +280,7 @@ Item {
                                     font.pixelSize: 14
                                 }
                                 Text {
-                                    text: modelData.transport
+                                    text: String(modelData.transport || "unknown").toUpperCase()
                                     color: "#9caec5"
                                     font.pixelSize: 11
                                 }

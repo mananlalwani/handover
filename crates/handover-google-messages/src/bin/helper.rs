@@ -296,20 +296,31 @@ fn start_live_worker(
     }
 }
 
+fn wire_transport(
+    transport: handover_core::messaging::TransportKind,
+) -> handover_gmessages::contract::WireTransport {
+    use handover_core::messaging::TransportKind;
+    use handover_gmessages::contract::WireTransport;
+    match transport {
+        TransportKind::Rcs => WireTransport::Rcs,
+        TransportKind::Sms => WireTransport::Sms,
+        TransportKind::Mms => WireTransport::Mms,
+        TransportKind::Unknown => WireTransport::Unknown,
+    }
+}
+
 fn wire_conversation(
     conversation: handover_core::messaging::Conversation,
 ) -> handover_gmessages::contract::WireConversation {
     use handover_core::messaging::ConversationKind;
-    use handover_gmessages::contract::{
-        WireConversation, WireConversationKind, WireParticipant, WireTransport,
-    };
+    use handover_gmessages::contract::{WireConversation, WireConversationKind, WireParticipant};
     WireConversation {
         local_id: conversation.id.local_id,
         kind: match conversation.kind {
             ConversationKind::Direct => WireConversationKind::Direct,
             ConversationKind::Group => WireConversationKind::Group,
         },
-        transport: WireTransport::Unknown,
+        transport: wire_transport(conversation.transport),
         title: conversation.title,
         participants: conversation
             .participants
@@ -404,7 +415,7 @@ async fn publish_messages<W: AsyncWrite + Unpin>(
         let wire = WireMessage {
             local_id: message.id.local_id,
             sender: message.sender.local_id,
-            transport: None,
+            transport: message.transport.map(wire_transport),
             sent_at: message.sent_at,
             text: message.text,
             attachments: message
@@ -1930,7 +1941,11 @@ mod tests {
             page.push(Conversation {
                 id: ConversationId::new(account.clone(), format!("thread-{index}")),
                 kind: ConversationKind::Group,
-                transport: TransportKind::Unknown,
+                transport: if index == 0 {
+                    TransportKind::Rcs
+                } else {
+                    TransportKind::Unknown
+                },
                 title: Some("Fixture".into()),
                 participants: (0..256)
                     .map(|participant| Participant {
@@ -1980,13 +1995,14 @@ mod tests {
             for wire in conversations {
                 let normalized =
                     handover_gmessages::normalize_conversation(&account, wire).unwrap();
-                assert_eq!(normalized.transport, TransportKind::Unknown);
                 if normalized.id.local_id == "thread-0" {
+                    assert_eq!(normalized.transport, TransportKind::Rcs);
                     assert_eq!(
                         normalized.capabilities,
                         BTreeSet::from([MessagingCapability::Text, MessagingCapability::Media])
                     );
                 } else {
+                    assert_eq!(normalized.transport, TransportKind::Unknown);
                     assert!(normalized.capabilities.is_empty());
                 }
                 count += 1;
@@ -2711,7 +2727,7 @@ mod tests {
                     address: None,
                     is_self: false,
                 },
-                transport: None,
+                transport: Some(handover_core::messaging::TransportKind::Sms),
                 sent_at: Some(n),
                 text: Some("x".repeat(60_000)),
                 attachments: vec![],
@@ -2747,7 +2763,8 @@ mod tests {
             assert_eq!(account, "fixture");
             assert!(!page_complete && !full);
             assert!(cursor_next.is_none() && generation.is_none() && fetch_id.is_none());
-            assert!(messages.iter().all(|message| message.transport.is_none()));
+            assert!(messages.iter().all(|message| message.transport
+                == Some(handover_gmessages::contract::WireTransport::Sms)));
             count += messages.len();
             threads.insert(conversation);
         }
