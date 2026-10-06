@@ -6,7 +6,7 @@ accessed during this investigation.
 
 ## Conclusion
 
-The strongest candidate is a setup window using full Chrome with a temporary,
+The first investigated candidate was a setup window using full Chrome with a temporary,
 Handover-owned profile and a private DevTools pipe. Handover could capture the
 same narrowly scoped authentication proof as the existing extension, then use
 its existing native registration and pairing flow. The local browser connection
@@ -15,6 +15,13 @@ works; Google sign-in acceptance and the authenticated handoff remain untested.
 Opening the user's existing browser alone does not provide that handoff.
 No supported consumer Messages OAuth callback was found. An ordinary Google
 sign-in callback must not be treated as authorization for Messages.
+
+The user subsequently chose an optional built-in sign-in component to avoid
+installing an extension or separate Chrome browser. A small dynamically linked
+[Qt WebEngine prototype](../login-window/README.md) now builds independently of
+the Rust workspace. Its private-profile blank-page check passes. Google sign-in
+and authentication handoff remain unverified. It is not included in installers
+yet. The existing native session and extension setup remain available.
 
 ## Evidence
 
@@ -54,7 +61,7 @@ is not an established replacement for the network-level capture used here.
 Sources: [RFC 6265, HttpOnly](https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.2.6),
 [HTML cross-origin access](https://html.spec.whatwg.org/multipage/nav-history-apis.html#security-infrastructure-for-window-windowproxy-and-location-objects).
 
-An embedded QtWebEngine or similar login window is a poor first choice. Google
+An embedded QtWebEngine or similar login window needs a compatibility test. Google
 restricts OAuth in controlled embedded user-agents and documents sign-in
 rejection in those environments. A full-browser process is a different
 implementation, but using DevTools does not guarantee that Google accepts its

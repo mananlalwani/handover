@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.21)
+project(handover_google_login_probe LANGUAGES CXX)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets WebEngineWidgets)
+add_executable(handover-google-login-probe main.cpp)
+target_compile_features(handover-google-login-probe PRIVATE cxx_std_17)
+target_compile_options(handover-google-login-probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(handover-google-login-probe PRIVATE Qt6::Widgets Qt6::WebEngineWidgets)

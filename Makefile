@@ -14,7 +14,12 @@ FISH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/fish/vendor_completions.d
 APPLICATIONS_DIR := $(DESTDIR)$(USER_DATA_HOME)/applications
 BIN_DIR := $(DESTDIR)$(PREFIX)/bin
 
-.PHONY: install-user uninstall-user systemd-smoke dist install-files
+.PHONY: install-user uninstall-user systemd-smoke dist install-files google-login-probe
+
+# Optional experiment; normal builds and installs do not require Qt WebEngine.
+google-login-probe:
+	cmake -S google-messages/login-window -B target/google-login-probe -DCMAKE_BUILD_TYPE=MinSizeRel
+	cmake --build target/google-login-probe
 
 systemd-smoke: target/debug/handoverd target/debug/handoverctl
 	./scripts/systemd-smoke.sh target/debug/handoverd target/debug/handoverctl
