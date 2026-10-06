@@ -48,6 +48,11 @@ No app mode or sync-disabling flag is used. Session retention after this restart
 and the native credential handoff remain unverified. Closing the first window
 only advances the experiment; it is not evidence of successful authentication.
 
+In the live two-stage test, the private pipe became ready after normal sign-in
+and Chrome exit. The user reported that the reopened page appeared signed in.
+This supports session retention across the restart; no account identity,
+authenticated native request, or phone pairing was checked by the prototype.
+
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
 python google-messages/tools/chromium_login_probe.py
