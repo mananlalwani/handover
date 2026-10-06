@@ -34,12 +34,68 @@ pub(crate) fn request(
             conversation: conversation.into(),
             parts: vec![Part {
                 text: Some(Text { value: text.into() }),
+                media: None,
             }],
             temporary: temporary.into(),
         }),
         temporary: temporary.into(),
     };
     Ok(Zeroizing::new(request.encode_to_vec()))
+}
+
+pub(crate) fn validate_media(conversation: &str, caption: Option<&str>) -> Result<(), ProbeError> {
+    identifier(conversation)?;
+    if caption.is_some_and(|value| value.chars().count() > MAX_TEXT_CHARS || value.contains('\0')) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+pub(crate) fn media_request(
+    conversation: &str,
+    uploaded: &crate::media::Uploaded,
+    caption: Option<&str>,
+    temporary: &str,
+) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
+    validate_media(conversation, caption)?;
+    identifier(temporary)?;
+    let caption = caption.filter(|value| !value.is_empty());
+    let mut parts = vec![Part {
+        text: None,
+        media: Some(Media {
+            kind: uploaded.kind,
+            blob: uploaded.blob.to_string(),
+            name: uploaded.name.to_string(),
+            size: uploaded.size as i64,
+            key: uploaded.key.to_vec(),
+            mime: uploaded.mime.into(),
+        }),
+    }];
+    if let Some(value) = caption {
+        parts.push(Part {
+            text: Some(Text {
+                value: value.into(),
+            }),
+            media: None,
+        });
+    }
+    Ok(Zeroizing::new(
+        Request {
+            conversation: conversation.into(),
+            temporary: temporary.into(),
+            message: Some(Content {
+                id: temporary.into(),
+                conversation: conversation.into(),
+                temporary: temporary.into(),
+                legacy_text: caption.map(|value| LegacyText {
+                    text: Some(Text {
+                        value: value.into(),
+                    }),
+                }),
+                parts,
+            }),
+        }
+        .encode_to_vec(),
+    ))
 }
 /// Preserve the daemon's random 128-bit operation identity in UUID text form.
 /// Other helper callers retain the existing fresh-temporary behavior.
@@ -133,6 +189,32 @@ struct LegacyText {
 struct Part {
     #[prost(message, optional, tag = "2")]
     text: Option<Text>,
+    #[prost(message, optional, tag = "3")]
+    media: Option<Media>,
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct Media {
+    #[prost(int32, tag = "1")]
+    kind: i32,
+    #[prost(string, tag = "2")]
+    blob: String,
+    #[prost(string, tag = "4")]
+    name: String,
+    #[prost(int64, tag = "5")]
+    size: i64,
+    #[prost(bytes = "vec", tag = "11")]
+    key: Vec<u8>,
+    #[prost(string, tag = "14")]
+    mime: String,
+}
+impl Drop for Media {
+    fn drop(&mut self) {
+        self.blob.zeroize();
+        self.name.zeroize();
+        self.key.zeroize();
+        self.mime.zeroize();
+    }
 }
 #[derive(Message)]
 #[prost(skip_debug)]
@@ -251,5 +333,55 @@ mod tests {
         );
         assert!(!capability(&[]).unwrap());
         assert!(capability(&[8, 1]).unwrap());
+    }
+
+    #[test]
+    fn media_send_contains_original_upload_key_size_and_optional_caption() {
+        let uploaded = crate::media::Uploaded {
+            blob: Zeroizing::new("fixture-blob".into()),
+            key: Zeroizing::new([9; 32]),
+            name: Zeroizing::new("fixture.png".into()),
+            mime: "image/png",
+            kind: 3,
+            size: 4096,
+        };
+        for caption in [None, Some("caption")] {
+            let encoded = media_request("thread", &uploaded, caption, "temp").unwrap();
+            let request = Request::decode(encoded.as_slice()).unwrap();
+            let content = request.message.as_ref().unwrap();
+            assert_eq!(content.id, request.temporary);
+            assert_eq!(content.temporary, request.temporary);
+            assert_eq!(content.conversation, "thread");
+            assert_eq!(content.parts.len(), if caption.is_some() { 2 } else { 1 });
+            assert!(content.parts[0].text.is_none());
+            let media = content.parts[0].media.as_ref().unwrap();
+            assert_eq!(media.blob, "fixture-blob");
+            assert_eq!(media.key, vec![9; 32]);
+            assert_eq!(media.size, 4096);
+            assert_eq!(media.mime, "image/png");
+            assert_eq!(media.name, "fixture.png");
+            assert_eq!(
+                content
+                    .legacy_text
+                    .as_ref()
+                    .and_then(|text| text.text.as_ref())
+                    .map(|text| text.value.as_str()),
+                caption
+            );
+            if caption.is_some() {
+                assert!(content.parts[1].media.is_none());
+            }
+        }
+        assert!(media_request("", &uploaded, None, "temp").is_err());
+        assert!(media_request("thread", &uploaded, Some("a\0b"), "temp").is_err());
+        assert!(
+            media_request(
+                "thread",
+                &uploaded,
+                Some(&"a".repeat(MAX_TEXT_CHARS + 1)),
+                "temp"
+            )
+            .is_err()
+        );
     }
 }

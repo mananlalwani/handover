@@ -12,6 +12,16 @@ pub struct HistoryPage {
     pub cursor_next: Option<String>,
     /// Private protocol references, never serialized into helper IPC.
     pub downloads: Vec<crate::media::Download>,
+    /// Fixed diagnostics for the local read-only probe, never helper IPC.
+    pub original_fetch_error: Option<OriginalFetchError>,
+}
+#[derive(Debug, Clone, Copy)]
+pub enum OriginalFetchError {
+    TimedOut,
+    Transport,
+    InvalidReply,
+    Authentication,
+    Receive,
 }
 impl std::fmt::Debug for HistoryPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -20,6 +30,76 @@ impl std::fmt::Debug for HistoryPage {
 }
 fn invalid() -> ProbeError {
     ProbeError::SessionProtocol(SessionError::HistoryModel)
+}
+
+#[derive(Message)]
+#[prost(skip_debug)]
+struct OriginalRequest {
+    #[prost(string, tag = "1")]
+    message: String,
+    #[prost(string, tag = "2")]
+    part: String,
+}
+impl Drop for OriginalRequest {
+    fn drop(&mut self) {
+        self.message.zeroize();
+        self.part.zeroize();
+    }
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct OriginalResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    message: Vec<u8>,
+}
+impl Drop for OriginalResponse {
+    fn drop(&mut self) {
+        self.message.zeroize();
+    }
+}
+pub(crate) fn original_request(message: &str, part: &str) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(
+        OriginalRequest {
+            message: message.into(),
+            part: part.into(),
+        }
+        .encode_to_vec(),
+    )
+}
+/// Validate the returned message against the requested thread and attachment.
+/// Only the original reference may become a full attachment download.
+pub(crate) fn original_download(
+    conversation: &Conversation,
+    message: &str,
+    part: &str,
+    bytes: &[u8],
+) -> Result<crate::media::Download, ProbeError> {
+    if bytes.len() > 64 * 1024 {
+        return Err(invalid());
+    }
+    let response = OriginalResponse::decode(bytes).map_err(|_| invalid())?;
+    let wire = WireMessage::decode(response.message.as_slice()).map_err(|_| invalid())?;
+    if wire.id != message {
+        return Err(invalid());
+    }
+    let validated = decode_records(conversation, vec![response.message.clone()])?;
+    if validated.len() != 1
+        || !validated[0]
+            .attachments
+            .iter()
+            .any(|item| item.local_id == part)
+    {
+        return Err(invalid());
+    }
+    let Some(part::Content::Media(media)) = wire
+        .parts
+        .iter()
+        .find(|item| item.id == part)
+        .and_then(|item| item.content.as_ref())
+    else {
+        return Err(invalid());
+    };
+    crate::media::Download::from_part(message, part, &media.blob, &media.key).ok_or_else(invalid)
 }
 
 pub(crate) fn request(
@@ -73,22 +153,13 @@ pub(crate) fn decode(conversation: &Conversation, bytes: &[u8]) -> Result<Histor
         let wire = WireMessage::decode(bytes.as_slice()).map_err(|_| invalid())?;
         for part in &wire.parts {
             if let Some(part::Content::Media(media)) = &part.content {
-                // For video, nk is a preview. Hdc uses only Kd for the full
-                // file, so never publish that preview as the video payload.
-                if media.blob.is_empty()
-                    && (matches!(media.kind, 8..=13) || media.mime.starts_with("video/"))
-                {
+                // The alternate reference is a display preview. A staged
+                // attachment must use the original reference and its key.
+                if media.blob.is_empty() {
                     continue;
                 }
-                // The full-file download uses Kd/key11 when present. Hdc's
-                // alternate nk path pairs with key12. Never mix the keys.
-                let (blob, key) = if !media.blob.is_empty() {
-                    (&media.blob, &media.key)
-                } else {
-                    (&media.alternate_blob, &media.alternate_key)
-                };
                 if let Some(download) =
-                    crate::media::Download::from_part(&wire.id, &part.id, blob, key)
+                    crate::media::Download::from_part(&wire.id, &part.id, &media.blob, &media.key)
                 {
                     downloads.push(download);
                 }
@@ -102,6 +173,7 @@ pub(crate) fn decode(conversation: &Conversation, bytes: &[u8]) -> Result<Histor
         messages,
         cursor_next,
         downloads,
+        original_fetch_error: None,
     })
 }
 
@@ -510,10 +582,10 @@ mod tests {
     }
 
     #[test]
-    fn alternate_blob_uses_its_own_key_and_never_stages_video_preview() {
+    fn alternate_preview_never_becomes_full_attachment() {
         for (kind, alternate_key, expected) in [
             (3, vec![8; 31], 0),
-            (3, vec![8; 32], 1),
+            (3, vec![8; 32], 0),
             (8, vec![8; 32], 0),
         ] {
             let mut wire = record();
@@ -531,6 +603,49 @@ mod tests {
             assert_eq!(decoded.downloads.len(), expected);
             assert_eq!(decoded.messages[0].attachments[0].staged_path, None);
         }
+    }
+
+    #[test]
+    fn original_reply_requires_exact_thread_message_and_part_without_preview_fallback() {
+        let mut original = record();
+        original.parts[0].content = Some(part::Content::Media(Media {
+            kind: 3,
+            blob: "original-reference".into(),
+            name: "fixture.png".into(),
+            size: Some(321),
+            alternate_blob: "preview-reference".into(),
+            key: vec![1; 32],
+            alternate_key: vec![2; 32],
+            mime: "image/png".into(),
+        }));
+        let encode = |wire: &WireMessage| {
+            OriginalResponse {
+                message: wire.encode_to_vec(),
+            }
+            .encode_to_vec()
+        };
+        let bytes = encode(&original);
+        let download = original_download(&conversation(), "message", "part", &bytes).unwrap();
+        assert!(download.matches_attachment("message", "part"));
+        assert!(download.encrypted());
+        for (message, part) in [("wrong", "part"), ("message", "wrong")] {
+            assert!(original_download(&conversation(), message, part, &bytes).is_err());
+        }
+        original.conversation = "another-thread".into();
+        assert!(original_download(&conversation(), "message", "part", &encode(&original)).is_err());
+        original.conversation = "thread".into();
+        if let Some(part::Content::Media(media)) = &mut original.parts[0].content {
+            media.blob.clear();
+        }
+        assert!(original_download(&conversation(), "message", "part", &encode(&original)).is_err());
+        assert!(original_download(&conversation(), "message", "part", &[]).is_err());
+        assert!(
+            original_download(&conversation(), "message", "part", &vec![0; 64 * 1024 + 1]).is_err()
+        );
+        let request =
+            OriginalRequest::decode(original_request("message", "part").as_slice()).unwrap();
+        assert_eq!(request.message, "message");
+        assert_eq!(request.part, "part");
     }
     #[test]
     fn opaque_cursor_roundtrips_through_the_next_request_and_bounds_input() {

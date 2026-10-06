@@ -11,6 +11,13 @@ pub enum LiveCommand {
         text: Zeroizing<String>,
         accepted: oneshot::Receiver<()>,
     },
+    SendMedia {
+        request_id: String,
+        conversation: String,
+        path: Zeroizing<String>,
+        caption: Option<Zeroizing<String>>,
+        accepted: oneshot::Receiver<()>,
+    },
     Conversations,
     History {
         conversation: Box<Conversation>,
@@ -59,6 +66,17 @@ async fn publish(events: &mpsc::Sender<LiveOutput>, event: LiveEvent) -> Result<
         .await
         .map_err(|_| ProbeError::Timeout)?
         .map_err(|_| ProbeError::NativeError)
+}
+fn media_failure(error: crate::media::MediaError) -> &'static str {
+    use crate::media::MediaError;
+    match error {
+        MediaError::InvalidFile | MediaError::Empty => "failed:rejected",
+        MediaError::TooLarge => "failed:too_large",
+        MediaError::Authentication
+        | MediaError::Randomness
+        | MediaError::EncryptionKeyUnavailable => "failed:encryption",
+        _ => "failed:transport",
+    }
 }
 fn merge(known: &mut Vec<Conversation>, records: &[Conversation]) -> Result<(), ProbeError> {
     for record in records {
@@ -228,13 +246,32 @@ impl RecoveredSession {
         let mut can_send = false;
         loop {
             if let Some(command) = pending.take() {
-                if let LiveCommand::SendText {
-                    request_id,
-                    conversation,
-                    text,
-                    accepted,
-                } = command
-                {
+                if matches!(
+                    &command,
+                    LiveCommand::SendText { .. } | LiveCommand::SendMedia { .. }
+                ) {
+                    let (request_id, conversation, text, media, accepted) = match command {
+                        LiveCommand::SendText {
+                            request_id,
+                            conversation,
+                            text,
+                            accepted,
+                        } => (request_id, conversation, Some(text), None, accepted),
+                        LiveCommand::SendMedia {
+                            request_id,
+                            conversation,
+                            path,
+                            caption,
+                            accepted,
+                        } => (
+                            request_id,
+                            conversation,
+                            None,
+                            Some((path, caption)),
+                            accepted,
+                        ),
+                        _ => unreachable!(),
+                    };
                     accepted.await.map_err(|_| ProbeError::NativeError)?;
                     if !online
                         || !can_send
@@ -252,11 +289,58 @@ impl RecoveredSession {
                         .await?;
                         continue;
                     }
-                    let payload = crate::send::request(
-                        &conversation,
-                        &text,
-                        &crate::send::temporary(&request_id).to_string(),
-                    )?;
+                    let temporary = crate::send::temporary(&request_id).to_string();
+                    let payload = if let Some(text) = text {
+                        crate::send::request(&conversation, &text, &temporary)?
+                    } else {
+                        let (path, caption) = media.ok_or(ProbeError::NativeError)?;
+                        let caption = caption.as_deref().map(String::as_str);
+                        if crate::send::validate_media(&conversation, caption).is_err() {
+                            publish(
+                                &events,
+                                LiveEvent::SendResult {
+                                    request_id,
+                                    conversation,
+                                    message: None,
+                                    status: "failed:rejected",
+                                },
+                            )
+                            .await?;
+                            continue;
+                        }
+                        // Uploading alone cannot send a phone message. Failures
+                        // here have a known outcome and are never retried.
+                        let upload = tokio::time::timeout(
+                            Duration::from_secs(60),
+                            crate::media::upload_staged(&self.pairing.registration, path),
+                        );
+                        tokio::pin!(upload);
+                        let uploaded = loop {
+                            tokio::select! {
+                                result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
+                                _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                                result = &mut upload => break result.unwrap_or(Err(crate::media::MediaError::Network)),
+                                push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                            }
+                        };
+                        let uploaded = match uploaded {
+                            Ok(uploaded) => uploaded,
+                            Err(error) => {
+                                publish(
+                                    &events,
+                                    LiveEvent::SendResult {
+                                        request_id,
+                                        conversation,
+                                        message: None,
+                                        status: media_failure(error),
+                                    },
+                                )
+                                .await?;
+                                continue;
+                            }
+                        };
+                        crate::send::media_request(&conversation, &uploaded, caption, &temporary)?
+                    };
                     let send = tokio::time::timeout(
                         Duration::from_secs(60),
                         self.send_on_stream(
@@ -297,6 +381,7 @@ impl RecoveredSession {
                 }
                 let (conversations, history, fetch_id) = match &command {
                     LiveCommand::SendText { .. } => unreachable!(),
+                    LiveCommand::SendMedia { .. } => unreachable!(),
                     LiveCommand::SendingCapability => (false, None, None),
                     LiveCommand::Conversations => (true, None, None),
                     LiveCommand::History {
@@ -331,7 +416,13 @@ impl RecoveredSession {
                                 &short,
                                 endpoint,
                                 conversations,
-                                history,
+                                history.map(|(conversation, payload)| {
+                                    (
+                                        conversation,
+                                        payload,
+                                        read_started + Duration::from_secs(30),
+                                    )
+                                }),
                                 &correlation,
                                 &mut reply_rx,
                             )
@@ -381,9 +472,10 @@ impl RecoveredSession {
                     ReadResult::Conversations(mut records) => {
                         for record in &mut records {
                             if can_send {
-                                record
-                                    .capabilities
-                                    .insert(handover_core::messaging::MessagingCapability::Text);
+                                record.capabilities.extend([
+                                    handover_core::messaging::MessagingCapability::Text,
+                                    handover_core::messaging::MessagingCapability::Media,
+                                ]);
                             }
                         }
                         merge(&mut known, &records)?;
@@ -407,13 +499,17 @@ impl RecoveredSession {
                     ReadResult::Startup if matches!(command, LiveCommand::SendingCapability) => {
                         for model in &mut known {
                             if can_send {
-                                model
-                                    .capabilities
-                                    .insert(handover_core::messaging::MessagingCapability::Text);
+                                model.capabilities.extend([
+                                    handover_core::messaging::MessagingCapability::Text,
+                                    handover_core::messaging::MessagingCapability::Media,
+                                ]);
                             } else {
                                 model
                                     .capabilities
                                     .remove(&handover_core::messaging::MessagingCapability::Text);
+                                model
+                                    .capabilities
+                                    .remove(&handover_core::messaging::MessagingCapability::Media);
                             }
                         }
                         publish(&events, LiveEvent::ConversationUpdates(known.clone())).await?;
@@ -471,9 +567,10 @@ impl RecoveredSession {
             crate::updates::Update::Conversations(mut records) => {
                 for record in &mut records {
                     if can_send {
-                        record
-                            .capabilities
-                            .insert(handover_core::messaging::MessagingCapability::Text);
+                        record.capabilities.extend([
+                            handover_core::messaging::MessagingCapability::Text,
+                            handover_core::messaging::MessagingCapability::Media,
+                        ]);
                     }
                 }
                 merge(known, &records)?;

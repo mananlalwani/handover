@@ -12,6 +12,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use prost::Message;
 use rand::{RngCore, rngs::OsRng};
 use zeroize::{Zeroize, Zeroizing};
+mod upload;
+pub(crate) use upload::{Uploaded, metadata as upload_metadata, upload_staged};
 
 /// A native-only full-size blob reference. It cannot expose secrets through
 /// Debug or serialization, and never crosses the normalized helper contract.
@@ -75,6 +77,10 @@ impl Download {
                 .attachments
                 .iter()
                 .any(|part| part.local_id == *self.part)
+    }
+
+    pub(crate) fn matches_attachment(&self, message: &str, part: &str) -> bool {
+        *self.message == message && *self.part == part
     }
 
     pub(crate) fn encrypted(&self) -> bool {
@@ -200,20 +206,24 @@ pub(crate) fn download_metadata(blob: &str, token: &[u8]) -> Zeroizing<Vec<u8>> 
             id: blob.into(),
             kind: 1,
         }),
-        header: Some(RequestHeader {
-            request: uuid::Uuid::new_v4().to_string(),
-            application: "GDitto".into(),
-            token: token.to_vec(),
-            client: Some(ClientInfo {
-                major: crate::OBSERVED_WIRE_VERSION[0],
-                minor: crate::OBSERVED_WIRE_VERSION[1],
-                patch: crate::OBSERVED_WIRE_VERSION[2],
-                platform: 4,
-                variant: 6,
-            }),
-        }),
+        header: Some(request_header(token)),
     };
     Zeroizing::new(metadata.encode_to_vec())
+}
+
+fn request_header(token: &[u8]) -> RequestHeader {
+    RequestHeader {
+        request: uuid::Uuid::new_v4().to_string(),
+        application: "GDitto".into(),
+        token: token.to_vec(),
+        client: Some(ClientInfo {
+            major: crate::OBSERVED_WIRE_VERSION[0],
+            minor: crate::OBSERVED_WIRE_VERSION[1],
+            patch: crate::OBSERVED_WIRE_VERSION[2],
+            platform: 4,
+            variant: 6,
+        }),
+    }
 }
 
 pub(crate) async fn download(
@@ -297,6 +307,9 @@ pub enum MediaError {
     ReferenceUnavailable,
     EncryptionKeyUnavailable,
     Staging,
+    InvalidFile,
+    UploadProtocol,
+    UploadEndpoint,
 }
 
 impl std::fmt::Display for MediaError {

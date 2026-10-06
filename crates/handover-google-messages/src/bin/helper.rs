@@ -115,6 +115,9 @@ async fn main() {
                 let page = session.read_history(&conversation, None, 50).await?;
                 println!("Native media history: {} message(s), {} attachment(s), {} download reference(s).",
                     page.messages.len(), page.messages.iter().map(|message| message.attachments.len()).sum::<usize>(), page.downloads.len());
+                if let Some(category) = page.original_fetch_error {
+                    println!("Native original-media enrichment failed ({category:?}).");
+                }
                 match session.probe_history_media(&page).await {
                     Ok((size, encrypted)) => {
                         println!("Native newest-media download complete: {size} plaintext byte(s), GCM authenticated: {encrypted}. Nothing saved.");
@@ -324,9 +327,12 @@ fn wire_conversation(
         cursor: None,
         capabilities: conversation
             .capabilities
-            .contains(&handover_core::messaging::MessagingCapability::Text)
-            .then(|| "text".to_owned())
             .into_iter()
+            .filter_map(|capability| match capability {
+                handover_core::messaging::MessagingCapability::Text => Some("text".to_owned()),
+                handover_core::messaging::MessagingCapability::Media => Some("media".to_owned()),
+                _ => None,
+            })
             .collect(),
     }
 }
@@ -519,6 +525,7 @@ async fn publish_push_messages<W: AsyncWrite + Unpin>(
                 messages,
                 cursor_next: None,
                 downloads: Vec::new(),
+                original_fetch_error: None,
             },
             false,
         )
@@ -600,6 +607,13 @@ struct TextSend {
     text: Zeroizing<String>,
     reply_to: Option<String>,
 }
+struct MediaSend {
+    request_id: String,
+    account: String,
+    conversation: String,
+    path: Zeroizing<String>,
+    caption: Option<Zeroizing<String>>,
+}
 async fn queue_send<W: AsyncWrite + Unpin>(
     helper: &NativeHelper,
     workers: &BTreeMap<String, LiveWorker>,
@@ -654,6 +668,68 @@ async fn queue_send<W: AsyncWrite + Unpin>(
     )
     .await?;
     // Never submit before the normalized acceptance has reached the daemon pipe.
+    if queued {
+        let _ = accepted.send(());
+    }
+    Ok(())
+}
+
+async fn queue_media<W: AsyncWrite + Unpin>(
+    helper: &NativeHelper,
+    workers: &BTreeMap<String, LiveWorker>,
+    sends: &mut BTreeMap<String, (String, String)>,
+    writer: &mut W,
+    send: MediaSend,
+) -> std::io::Result<()> {
+    use handover_core::messaging::{MAX_ID_LEN, MAX_TEXT_CHARS, MessagingCapability};
+    let MediaSend {
+        request_id,
+        account,
+        conversation,
+        path,
+        caption,
+    } = send;
+    let allowed = helper.online.contains(&account)
+        && !sends.contains_key(&account)
+        && !request_id.is_empty()
+        && request_id.len() <= MAX_ID_LEN
+        && !request_id.chars().any(char::is_control)
+        && !path.is_empty()
+        && path.len() <= 4096
+        && !path.chars().any(char::is_control)
+        && caption
+            .as_ref()
+            .is_none_or(|value| value.chars().count() <= MAX_TEXT_CHARS && !value.contains('\0'))
+        && helper
+            .conversations
+            .get(&(account.clone(), conversation.clone()))
+            .is_some_and(|model| model.capabilities.contains(&MessagingCapability::Media));
+    let (accepted, gate) = tokio::sync::oneshot::channel();
+    let queued = allowed
+        && workers.get(&account).is_some_and(|worker| {
+            worker
+                .commands
+                .try_send(LiveCommand::SendMedia {
+                    request_id: request_id.clone(),
+                    conversation: conversation.clone(),
+                    path,
+                    caption,
+                    accepted: gate,
+                })
+                .is_ok()
+        });
+    if queued {
+        sends.insert(account.clone(), (request_id.clone(), conversation));
+    }
+    publish(
+        writer,
+        HelperEvent::CommandResult {
+            request_id,
+            ok: queued,
+            error: (!queued).then(|| UNAVAILABLE.into()),
+        },
+    )
+    .await?;
     if queued {
         let _ = accepted.send(());
     }
@@ -859,6 +935,8 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
                     if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendText { request_id, account, conversation, text, reply_to }) = serde_json::from_slice::<HelperCommand>(&line) {
                         queue_send(helper, &workers, &mut sends, writer, TextSend { request_id, account, conversation, text: Zeroizing::new(text), reply_to }).await?;
+                    } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendMedia { request_id, account, conversation, path, caption }) = serde_json::from_slice::<HelperCommand>(&line) {
+                        queue_media(helper, &workers, &mut sends, writer, MediaSend { request_id, account, conversation, path: Zeroizing::new(path), caption: caption.map(Zeroizing::new) }).await?;
                     } else {
                     for response in helper.handle_line(&line) {
                         writer.write_all(response.as_bytes()).await?;
@@ -1711,10 +1789,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn media_admission_checks_capability_availability_and_shared_send_lock() {
+        use handover_core::messaging::{
+            Conversation, ConversationId, ConversationKind, MessagingAccountId,
+            MessagingCapability, Participant, TransportKind,
+        };
+        for case in ["accepted", "offline", "unsupported", "busy", "full"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut helper = helper_with_store(directory.path());
+            helper.online.insert("work".into());
+            helper.conversations.insert(
+                ("work".into(), "thread".into()),
+                Conversation {
+                    id: ConversationId::new(MessagingAccountId::new("work"), "thread"),
+                    kind: ConversationKind::Direct,
+                    transport: TransportKind::Unknown,
+                    title: None,
+                    participants: vec![Participant {
+                        local_id: "peer".into(),
+                        display_name: None,
+                        address: None,
+                        is_self: false,
+                    }],
+                    latest_message_id: None,
+                    last_activity_at: None,
+                    unread_count: None,
+                    cursor: None,
+                    capabilities: BTreeSet::from([MessagingCapability::Media]),
+                },
+            );
+            let (commands, mut incoming) = mpsc::channel(1);
+            let mut workers = BTreeMap::new();
+            workers.insert(
+                "work".into(),
+                LiveWorker {
+                    generation: 1,
+                    ready: true,
+                    commands,
+                    task: None,
+                },
+            );
+            let mut sends = BTreeMap::new();
+            if case == "offline" {
+                helper.online.clear();
+            }
+            if case == "unsupported" {
+                helper
+                    .conversations
+                    .get_mut(&("work".into(), "thread".into()))
+                    .unwrap()
+                    .capabilities
+                    .clear();
+            }
+            if case == "busy" {
+                sends.insert("work".into(), ("prior".into(), "thread".into()));
+            }
+            if case == "full" {
+                workers["work"]
+                    .commands
+                    .try_send(LiveCommand::Conversations)
+                    .unwrap();
+            }
+            let mut output = Vec::new();
+            queue_media(
+                &helper,
+                &workers,
+                &mut sends,
+                &mut output,
+                MediaSend {
+                    request_id: "media-test".into(),
+                    account: "work".into(),
+                    conversation: "thread".into(),
+                    path: Zeroizing::new("/tmp/staged.jpg".into()),
+                    caption: Some(Zeroizing::new("caption".into())),
+                },
+            )
+            .await
+            .unwrap();
+            let event: HelperEvent = serde_json::from_slice(&output).unwrap();
+            assert!(
+                matches!(event, HelperEvent::CommandResult { ok, .. } if ok == (case == "accepted")),
+                "case {case}"
+            );
+            if case == "accepted" {
+                let LiveCommand::SendMedia {
+                    accepted,
+                    path,
+                    caption,
+                    ..
+                } = incoming.recv().await.unwrap()
+                else {
+                    panic!("queued media");
+                };
+                assert_eq!(&*path, "/tmp/staged.jpg");
+                assert_eq!(caption.as_deref().map(|value| &**value), Some("caption"));
+                accepted.await.unwrap();
+                assert_eq!(
+                    sends.get("work").map(|pending| pending.0.as_str()),
+                    Some("media-test")
+                );
+                // The same account lock rejects text while media is awaiting its result.
+                queue_send(
+                    &helper,
+                    &workers,
+                    &mut sends,
+                    &mut Vec::new(),
+                    TextSend {
+                        request_id: "text-test".into(),
+                        account: "work".into(),
+                        conversation: "thread".into(),
+                        text: Zeroizing::new("hello".into()),
+                        reply_to: None,
+                    },
+                )
+                .await
+                .unwrap();
+                assert!(incoming.try_recv().is_err());
+            } else {
+                if case == "full" {
+                    assert!(matches!(
+                        incoming.try_recv(),
+                        Ok(LiveCommand::Conversations)
+                    ));
+                }
+                assert!(incoming.try_recv().is_err(), "rejected media was queued");
+                assert!(sends.get("work").is_none_or(|pending| pending.0 == "prior"));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn conversation_pages_keep_the_contract_bound_and_remain_incremental() {
         use handover_core::messaging::{
-            Conversation, ConversationId, ConversationKind, MessagingAccountId, Participant,
-            TransportKind,
+            Conversation, ConversationId, ConversationKind, MessagingAccountId,
+            MessagingCapability, Participant, TransportKind,
         };
         let account = MessagingAccountId::new("gmessages-fixture");
         let mut page = Vec::new();
@@ -1736,7 +1944,15 @@ mod tests {
                 last_activity_at: Some(1234),
                 unread_count: None,
                 cursor: None,
-                capabilities: BTreeSet::new(),
+                capabilities: if index == 0 {
+                    BTreeSet::from([
+                        MessagingCapability::Text,
+                        MessagingCapability::Media,
+                        MessagingCapability::Replies,
+                    ])
+                } else {
+                    BTreeSet::new()
+                },
             });
         }
         let mut output = Vec::new();
@@ -1765,7 +1981,14 @@ mod tests {
                 let normalized =
                     handover_gmessages::normalize_conversation(&account, wire).unwrap();
                 assert_eq!(normalized.transport, TransportKind::Unknown);
-                assert!(normalized.capabilities.is_empty());
+                if normalized.id.local_id == "thread-0" {
+                    assert_eq!(
+                        normalized.capabilities,
+                        BTreeSet::from([MessagingCapability::Text, MessagingCapability::Media])
+                    );
+                } else {
+                    assert!(normalized.capabilities.is_empty());
+                }
                 count += 1;
             }
             chunks += 1;
@@ -2566,6 +2789,7 @@ mod tests {
                 messages: records,
                 cursor_next: Some("opaque-cursor".into()),
                 downloads: Vec::new(),
+                original_fetch_error: None,
             },
         )
         .await
@@ -2615,6 +2839,7 @@ mod tests {
                 messages: Vec::new(),
                 cursor_next: None,
                 downloads: Vec::new(),
+                original_fetch_error: None,
             },
         )
         .await
@@ -2662,6 +2887,7 @@ mod tests {
                     messages: vec![message],
                     cursor_next: Some(format!("cursor-{index}")),
                     downloads: Vec::new(),
+                    original_fetch_error: None,
                 },
             );
         }

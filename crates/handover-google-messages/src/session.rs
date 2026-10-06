@@ -273,12 +273,12 @@ impl RecoveredSession {
             |event| {
                 if action != 0 {
                     if let crate::receive::ReceiveEvent::Record(record) = event {
+                        let pending = list_id
+                            .lock()
+                            .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
                         if let Some(reply) = record.session_reply(
-                            &list_id
-                                .lock()
-                                .map_err(|_| crate::receive::ReceiveError::TooLarge)?
-                                .0,
-                            action,
+                            &pending.0,
+                            pending.1,
                             self.pairing.pairing.peer(),
                         )? {
                             reply_tx
@@ -294,6 +294,8 @@ impl RecoveredSession {
             },
         );
         tokio::pin!(receive);
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(if conversations { 120 } else { 30 });
         let attempt = async {
             tokio::select! {
                 result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
@@ -307,7 +309,7 @@ impl RecoveredSession {
                     &short,
                     endpoint,
                     conversations,
-                    history,
+                    history.map(|(conversation, payload)| (conversation, payload, deadline)),
                     &list_id,
                     &mut reply_rx,
                 )
@@ -318,12 +320,9 @@ impl RecoveredSession {
                 result = send => result,
             }
         };
-        tokio::time::timeout(
-            Duration::from_secs(if conversations { 120 } else { 30 }),
-            attempt,
-        )
-        .await
-        .map_err(|_| ProbeError::Timeout)?
+        tokio::time::timeout_at(deadline, attempt)
+            .await
+            .map_err(|_| ProbeError::Timeout)?
     }
 
     async fn read_on_stream(
@@ -331,11 +330,15 @@ impl RecoveredSession {
         short: &reqwest::Client,
         endpoint: &str,
         conversations: bool,
-        history: Option<(&handover_core::messaging::Conversation, Zeroizing<Vec<u8>>)>,
+        history: Option<(
+            &handover_core::messaging::Conversation,
+            Zeroizing<Vec<u8>>,
+            tokio::time::Instant,
+        )>,
         list_id: &std::sync::Mutex<(Zeroizing<String>, i32)>,
         reply_rx: &mut tokio::sync::mpsc::Receiver<crate::receive::session_reply::SessionReply>,
     ) -> Result<ReadResult, ProbeError> {
-        if let Some((conversation, payload)) = history {
+        if let Some((conversation, payload, deadline)) = history {
             let request_id = Uuid::new_v4().to_string();
             *list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? =
                 (Zeroizing::new(request_id.clone()), 2);
@@ -347,8 +350,82 @@ impl RecoveredSession {
                 .pairing
                 .decrypt_payload(&reply.ciphertext)
                 .map_err(|_| ProbeError::ReceiveFailed)?;
-            let page = crate::history::decode(conversation, plaintext.as_bytes())?;
+            let mut page = crate::history::decode(conversation, plaintext.as_bytes())?;
             self.acknowledge(short, endpoint, reply.message_id).await?;
+            // The original can be absent from history even when a display
+            // preview exists. Request it from the phone without substituting
+            // the preview. Optional enrichment is bounded per history page.
+            let mut newest_first = page.messages.iter().collect::<Vec<_>>();
+            newest_first.sort_unstable_by_key(|message| std::cmp::Reverse(message.sent_at));
+            let originals = newest_first
+                .into_iter()
+                .flat_map(|message| {
+                    message
+                        .attachments
+                        .iter()
+                        .map(|part| (message.id.local_id.clone(), part.local_id.clone()))
+                })
+                .filter(|(message, part)| {
+                    !page
+                        .downloads
+                        .iter()
+                        .any(|download| download.matches_attachment(message, part))
+                })
+                .take(8)
+                .collect::<Vec<_>>();
+            let budget = deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .saturating_sub(Duration::from_millis(500))
+                .min(Duration::from_secs(8));
+            let enrich = async {
+                for (message, part) in originals {
+                    let request_id = Uuid::new_v4().to_string();
+                    *list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? =
+                        (Zeroizing::new(request_id.clone()), 36);
+                    let payload = crate::history::original_request(&message, &part);
+                    let request =
+                        self.build_request(&request_id, 36, &payload, 2, Some(8_000_000))?;
+                    self.post_request(short, endpoint, &request).await?;
+                    let reply = reply_rx.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+                    let plain = self
+                        .pairing
+                        .pairing
+                        .decrypt_payload(&reply.ciphertext)
+                        .map_err(|_| {
+                            ProbeError::SessionProtocol(SessionError::UpdateAuthentication)
+                        })?;
+                    let download = crate::history::original_download(
+                        conversation,
+                        &message,
+                        &part,
+                        plain.as_bytes(),
+                    )?;
+                    // Preserve malformed or mismatched replies in the inbox,
+                    // as with unsupported pushes. Never ACK unvalidated data.
+                    page.downloads.push(download);
+                    self.acknowledge(short, endpoint, reply.message_id).await?;
+                }
+                Ok::<(), ProbeError>(())
+            };
+            // Invalid or unavailable originals leave their metadata intact.
+            use crate::history::OriginalFetchError;
+            page.original_fetch_error = match tokio::time::timeout(budget, enrich).await {
+                Ok(Ok(())) => None,
+                Err(_) => Some(OriginalFetchError::TimedOut),
+                Ok(Err(ProbeError::SessionProtocol(SessionError::UpdateAuthentication))) => {
+                    Some(OriginalFetchError::Authentication)
+                }
+                Ok(Err(ProbeError::SessionProtocol(_))) => Some(OriginalFetchError::InvalidReply),
+                Ok(Err(ProbeError::ReceiveFailed | ProbeError::ReceiveProtocol(_))) => {
+                    Some(OriginalFetchError::Receive)
+                }
+                Ok(Err(_)) => Some(OriginalFetchError::Transport),
+            };
+            *list_id.lock().map_err(|_| ProbeError::ReceiveFailed)? =
+                (Zeroizing::new(String::new()), 0);
+            // A reply may already have entered the bounded channel when the
+            // optional deadline expired. It cannot satisfy the next RPC.
+            while reply_rx.try_recv().is_ok() {}
             return Ok(ReadResult::History(page));
         }
         if !conversations {

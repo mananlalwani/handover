@@ -749,15 +749,16 @@ struct ActivationTimestamp {
 
 #[tokio::test]
 async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_account() {
-    for (wrong, conversations, corrupt, paged, cycle, history) in [
-        (false, false, false, false, false, false),
-        (true, false, false, false, false, false),
-        (false, true, false, false, false, false),
-        (false, true, true, false, false, false),
-        (false, true, false, true, false, false),
-        (false, true, false, true, true, false),
-        (false, true, false, false, false, true),
-        (false, true, true, false, false, true),
+    for (wrong, conversations, corrupt, paged, cycle, history, original) in [
+        (false, false, false, false, false, false, false),
+        (true, false, false, false, false, false, false),
+        (false, true, false, false, false, false, false),
+        (false, true, true, false, false, false, false),
+        (false, true, false, true, false, false, false),
+        (false, true, false, true, true, false, false),
+        (false, true, false, false, false, true, false),
+        (false, true, true, false, false, true, false),
+        (false, true, false, false, false, true, true),
     ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
@@ -765,7 +766,9 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
         };
         let mut pages = Vec::new();
         for index in 0..if paged { 2 } else { 1 } {
-            let mut bytes = if history {
+            let mut bytes = if original {
+                synthetic_media_page(false)
+            } else if history {
                 synthetic_history_page()
             } else {
                 synthetic_conversation_page(26 + index)
@@ -780,6 +783,33 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
             }
             pages.push(encrypted);
         }
+        let full_media = if original {
+            #[derive(Message)]
+            struct Page {
+                #[prost(bytes = "vec", repeated, tag = "2")]
+                messages: Vec<Vec<u8>>,
+            }
+            #[derive(Message)]
+            struct Original {
+                #[prost(bytes = "vec", tag = "1")]
+                message: Vec<u8>,
+            }
+            let page = Page::decode(synthetic_media_page(true).as_slice()).unwrap();
+            Some(
+                pairing
+                    .encrypt(
+                        &Original {
+                            message: page.messages[0].clone(),
+                        }
+                        .encode_to_vec(),
+                    )
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
+            )
+        } else {
+            None
+        };
         let session =
             crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
                 .unwrap();
@@ -873,6 +903,24 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                     }
                 }
             }
+            if let Some(full_media) = full_media {
+                let (mut original_request, _) = listener.accept().await.unwrap();
+                let (path, body) = request(&mut original_request).await;
+                assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                let wrapper = rpc_request(&body);
+                assert_eq!(wrapper.action, 36);
+                response(&mut original_request, "application/json+protobuf", b"[]").await;
+                rpc_push(
+                    &mut receive,
+                    &wrapper.request_id,
+                    36,
+                    full_media,
+                    "original-media",
+                    true,
+                )
+                .await;
+                expect_ack(&listener, "original-media").await;
+            }
             let mut byte = [0];
             assert_eq!(
                 receive.read(&mut byte).await.unwrap(),
@@ -887,7 +935,12 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                 session
                     .history_at(&endpoint, crate::client(false).unwrap(), &model)
                     .await
-                    .map(|page| Some(page.messages.len()))
+                    .map(|page| {
+                        if original {
+                            assert_eq!(page.downloads.len(), 1);
+                        }
+                        Some(page.messages.len())
+                    })
             } else {
                 session
                     .probe_startup_at(
@@ -956,6 +1009,84 @@ fn synthetic_conversation_page(count: usize) -> Vec<u8> {
         page.extend(record);
     }
     page
+}
+
+fn synthetic_media_page(original: bool) -> Vec<u8> {
+    #[derive(Message)]
+    struct Media {
+        #[prost(int32, tag = "1")]
+        kind: i32,
+        #[prost(string, tag = "2")]
+        blob: String,
+        #[prost(string, tag = "4")]
+        name: String,
+        #[prost(int64, tag = "5")]
+        size: i64,
+        #[prost(string, tag = "9")]
+        preview: String,
+        #[prost(bytes = "vec", tag = "11")]
+        key: Vec<u8>,
+        #[prost(bytes = "vec", tag = "12")]
+        preview_key: Vec<u8>,
+        #[prost(string, tag = "14")]
+        mime: String,
+    }
+    #[derive(Message)]
+    struct Part {
+        #[prost(string, tag = "1")]
+        id: String,
+        #[prost(message, optional, tag = "3")]
+        media: Option<Media>,
+    }
+    #[derive(Message)]
+    struct Status {
+        #[prost(int32, tag = "2")]
+        code: i32,
+    }
+    #[derive(Message)]
+    struct Record {
+        #[prost(string, tag = "1")]
+        id: String,
+        #[prost(message, optional, tag = "4")]
+        status: Option<Status>,
+        #[prost(string, tag = "7")]
+        conversation: String,
+        #[prost(string, tag = "9")]
+        sender: String,
+        #[prost(message, repeated, tag = "10")]
+        parts: Vec<Part>,
+    }
+    #[derive(Message)]
+    struct Page {
+        #[prost(message, repeated, tag = "2")]
+        records: Vec<Record>,
+    }
+    Page {
+        records: vec![Record {
+            id: "message".into(),
+            conversation: "thread-0".into(),
+            sender: "fixture-peer".into(),
+            status: Some(Status { code: 100 }),
+            parts: vec![Part {
+                id: "media-part".into(),
+                media: Some(Media {
+                    kind: 3,
+                    blob: if original {
+                        "original-blob".into()
+                    } else {
+                        String::new()
+                    },
+                    name: "fixture.png".into(),
+                    size: 100,
+                    preview: "preview-blob".into(),
+                    key: if original { vec![1; 32] } else { vec![] },
+                    preview_key: vec![2; 32],
+                    mime: "image/png".into(),
+                }),
+            }],
+        }],
+    }
+    .encode_to_vec()
 }
 
 fn synthetic_history_page() -> Vec<u8> {
@@ -1440,6 +1571,24 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 matches!(page.event, LiveEvent::History { fetch_id: Some(77), ref page, .. } if page.messages.len() == 1)
             );
             page.accepted.send(()).unwrap();
+            let (media_accepted, media_gate) = tokio::sync::oneshot::channel();
+            commands
+                .send(LiveCommand::SendMedia {
+                    request_id: "media-invalid".into(),
+                    conversation: "thread-0".into(),
+                    path: zeroize::Zeroizing::new("/nonexistent-handover-test/fixture.png".into()),
+                    caption: None,
+                    accepted: media_gate,
+                })
+                .await
+                .unwrap();
+            gate_checked_rx.await.unwrap();
+            media_accepted.send(()).unwrap();
+            let failure = outgoing.recv().await.unwrap();
+            assert!(
+                matches!(failure.event, LiveEvent::SendResult { ref request_id, message: None, status: "failed:rejected", .. } if request_id == "media-invalid")
+            );
+            failure.accepted.send(()).unwrap();
             let (accepted, gate) = tokio::sync::oneshot::channel();
             commands
                 .send(LiveCommand::SendText {
@@ -1450,7 +1599,6 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 })
                 .await
                 .unwrap();
-            gate_checked_rx.await.unwrap();
             accepted.send(()).unwrap();
             if send_code > 0 {
                 let result = outgoing.recv().await.unwrap();

@@ -166,10 +166,11 @@ bounded conversation and history reads through contract v1 on one receive stream
 per active account. Accounts start offline and become connected and authenticated
 only after the paired phone's encrypted activation alert matches that session.
 Live conversation and message updates use the same normalized events. Message
-pushes do not close history pages or change their cursors. Text capability is
-advertised only after an authenticated phone response permits sending. One
-text send per account may be queued; replies, attachments, and new conversations
-remain unsupported. Standalone read probes still close receive after each read.
+pushes do not close history pages or change their cursors. Text and media
+capabilities are advertised only after an authenticated phone response permits
+sending. One text or media send per account may be queued; replies and new
+conversations remain unsupported. Standalone read probes still close receive
+after each read.
 
 The helper flushes `command_result ok` before submitting a queued send. That
 confirms helper acceptance only. An authenticated successful phone reply reports
@@ -298,14 +299,31 @@ file envelope with the existing 50 MiB staging limit. It authenticates chunk
 order and finality before returning plaintext and wipes intermediate buffers
 on failure. Local tests compare single- and multiple-chunk outputs with
 independent Node WebCrypto fixtures and reject changed keys, tampering,
-reordered chunks, truncation, and appended chunks. Native media sends and
-uploads remain unsupported, and no media-send capability is advertised.
+reordered chunks, truncation, and appended chunks.
+
+Native media sends encrypt the daemon's private staged copy before a bounded
+two-request resumable upload. The helper checks the opened file descriptor,
+rejects paths outside daemon staging, and bounds files to 50 MiB. Upload URLs
+must stay on the observed service origin and path, without user credentials or
+fragments; neither HTTP redirects nor automatic retries are allowed. Upload
+metadata uses the native registration token, without browser cookies. Blob
+references and encryption keys stay inside the native client. The phone send
+uses the existing outgoing-operation identity and optional caption. Upload
+failures report a known failure before any phone send request. A lost phone
+send reply retains the existing unknown outcome. Local tests exercise the
+upload exchange, full ciphertext decryption, unsafe paths, rejected URLs,
+malformed responses, acceptance gating, and failure recovery. Live attachment
+sending remains unverified.
 
 Explicit native history requests now enrich up to eight attachment references
 within an eight-second download budget. Download failures leave metadata
-available with no staged path. Primary blob references use their own key;
-alternate references use the alternate key. Video preview references cannot
-replace a full video file. Missing keys permit the web client's explicit
+available with no staged path. Only primary blob references and their own keys
+can become staged attachments. Alternate references are display previews.
+When history lacks an original, an action-36 request asks the phone for it by
+message and part ID. Its reply must match the requested conversation, message,
+and attachment. Up to eight requests share an eight-second budget inside the
+existing history deadline, starting with the newest messages. Failure keeps
+metadata available and never substitutes a preview. Missing keys permit the web client's explicit
 unencrypted-file case, but encrypted framing without a key is rejected.
 Download requests use the registration token in sensitive protobuf metadata,
 with no browser cookies and no HTTP redirects. Keys stay below helper IPC.
@@ -318,14 +336,19 @@ private permissions, content reuse, temporary-file cleanup, and symlink rejectio
 
 The read-only `--probe-media` command checks the newest attachment in the
 newest self-only conversation, keeps bytes in transient memory, and prints
-only counts, sizes, and fixed error categories. A live newest-item probe
-downloaded and GCM-authenticated the self-conversation image. A subsequent
-native daemon history request staged that same newest attachment, imported
-it into the daemon-owned cache, and published its path. The imported file was
-regular, had mode 0600, matched the downloaded byte count, and had a recognized
-image signature. Opening the attachment from Quickshell still needs visual
-verification. The standalone probes restored production afterward; the daemon
-UI test uses a timed automatic production restore.
+only counts, sizes, and fixed error categories. The first live self-image
+test downloaded and staged a 53,362-byte display preview; opening it from
+Quickshell worked, but did not verify the original. The corrected client
+rejects previews. A subsequent original-reference probe downloaded and
+GCM-authenticated 698,621 bytes. The first original request was unavailable
+within the bounded check, so it preserved metadata without a path; the next
+explicit read found the original. Standalone probes restore production
+afterward, and daemon tests use a timed automatic production restore.
+A corrected native daemon history request staged that same 698,621-byte file
+and imported it into the daemon-owned attachment cache. The published file
+was regular, had mode 0600, and had a recognized image signature. All 201
+live native conversations advertised media capability after the phone's
+authenticated send-capability response. These checks did not send an attachment.
 
 Media framing was observed in the public web client's SVb/TVb, PVb/QVb, and
 NVb functions. The modules were fetched anonymously from Google's public
