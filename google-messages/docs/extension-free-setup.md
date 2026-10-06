@@ -38,6 +38,16 @@ installed `google-chrome-stable` executable. It now discovers official Chrome
 before falling back to Helium. Testing Chrome separately keeps the profile and
 pipe settings unchanged; the rejection's cause is not established.
 
+Official Chrome also rejected sign-in under the original launch settings.
+A normal Chrome window with a fresh profile, no debugging connection, and no
+app mode then accepted the same user's sign-in. This implicates the changed
+launch settings but does not isolate a single flag. The prototype now starts
+normal Chrome for sign-in. When the user closes it, the prototype reopens its
+own temporary profile with a private pipe at the Messages configuration page.
+No app mode or sync-disabling flag is used. Session retention after this restart
+and the native credential handoff remain unverified. Closing the first window
+only advances the experiment; it is not evidence of successful authentication.
+
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
 python google-messages/tools/chromium_login_probe.py

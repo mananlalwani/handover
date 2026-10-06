@@ -9,6 +9,7 @@ from pathlib import Path
 import select
 import shutil
 import signal
+import subprocess
 import tempfile
 import time
 
@@ -32,12 +33,31 @@ def private_fd(fd):
     return duplicate
 
 
+def normal_sign_in(browser, profile):
+    args = [browser, f"--user-data-dir={profile}", "--no-first-run",
+            "--no-default-browser-check", "https://accounts.google.com/"]
+    process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, start_new_session=True)
+    print("Sign in normally, then close this Chrome window to continue. No debugging connection.",
+          flush=True)
+    try:
+        if process.wait(timeout=600) != 0:
+            raise RuntimeError("Normal browser exited unsuccessfully")
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+
+
 def run(browser, smoke):
-    url = "about:blank" if smoke else (
-        "https://accounts.google.com/AccountChooser?continue="
-        "https%3A%2F%2Fmessages.google.com%2Fweb%2Fconfig"
-    )
+    url = "about:blank" if smoke else "https://messages.google.com/web/config"
     with tempfile.TemporaryDirectory(prefix="handover-chromium-signin-") as profile:
+        if not smoke:
+            normal_sign_in(browser, profile)
         read_in, write_in = map(private_fd, os.pipe())
         read_out, write_out = map(private_fd, os.pipe())
         null = private_fd(os.open(os.devnull, os.O_RDWR))
@@ -46,8 +66,8 @@ def run(browser, smoke):
                    (os.POSIX_SPAWN_DUP2, write_out, 4)]
         actions += [(os.POSIX_SPAWN_DUP2, null, fd) for fd in (0, 1, 2)]
         actions += [(os.POSIX_SPAWN_CLOSE, fd) for fd in descriptors]
-        args = [browser, "--disable-sync", "--no-first-run", "--no-default-browser-check",
-                "--remote-debugging-pipe", f"--user-data-dir={profile}", f"--app={url}"]
+        args = [browser, "--no-first-run", "--no-default-browser-check",
+                "--remote-debugging-pipe", f"--user-data-dir={profile}", url]
         pid = None
         reaped = False
         try:
@@ -78,7 +98,8 @@ def run(browser, smoke):
             print("Private browser pipe ready. No authentication was captured.", flush=True)
             if smoke:
                 return
-            print("Sign in, then close the window. Do not open the conversation list.", flush=True)
+            print("Check whether the configuration page remains signed in, then close the window. "
+                  "Do not open the conversation list.", flush=True)
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
                 if os.waitpid(pid, os.WNOHANG)[0]:
@@ -111,7 +132,7 @@ def main():
     args = parser.parse_args()
     try:
         run(find_browser(args.browser), args.self_test)
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
         # Browser output and arbitrary error values may contain private URLs.
         print("Chromium sign-in probe failed. Check browser availability and display access.")
         return 1
