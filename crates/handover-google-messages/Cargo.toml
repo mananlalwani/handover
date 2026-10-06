@@ -24,8 +24,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 uuid = { version = "1.23", features = ["v4"] }
-ukey2_rs = { path = "../../third_party/ukey2/connections/ukey2/ukey2" }
-crypto_provider_rustcrypto = { path = "../../third_party/ukey2/crypto/crypto_provider_rustcrypto" }
+ukey2_rs = { version = "0.1.0", path = "../../third_party/ukey2/connections/ukey2/ukey2" }
+crypto_provider_rustcrypto = { version = "0.1.0", path = "../../third_party/ukey2/crypto/crypto_provider_rustcrypto" }
 rand = { version = "0.8.5", features = ["std_rng"] }
 zeroize = "1.8.1"
 hkdf = "0.12.4"
@@ -40,4 +40,4 @@ hmac = "0.12.1"
 secret-service = { version = "4.0.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
 
 [dev-dependencies]
-ukey2_proto = { path = "../../third_party/ukey2/connections/ukey2/ukey2_proto" }
+ukey2_proto = { version = "0.1.0", path = "../../third_party/ukey2/connections/ukey2/ukey2_proto" }

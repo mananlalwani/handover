@@ -14,9 +14,9 @@ default = []
 test_rustcrypto = ["crypto_provider_default/rustcrypto"]
 
 [dependencies]
-crypto_provider.workspace = true
+crypto_provider = { version = "0.1.0", path = "../../../crypto/crypto_provider", default-features = false }
 rand.workspace = true
-ukey2_proto.workspace = true
+ukey2_proto = { version = "0.1.0", path = "../ukey2_proto" }
 log.workspace = true
 
 num-bigint = "0.4.4"
