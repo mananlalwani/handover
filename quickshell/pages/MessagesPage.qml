@@ -18,6 +18,37 @@ Rectangle {
     property var replyingTo: null
     property string status: ""
     GoogleMessagesSetup { id: googleSetup }
+    Dialog {
+        id: disconnectDialog
+        property string accountId: ""
+        property string accountLabel: ""
+        anchors.centerIn: parent
+        width: Math.min(440, messagesCard.width - 28)
+        modal: true
+        title: "Disconnect account?"
+        standardButtons: Dialog.Cancel
+        contentItem: Label {
+            text: "Disconnect " + disconnectDialog.accountLabel
+                + " from Handover and remove its saved credentials? You can connect again later."
+                + "\n\nThis does not remove the linked device from Google Messages on your phone."
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+        }
+        footer: DialogButtonBox {
+            standardButtons: DialogButtonBox.Cancel
+            onRejected: disconnectDialog.reject()
+            Button {
+                text: "Disconnect"
+                enabled: HandoverService.connected && !HandoverService.pendingMessaging
+                    && HandoverService.messagingAccounts.some(account =>
+                        account.id === disconnectDialog.accountId)
+                onClicked: {
+                    if (HandoverService.logoutAccount(disconnectDialog.accountId))
+                        disconnectDialog.accept();
+                }
+            }
+        }
+    }
     FileDialog {
         id: attachmentDialog
         title: "Attach one file"
@@ -180,6 +211,16 @@ Item {
                     && !HandoverService.pendingMessaging
                 onClicked: HandoverService.syncAccount(
                     messagesCard.selectedAccount.id)
+            }
+            Button {
+                text: "Disconnect"
+                enabled: !!messagesCard.selectedAccount && HandoverService.connected
+                    && !HandoverService.pendingMessaging
+                onClicked: {
+                    disconnectDialog.accountId = messagesCard.selectedAccount.id;
+                    disconnectDialog.accountLabel = messagesCard.selectedAccount.displayLabel;
+                    disconnectDialog.open();
+                }
             }
         }
 
