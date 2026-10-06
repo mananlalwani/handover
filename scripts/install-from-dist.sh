@@ -5,6 +5,26 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 PREFIX="${PREFIX:-$HOME/.local}"
 USER_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+SETUP_INSTALL=auto
+for argument in "$@"; do
+	case "$argument" in
+		--with-google-messages-setup) SETUP_INSTALL=yes ;;
+		--without-google-messages-setup) SETUP_INSTALL=no ;;
+		--help)
+			echo 'Usage: install.sh [--with-google-messages-setup | --without-google-messages-setup]'
+			echo 'Optional setup uses Python 3 and an installed Chromium browser; no browser is downloaded.'
+			exit 0 ;;
+		*) echo "Unknown installation option: $argument" >&2; exit 2 ;;
+	esac
+done
+if test "$SETUP_INSTALL" = auto; then
+	SETUP_INSTALL=no
+	if test -t 0; then
+		printf '%s' 'Include Google Messages setup using an installed Chromium browser? [y/N] '
+		IFS= read -r answer || answer=
+		case "$answer" in y|Y|yes|YES) SETUP_INSTALL=yes ;; esac
+	fi
+fi
 
 install -Dm755 "$ROOT/bin/handoverd" "$PREFIX/bin/handoverd"
 install -Dm755 "$ROOT/bin/handoverctl" "$PREFIX/bin/handoverctl"
@@ -13,6 +33,15 @@ install -Dm755 "$ROOT/bin/handover-google-messages-helper" \
 install -Dm755 "$ROOT/bin/handover-google-messages-auth-probe" \
 	"$PREFIX/bin/handover-google-messages-auth-probe"
 install -Dm755 "$ROOT/bin/handover-gui" "$PREFIX/bin/handover-gui"
+if test "$SETUP_INSTALL" = yes; then
+	install -Dm755 "$ROOT/bin/handover-google-messages-setup" "$PREFIX/bin/handover-google-messages-setup"
+	install -d "$USER_DATA_HOME/handover/google-messages/tools"
+	install -Dm644 "$ROOT/share/handover/google-messages/tools/setup_google_messages.py" \
+		"$ROOT/share/handover/google-messages/tools/chromium_login_probe.py" \
+		"$ROOT/share/handover/google-messages/tools/chromium_auth_capture.py" \
+		"$ROOT/share/handover/google-messages/tools/chromium_browsers.py" \
+		"$USER_DATA_HOME/handover/google-messages/tools/"
+fi
 printf '%s\n' "$USER_DATA_HOME" > "$PREFIX/bin/handover-gui.data-home"
 install -Dm644 "$ROOT/share/applications/handover.desktop" \
 	"$USER_DATA_HOME/applications/handover.desktop"

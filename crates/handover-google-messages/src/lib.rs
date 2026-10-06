@@ -16,6 +16,7 @@ pub mod registration;
 mod send;
 pub mod session;
 pub mod session_store;
+pub mod setup;
 pub mod sources;
 pub mod updates;
 

@@ -794,6 +794,12 @@ where
         Method::MessagesSync { account_id } => {
             return handle_sync(account_id, writer, state, messaging).await;
         }
+        Method::MessagesSetupBegin => {
+            return handle_setup_begin(writer, messaging).await;
+        }
+        Method::MessagesSetupEnd { lease } => {
+            return handle_setup_end(lease, writer, messaging).await;
+        }
     };
     if let ServerPayload::Subscribed {
         devices,

@@ -17,6 +17,7 @@ Rectangle {
     property var selectedConversation: null
     property var replyingTo: null
     property string status: ""
+    GoogleMessagesSetup { id: googleSetup }
     FileDialog {
         id: attachmentDialog
         title: "Attach one file"
@@ -149,6 +150,11 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+            Button {
+                text: "Connect Google Messages"
+                enabled: HandoverService.connected
+                onClicked: googleSetup.prepare()
+            }
             CheckBox {
                 text: "Include offline accounts"
                 visible: HandoverService.messagingAccounts.some(account =>

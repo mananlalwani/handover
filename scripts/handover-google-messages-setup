@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+configured_data_home=
+if test -f "$script_dir/handover-gui.data-home"; then
+	IFS= read -r configured_data_home < "$script_dir/handover-gui.data-home" || :
+fi
+for data_home in "${XDG_DATA_HOME:-${HOME}/.local/share}" "$configured_data_home" /usr/share; do
+	if test -n "$data_home" && test -f "$data_home/handover/google-messages/tools/setup_google_messages.py"; then
+		exec python3 -B "$data_home/handover/google-messages/tools/setup_google_messages.py" "$@"
+	fi
+done
+echo 'Google Messages setup is not installed.' >&2
+exit 1

@@ -121,8 +121,41 @@ requires Google Messages on the phone and Google's service. Confirmed native
 pairings reconnect after daemon restarts using the private session record and
 desktop credential store.
 
-First-time pairing uses the included Chrome extension and Native Messaging host.
-For a user installation, register the host with:
+### Browser setup
+
+Install the optional setup component with `./install.sh --with-google-messages-setup`
+from a release archive, or `make install-user GOOGLE_MESSAGES_SETUP=1` from source.
+It needs Python 3 and an installed Chromium browser. It discovers Chrome,
+Chromium, Brave, Edge, Vivaldi, Opera, and Helium, prefers a supported default
+browser, and lets you choose another executable. No browser is downloaded.
+
+In Messages, click **Connect Google Messages**, choose a browser, and continue.
+Sign in normally, then choose **Exit** in the browser menu. Handover reopens its
+temporary browser profile briefly to finish authentication, closes that browser,
+and starts native setup. If phone confirmation is needed, confirm the displayed
+symbol on your phone. A saved account with matching registered device and phone
+identities refreshes credentials instead of creating another pairing.
+
+Your normal browser profile is not accessed. The temporary profile is removed
+after authentication; required Google authentication is saved in desktop Secret
+Service. Messages pause during setup, while other Handover features keep running.
+Cancellation resumes the helper. A crashed setup's pause expires after fifteen
+minutes. Interrupted registration or pairing is not retried automatically.
+Check your phone's linked devices before repeating a failed attempt.
+
+Normal Chrome passkey sign-in and the read-only native handoff have passed live
+tests. The complete setup dialog, credential refresh, and fresh phone pairing
+flow still need end-to-end live checks. Other detected browsers are unverified.
+An account is shown connected only after the daemon reports a usable session.
+
+For terminal setup, run `handover-google-messages-setup`. It prints setup progress
+and the confirmation symbol. `--browser /path/to/browser` selects an executable;
+`--list-browsers` lists detected choices without changing account state.
+
+### Development extension
+
+The included extension remains available for protocol diagnostics and the earlier
+pairing flow. For a user installation, register its host with:
 
 ```sh
 python3 "${XDG_DATA_HOME:-$HOME/.local/share}/handover/google-messages/tools/install_native_probe.py" \

@@ -23,6 +23,14 @@ fn arguments() -> Result<(String, String), &'static str> {
 
 #[tokio::main]
 async fn main() {
+    if env::args().skip(1).eq(["--local-setup"].map(str::to_owned)) {
+        thread::spawn(|| {
+            thread::sleep(Duration::from_secs(5 * 60));
+            process::exit(124);
+        });
+        let result = native::run_local_setup(stdin(), stdout()).await;
+        process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     if env::args()
         .skip(1)
         .eq(["--local-read-only"].map(str::to_owned))

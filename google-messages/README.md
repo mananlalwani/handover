@@ -19,7 +19,8 @@ accepted send never claims delivery, and interrupted sends remain unknown
 without automatic retries. Live text tests verified acceptance, phone-assigned
 identity correlation, and sent/delivered/displayed events. A live image send
 arrived and opened on the phone; original image downloading and daemon staging
-also passed. Replies, reactions, token renewal, and remote logout remain
+also passed. Registration renewal preserves the paired device identity and
+has passed a live forced-renewal check. Replies, reactions, and remote logout remain
 unfinished. See
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for the helper contract.
 
@@ -32,6 +33,31 @@ pairing or message delivery.
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.
 It builds inside this repository and requires no separate checkout.
+
+## Optional browser setup
+
+`handover-google-messages-setup` uses an installed Chromium browser. Discovery
+prefers a known supported default and offers explicit selection. The first
+window signs in normally, without a debugging connection. After browser exit,
+a private pipe captures one matched authentication request in the same temporary
+profile. The browser closes and its profile is deleted before native registration
+or pairing. Required authentication is saved in the approved desktop credential
+store after account verification. No extension or bundled browser is needed.
+
+The daemon grants one fifteen-minute messaging setup lease and acknowledges it
+only after the old helper stops. Cancellation releases the lease; expiry recovers
+from a crashed setup process. Other native continuity functions keep running.
+The setup backend uses the existing registration, source binding, and pairing
+implementation. A unique saved device/phone match reauthenticates that account;
+otherwise a new registration and phone ceremony run once. No operation is
+automatically retried. The public account remains offline until daemon recovery
+establishes a usable session.
+
+Install with `make install-user GOOGLE_MESSAGES_SETUP=1` or the tarball installer's
+`--with-google-messages-setup` option. Python 3 is optional for the base runtime.
+The normal Chrome sign-in and read-only handoff are live-tested. Full setup and
+other browser implementations still need live checks. See the
+[user guide](../docs/user-guide.md#browser-setup).
 
 ## Collect first-party evidence
 

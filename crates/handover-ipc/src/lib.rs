@@ -251,6 +251,10 @@ pub enum Method {
     MessagesLogout { account_id: MessagingAccountId },
     #[serde(rename = "messages.sync")]
     MessagesSync { account_id: MessagingAccountId },
+    #[serde(rename = "messages.setup.begin")]
+    MessagesSetupBegin,
+    #[serde(rename = "messages.setup.end")]
+    MessagesSetupEnd { lease: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -614,6 +618,11 @@ pub enum ServerPayload {
     AccountAccepted {
         account_id: MessagingAccountId,
     },
+    MessagingSetupPaused {
+        lease: String,
+        expires_after_seconds: u32,
+    },
+    MessagingSetupResumed,
     CommandCompleted {
         notification_id: NotificationId,
     },
@@ -1578,6 +1587,22 @@ impl Client {
         })
         .await?;
         self.expect_account_accepted(account_id).await
+    }
+
+    pub async fn messaging_setup_begin(&mut self) -> Result<String, IpcError> {
+        self.send(Method::MessagesSetupBegin).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessagingSetupPaused { lease, .. } => Ok(lease),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn messaging_setup_end(&mut self, lease: String) -> Result<(), IpcError> {
+        self.send(Method::MessagesSetupEnd { lease }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessagingSetupResumed => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
     }
 
     async fn send(&mut self, method: Method) -> Result<(), IpcError> {

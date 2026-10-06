@@ -37,6 +37,10 @@ install -Dm755 target/release/handover-google-messages-helper \
 install -Dm755 target/release/handover-google-messages-auth-probe \
 	"$STAGE_DIR/bin/handover-google-messages-auth-probe"
 install -Dm755 scripts/handover-gui "$STAGE_DIR/bin/handover-gui"
+install -Dm755 scripts/handover-google-messages-setup "$STAGE_DIR/bin/handover-google-messages-setup"
+install -Dm644 google-messages/tools/setup_google_messages.py \
+	google-messages/tools/chromium_login_probe.py google-messages/tools/chromium_auth_capture.py \
+	google-messages/tools/chromium_browsers.py "$STAGE_DIR/share/handover/google-messages/tools/"
 if command -v strip >/dev/null 2>&1; then
 	strip "$STAGE_DIR/bin/handoverd" "$STAGE_DIR/bin/handoverctl" \
 		"$STAGE_DIR/bin/handover-google-messages-helper" \
@@ -93,6 +97,8 @@ Install:
   tar xf ${STAGE}.tar.gz
   cd ${STAGE}
   ./install.sh
+  # Optional Google Messages sign-in using an installed Chromium browser:
+  ./install.sh --with-google-messages-setup
 
 Binaries go to ~/.local/bin. Put that directory on PATH.
 EOF

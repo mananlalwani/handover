@@ -5,6 +5,7 @@ USER_UNIT_DIR := $(DESTDIR)$(USER_DATA_HOME)/systemd/user
 UNIT_SRC := packaging/systemd/handoverd.local.service
 QUICKSHELL_INSTALL_DIR := $(DESTDIR)$(USER_DATA_HOME)/handover/quickshell
 GOOGLE_MESSAGES_TOOLS_DIR := $(DESTDIR)$(USER_DATA_HOME)/handover/google-messages/tools
+GOOGLE_MESSAGES_SETUP ?= 0
 MAN_DIR := $(DESTDIR)$(PREFIX)/share/man/man1
 MAN8_DIR := $(DESTDIR)$(PREFIX)/share/man/man8
 LICENSE_DIR := $(DESTDIR)$(PREFIX)/share/licenses/handover
@@ -14,7 +15,12 @@ FISH_COMPLETION_DIR := $(DESTDIR)$(USER_DATA_HOME)/fish/vendor_completions.d
 APPLICATIONS_DIR := $(DESTDIR)$(USER_DATA_HOME)/applications
 BIN_DIR := $(DESTDIR)$(PREFIX)/bin
 
-.PHONY: install-user uninstall-user systemd-smoke dist install-files google-login-probe
+.PHONY: install-user uninstall-user systemd-smoke dist install-files google-login-probe install-google-messages-setup
+
+install-google-messages-setup:
+	install -Dm755 scripts/handover-google-messages-setup $(BIN_DIR)/handover-google-messages-setup
+	install -d $(GOOGLE_MESSAGES_TOOLS_DIR)
+	install -Dm644 google-messages/tools/setup_google_messages.py google-messages/tools/chromium_login_probe.py google-messages/tools/chromium_auth_capture.py google-messages/tools/chromium_browsers.py $(GOOGLE_MESSAGES_TOOLS_DIR)/
 
 # Optional experiment; normal builds and installs do not require Qt WebEngine.
 google-login-probe:
@@ -55,6 +61,7 @@ install-files:
 	install -Dm644 LICENSE $(LICENSE_DIR)/LICENSE
 	install -Dm644 third_party/ukey2/LICENSE $(LICENSE_DIR)/ukey2/LICENSE
 	install -Dm644 third_party/ukey2/README.md $(LICENSE_DIR)/ukey2/README.md
+	@if test "$(GOOGLE_MESSAGES_SETUP)" = 1; then $(MAKE) install-google-messages-setup; fi
 
 install-user:
 	cargo build --release --locked -p handoverd -p handoverctl -p handover-google-messages
@@ -75,6 +82,8 @@ uninstall-user:
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
 	rm -f $(PREFIX)/bin/handover-google-messages-helper
 	rm -f $(PREFIX)/bin/handover-google-messages-auth-probe
+	rm -f $(BIN_DIR)/handover-google-messages-setup
+	rm -f $(GOOGLE_MESSAGES_TOOLS_DIR)/setup_google_messages.py $(GOOGLE_MESSAGES_TOOLS_DIR)/chromium_login_probe.py $(GOOGLE_MESSAGES_TOOLS_DIR)/chromium_auth_capture.py $(GOOGLE_MESSAGES_TOOLS_DIR)/chromium_browsers.py
 	rm -f $(BIN_DIR)/handover-gui
 	rm -f $(BIN_DIR)/handover-gui.data-home
 	rm -f $(APPLICATIONS_DIR)/handover.desktop

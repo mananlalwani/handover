@@ -85,7 +85,7 @@ class Pipe:
                 return message["result"]
 
 
-def capture(reader, writer, native_probe):
+def capture_proof(reader, writer, include_account=False):
     pipe = Pipe(reader, writer)
     targets = pipe.call("Target.getTargets")["targetInfos"]
     pages = [target for target in targets if target.get("type") == "page"
@@ -131,6 +131,41 @@ def capture(reader, writer, native_probe):
                 if "x-goog-authuser" in headers:
                     proof["auth_user"] = headers["x-goog-authuser"]
                 headers.clear()
+        if include_account:
+            email = read_account(pipe, session)
+            if read_account(pipe, session) != email:
+                raise RuntimeError("Signed-in account changed")
+            proof["account_email"] = email
+            proof["type"] = "gaia_pairing_start"
+        result = proof
+        proof = None
+        return result
+    finally:
+        candidates.clear()
+        if proof is not None:
+            proof.clear()
+        pipe.pending = b""
+
+
+def read_account(pipe, session):
+    # Read only the provider's account routing field, not the rest of the page.
+    expression = r'''(()=>{try{if(location.origin!=="https://messages.google.com")return null;
+const c=globalThis.MW_CONFIG;if(typeof c!=="string"||c.length>1048576)return null;
+const d=JSON.parse(c);const f=(a,n)=>{if(!Array.isArray(a))return null;
+const i=n-1,l=a.length-1,t=a[l];if(i<l)return a[i];
+if(t&&typeof t==="object"&&!Array.isArray(t))return Object.hasOwn(t,n)?t[n]:null;
+return i===l?t:null};return f(f(d,5),2)}catch{return null}})()'''
+    response = pipe.call("Runtime.evaluate", {"expression": expression,
+        "returnByValue": True, "awaitPromise": False, "silent": True}, session)
+    email = response.get("result", {}).get("value")
+    if not isinstance(email, str) or len(email) > 254 or "@" not in email:
+        raise RuntimeError("Signed-in account unavailable")
+    return email
+
+
+def capture(reader, writer, native_probe):
+    proof = capture_proof(reader, writer)
+    try:
         payload = json.dumps(proof).encode()
         if len(payload) > 32 * 1024:
             raise RuntimeError("Authentication proof exceeds bound")
@@ -149,7 +184,4 @@ def capture(reader, writer, native_probe):
         else:
             print("Native read-only authentication failed. No credentials saved.", flush=True)
     finally:
-        candidates.clear()
-        if proof is not None:
-            proof.clear()
-        pipe.pending = b""
+        proof.clear()

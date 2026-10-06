@@ -12,7 +12,7 @@ makedepends=('git' 'rust' 'cargo')
 optdepends=(
   'quickshell: example panel'
   'playerctl: pause local MPRIS players during phone calls'
-  'python: install the Google Messages browser setup helper'
+  'python: optional Google Messages setup with an installed Chromium browser'
   'kdeconnect: optional compatibility backend'
   'handover-gmessages: legacy Google Messages compatibility backend (AGPL)'
 )
@@ -41,6 +41,7 @@ build() {
 package() {
   cd handover
   make PREFIX=/usr DESTDIR="$pkgdir" \
+    GOOGLE_MESSAGES_SETUP=1 \
     USER_DATA_HOME=/usr/share \
     USER_UNIT_DIR="$pkgdir/usr/lib/systemd/user" \
     UNIT_SRC=packaging/systemd/handoverd.service \

@@ -1,5 +1,53 @@
 use super::*;
 
+pub(crate) async fn handle_setup_begin<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError> {
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    let response = match hub.begin_setup().await {
+        Ok(lease) => ServerMessage::new(ServerPayload::MessagingSetupPaused {
+            lease,
+            expires_after_seconds: crate::messaging_backend::SETUP_LEASE_SECONDS,
+        }),
+        Err(error) => {
+            let (code, message) = helper_call_error(error);
+            ServerMessage::protocol_error(code, message)
+        }
+    };
+    write_json_line(writer, &response).await?;
+    Ok(true)
+}
+
+pub(crate) async fn handle_setup_end<W: AsyncWrite + Unpin>(
+    lease: String,
+    writer: &mut W,
+    messaging: &Option<MessagingHub>,
+) -> Result<bool, IpcError> {
+    let hub = match require_messaging_hub(messaging) {
+        Ok(hub) => hub,
+        Err((code, message)) => {
+            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            return Ok(true);
+        }
+    };
+    let response = match hub.end_setup(&lease).await {
+        Ok(()) => ServerMessage::new(ServerPayload::MessagingSetupResumed),
+        Err(error) => {
+            let (code, message) = helper_call_error(error);
+            ServerMessage::protocol_error(code, message)
+        }
+    };
+    write_json_line(writer, &response).await?;
+    Ok(true)
+}
+
 pub(crate) async fn handle_messaging_send<W>(
     conversation_id: ConversationId,
     text: String,

@@ -220,7 +220,9 @@ where
     write_response(&mut writer, response).await
 }
 
-async fn read_proof<R: AsyncRead + Unpin>(reader: &mut R) -> Result<BrowserProof, &'static str> {
+pub(crate) async fn read_proof<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<BrowserProof, &'static str> {
     let mut length = [0_u8; 4];
     reader
         .read_exact(&mut length)
@@ -230,12 +232,92 @@ async fn read_proof<R: AsyncRead + Unpin>(reader: &mut R) -> Result<BrowserProof
     if length > MAX_REQUEST_BYTES {
         return Err("invalid_frame");
     }
-    let mut payload = vec![0; length];
+    let mut payload = Zeroizing::new(vec![0; length]);
     reader
         .read_exact(&mut payload)
         .await
         .map_err(|_| "invalid_frame")?;
     serde_json::from_slice(&payload).map_err(|_| "invalid_bootstrap")
+}
+
+/// Local setup progress is public ceremony/status text only, never proof bytes.
+pub async fn run_local_setup<R, W>(mut reader: R, mut writer: W) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let proof = tokio::time::timeout(READ_TIMEOUT, read_proof(&mut reader)).await;
+    let proof = match proof {
+        Ok(Ok(proof)) => proof,
+        _ => {
+            return write_setup_event(
+                &mut writer,
+                serde_json::json!({"status":"failed","message":"Invalid setup proof."}),
+            )
+            .await;
+        }
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let work = crate::setup::connect(proof, move |progress| {
+        tx.try_send(progress).map_err(|_| ProbeError::NativeError)
+    });
+    tokio::pin!(work);
+    let result = loop {
+        tokio::select! {
+            result = &mut work => break result,
+            Some(progress) = rx.recv() => write_setup_progress(&mut writer, progress).await?,
+        }
+    };
+    while let Ok(progress) = rx.try_recv() {
+        write_setup_progress(&mut writer, progress).await?;
+    }
+    let event = match result {
+        Ok(account) => serde_json::json!({"status":"saved","account":account,
+            "message":"Account credentials saved. Waiting for Handover to reconnect."}),
+        Err(error) => serde_json::json!({"status":"failed","error":error.code(),
+            "message":"Setup did not complete. Check phone pairing state before trying again."}),
+    };
+    write_setup_event(&mut writer, event).await
+}
+
+async fn write_setup_progress<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    progress: crate::login::LoginProgress,
+) -> io::Result<()> {
+    use crate::login::LoginProgress;
+    let message = match progress {
+        LoginProgress::Ready => "Account registration verified.".to_owned(),
+        LoginProgress::RegistrationVerified => {
+            "Account verified. Starting phone pairing.".to_owned()
+        }
+        LoginProgress::InitialSendAccepted | LoginProgress::InitialAcknowledgementAccepted => {
+            "Waiting for the phone pairing handshake.".to_owned()
+        }
+        LoginProgress::FinalSendAccepted => "Waiting for confirmation on your phone.".to_owned(),
+        LoginProgress::Verification(symbol) => format!("Confirm {symbol} on your phone."),
+    };
+    write_setup_event(
+        writer,
+        serde_json::json!({"status":"progress","message":message}),
+    )
+    .await
+}
+
+async fn write_setup_event<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    event: serde_json::Value,
+) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(&event).map_err(io::Error::other)?;
+    if bytes.len() > 1024 {
+        return Err(io::Error::other("setup status exceeds bound"));
+    }
+    bytes.push(b'\n');
+    tokio::time::timeout(WRITE_TIMEOUT, async {
+        writer.write_all(&bytes).await?;
+        writer.flush().await
+    })
+    .await
+    .map_err(|_| io::Error::other("setup status write timeout"))?
 }
 
 async fn write_response<W: AsyncWrite + Unpin>(

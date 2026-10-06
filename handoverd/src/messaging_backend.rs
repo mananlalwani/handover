@@ -31,7 +31,7 @@ use handover_gmessages::staging::{
     imported_staging_directory,
 };
 use handover_gmessages::supervisor::{HelperProcess, backoff_delay, find_helper, redact_command};
-use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::{apply_backend_event, publish_event, state::StateStore};
@@ -44,6 +44,7 @@ use handover_core::StateEvent;
 // as failures merely because the daemon stopped waiting early.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 const MAX_IN_FLIGHT: usize = 64;
+pub(crate) const SETUP_LEASE_SECONDS: u32 = 15 * 60;
 const DORMANT_RETRY: Duration = Duration::from_secs(30);
 /// A helper session that survives this long counts as healthy and
 /// resets the restart backoff. Shorter sessions keep counting up.
@@ -91,6 +92,10 @@ type PageFloorKey = (String, String, Option<u64>);
 type PageFloors = HashMap<PageFloorKey, (Option<i64>, String)>;
 
 struct HubInner {
+    setup: Mutex<Option<(String, tokio::time::Instant)>>,
+    setup_changed: Notify,
+    helper_stopped: Notify,
+    helper_running: AtomicBool,
     sender: Mutex<Option<mpsc::Sender<HelperCommand>>>,
     helper_name: Mutex<Option<String>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), HelperCallError>>>>,
@@ -126,6 +131,10 @@ impl MessagingHub {
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(HubInner {
+                setup: Mutex::new(None),
+                setup_changed: Notify::new(),
+                helper_stopped: Notify::new(),
+                helper_running: AtomicBool::new(false),
                 sender: Mutex::new(None),
                 helper_name: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
@@ -146,6 +155,7 @@ impl MessagingHub {
     /// generation replaces it.
     pub(crate) async fn shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::Relaxed);
+        self.inner.setup_changed.notify_one();
         let _ = self.fire(HelperCommand::Shutdown).await;
     }
 
@@ -156,6 +166,82 @@ impl MessagingHub {
     pub(crate) async fn accepts_native_browser_login(&self) -> bool {
         self.inner.helper_name.lock().await.as_deref()
             == Some(handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME)
+    }
+
+    /// One bounded local setup lease. Acknowledgement follows helper shutdown,
+    /// not merely the request to shut down. Other continuity backends keep running.
+    pub(crate) async fn begin_setup(&self) -> Result<String, HelperCallError> {
+        if !self.accepts_native_browser_login().await {
+            return Err(HelperCallError::Unavailable);
+        }
+        if !self.inner.pending.lock().await.is_empty() {
+            return Err(HelperCallError::Busy);
+        }
+        let token = self.next_request_id();
+        {
+            let mut setup = self.inner.setup.lock().await;
+            if setup.is_some() {
+                return Err(HelperCallError::Busy);
+            }
+            *setup = Some((
+                token.clone(),
+                tokio::time::Instant::now() + Duration::from_secs(u64::from(SETUP_LEASE_SECONDS)),
+            ));
+        }
+        self.inner.setup_changed.notify_one();
+        let stopped = async {
+            loop {
+                let notified = self.inner.helper_stopped.notified();
+                if !self.inner.helper_running.load(Ordering::Acquire) {
+                    break;
+                }
+                notified.await;
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(10), stopped)
+            .await
+            .is_err()
+        {
+            let _ = self.end_setup(&token).await;
+            return Err(HelperCallError::Timeout);
+        }
+        Ok(token)
+    }
+
+    pub(crate) async fn end_setup(&self, token: &str) -> Result<(), HelperCallError> {
+        let mut setup = self.inner.setup.lock().await;
+        if !setup.as_ref().is_some_and(|(owner, _)| owner == token) {
+            return Err(HelperCallError::Unavailable);
+        }
+        *setup = None;
+        self.inner.setup_changed.notify_one();
+        Ok(())
+    }
+
+    async fn wait_for_setup(&self) {
+        loop {
+            if self.is_shutdown() {
+                return;
+            }
+            let changed = self.inner.setup_changed.notified();
+            let deadline = self
+                .inner
+                .setup
+                .lock()
+                .await
+                .as_ref()
+                .map(|(_, deadline)| *deadline);
+            let Some(deadline) = deadline else { return };
+            tokio::select! {
+                _ = changed => {},
+                _ = tokio::time::sleep_until(deadline) => {
+                    let mut setup = self.inner.setup.lock().await;
+                    if setup.as_ref().is_some_and(|(_, expiry)| *expiry <= tokio::time::Instant::now()) {
+                        *setup = None;
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -173,6 +259,9 @@ impl MessagingHub {
     }
 
     async fn submit(&self, command: HelperCommand) -> Result<(), HelperCallError> {
+        if self.inner.setup.lock().await.is_some() {
+            return Err(HelperCallError::Unavailable);
+        }
         let sender = if matches!(&command, HelperCommand::Login { bundle_b64, .. }
             if handover_gmessages::contract::is_native_browser_login_bundle(bundle_b64))
         {
@@ -607,10 +696,21 @@ pub(crate) fn spawn_supervisor(
             if hub.is_shutdown() {
                 break;
             }
+            hub.wait_for_setup().await;
+            if hub.is_shutdown() {
+                break;
+            }
             let Some(path) = find_helper() else {
                 tokio::time::sleep(DORMANT_RETRY).await;
                 continue;
             };
+            {
+                let setup = hub.inner.setup.lock().await;
+                if setup.is_some() {
+                    continue;
+                }
+                hub.inner.helper_running.store(true, Ordering::Release);
+            }
             match HelperProcess::spawn(&path).await {
                 Ok(process) => {
                     info!(helper = %process.name, "messaging helper connected");
@@ -622,6 +722,12 @@ pub(crate) fn spawn_supervisor(
                         break;
                     }
                     mark_helper_accounts_down(&state, &events);
+                    hub.inner.helper_running.store(false, Ordering::Release);
+                    hub.inner.helper_stopped.notify_one();
+                    if hub.inner.setup.lock().await.is_some() {
+                        restarts = 0;
+                        continue;
+                    }
                     // Only a session that stayed up earns a reset. A
                     // helper that handshakes and then crashes repeatedly
                     // must back off progressively instead of respawning
@@ -631,11 +737,16 @@ pub(crate) fn spawn_supervisor(
                     }
                 }
                 Err(error) => {
+                    hub.inner.helper_running.store(false, Ordering::Release);
+                    hub.inner.helper_stopped.notify_one();
                     warn!(%error, "messaging helper unavailable; retrying");
                 }
             }
             restarts += 1;
-            tokio::time::sleep(backoff_delay(restarts)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(backoff_delay(restarts)) => {},
+                _ = hub.inner.setup_changed.notified() => {},
+            }
         }
     })
 }
@@ -673,7 +784,13 @@ async fn run_session(
     // Outbound pump and inbound reader share one mutable borrow of the
     // helper process inside a single select loop.
     loop {
+        if hub.inner.setup.lock().await.is_some() {
+            break;
+        }
         tokio::select! {
+            _ = hub.inner.setup_changed.notified() => {
+                continue;
+            }
             command = rx.recv() => {
                 match command {
                     Some(command) => {
@@ -701,6 +818,9 @@ async fn run_session(
         }
     }
     hub.set_connection(None, None).await;
+    // Await exit even if EOF won the race with a setup request. The lease
+    // must not acknowledge while an old child can still receive messages.
+    process.shutdown().await;
 }
 
 async fn ingest_event(
@@ -1379,6 +1499,52 @@ pub(crate) fn validate_login_bundle(bundle_b64: &str) -> Result<(), HelperCallEr
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn setup_waits_for_stopped_helper_and_rejects_wrong_lease() {
+        let hub = MessagingHub::new();
+        let (sender, _receiver) = mpsc::channel(1);
+        hub.set_connection(
+            Some(handover_gmessages::contract::NATIVE_GOOGLE_MESSAGES_HELPER_NAME.into()),
+            Some(sender),
+        )
+        .await;
+        hub.inner.helper_running.store(true, Ordering::Release);
+        let started = hub.inner.setup_changed.notified();
+        let clone = hub.clone();
+        let task = tokio::spawn(async move { clone.begin_setup().await });
+        started.await;
+        assert!(!task.is_finished());
+        assert!(hub.end_setup("not-the-owner").await.is_err());
+        assert!(matches!(
+            hub.fire(HelperCommand::Sync {
+                account: "test".into()
+            })
+            .await,
+            Err(HelperCallError::Unavailable)
+        ));
+        hub.inner.helper_running.store(false, Ordering::Release);
+        hub.inner.helper_stopped.notify_one();
+        let lease = task.await.unwrap().unwrap();
+        assert!(matches!(
+            hub.begin_setup().await,
+            Err(HelperCallError::Busy)
+        ));
+        hub.end_setup(&lease).await.unwrap();
+        hub.fire(HelperCommand::Sync {
+            account: "test".into(),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_setup_lease_restores_supervision_without_a_client() {
+        let hub = MessagingHub::new();
+        *hub.inner.setup.lock().await = Some(("expired".into(), tokio::time::Instant::now()));
+        hub.wait_for_setup().await;
+        assert!(hub.inner.setup.lock().await.is_none());
+    }
+
     #[tokio::test]
     async fn helper_replacement_after_preflight_never_reroutes_browser_proof() {
         let hub = MessagingHub::new();

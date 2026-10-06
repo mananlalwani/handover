@@ -112,6 +112,28 @@ fn decode(account: &str, bytes: &[u8]) -> Result<BrowserProof, CredentialError> 
 /// No file fallback, automatic unlock prompt, or connection-state claim.
 pub struct DesktopCredentialStore;
 impl DesktopCredentialStore {
+    /// Check the approved store before registration or phone pairing changes state.
+    pub async fn check_writable() -> Result<(), CredentialError> {
+        tokio::time::timeout(TIMEOUT, async {
+            let service = SecretService::connect(EncryptionType::Dh)
+                .await
+                .map_err(|_| CredentialError::Unavailable)?;
+            let collection = service
+                .get_default_collection()
+                .await
+                .map_err(|_| CredentialError::Unavailable)?;
+            if collection
+                .is_locked()
+                .await
+                .map_err(|_| CredentialError::Unavailable)?
+            {
+                return Err(CredentialError::Locked);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| CredentialError::Timeout)?
+    }
     pub async fn save(account: &str, proof: &BrowserProof) -> Result<(), CredentialError> {
         let bytes = encode(account, proof)?;
         tokio::time::timeout(TIMEOUT, async {

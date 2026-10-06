@@ -92,6 +92,31 @@ pairing was requested, and the temporary browser profile was deleted when the
 probe exited. Handover was restarted immediately afterward. This verifies the
 two-stage authentication handoff, not a complete installer or pairing wizard.
 
+## Implemented setup component
+
+The optional `handover-google-messages-setup` command and Messages dialog now
+implement installed-browser discovery, explicit browser selection, normal
+sign-in, the private-pipe handoff, native registration/pairing, and cancellation.
+They prefer a known supported system default. The daemon owns a bounded helper
+pause through normalized setup lease methods, so other continuity functions stay
+available. Setup releases the lease on exit; an abandoned lease expires after
+fifteen minutes. Native setup reauthenticates a unique saved registration/phone
+match from the signed-in account's attested source list. It does not select an
+account by a display name or create another device for that saved match.
+
+The browser profile is removed before native pairing begins. Google proof stays
+inside the provider's local browser/backend processes and the approved desktop
+credential store. No new helper IPC contract, separate repository, browser
+download, or Handover extension is required. Installation is optional and needs
+only Python 3 in addition to an installed Chromium browser.
+
+Synthetic discovery, capture, cancellation, lease expiry, and rejected setup-mode
+tests pass. The existing registration and pairing tests still exercise their
+protocol behavior. Full dialog reauthentication and fresh account pairing await
+live checks. Only official Chrome sign-in and the read-only handoff are currently
+verified with the user's account; discovery is not a claim that Google accepts
+every browser.
+
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
 python google-messages/tools/chromium_login_probe.py

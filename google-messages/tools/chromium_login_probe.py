@@ -5,26 +5,20 @@ import argparse
 import fcntl
 import json
 import os
-from pathlib import Path
 import select
-import shutil
 import signal
 import subprocess
 import tempfile
 import time
 
-from chromium_auth_capture import capture
+from chromium_auth_capture import capture, capture_proof
+from chromium_browsers import discover_browsers
 
 
 def find_browser(explicit):
-    candidates = [explicit] if explicit else [
-        shutil.which("chromium"), shutil.which("chromium-browser"),
-        shutil.which("google-chrome-stable"), shutil.which("google-chrome"),
-        "/opt/google/chrome/chrome", "/opt/helium-browser-bin/chrome",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
-            return str(Path(candidate).resolve())
+    candidates = discover_browsers(explicit)
+    if candidates:
+        return candidates[0].path
     raise RuntimeError("No Chromium browser found; supply --browser with its executable path")
 
 
@@ -35,15 +29,14 @@ def private_fd(fd):
     return duplicate
 
 
-def normal_sign_in(browser, profile):
+def normal_sign_in(browser, profile, notify=print):
     args = [browser, f"--user-data-dir={profile}", "--no-first-run",
             "--no-default-browser-check", "https://accounts.google.com/"]
     process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, start_new_session=True)
-    print("Sign in normally, then close this Chrome window to continue. No debugging connection.",
-          flush=True)
+    notify("Sign in normally, then choose the browser menu's Exit to continue.")
     try:
-        if process.wait(timeout=600) != 0:
+        if process.wait(timeout=7 * 60) != 0:
             raise RuntimeError("Normal browser exited unsuccessfully")
     finally:
         if process.poll() is None:
@@ -55,11 +48,11 @@ def normal_sign_in(browser, profile):
                 process.wait()
 
 
-def run(browser, smoke, native_probe=None):
-    url = "about:blank" if smoke or native_probe else "https://messages.google.com/web/config"
+def run(browser, smoke, native_probe=None, setup=False, notify=print):
+    url = "about:blank" if smoke or native_probe or setup else "https://messages.google.com/web/config"
     with tempfile.TemporaryDirectory(prefix="handover-chromium-signin-") as profile:
         if not smoke:
-            normal_sign_in(browser, profile)
+            normal_sign_in(browser, profile, notify)
         read_in, write_in = map(private_fd, os.pipe())
         read_out, write_out = map(private_fd, os.pipe())
         null = private_fd(os.open(os.devnull, os.O_RDWR))
@@ -97,9 +90,13 @@ def run(browser, smoke, native_probe=None):
                         ready = "result" in response
             if not ready:
                 raise RuntimeError("Browser private pipe did not become ready")
-            print("Private browser pipe ready. No authentication was captured.", flush=True)
+            if not setup:
+                print("Private browser pipe ready. No authentication was captured.", flush=True)
             if smoke:
                 return
+            if setup:
+                notify("Finishing browser sign-in. Keep your phone available.")
+                return capture_proof(read_out, write_in, include_account=True)
             if native_probe:
                 capture(read_out, write_in, native_probe)
                 return

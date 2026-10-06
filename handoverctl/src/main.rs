@@ -1230,6 +1230,8 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::MessageAccepted { .. }
         | ServerPayload::ConversationAccepted { .. }
         | ServerPayload::AccountAccepted { .. }
+        | ServerPayload::MessagingSetupPaused { .. }
+        | ServerPayload::MessagingSetupResumed
         | ServerPayload::Subscribed { .. }
         | ServerPayload::SubscribedChunk { .. }
         | ServerPayload::NativePeers { .. }

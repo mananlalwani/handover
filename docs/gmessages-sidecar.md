@@ -165,6 +165,17 @@ The production adapter uses the same contract against the real relay. Point
 
 ## Native helper
 
+The optional in-tree browser setup uses daemon IPC `messages.setup.begin` and
+`messages.setup.end`. These control a single bounded messaging pause and carry
+only an opaque lease identifier. They do not change helper IPC v1 and expose no
+Google protocol material. `messaging_setup_paused` acknowledges actual helper
+shutdown and reports `expires_after_seconds`; `messaging_setup_resumed` accepts
+resumption without claiming that any account is online. A lease expires after
+fifteen minutes. Native setup captures authentication below the provider boundary,
+performs existing registration/pairing operations, and persists only through the
+native session and desktop credential stores. The daemon's recovered snapshots
+remain authoritative. This path does not import the legacy adapter.
+
 `handover-google-messages-helper` is the in-tree helper for the independent
 client. It is MIT and first-party, carries no AGPL source and no generated
 Google protobuf definitions, and speaks the same contract v1.

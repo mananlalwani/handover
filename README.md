@@ -35,6 +35,8 @@ To build from source, install Rust and a C linker, then run:
 git clone https://github.com/mananlalwani/handover.git
 cd handover
 make install-user
+# Optional Google Messages sign-in using an installed Chromium browser:
+make install-user GOOGLE_MESSAGES_SETUP=1
 ```
 
 On Arch Linux, you can build a system package from the clone instead:
@@ -123,6 +125,11 @@ Google Messages SMS/RCS support uses the native MIT helper included with
 Handover. It still requires Google Messages on the phone and Google's service.
 See the [setup guide](docs/user-guide.md#google-messages). Credentials stay in
 the helper and desktop credential store.
+
+The optional setup component discovers installed Chromium browsers and lets
+you choose one. It needs Python 3, with no Handover extension or browser
+download. Tarball installs offer this component interactively, or accept
+`./install.sh --with-google-messages-setup`.
 
 The separate AGPL-3.0-only
 [legacy relay](https://github.com/mananlalwani/handover-gmessages) remains an
