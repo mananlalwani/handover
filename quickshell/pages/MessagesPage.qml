@@ -29,7 +29,9 @@ Rectangle {
             }
         }
     }
-    property var accountChoices: AccountPicker.choices(HandoverService.messagingAccounts)
+    property bool includeOfflineAccounts: false
+    property var accountChoices: AccountPicker.choices(HandoverService.messagingAccounts,
+        includeOfflineAccounts)
     property string selectedAccountId: ""
     property bool explicitAccountSelection: false
     property var selectedAccount: accountChoices.find(item => item.id === selectedAccountId) || null
@@ -143,6 +145,13 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+            CheckBox {
+                text: "Include offline accounts"
+                visible: HandoverService.messagingAccounts.some(account =>
+                    !account.connected || !account.authenticated)
+                checked: messagesCard.includeOfflineAccounts
+                onToggled: messagesCard.includeOfflineAccounts = checked
+            }
             ComboBox {
                 id: modernAccountPicker
                 Layout.preferredWidth: 290
