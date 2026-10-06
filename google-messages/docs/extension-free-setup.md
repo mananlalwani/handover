@@ -117,6 +117,12 @@ live checks. Only official Chrome sign-in and the read-only handoff are currentl
 verified with the user's account; discovery is not a claim that Google accepts
 every browser.
 
+The optional component is installed locally. A live lease check verified one
+online account before pause, zero during the helper pause while `handoverd`
+remained active, and one after resumption. Installed browser discovery selects
+the user's Helium default and offers Chrome. The new full setup flow has not yet
+been driven through browser sign-in or fresh phone confirmation.
+
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
 python google-messages/tools/chromium_login_probe.py
