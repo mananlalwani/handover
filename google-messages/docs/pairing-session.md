@@ -120,6 +120,16 @@ only within the 24-hour window. A forced renewal and read-only source
 re-attestation succeeded live on 2026-10-05 with the existing device identity;
 the daemon was restarted with the rebuilt helper afterward.
 
+A continuously running session also schedules renewal before expiry. Tokens
+with more than two days remaining rotate 24 hours before expiry; shorter tokens
+rotate halfway through their remaining lifetime. Rotation waits for the current
+request and publication to finish, then closes receive before the helper starts
+recovery from the saved record. Planned rotation does not consume failure
+backoff or emit a receive error. Registration failure still stops recovery
+without retrying the registration request. Local HTTP tests verify the rotation
+signal, publication ordering, and closure of the old receive stream. The timed
+rotation path has not been observed at natural expiry on the live account.
+
 Google's restore path requires a complete set of registration and pairing data
 and applies a configuration-dependent pairing-age limit. A partial record must
 not become an authenticated account. The observed fallback of 21 days is not a

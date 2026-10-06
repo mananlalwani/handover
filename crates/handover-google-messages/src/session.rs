@@ -82,6 +82,14 @@ fn unique_conversations(
 }
 
 const MAX_PAGE_RECORDS: usize = 1024;
+const REGISTRATION_RENEWAL_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn renewal_delay(remaining: Duration) -> Duration {
+    // A short-lived token must not cause an immediate renewal loop.
+    remaining
+        .saturating_sub(REGISTRATION_RENEWAL_WINDOW)
+        .max(remaining / 2)
+}
 
 pub struct RecoveredSession {
     pairing: ConfirmedPairing,
@@ -154,10 +162,9 @@ impl RecoveredSession {
         proof: BrowserProof,
         force_renewal: bool,
     ) -> Result<Self, ProbeError> {
-        let renewal_window = Duration::from_secs(24 * 60 * 60);
         let renewal_due = force_renewal
             || match pairing.registration.remaining_lifetime() {
-                Ok(remaining) => remaining <= renewal_window,
+                Ok(remaining) => remaining <= REGISTRATION_RENEWAL_WINDOW,
                 Err(_) => true,
             };
         if renewal_due {
@@ -987,6 +994,18 @@ mod tests {
         Conversation, ConversationId, ConversationKind, MessagingAccountId, Participant,
         TransportKind,
     };
+
+    #[test]
+    fn renewal_leaves_time_for_recovery_without_looping_on_short_tokens() {
+        let day = Duration::from_secs(24 * 60 * 60);
+        assert_eq!(renewal_delay(30 * day), 29 * day);
+        assert_eq!(renewal_delay(2 * day), day);
+        assert_eq!(renewal_delay(day), day / 2);
+        assert_eq!(
+            renewal_delay(Duration::from_secs(60)),
+            Duration::from_secs(30)
+        );
+    }
 
     #[test]
     fn repeated_page_entries_merge_only_when_the_normalized_record_agrees() {

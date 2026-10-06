@@ -1286,13 +1286,14 @@ async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
 #[tokio::test]
 async fn live_session_shares_receive_with_history_and_requires_push_publication_before_ack() {
     use crate::session::{LiveCommand, LiveEvent};
-    for (reject_push, send_code) in [
-        (false, 1_i32),
-        (false, 2),
-        (false, 5), // Explicit success without an assigned message ID.
-        (false, 0),
-        (false, -1),
-        (true, 1),
+    for (reject_push, send_code, renewal) in [
+        (false, 1_i32, false),
+        (false, 2, false),
+        (false, 5, false), // Explicit success without an assigned message ID.
+        (false, 0, false),
+        (false, -1, false),
+        (true, 1, false),
+        (false, 1, true),
     ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
@@ -1408,6 +1409,17 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             )
             .await;
             expect_ack(&listener, "capabilities").await;
+            if renewal {
+                let mut byte = [0];
+                assert_eq!(receive.read(&mut byte).await.unwrap(), 0);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                        .await
+                        .is_err(),
+                    "rotation must close the old stream without retrying a request"
+                );
+                return;
+            }
             rpc_push(
                 &mut receive,
                 &session_id,
@@ -1529,6 +1541,7 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                     crate::client(false).unwrap(),
                     incoming,
                     events,
+                    renewal.then_some(Duration::ZERO),
                 )
                 .await
         });
@@ -1547,6 +1560,26 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         assert!(
             matches!(capability_update.event, LiveEvent::ConversationUpdates(ref records) if records[0].capabilities.contains(&handover_core::messaging::MessagingCapability::Text))
         );
+        if renewal {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(
+                !network.is_finished(),
+                "renewal must wait for current publication acceptance"
+            );
+            capability_update.accepted.send(()).unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), network)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Err(ProbeError::RegistrationRenewalDue)
+            );
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+            continue;
+        }
         capability_update.accepted.send(()).unwrap();
         let message = outgoing.recv().await.unwrap();
         assert!(

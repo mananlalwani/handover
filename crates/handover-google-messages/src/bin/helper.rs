@@ -1055,6 +1055,12 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         if let Some(worker) = workers.remove(&account) { worker.stop().await; }
                         helper.end_live_session(&account);
                         publish(writer, disconnected(&account)).await?;
+                        if matches!(result, Err(handover_google_messages::ProbeError::RegistrationRenewalDue)) {
+                            // The old receive owner has stopped. Restore from
+                            // disk and renew once without consuming failure backoff.
+                            retries.insert(account.clone(), tokio::time::Instant::now());
+                            continue;
+                        }
                         if let Err(error) = result {
                             let attempt = *attempts.get(&account).unwrap_or(&0);
                             if let Some(delay) = reconnect_delay(&error, attempt) {
@@ -2655,6 +2661,7 @@ mod tests {
         for error in [
             ProbeError::HttpError(401),
             ProbeError::SessionExpired,
+            ProbeError::RegistrationRenewalDue,
             ProbeError::RegistrationFailed,
             ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted),
             ProbeError::SessionProtocol(SessionError::UpdateAuthentication),

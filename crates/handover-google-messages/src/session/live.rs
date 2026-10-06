@@ -154,6 +154,7 @@ impl RecoveredSession {
             crate::streaming_client()?,
             commands,
             events,
+            None,
         )
         .await
     }
@@ -164,6 +165,7 @@ impl RecoveredSession {
         stream: reqwest::Client,
         mut commands: mpsc::Receiver<LiveCommand>,
         events: mpsc::Sender<LiveOutput>,
+        renewal_after: Option<Duration>,
     ) -> Result<(), ProbeError> {
         let sources = Zeroizing::new(
             crate::query_response(
@@ -240,11 +242,18 @@ impl RecoveredSession {
             .map_err(|_| ProbeError::SessionExpired)?;
         let expiry = tokio::time::sleep(lifetime);
         tokio::pin!(expiry);
+        let renewal = tokio::time::sleep(renewal_after.unwrap_or_else(|| renewal_delay(lifetime)));
+        tokio::pin!(renewal);
         let mut known = Vec::<Conversation>::new();
         let mut pending = Some(LiveCommand::Conversations);
         let mut online = false;
         let mut can_send = false;
         loop {
+            // Let the current request and its publication finish before rotating
+            // receive ownership. Never cancel or replay an active send to renew.
+            if pending.is_none() && renewal.is_elapsed() {
+                return Err(ProbeError::RegistrationRenewalDue);
+            }
             if let Some(command) = pending.take() {
                 if matches!(
                     &command,
@@ -522,6 +531,7 @@ impl RecoveredSession {
                 tokio::select! {
                     result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
                     _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                    _ = &mut renewal => return Err(ProbeError::RegistrationRenewalDue),
                     command = commands.recv() => {
                         let Some(command) = command else { return Ok(()); };
                         pending = Some(command);
