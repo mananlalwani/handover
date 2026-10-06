@@ -4,7 +4,8 @@ Updated 2026-10-05. The optional setup component is implemented and locally
 installed. The user confirmed fresh phone pairing, daemon restart recovery,
 and Disconnect followed by connecting again in the installed UI. The pairing
 symbol stays visible through subsequent handshake updates. These are live
-results for this account and desktop; other discovered browsers remain unverified.
+results for this account and desktop using Helium; other discovered browsers
+remain unverified apart from Chrome's separate authentication handoff.
 
 ## Current setup flow
 
@@ -31,9 +32,10 @@ expiry recovers from a crashed setup process. Interrupted registration or
 pairing is not retried automatically. Check linked devices on the phone before
 repeating a failed attempt.
 
-**Disconnect** beside the account selector removes that account's local saved
-credentials after confirmation. It does not revoke the linked device on the
-phone. Remove that device separately in Google Messages if desired.
+**Disconnect** beside the account selector now requests native phone unpairing
+before removing saved credentials. Credentials remain if the phone does not
+confirm. This remote operation awaits live verification. The earlier confirmed
+disconnect/reconnect test exercised local credential removal.
 
 ## Verification
 
@@ -50,9 +52,8 @@ phone. Remove that device separately in Google Messages if desired.
   and QML checks pass.
 
 Discovery lists installed browsers; it does not establish Google sign-in support
-for every listed browser. The exact browser used in the final full-flow checks
-was not recorded. Official Chrome's sign-in and read-only handoff were verified
-separately.
+for every listed browser. The user confirmed Helium was used for the full setup
+checks. Official Chrome's sign-in and read-only handoff were verified separately.
 
 ## Investigation findings
 

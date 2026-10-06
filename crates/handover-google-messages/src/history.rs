@@ -289,8 +289,54 @@ pub(crate) fn decode_records(
             sent_at: wire.timestamp.filter(|value| *value > 0),
             text,
             attachments,
-            reply_to: None,
-            reactions: Vec::new(),
+            reply_to: wire
+                .reply
+                .as_ref()
+                .and_then(|reply| {
+                    reply
+                        .mapping
+                        .as_ref()
+                        .and_then(|mapping| {
+                            if !mapping.assigned.is_empty() {
+                                Some(mapping.assigned.as_str())
+                            } else if !mapping.original.is_empty() {
+                                Some(mapping.original.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| (!reply.original.is_empty()).then_some(reply.original.as_str()))
+                })
+                .map(|target| MessageId::new(conversation.id.clone(), target)),
+            reactions: wire
+                .reactions
+                .iter()
+                .map(|reaction| {
+                    let emoji = reaction.emoji.as_ref().ok_or_else(invalid)?;
+                    if reaction.actors.is_empty() {
+                        return Err(invalid());
+                    }
+                    let mut ids: Vec<String> = reaction
+                        .actors
+                        .iter()
+                        .map(|actor| format!("peer:{actor}"))
+                        .collect();
+                    ids.sort();
+                    ids.dedup();
+                    if reaction.actors.iter().any(|actor| {
+                        actor.is_empty()
+                            || actor.len() > handover_core::messaging::MAX_ID_LEN - 5
+                            || actor.chars().any(char::is_control)
+                    }) {
+                        return Err(invalid());
+                    }
+                    Ok(handover_core::messaging::Reaction {
+                        emoji: emoji.value.clone(),
+                        count: ids.len() as u64,
+                        participant_ids: ids,
+                    })
+                })
+                .collect::<Result<Vec<_>, ProbeError>>()?,
             deleted: false,
         };
         validate_message(&record).map_err(|_| invalid())?;
@@ -377,6 +423,61 @@ struct WireMessage {
     parts: Vec<Part>,
     #[prost(bool, tag = "16")]
     notice: bool,
+    #[prost(message, repeated, tag = "19")]
+    reactions: Vec<WireReaction>,
+    #[prost(message, optional, tag = "21")]
+    reply: Option<ReplyReference>,
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct WireReaction {
+    #[prost(message, optional, tag = "1")]
+    emoji: Option<WireEmoji>,
+    #[prost(string, repeated, tag = "2")]
+    actors: Vec<String>,
+}
+impl Drop for WireReaction {
+    fn drop(&mut self) {
+        self.actors.zeroize();
+    }
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct WireEmoji {
+    #[prost(string, tag = "1")]
+    value: String,
+}
+impl Drop for WireEmoji {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct ReplyReference {
+    #[prost(string, tag = "1")]
+    original: String,
+    #[prost(message, optional, tag = "6")]
+    mapping: Option<ReplyMapping>,
+}
+impl Drop for ReplyReference {
+    fn drop(&mut self) {
+        self.original.zeroize();
+    }
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct ReplyMapping {
+    #[prost(string, tag = "1")]
+    original: String,
+    #[prost(string, tag = "2")]
+    assigned: String,
+}
+impl Drop for ReplyMapping {
+    fn drop(&mut self) {
+        self.original.zeroize();
+        self.assigned.zeroize();
+    }
 }
 impl Drop for WireMessage {
     fn drop(&mut self) {
@@ -503,6 +604,8 @@ mod tests {
                 })),
             }],
             notice: false,
+            reply: None,
+            reactions: Vec::new(),
         }
     }
     fn page(record: WireMessage) -> Vec<u8> {
@@ -511,6 +614,36 @@ mod tests {
             cursor: None,
         }
         .encode_to_vec()
+    }
+    #[test]
+    fn projects_attested_reply_target_and_reaction_actors() {
+        let mut wire = record();
+        // Field 19, reaction field 1 contains the emoji; repeated field 2 actors.
+        let mut bytes = wire.encode_to_vec();
+        bytes.extend_from_slice(b"\x9a\x01\x0b\x0a\x06\x0a\x04\xf0\x9f\x91\x8d\x12\x01p");
+        // Field 21, reference field 1 is the original message ID.
+        bytes.extend_from_slice(b"\xaa\x01\x05\x0a\x03old");
+        let messages = decode_records(&conversation(), vec![bytes]).unwrap();
+        assert_eq!(messages[0].reply_to.as_ref().unwrap().local_id, "old");
+        assert_eq!(messages[0].reactions[0].emoji, "👍");
+        assert_eq!(messages[0].reactions[0].participant_ids, ["peer:p"]);
+        assert_eq!(messages[0].reactions[0].count, 1);
+        wire.reply = Some(ReplyReference {
+            original: "old".into(),
+            mapping: Some(ReplyMapping {
+                original: "temporary".into(),
+                assigned: "assigned".into(),
+            }),
+        });
+        let messages = decode_records(&conversation(), vec![wire.encode_to_vec()]).unwrap();
+        assert_eq!(messages[0].reply_to.as_ref().unwrap().local_id, "assigned");
+        wire.reactions.push(WireReaction {
+            emoji: Some(WireEmoji {
+                value: "👍".into()
+            }),
+            actors: vec![String::new()],
+        });
+        assert!(decode_records(&conversation(), vec![wire.encode_to_vec()]).is_err());
     }
     #[test]
     fn preserves_each_messages_attested_transport_in_a_mixed_thread() {

@@ -120,7 +120,9 @@ each file through a no-follow descriptor into
 `.../handover/gmessages/imported`. Clients never keep helper-controlled paths.
 
 `messages logout` revokes on the helper and deletes local secrets. The daemon
-drops the account on `account_removed`. Authentication failures must report
+drops the account on `account_removed`. The native helper requires a positive
+phone unpair result before deleting a confirmed account's credentials; offline
+or uncertain attempts retain them. Authentication failures must report
 that pairing is required. On connect, `hello` lists persisted sessions so a
 restarted daemon can restore its account list.
 

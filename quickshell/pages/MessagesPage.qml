@@ -17,6 +17,8 @@ Rectangle {
     property var selectedConversation: null
     property var replyingTo: null
     property string status: ""
+    property string disconnectingAccountId: ""
+    property string accountNotice: ""
     GoogleMessagesSetup { id: googleSetup }
     Dialog {
         id: disconnectDialog
@@ -28,9 +30,9 @@ Rectangle {
         title: "Disconnect account?"
         standardButtons: Dialog.Cancel
         contentItem: Label {
-            text: "Disconnect " + disconnectDialog.accountLabel
-                + " from Handover and remove its saved credentials? You can connect again later."
-                + "\n\nThis does not remove the linked device from Google Messages on your phone."
+            text: "Ask your phone to unpair " + disconnectDialog.accountLabel
+                + " from Handover, then remove its saved credentials? You can connect again later."
+                + "\n\nHandover keeps the credentials if phone unpairing is not confirmed."
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
         }
@@ -38,14 +40,39 @@ Rectangle {
             standardButtons: DialogButtonBox.Cancel
             onRejected: disconnectDialog.reject()
             Button {
-                text: "Disconnect"
+                text: "Disconnect and unpair"
                 enabled: HandoverService.connected && !HandoverService.pendingMessaging
                     && HandoverService.messagingAccounts.some(account =>
                         account.id === disconnectDialog.accountId)
                 onClicked: {
-                    if (HandoverService.logoutAccount(disconnectDialog.accountId))
+                    if (HandoverService.logoutAccount(disconnectDialog.accountId)) {
+                        messagesCard.disconnectingAccountId = disconnectDialog.accountId;
+                        messagesCard.accountNotice = "Waiting for phone unpairing confirmation...";
+                        disconnectDeadline.restart();
                         disconnectDialog.accept();
+                    } else
+                        messagesCard.accountNotice = HandoverService.lastError;
                 }
+            }
+        }
+    }
+    Timer {
+        id: disconnectDeadline
+        interval: 30000
+        onTriggered: {
+            messagesCard.disconnectingAccountId = "";
+            messagesCard.accountNotice = "Unpairing was not confirmed. Check your phone's linked devices before retrying.";
+        }
+    }
+    Connections {
+        target: HandoverService
+        function onMessagingAccountsChanged() {
+            if (messagesCard.disconnectingAccountId && HandoverService.connected
+                && !HandoverService.messagingAccounts.some(account =>
+                    account.id === messagesCard.disconnectingAccountId)) {
+                disconnectDeadline.stop();
+                messagesCard.disconnectingAccountId = "";
+                messagesCard.accountNotice = "Account disconnected.";
             }
         }
     }
@@ -216,12 +243,24 @@ Item {
                 text: "Disconnect"
                 enabled: !!messagesCard.selectedAccount && HandoverService.connected
                     && !HandoverService.pendingMessaging
+                    && !messagesCard.disconnectingAccountId
+                    && messagesCard.selectedAccount.connected
+                    && messagesCard.selectedAccount.authenticated
                 onClicked: {
                     disconnectDialog.accountId = messagesCard.selectedAccount.id;
                     disconnectDialog.accountLabel = messagesCard.selectedAccount.displayLabel;
                     disconnectDialog.open();
                 }
             }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: messagesCard.accountNotice
+            visible: text.length > 0
+            color: "#9caec5"
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
         }
 
         Text {
@@ -487,6 +526,26 @@ Item {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 12
                                     Layout.rightMargin: 12
+                                    visible: !!modelData.reply_to
+                                    text: {
+                                        const target = modelData.reply_to;
+                                        if (!target)
+                                            return "";
+                                        const original = messagesCard.selectedMessages.find(item =>
+                                            item.id.local_id === target.local_id);
+                                        return "Reply to: " + (original && original.text
+                                            ? original.text : "an earlier message");
+                                    }
+                                    color: "#b9d7f2"
+                                    textFormat: Text.PlainText
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                    wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 12
+                                    Layout.rightMargin: 12
                                     text: modelData.text
                                         || ((modelData.attachments || []).length > 0
                                             ? "📎 " + (modelData.attachments || []).map(item =>
@@ -509,15 +568,27 @@ Item {
                                             "file://" + modelData.staged_path)
                                     }
                                 }
-                                Text {
+                                Flow {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 12
                                     Layout.rightMargin: 12
                                     visible: (modelData.reactions || []).length > 0
-                                    text: (modelData.reactions || []).map(item =>
-                                        item.emoji + " ×" + item.count).join("  ")
-                                    color: "#c4d8ec"
-                                    font.pixelSize: 12
+                                    Repeater {
+                                        model: messageData.reactions || []
+                                        Button {
+                                            required property var modelData
+                                            text: modelData.emoji + " ×" + modelData.count
+                                            flat: true
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "Remove your reaction"
+                                            enabled: messagesCard.accountConversations.some(item =>
+                                                HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
+                                                && item.capabilities.includes("reactions"))
+                                            onClicked: HandoverService.unreact(
+                                                messagesCard.selectedConversation,
+                                                messageData.id.local_id, modelData.emoji)
+                                        }
+                                    }
                                 }
                                 Row {
                                     Layout.leftMargin: 8
@@ -533,14 +604,21 @@ Item {
                                     Button {
                                         text: "Reply"
                                         flat: true
+                                        enabled: !!messagesCard.selectedAccount
+                                            && messagesCard.accountConversations.some(item =>
+                                                HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
+                                                && item.capabilities.includes("replies"))
                                         onClicked: messagesCard.replyingTo = modelData.id.local_id
                                     }
                                     Repeater {
-                                        model: ["❤", "👍", "😂"]
+                                        model: ["❤️", "👍", "😂"]
                                         Button {
                                             required property var modelData
                                             text: modelData
                                             flat: true
+                                            enabled: messagesCard.accountConversations.some(item =>
+                                                HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
+                                                && item.capabilities.includes("reactions"))
                                             onClicked: HandoverService.react(
                                                 messagesCard.selectedConversation,
                                                 messageData.id.local_id,

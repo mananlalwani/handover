@@ -1286,24 +1286,24 @@ async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
 #[tokio::test]
 async fn live_session_shares_receive_with_history_and_requires_push_publication_before_ack() {
     use crate::session::{LiveCommand, LiveEvent};
-    for (reject_push, send_code, renewal) in [
-        (false, 1_i32, false),
-        (false, 2, false),
-        (false, 5, false), // Explicit success without an assigned message ID.
-        (false, 0, false),
-        (false, -1, false),
-        (true, 1, false),
-        (false, 1, true),
+    for (reject_push, send_code, renewal, unpair_ack_failure) in [
+        (false, 1_i32, false, false),
+        (false, 1, false, true),
+        (false, 2, false, false),
+        (false, 5, false, false), // Explicit success without an assigned message ID.
+        (false, 0, false, false),
+        (false, -1, false, false),
+        (true, 1, false, false),
+        (false, 1, true, false),
     ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
             panic!("pairing");
         };
-        let inventory = pairing
-            .encrypt(&synthetic_conversation_page(1))
-            .unwrap()
-            .as_bytes()
-            .to_vec();
+        let mut rcs_inventory = synthetic_conversation_page(1);
+        rcs_inventory[1] += 3;
+        rcs_inventory.extend_from_slice(&[0xb0, 0x01, 2]);
+        let inventory = pairing.encrypt(&rcs_inventory).unwrap().as_bytes().to_vec();
         let capability = pairing.encrypt(&[8, 1]).unwrap().as_bytes().to_vec();
         let send_reply = if send_code == 5 {
             vec![0x18, 1]
@@ -1340,6 +1340,8 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             .unwrap()
             .as_bytes()
             .to_vec();
+        let mutation_success = pairing.encrypt(&[8, 1]).unwrap().as_bytes().to_vec();
+        let mutation_rejection = pairing.encrypt(&[8, 2]).unwrap().as_bytes().to_vec();
         let session =
             crate::session::RecoveredSession::from_credentials(*pairing, proof("gaia_pairing"))
                 .unwrap();
@@ -1515,6 +1517,39 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                         response(&mut response_socket, "application/json+protobuf", b"[]").await;
                         expect_ack(&listener, "presence-check").await;
                         presence_tx.send(()).unwrap();
+                        if send_code == 1 {
+                            for (action, payload, id) in [
+                                (38, mutation_success.clone(), "reaction-add"),
+                                (38, mutation_rejection, "reaction-rejected"),
+                                (46, mutation_success, "unpair"),
+                            ] {
+                                let (mut mutation, _) = listener.accept().await.unwrap();
+                                let (path, body) = request(&mut mutation).await;
+                                assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                                let wrapper = rpc_request(&body);
+                                assert_eq!(wrapper.action, action);
+                                response(&mut mutation, "application/json+protobuf", b"[]").await;
+                                rpc_push(
+                                    &mut receive,
+                                    &wrapper.request_id,
+                                    action,
+                                    payload,
+                                    id,
+                                    true,
+                                )
+                                .await;
+                                if action == 46 && unpair_ack_failure {
+                                    let (mut ack, _) = listener.accept().await.unwrap();
+                                    let (path, body) = request(&mut ack).await;
+                                    assert_eq!(path, crate::ACK_MESSAGES_PATH);
+                                    let body: Value = serde_json::from_slice(&body).unwrap();
+                                    assert_eq!(body[1], json!([id]));
+                                    ack.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                                } else {
+                                    expect_ack(&listener, id).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1625,6 +1660,7 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             let (accepted, gate) = tokio::sync::oneshot::channel();
             commands
                 .send(LiveCommand::SendText {
+                    reply_to: None,
                     request_id: "send-test".into(),
                     conversation: "thread-0".into(),
                     text: zeroize::Zeroizing::new("hello".into()),
@@ -1653,6 +1689,47 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 send_checked_rx.await.unwrap();
                 result.accepted.send(()).unwrap();
                 presence_rx.await.unwrap();
+                if send_code == 1 {
+                    // Expired queued mutations must never reach the phone.
+                    for action in [38, 46] {
+                        let (result, completion) = tokio::sync::oneshot::channel();
+                        drop(completion);
+                        let command = if action == 38 {
+                            LiveCommand::React {
+                                conversation: "thread-0".into(),
+                                message: "message".into(),
+                                emoji: zeroize::Zeroizing::new("👍".into()),
+                                add: true,
+                                result,
+                            }
+                        } else {
+                            LiveCommand::Unpair { result }
+                        };
+                        commands.send(command).await.unwrap();
+                    }
+                    for (action, expected) in [(38, true), (38, false), (46, true)] {
+                        let (result, completion) = tokio::sync::oneshot::channel();
+                        let command = if action == 38 {
+                            LiveCommand::React {
+                                conversation: "thread-0".into(),
+                                message: "message".into(),
+                                emoji: zeroize::Zeroizing::new("👍".into()),
+                                add: true,
+                                result,
+                            }
+                        } else {
+                            LiveCommand::Unpair { result }
+                        };
+                        commands.send(command).await.unwrap();
+                        assert_eq!(
+                            tokio::time::timeout(Duration::from_secs(2), completion)
+                                .await
+                                .unwrap()
+                                .unwrap(),
+                            expected
+                        );
+                    }
+                }
             } else {
                 assert!(
                     outgoing.recv().await.is_none(),
@@ -1665,7 +1742,10 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result.is_err(), reject_push || send_code <= 0);
+        assert_eq!(
+            result.is_err(),
+            reject_push || send_code <= 0 || unpair_ack_failure
+        );
         tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .unwrap()

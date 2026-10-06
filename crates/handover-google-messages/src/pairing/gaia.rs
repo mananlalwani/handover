@@ -595,6 +595,9 @@ impl fmt::Debug for PhoneConfirmedPairing {
 }
 
 impl PhoneConfirmedPairing {
+    pub(crate) fn pairing_id(&self) -> &str {
+        &self._pairing_id
+    }
     pub(crate) fn stored_record(&self) -> Zeroizing<Vec<u8>> {
         let (first, second) = self.keys.stored_keys();
         Zeroizing::new(

@@ -18,13 +18,20 @@ pub(crate) fn request(
     conversation: &str,
     text: &str,
     temporary: &str,
+    reply_to: Option<&str>,
 ) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
     identifier(conversation)?;
     identifier(temporary)?;
+    if let Some(target) = reply_to {
+        identifier(target)?;
+    }
     if text.trim().is_empty() || text.chars().count() > MAX_TEXT_CHARS || text.contains('\0') {
         return Err(invalid());
     }
     let request = Request {
+        reply_to: reply_to.map(|message| ReplyTarget {
+            message: message.into(),
+        }),
         conversation: conversation.into(),
         message: Some(Content {
             id: temporary.into(),
@@ -80,6 +87,7 @@ pub(crate) fn media_request(
     }
     Ok(Zeroizing::new(
         Request {
+            reply_to: None,
             conversation: conversation.into(),
             temporary: temporary.into(),
             message: Some(Content {
@@ -157,12 +165,25 @@ pub(crate) fn capability(bytes: &[u8]) -> Result<bool, ProbeError> {
 #[derive(Message)]
 #[prost(skip_debug)]
 struct Request {
+    #[prost(message, optional, tag = "8")]
+    reply_to: Option<ReplyTarget>,
     #[prost(string, tag = "2")]
     conversation: String,
     #[prost(message, optional, tag = "3")]
     message: Option<Content>,
     #[prost(string, tag = "5")]
     temporary: String,
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct ReplyTarget {
+    #[prost(string, tag = "1")]
+    message: String,
+}
+impl Drop for ReplyTarget {
+    fn drop(&mut self) {
+        self.message.zeroize();
+    }
 }
 #[derive(Message)]
 #[prost(skip_debug)]
@@ -306,14 +327,28 @@ mod tests {
     }
     #[test]
     fn request_rejects_invalid_text_and_identifiers() {
-        assert!(request("thread", " ", "temp").is_err());
-        assert!(request("thread", "a\0b", "temp").is_err());
-        assert!(request("", "hello", "temp").is_err());
-        assert!(request("thread", &"a".repeat(MAX_TEXT_CHARS + 1), "temp").is_err());
+        assert!(request("thread", " ", "temp", None).is_err());
+        assert!(request("thread", "a\0b", "temp", None).is_err());
+        assert!(request("", "hello", "temp", None).is_err());
+        assert!(request("thread", &"a".repeat(MAX_TEXT_CHARS + 1), "temp", None).is_err());
+    }
+    #[test]
+    fn reply_target_is_outer_field_eight_not_message_content() {
+        let encoded = request("thread", "hello", "temp", Some("original")).unwrap();
+        // Independent fixture for nested field 8, target field 1.
+        assert!(
+            encoded
+                .windows(12)
+                .any(|bytes| bytes == b"\x42\x0a\x0a\x08original")
+        );
+        let decoded = Request::decode(encoded.as_slice()).unwrap();
+        assert_eq!(decoded.reply_to.as_ref().unwrap().message, "original");
+        assert!(request("thread", "hello", "temp", Some("")).is_err());
+        assert!(request("thread", "hello", "temp", Some("bad\nidentity")).is_err());
     }
     #[test]
     fn text_is_present_in_both_first_party_content_encodings() {
-        let encoded = request("thread", "hello", "temp").unwrap();
+        let encoded = request("thread", "hello", "temp", None).unwrap();
         let request = Request::decode(encoded.as_slice()).unwrap();
         assert_eq!(request.conversation, "thread");
         let content = request.message.as_ref().unwrap();

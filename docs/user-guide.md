@@ -143,15 +143,17 @@ Cancellation resumes the helper. A crashed setup's pause expires after fifteen
 minutes. Interrupted registration or pairing is not retried automatically.
 Check your phone's linked devices before repeating a failed attempt.
 
-The installed setup flow has passed user-confirmed live checks for fresh phone
+Using Helium, the installed setup flow passed user-confirmed live checks for fresh phone
 pairing, restart recovery, and disconnect/reconnect. Official Chrome passkey
 sign-in and the read-only native handoff also passed. Other detected browsers
 remain unverified.
 An account is shown connected only after the daemon reports a usable session.
 
-To disconnect, select the account and click **Disconnect**, then confirm. This
-removes its saved Handover credentials. It does not remove the linked device on
-the phone; use Google Messages device pairing settings for that.
+To disconnect a confirmed native account, select it while online and click
+**Disconnect**, then confirm **Disconnect and unpair**. Handover asks the phone
+to unpair before removing saved credentials. If unpairing is not confirmed,
+credentials remain. Check the phone's linked devices before retrying an uncertain
+attempt. Native remote unpairing has automated coverage and awaits a live check.
 
 For terminal setup, run `handover-google-messages-setup`. It prints setup progress
 and the confirmation symbol. `--browser /path/to/browser` selects an executable;

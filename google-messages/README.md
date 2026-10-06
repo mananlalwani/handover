@@ -20,8 +20,9 @@ without automatic retries. Live text tests verified acceptance, phone-assigned
 identity correlation, and sent/delivered/displayed events. A live image send
 arrived and opened on the phone; original image downloading and daemon staging
 also passed. Registration renewal preserves the paired device identity and
-has passed a live forced-renewal check. Replies, reactions, and remote logout remain
-unfinished. See
+has passed a live forced-renewal check. Replies, reaction add/remove, and confirmed
+native phone unpairing are implemented with automated coverage and await live
+checks. See [mutation evidence](docs/message-mutations.md) and
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for the helper contract.
 
 Confirmed pairing records stay in the restricted local session store. Required
@@ -55,7 +56,7 @@ establishes a usable session.
 
 Install with `make install-user GOOGLE_MESSAGES_SETUP=1` or the tarball installer's
 `--with-google-messages-setup` option. Python 3 is optional for the base runtime.
-The user confirmed the installed full flow for fresh pairing, restart recovery,
+The user confirmed the installed full flow using Helium for fresh pairing, restart recovery,
 and disconnect/reconnect. Normal Chrome sign-in and the read-only handoff also
 passed live checks. Other detected browsers remain unverified. See the
 [user guide](../docs/user-guide.md#browser-setup).

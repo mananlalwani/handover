@@ -356,6 +356,12 @@ fn wire_conversation(
             .filter_map(|capability| match capability {
                 handover_core::messaging::MessagingCapability::Text => Some("text".to_owned()),
                 handover_core::messaging::MessagingCapability::Media => Some("media".to_owned()),
+                handover_core::messaging::MessagingCapability::Replies => {
+                    Some("replies".to_owned())
+                }
+                handover_core::messaging::MessagingCapability::Reactions => {
+                    Some("reactions".to_owned())
+                }
                 _ => None,
             })
             .collect(),
@@ -443,9 +449,16 @@ async fn publish_messages<W: AsyncWrite + Unpin>(
                     staged_path: item.staged_path,
                 })
                 .collect(),
-            reply_to: None,
-            reactions: Vec::new(),
-            deleted: false,
+            reply_to: message.reply_to.map(|id| id.local_id),
+            reactions: message
+                .reactions
+                .into_iter()
+                .map(|reaction| handover_gmessages::contract::WireReaction {
+                    emoji: reaction.emoji,
+                    participant_ids: reaction.participant_ids,
+                })
+                .collect(),
+            deleted: message.deleted,
         };
         let HelperEvent::Messages { messages, .. } = &mut event else {
             unreachable!()
@@ -656,7 +669,9 @@ async fn queue_send<W: AsyncWrite + Unpin>(
     } = send;
     let allowed = helper.online.contains(&account)
         && !sends.contains_key(&account)
-        && reply_to.is_none()
+        && reply_to.as_ref().is_none_or(|id| {
+            !id.is_empty() && id.len() <= MAX_ID_LEN && !id.chars().any(char::is_control)
+        })
         && !request_id.is_empty()
         && request_id.len() <= MAX_ID_LEN
         && !request_id.chars().any(char::is_control)
@@ -666,7 +681,11 @@ async fn queue_send<W: AsyncWrite + Unpin>(
         && helper
             .conversations
             .get(&(account.clone(), conversation.clone()))
-            .is_some_and(|model| model.capabilities.contains(&MessagingCapability::Text));
+            .is_some_and(|model| {
+                model.capabilities.contains(&MessagingCapability::Text)
+                    && (reply_to.is_none()
+                        || model.capabilities.contains(&MessagingCapability::Replies))
+            });
     let (accepted, gate) = tokio::sync::oneshot::channel();
     let queued = allowed
         && workers.get(&account).is_some_and(|worker| {
@@ -676,6 +695,7 @@ async fn queue_send<W: AsyncWrite + Unpin>(
                     request_id: request_id.clone(),
                     conversation: conversation.clone(),
                     text,
+                    reply_to,
                     accepted: gate,
                 })
                 .is_ok()
@@ -796,6 +816,8 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let mut retries = BTreeMap::<String, tokio::time::Instant>::new();
     let mut attempts = BTreeMap::<String, u8>::new();
     let mut sends = BTreeMap::<String, (String, String)>::new();
+    let mut mutations = JoinSet::<(String, Option<String>, bool)>::new();
+    let mut mutating = std::collections::BTreeSet::<String>::new();
     let mut line = Zeroizing::new(Vec::new());
     loop {
         if jobs.is_empty() {
@@ -805,7 +827,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 .map(|request| request.account.clone())
                 .or_else(|| helper.pending_sync.clone());
             if let Some(account) = requested {
-                if !workers.contains_key(&account) {
+                if !workers.contains_key(&account) && !mutating.contains(&account) {
                     retries.remove(&account);
                     attempts.remove(&account);
                     if workers.len() >= 8 {
@@ -917,6 +939,50 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     while jobs.join_next().await.is_some() {}
                     return Ok(());
                 }
+                if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(control) = serde_json::from_slice::<Control>(&line) {
+                    // Route by metadata without allocating a second copy of
+                    // login credentials, text, or media paths.
+                    if matches!(control.kind.as_str(), "send_text" | "send_media") && control.account.as_ref().is_some_and(|account| mutating.contains(account)) {
+                        if let Some(request_id) = control.request_id {
+                            publish(writer, HelperEvent::CommandResult { request_id, ok: false, error: Some(UNAVAILABLE.into()) }).await?;
+                        }
+                        line.zeroize();
+                        continue;
+                    }
+                    if matches!(control.kind.as_str(), "react" | "logout") && let Ok(command) = serde_json::from_slice::<HelperCommand>(&line) {
+                        let mutation = match command {
+                            HelperCommand::React { request_id, account, conversation, message, emoji, add } => {
+                                let allowed = helper.online.contains(&account) && !sends.contains_key(&account)
+                                    && !mutating.contains(&account) && helper.conversations.get(&(account.clone(), conversation.clone())).is_some_and(|model| model.capabilities.contains(&handover_core::messaging::MessagingCapability::Reactions));
+                                let (result, completion) = tokio::sync::oneshot::channel();
+                                let command = LiveCommand::React { conversation, message, emoji: Zeroizing::new(emoji), add, result };
+                                Some((account, Some(request_id), allowed, command, completion))
+                            }
+                            HelperCommand::Logout { account } if helper.confirmed.contains_key(&account) => {
+                                let allowed = helper.online.contains(&account) && !sends.contains_key(&account) && !mutating.contains(&account);
+                                let (result, completion) = tokio::sync::oneshot::channel();
+                                Some((account, None, allowed, LiveCommand::Unpair { result }, completion))
+                            }
+                            _ => None,
+                        };
+                        if let Some((account, request_id, allowed, command, completion)) = mutation {
+                            let queued = allowed && mutations.len() < 8 && workers.get(&account).is_some_and(|worker| worker.commands.try_send(command).is_ok());
+                            if queued {
+                                mutating.insert(account.clone());
+                                mutations.spawn(async move {
+                                    let ok = tokio::time::timeout(std::time::Duration::from_secs(25), completion).await.ok().and_then(Result::ok).unwrap_or(false);
+                                    (account, request_id, ok)
+                                });
+                            } else if let Some(request_id) = request_id {
+                                publish(writer, HelperEvent::CommandResult { request_id, ok: false, error: Some(UNAVAILABLE.into()) }).await?;
+                            } else {
+                                publish(writer, HelperEvent::Error { message: "Unpair unavailable. Saved credentials were retained.".into() }).await?;
+                            }
+                            line.zeroize();
+                            continue;
+                        }
+                    }
+                }
                 let terminated = line.last() == Some(&b'\n');
                 if terminated { line.pop(); }
                 if line.len() <= MAX_HELPER_LINE_BYTES {
@@ -1002,11 +1068,40 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 let due: Vec<_> = retries.iter().filter(|(_, deadline)| **deadline <= tokio::time::Instant::now()).map(|(account, _)| account.clone()).collect();
                 for account in due {
                     retries.remove(&account);
-                    if helper.confirmed.contains_key(&account) && !workers.contains_key(&account) && workers.len() < 8 {
+                    if helper.confirmed.contains_key(&account) && !workers.contains_key(&account) && !mutating.contains(&account) && workers.len() < 8 {
                         if let Some(store) = helper.store.clone() {
                             generation = generation.wrapping_add(1);
                             workers.insert(account.clone(), start_live_worker(account, generation, store, live_tx.clone()));
                         }
+                    }
+                }
+            }
+            Some(result) = mutations.join_next(), if !mutations.is_empty() => {
+                let (account, request_id, ok) = result.map_err(std::io::Error::other)?;
+                mutating.remove(&account);
+                if let Some(request_id) = request_id {
+                    publish(writer, HelperEvent::CommandResult { request_id, ok, error: (!ok).then(|| "Reaction was not confirmed. Check the message before retrying.".into()) }).await?;
+                    if !workers.contains_key(&account) && helper.confirmed.contains_key(&account) {
+                        // Restore receive ownership without replaying the mutation.
+                        helper.pending_sync = Some(account);
+                    }
+                } else if ok {
+                    // Forget only after the phone positively confirms action 46.
+                    retries.remove(&account);
+                    attempts.remove(&account);
+                    if let Some(worker) = workers.remove(&account) { worker.stop().await; }
+                    helper.online.remove(&account);
+                    publish(writer, disconnected(&account)).await?;
+                    if helper.desktop_credentials && handover_google_messages::credential_store::DesktopCredentialStore::delete(&account).await.is_err() {
+                        publish(writer, HelperEvent::Error { message: "Phone unpaired, but desktop credential cleanup failed.".into() }).await?;
+                    } else {
+                        for event in helper.logout(&account) { publish(writer, event).await?; }
+                    }
+                } else {
+                    publish(writer, HelperEvent::Error { message: "Phone unpairing was not confirmed. Saved credentials were retained; check linked devices before retrying.".into() }).await?;
+                    if !workers.contains_key(&account) && helper.confirmed.contains_key(&account) {
+                        // Recover receive only; never replay an uncertain unpair.
+                        helper.pending_sync = Some(account);
                     }
                 }
             }
@@ -1055,6 +1150,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         if let Some(worker) = workers.remove(&account) { worker.stop().await; }
                         helper.end_live_session(&account);
                         publish(writer, disconnected(&account)).await?;
+                        if mutating.contains(&account) { continue; }
                         if matches!(result, Err(handover_google_messages::ProbeError::RegistrationRenewalDue)) {
                             // The old receive owner has stopped. Restore from
                             // disk and renew once without consuming failure backoff.
@@ -1178,6 +1274,7 @@ struct Control {
     #[serde(rename = "type")]
     kind: String,
     account: Option<String>,
+    request_id: Option<String>,
 }
 
 /// One read is capped just past the contract's line limit, plus room for the
@@ -1695,6 +1792,7 @@ mod tests {
         };
         for case in [
             "accepted",
+            "reply_accepted",
             "busy",
             "offline",
             "no_capability",
@@ -1722,7 +1820,11 @@ mod tests {
                 last_activity_at: None,
                 unread_count: None,
                 cursor: None,
-                capabilities: BTreeSet::from([MessagingCapability::Text]),
+                capabilities: if case == "reply_accepted" {
+                    BTreeSet::from([MessagingCapability::Text, MessagingCapability::Replies])
+                } else {
+                    BTreeSet::from([MessagingCapability::Text])
+                },
             };
             helper
                 .conversations
@@ -1781,20 +1883,27 @@ mod tests {
                         }
                         .into(),
                     ),
-                    reply_to: (case == "reply").then(|| "message".into()),
+                    reply_to: matches!(case, "reply" | "reply_accepted").then(|| "message".into()),
                 },
             )
             .await
             .unwrap();
             let event: HelperEvent = serde_json::from_slice(&output).unwrap();
             assert!(
-                matches!(event, HelperEvent::CommandResult { ok, .. } if ok == (case=="accepted")),
+                matches!(event, HelperEvent::CommandResult { ok, .. } if ok == matches!(case, "accepted" | "reply_accepted")),
                 "case {case}"
             );
-            if case == "accepted" {
-                let LiveCommand::SendText { accepted, .. } = incoming.recv().await.unwrap() else {
+            if matches!(case, "accepted" | "reply_accepted") {
+                let LiveCommand::SendText {
+                    accepted, reply_to, ..
+                } = incoming.recv().await.unwrap()
+                else {
                     panic!("queued send");
                 };
+                assert_eq!(
+                    reply_to.as_deref(),
+                    (case == "reply_accepted").then_some("message")
+                );
                 accepted.await.unwrap();
                 output.clear();
                 abandon_send(&mut output, &mut sends, "work").await.unwrap();
@@ -1984,6 +2093,7 @@ mod tests {
                         MessagingCapability::Text,
                         MessagingCapability::Media,
                         MessagingCapability::Replies,
+                        MessagingCapability::Reactions,
                     ])
                 } else {
                     BTreeSet::new()
@@ -2019,7 +2129,12 @@ mod tests {
                     assert_eq!(normalized.transport, TransportKind::Rcs);
                     assert_eq!(
                         normalized.capabilities,
-                        BTreeSet::from([MessagingCapability::Text, MessagingCapability::Media])
+                        BTreeSet::from([
+                            MessagingCapability::Text,
+                            MessagingCapability::Media,
+                            MessagingCapability::Replies,
+                            MessagingCapability::Reactions
+                        ])
                     );
                 } else {
                     assert_eq!(normalized.transport, TransportKind::Unknown);
@@ -2212,6 +2327,28 @@ mod tests {
                 .as_slice(),
             [HelperEvent::Error { .. }]
         ));
+        // An offline confirmed account cannot attest phone revocation. The
+        // asynchronous command path must retain both saved records.
+        let input = format!(
+            "{}\n",
+            serde_json::to_string(&HelperCommand::Logout {
+                account: account.clone()
+            })
+            .unwrap()
+        );
+        let mut input = tokio::io::BufReader::new(input.as_bytes());
+        let mut output = Vec::new();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(serve_async(&mut helper, &mut input, &mut output))
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<HelperEvent>(&output).unwrap(),
+            HelperEvent::Error { .. }
+        ));
+        assert!(!store.load_all().unwrap().is_empty());
+        assert!(!confirmed_store.load_all().unwrap().is_empty());
+        assert!(helper.accounts.contains(&account));
         assert_eq!(
             line(
                 &mut helper,

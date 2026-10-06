@@ -5,10 +5,21 @@ use tokio::sync::{mpsc, oneshot};
 
 pub enum LiveCommand {
     SendingCapability,
+    React {
+        conversation: String,
+        message: String,
+        emoji: Zeroizing<String>,
+        add: bool,
+        result: oneshot::Sender<bool>,
+    },
+    Unpair {
+        result: oneshot::Sender<bool>,
+    },
     SendText {
         request_id: String,
         conversation: String,
         text: Zeroizing<String>,
+        reply_to: Option<String>,
         accepted: oneshot::Receiver<()>,
     },
     SendMedia {
@@ -143,6 +154,31 @@ impl RecoveredSession {
             .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
         Ok((crate::send::reply(plain.as_bytes())?, reply.message_id))
     }
+    async fn mutation_on_stream(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        action: i32,
+        payload: &[u8],
+        correlation: &std::sync::Mutex<(Zeroizing<String>, i32)>,
+        replies: &mut mpsc::Receiver<crate::receive::session_reply::SessionReply>,
+    ) -> Result<(bool, Zeroizing<String>), ProbeError> {
+        let id = Uuid::new_v4().to_string();
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(id.clone()), action);
+        let request = self.build_request(&id, action, payload, 2, Some(20_000_000))?;
+        self.post_request(http, endpoint, &request).await?;
+        let reply = replies.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+        let plain = self
+            .pairing
+            .pairing
+            .decrypt_payload(&reply.ciphertext)
+            .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
+        let result = crate::mutation::response(action, plain.as_bytes())?;
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(String::new()), 0);
+        Ok((result, reply.message_id))
+    }
     pub async fn run_live(
         &self,
         commands: mpsc::Receiver<LiveCommand>,
@@ -257,15 +293,92 @@ impl RecoveredSession {
             if let Some(command) = pending.take() {
                 if matches!(
                     &command,
+                    LiveCommand::React { .. } | LiveCommand::Unpair { .. }
+                ) {
+                    let (action, payload, result) = match command {
+                        LiveCommand::React {
+                            conversation,
+                            message,
+                            emoji,
+                            add,
+                            result,
+                        } => {
+                            if result.is_closed()
+                                || !online
+                                || !can_send
+                                || !known.iter().any(|model| {
+                                    model.id.local_id == conversation
+                                        && model.transport
+                                            == handover_core::messaging::TransportKind::Rcs
+                                })
+                            {
+                                let _ = result.send(false);
+                                continue;
+                            }
+                            (
+                                38,
+                                crate::mutation::reaction(&message, &emoji, add)?,
+                                result,
+                            )
+                        }
+                        LiveCommand::Unpair { result } => {
+                            if result.is_closed() || !online {
+                                let _ = result.send(false);
+                                continue;
+                            }
+                            (
+                                46,
+                                crate::mutation::unpair(self.pairing.pairing.pairing_id())?,
+                                result,
+                            )
+                        }
+                        _ => unreachable!(),
+                    };
+                    let mutation = tokio::time::timeout(
+                        Duration::from_secs(20),
+                        self.mutation_on_stream(
+                            &short,
+                            endpoint,
+                            action,
+                            &payload,
+                            &correlation,
+                            &mut reply_rx,
+                        ),
+                    );
+                    tokio::pin!(mutation);
+                    let (confirmed, inbox_id) = loop {
+                        tokio::select! {
+                            receive_result = &mut receive => { receive_result?; return Err(ProbeError::ReceiveFailed); }
+                            _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                            outcome = &mut mutation => break outcome.map_err(|_| ProbeError::Timeout)??,
+                            push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                        }
+                    };
+                    // A later ACK failure cannot erase an attested phone result.
+                    let _ = result.send(confirmed);
+                    self.acknowledge(&short, endpoint, inbox_id).await?;
+                    continue;
+                }
+                if matches!(
+                    &command,
                     LiveCommand::SendText { .. } | LiveCommand::SendMedia { .. }
                 ) {
-                    let (request_id, conversation, text, media, accepted) = match command {
+                    let (request_id, conversation, text, reply_to, media, accepted) = match command
+                    {
                         LiveCommand::SendText {
                             request_id,
                             conversation,
                             text,
+                            reply_to,
                             accepted,
-                        } => (request_id, conversation, Some(text), None, accepted),
+                        } => (
+                            request_id,
+                            conversation,
+                            Some(text),
+                            reply_to,
+                            None,
+                            accepted,
+                        ),
                         LiveCommand::SendMedia {
                             request_id,
                             conversation,
@@ -275,6 +388,7 @@ impl RecoveredSession {
                         } => (
                             request_id,
                             conversation,
+                            None,
                             None,
                             Some((path, caption)),
                             accepted,
@@ -300,7 +414,7 @@ impl RecoveredSession {
                     }
                     let temporary = crate::send::temporary(&request_id).to_string();
                     let payload = if let Some(text) = text {
-                        crate::send::request(&conversation, &text, &temporary)?
+                        crate::send::request(&conversation, &text, &temporary, reply_to.as_deref())?
                     } else {
                         let (path, caption) = media.ok_or(ProbeError::NativeError)?;
                         let caption = caption.as_deref().map(String::as_str);
@@ -389,6 +503,7 @@ impl RecoveredSession {
                     continue;
                 }
                 let (conversations, history, fetch_id) = match &command {
+                    LiveCommand::React { .. } | LiveCommand::Unpair { .. } => unreachable!(),
                     LiveCommand::SendText { .. } => unreachable!(),
                     LiveCommand::SendMedia { .. } => unreachable!(),
                     LiveCommand::SendingCapability => (false, None, None),
@@ -481,6 +596,13 @@ impl RecoveredSession {
                     ReadResult::Conversations(mut records) => {
                         for record in &mut records {
                             if can_send {
+                                if record.transport == handover_core::messaging::TransportKind::Rcs
+                                {
+                                    record.capabilities.extend([
+                                        handover_core::messaging::MessagingCapability::Replies,
+                                        handover_core::messaging::MessagingCapability::Reactions,
+                                    ]);
+                                }
                                 record.capabilities.extend([
                                     handover_core::messaging::MessagingCapability::Text,
                                     handover_core::messaging::MessagingCapability::Media,
@@ -508,11 +630,23 @@ impl RecoveredSession {
                     ReadResult::Startup if matches!(command, LiveCommand::SendingCapability) => {
                         for model in &mut known {
                             if can_send {
+                                if model.transport == handover_core::messaging::TransportKind::Rcs {
+                                    model.capabilities.extend([
+                                        handover_core::messaging::MessagingCapability::Replies,
+                                        handover_core::messaging::MessagingCapability::Reactions,
+                                    ]);
+                                }
                                 model.capabilities.extend([
                                     handover_core::messaging::MessagingCapability::Text,
                                     handover_core::messaging::MessagingCapability::Media,
                                 ]);
                             } else {
+                                model.capabilities.remove(
+                                    &handover_core::messaging::MessagingCapability::Reactions,
+                                );
+                                model.capabilities.remove(
+                                    &handover_core::messaging::MessagingCapability::Replies,
+                                );
                                 model
                                     .capabilities
                                     .remove(&handover_core::messaging::MessagingCapability::Text);
@@ -577,6 +711,12 @@ impl RecoveredSession {
             crate::updates::Update::Conversations(mut records) => {
                 for record in &mut records {
                     if can_send {
+                        if record.transport == handover_core::messaging::TransportKind::Rcs {
+                            record.capabilities.extend([
+                                handover_core::messaging::MessagingCapability::Replies,
+                                handover_core::messaging::MessagingCapability::Reactions,
+                            ]);
+                        }
                         record.capabilities.extend([
                             handover_core::messaging::MessagingCapability::Text,
                             handover_core::messaging::MessagingCapability::Media,
