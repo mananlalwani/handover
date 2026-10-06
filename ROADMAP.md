@@ -22,8 +22,9 @@ Implement Handover's own Google Messages protocol client in `google-messages/`
 without
 `mautrix-gmessages` or copied mautrix implementation code. Keep Google wire
 formats, authentication, pairing, encryption, and relay behavior below the
-normalized helper contract. The existing adapter remains a temporary bootstrap
-backend while the independent client is developed and verified.
+normalized helper contract. The independent client is now the default for
+installed current-source builds. The existing adapter remains optional
+compatibility.
 
 Start by proving fresh pairing and read-only conversation/history retrieval.
 Then implement live updates, text and media sends, provider-backed outcomes, and

@@ -1,6 +1,18 @@
 # Google Messages sidecar
 
-The legacy production Google Messages adapter lives in
+The native `handover-google-messages-helper` is bundled with Handover and is
+the default Google Messages client. Explicit `HANDOVER_GMESSAGES_HELPER`
+overrides take precedence. Otherwise, discovery checks beside the daemon for
+the native helper, then `PATH`; only installations without a native binary
+fall back to the legacy helper on `PATH`. A native authentication or session
+failure never silently selects the legacy relay or retries a send through it.
+The installed native helper passed live cutover checks with no explicit helper
+override: saved authentication restored, all 201 conversations returned, and
+two 20-message history pages had correct thread binding and no overlap. A
+second service restart recovered the native connection without browser or
+phone interaction. The legacy binary remains installed but is not running.
+
+The optional legacy Google Messages adapter lives in
 [handover-gmessages](https://github.com/mananlalwani/handover-gmessages) and is
 licensed under AGPL-3.0-only. This MIT repository communicates with it as a
 separate process. Two helpers live in this repository:
@@ -16,6 +28,7 @@ through explicit phone confirmation on 2026-10-05. Bounded browser-free
 conversation and history reads also passed live tests. The native helper now
 keeps a shared receive stream for live updates, reads, and text sends. Native
 text sending passed recipient tests and live acceptance without an assigned ID.
+Image download, daemon staging, and image sending also passed live checks.
 It must not import or copy the AGPL adapter or mautrix
 implementation. Its Google wire formats and authentication remain below the
 normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay

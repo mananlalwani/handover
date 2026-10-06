@@ -119,9 +119,14 @@ and removal. The [CLI reference](docs/cli/handoverctl.md) is also available as
 
 ## Optional integrations
 
-[Handover Google Messages](https://github.com/mananlalwani/handover-gmessages)
-is a separate install for SMS/RCS on Linux. The adapter is AGPL-3.0-only and runs
-as a separate process. Google credentials stay with the adapter.
+Google Messages SMS/RCS support uses the native MIT helper included with
+Handover. It still requires Google Messages on the phone and Google's service.
+See the [setup guide](docs/user-guide.md#google-messages). Credentials stay in
+the helper and desktop credential store.
+
+The separate AGPL-3.0-only
+[legacy relay](https://github.com/mananlalwani/handover-gmessages) remains an
+optional compatibility backend.
 
 KDE Connect can remain paired for compatibility with its existing capabilities.
 

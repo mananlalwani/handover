@@ -8,6 +8,10 @@ USER_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 
 install -Dm755 "$ROOT/bin/handoverd" "$PREFIX/bin/handoverd"
 install -Dm755 "$ROOT/bin/handoverctl" "$PREFIX/bin/handoverctl"
+install -Dm755 "$ROOT/bin/handover-google-messages-helper" \
+	"$PREFIX/bin/handover-google-messages-helper"
+install -Dm755 "$ROOT/bin/handover-google-messages-auth-probe" \
+	"$PREFIX/bin/handover-google-messages-auth-probe"
 install -Dm755 "$ROOT/bin/handover-gui" "$PREFIX/bin/handover-gui"
 printf '%s\n' "$USER_DATA_HOME" > "$PREFIX/bin/handover-gui.data-home"
 install -Dm644 "$ROOT/share/applications/handover.desktop" \
@@ -33,6 +37,25 @@ install -Dm644 "$ROOT/share/handover/quickshell/README.md" \
 	"$USER_DATA_HOME/handover/quickshell/README.md"
 install -Dm644 "$ROOT/share/handover/quickshell/pages/"*.qml \
 	"$USER_DATA_HOME/handover/quickshell/pages/"
+install -Dm755 "$ROOT/share/handover/google-messages/tools/install_native_probe.py" \
+	"$USER_DATA_HOME/handover/google-messages/tools/install_native_probe.py"
+install -Dm644 "$ROOT/share/handover/google-messages/tools/chrome-observer/manifest.json" \
+	"$USER_DATA_HOME/handover/google-messages/tools/chrome-observer/manifest.json"
+install -Dm644 "$ROOT/share/handover/google-messages/tools/chrome-observer/popup.html" \
+	"$USER_DATA_HOME/handover/google-messages/tools/chrome-observer/popup.html"
+install -Dm644 "$ROOT/share/handover/google-messages/tools/chrome-observer/"*.js \
+	"$USER_DATA_HOME/handover/google-messages/tools/chrome-observer/"
+install -Dm644 "$ROOT/share/licenses/handover/LICENSE" \
+	"$PREFIX/share/licenses/handover/LICENSE"
+install -Dm644 "$ROOT/share/licenses/handover/ukey2/LICENSE" \
+	"$PREFIX/share/licenses/handover/ukey2/LICENSE"
+install -Dm644 "$ROOT/share/licenses/handover/ukey2/README.md" \
+	"$PREFIX/share/licenses/handover/ukey2/README.md"
+install -Dm644 \
+	"$ROOT/share/handover/google-messages/tools/chrome-observer/privacy.mjs" \
+	"$ROOT/share/handover/google-messages/tools/chrome-observer/wire-shape.mjs" \
+	"$ROOT/share/handover/google-messages/tools/chrome-observer/README.md" \
+	"$USER_DATA_HOME/handover/google-messages/tools/chrome-observer/"
 
 systemctl --user daemon-reload
 systemctl --user reenable handoverd.service

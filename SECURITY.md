@@ -17,8 +17,9 @@ logs in a public issue, pull request, or discussion.
 Reports about native TLS and pairing, Android identity and storage, daemon IPC,
 backend isolation, secret handling, or sensitive logging are in scope. Reports
 about the optional Google Messages integration should include only sanitized
-details. Google authentication and relay credentials belong to the external
-`handover-gmessages` adapter and must not be pasted into this repository.
+details. Google authentication, pairing keys, and relay credentials stay with
+the native helper or optional external adapter and must not be pasted into
+this repository.
 
 The MIT daemon and the AGPL adapter run in separate processes and communicate
 through the [helper contract](docs/gmessages-sidecar.md). This describes the

@@ -64,8 +64,9 @@ file managers, media, other apps. Do not require one giant Handover GUI.
 
 ## Communications
 
-`handover-gmessages` is a provider. It does not define the public messaging
-model. Google protocol code stays in that process. A carrier-level RCS stack
+The native Google Messages helper is a provider. It does not define the public
+messaging model. Google protocol code stays in that process; the old relay is
+optional compatibility. A carrier-level RCS stack
 is a separate problem and is not required for the current goal.
 
 ## Done enough

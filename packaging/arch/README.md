@@ -11,6 +11,7 @@ before installing the Arch package:
 ```sh
 systemctl --user disable --now handoverd.service
 rm -f ~/.local/bin/handoverd ~/.local/bin/handoverctl
+rm -f ~/.local/bin/handover-google-messages-helper ~/.local/bin/handover-google-messages-auth-probe
 rm -f ~/.local/share/systemd/user/handoverd.service
 systemctl --user daemon-reload
 ```
@@ -35,5 +36,8 @@ to pair the phone. The
 Quickshell example is `/usr/share/handover/quickshell/example.qml`.
 
 The package files live in [`handover`](handover) and
-[`handover-git`](handover-git). Keep Google Messages in the separate
-`handover-gmessages` package. That repository is AGPL-3.0-only.
+[`handover-git`](handover-git). Current source builds include the native MIT
+Google Messages helper. The published `v0.3.4` archive predates it; that stable
+package retains its existing build until a newer source release is selected.
+The separate `handover-gmessages` package is an optional legacy compatibility
+backend and remains AGPL-3.0-only.

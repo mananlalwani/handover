@@ -12,8 +12,9 @@ makedepends=('git' 'rust' 'cargo')
 optdepends=(
   'quickshell: example panel'
   'playerctl: pause local MPRIS players during phone calls'
+  'python: install the Google Messages browser setup helper'
   'kdeconnect: optional compatibility backend'
-  'handover-gmessages: Google Messages helper (AGPL)'
+  'handover-gmessages: legacy Google Messages compatibility backend (AGPL)'
 )
 provides=('handover')
 conflicts=('handover')
@@ -34,7 +35,7 @@ prepare() {
 
 build() {
   cd handover
-  cargo build --release --frozen --offline -p handoverd -p handoverctl
+  cargo build --release --frozen --offline -p handoverd -p handoverctl -p handover-google-messages
 }
 
 package() {

@@ -30,25 +30,54 @@ use crate::contract::{
 
 /// Environment override for the helper binary path. Never carries secrets.
 pub const HELPER_ENV: &str = "HANDOVER_GMESSAGES_HELPER";
-/// Default helper binary name resolved via `PATH`.
-pub const HELPER_BINARY: &str = "handover-gmessages";
+/// Native helper shipped with the daemon.
+pub const HELPER_BINARY: &str = "handover-google-messages-helper";
+/// Optional compatibility helper for installations without the native binary.
+pub const LEGACY_HELPER_BINARY: &str = "handover-gmessages";
 
-/// Locate the helper binary: explicit env path first, then `PATH` lookup.
+/// Prefer an explicit override, then the bundled native helper, then PATH.
+/// Legacy discovery applies only when the native binary is absent. A failed
+/// native session never silently changes providers or retries a send elsewhere.
 /// Returns `None` when messaging should stay dormant.
 pub fn find_helper() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(HELPER_ENV) {
+    let configured = std::env::var_os(HELPER_ENV);
+    let executable = std::env::current_exe().ok();
+    let paths = std::env::var_os("PATH");
+    find_helper_in(
+        configured.as_deref(),
+        executable.as_deref().and_then(Path::parent),
+        paths.as_deref(),
+    )
+}
+
+fn find_helper_in(
+    configured: Option<&std::ffi::OsStr>,
+    binary_directory: Option<&Path>,
+    paths: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if let Some(path) = configured {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Some(path);
         }
         return None;
     }
-    // PATH lookup without spawning anything: messaging stays dormant when
-    // no helper binary is installed.
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|directory| directory.join(HELPER_BINARY))
-        .find(|candidate| candidate.is_file())
+    if let Some(directory) = binary_directory {
+        let bundled = directory.join(HELPER_BINARY);
+        if bundled.is_file() {
+            return Some(bundled);
+        }
+    }
+    let paths = paths?;
+    for name in [HELPER_BINARY, LEGACY_HELPER_BINARY] {
+        if let Some(path) = std::env::split_paths(paths)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 pub fn backoff_delay(restarts: u32) -> Duration {
@@ -256,14 +285,43 @@ mod tests {
     #[test]
     fn helper_env_override_missing_file_means_dormant() {
         let missing = "/tmp/handover-definitely-missing-helper-binary";
-        // Test-only env mutation: single-threaded test context.
-        unsafe {
-            std::env::set_var(HELPER_ENV, missing);
-        }
-        assert_eq!(find_helper(), None);
-        unsafe {
-            std::env::remove_var(HELPER_ENV);
-        }
+        assert_eq!(find_helper_in(Some(missing.as_ref()), None, None), None);
+    }
+
+    #[test]
+    fn discovery_prefers_native_and_preserves_explicit_legacy_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let legacy = first.join(LEGACY_HELPER_BINARY);
+        let native = second.join(HELPER_BINARY);
+        std::fs::write(&legacy, []).unwrap();
+        let paths = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(
+            find_helper_in(None, None, Some(&paths)),
+            Some(legacy.clone())
+        );
+        std::fs::write(&native, []).unwrap();
+        assert_eq!(find_helper_in(None, None, Some(&paths)), Some(native));
+        let bundled = first.join(HELPER_BINARY);
+        std::fs::write(&bundled, []).unwrap();
+        assert_eq!(
+            find_helper_in(None, Some(&first), Some(&paths)),
+            Some(bundled.clone())
+        );
+        assert_eq!(find_helper_in(None, Some(&first), None), Some(bundled));
+        assert_eq!(
+            find_helper_in(Some(legacy.as_os_str()), Some(&first), Some(&paths)),
+            Some(legacy)
+        );
+        let missing = directory.path().join("missing");
+        assert_eq!(
+            find_helper_in(Some(missing.as_os_str()), Some(&first), Some(&paths)),
+            None
+        );
+        assert_eq!(find_helper_in(None, None, None), None);
     }
 
     #[test]

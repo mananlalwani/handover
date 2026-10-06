@@ -55,10 +55,11 @@ Other state locations:
 ## Environment variables
 
 - `HANDOVER_GMESSAGES_HELPER`: explicit path to the Google Messages
-  helper binary. When unset, `handoverd` resolves
-  `handover-gmessages`
-  (production adapter) via `PATH`. When it is absent, the
-  messaging subsystem stays dormant and other backends keep working.
+  helper binary. When unset, `handoverd` prefers the bundled
+  `handover-google-messages-helper` beside the daemon, then the native helper
+  on `PATH`. If neither exists, it looks for the optional legacy
+  `handover-gmessages` on `PATH`. Missing explicit overrides keep messaging
+  dormant. Session errors do not switch helpers or resend operations.
 - `HANDOVER_GMESSAGES_STAGING_DIR`: private absolute root for helper
   attachment staging. Optional.
 - `HANDOVER_CLIPBOARD_MIRROR`: set to `1` to enable Linux-to-phone

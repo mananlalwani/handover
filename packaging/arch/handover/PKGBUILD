@@ -12,8 +12,9 @@ makedepends=('rust' 'cargo')
 optdepends=(
   'quickshell: example panel'
   'playerctl: pause local MPRIS players during phone calls'
+  'python: install the Google Messages browser setup helper'
   'kdeconnect: optional compatibility backend'
-  'handover-gmessages: Google Messages helper (AGPL)'
+  'handover-gmessages: legacy Google Messages compatibility backend (AGPL)'
 )
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
@@ -26,7 +27,12 @@ prepare() {
 
 build() {
   cd "$pkgname-$pkgver"
-  cargo build --release --frozen --offline -p handoverd -p handoverctl
+  # The published v0.3.4 source archive predates the native helper crate.
+  if [[ -f crates/handover-google-messages/Cargo.toml ]]; then
+    cargo build --release --frozen --offline -p handoverd -p handoverctl -p handover-google-messages
+  else
+    cargo build --release --frozen --offline -p handoverd -p handoverctl
+  fi
 }
 
 package() {

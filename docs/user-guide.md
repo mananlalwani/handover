@@ -116,38 +116,49 @@ hold the inhibitor.
 
 ## Google Messages
 
-Google Messages support is optional and uses the separate
-[Handover Google Messages adapter](https://github.com/mananlalwani/handover-gmessages).
-Build that adapter in its own repository, then point the daemon at the binary.
-For a systemd user service, add the variable with `systemctl --user edit
-handoverd`:
+Google Messages uses the native MIT helper bundled with Handover. It still
+requires Google Messages on the phone and Google's service. Confirmed native
+pairings reconnect after daemon restarts using the private session record and
+desktop credential store.
+
+First-time pairing uses the included Chrome extension and Native Messaging host.
+For a user installation, register the host with:
+
+```sh
+python3 "${XDG_DATA_HOME:-$HOME/.local/share}/handover/google-messages/tools/install_native_probe.py" \
+  --binary "$HOME/.local/bin/handover-google-messages-auth-probe"
+```
+
+For a system package, use `/usr/share/handover/google-messages/tools/install_native_probe.py`
+and `/usr/bin/handover-google-messages-auth-probe` instead. Load the adjacent
+`chrome-observer` directory with Chrome's **Load unpacked** action, then follow
+its [native registration and pairing instructions](../google-messages/tools/chrome-observer/README.md#register-one-native-device).
+The phone confirmation is required once. Keep Google Messages web tabs closed
+while using Handover's connected native session.
+
+The daemon receives normalized conversations, messages, statuses, capabilities,
+and opaque identifiers. Google authentication and keys stay inside the native
+helper and desktop credential store. Login bundles are sensitive; never put
+one in command arguments, shell history, logs, or a committed file. Native
+logout removes local credentials; removing the linked device on the phone is
+still a separate step.
+
+### Optional legacy relay
+
+The separate AGPL-3.0-only
+[legacy relay](https://github.com/mananlalwani/handover-gmessages) remains
+available. To select it explicitly, use `systemctl --user edit handoverd`:
 
 ```ini
 [Service]
 Environment=HANDOVER_GMESSAGES_HELPER=/path/to/handover-gmessages
 ```
 
-Then restart the daemon:
-
-```sh
-systemctl --user restart handoverd
-```
-
-The adapter handles Google credentials and the phone relay. Handover receives
-only normalized conversations, messages, statuses, capabilities, and opaque
-identifiers. Follow the adapter's [user guide](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/user-guide.md)
-and [pairing runbook](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/pairing-runbook.md)
-to obtain the login data and confirm the phone pairing. Pass the data through
-standard input or `--from-file`, for example:
-
-```sh
-handoverctl messages login gmessages:personal --from-file /path/to/bundle.json
-```
-
-The login bundle is sensitive. Do not put it in command arguments, shell
-history, logs, or a committed file. A saved session survives daemon restarts;
-run `handoverctl messages logout gmessages:personal` to revoke it and remove
-the local session.
+Restart with `systemctl --user restart handoverd`, then follow the legacy
+[setup guide](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/user-guide.md).
+An existing explicit override continues to take precedence after upgrades.
+Removing it restores native discovery. A missing override or a failed native
+session does not silently choose another provider.
 
 ## Notifications, media, calls, and clipboard
 

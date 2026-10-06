@@ -1,8 +1,9 @@
 # Contributing to Handover
 
 Handover is a Rust daemon and CLI with an Android companion and a Quickshell
-reference client. The Google Messages production adapter lives in a separate Go
-repository because it has a different license.
+reference client. The native Google Messages client and helper live here. The
+optional legacy Go adapter stays in a separate repository because it has a
+different license.
 
 ## Repository layout
 
@@ -108,7 +109,7 @@ identifiers, credentials, pairing codes, message content, or live logs.
 
 ## Google Messages adapter
 
-The production adapter is maintained in the [handover-gmessages
+The optional legacy adapter is maintained in the [handover-gmessages
 repository](https://github.com/mananlalwani/handover-gmessages). Changes to its
 Go code belong there. Its public boundary with Handover is the helper IPC
 contract described in [docs/gmessages-sidecar.md](docs/gmessages-sidecar.md).

@@ -354,11 +354,11 @@ disappearing-message capabilities because no backend attests them.
 The Google Messages path runs through an optional separate helper process
 over a versioned JSON contract (see
 [`docs/gmessages-sidecar.md`](docs/gmessages-sidecar.md)). The helper owns
-credential bundles, pairing, relay RPCs, polling, and media transfer; the
+credential bundles, pairing, relay RPCs, receive streams, and media transfer; the
 daemon owns normalized accounts, conversations, bounded message windows
 (300 per conversation), statuses, typing, and read state, and validates
-every helper record and outbound command. No Google protocol types and no
-AGPL material enter the MIT tree. A missing or dead helper only marks its
+every helper record and outbound command. Google protocol types stay below
+the normalized model; no AGPL material enters the MIT tree. A missing or dead helper only marks its
 accounts offline; native and KDE Connect state are untouched.
 
 The daemon caches normalized accounts, conversations, message windows, and read

@@ -9,17 +9,18 @@ It has independently authored source lookup, registration, correlated UKEY2
 pairing, encrypted receive, and normalized conversation/history projection.
 On 2026-10-05, live tests verified phone confirmation, credential recovery after
 restart, all 201 conversations, older message pages, and automatic incoming
-message display in Handover. The production adapter remains the default during
-development.
+message display in Handover. The native helper is now bundled and selected by
+default. The separate legacy adapter remains optional.
 
 `handover-google-messages-helper` runs this client through the existing normalized
 helper contract. It keeps one receive stream per active account for updates,
-reads, and bounded text sends. A phone capability response gates sending; an
+reads, and bounded text and media sends. A phone capability response gates sending; an
 accepted send never claims delivery, and interrupted sends remain unknown
-without automatic retries. Native text sending passed a recipient test. The daemon
-recorded that send as unknown without an assigned provider ID, so send-reply
-correlation still needs verification. Attachments, replies, reactions, token renewal, and
-remote logout remain unfinished. See
+without automatic retries. Live text tests verified acceptance, phone-assigned
+identity correlation, and sent/delivered/displayed events. A live image send
+arrived and opened on the phone; original image downloading and daemon staging
+also passed. Replies, reactions, token renewal, and remote logout remain
+unfinished. See
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for the helper contract.
 
 Confirmed pairing records stay in the restricted local session store. Required
@@ -100,7 +101,8 @@ protocol evidence and separates offline checks from live verification.
 
 The client implements the existing Handover helper IPC v1, documented in
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md). The process boundary
-and contract handling exist; the protocol work behind it does not.
+and contract handling serve native pairing, recovery, conversation/history
+reads, live updates, and text/image sends.
 Handoverd remains authoritative for normalized runtime state; credentials and
 Google protocol details remain inside this client.
 Do not copy or import the AGPL adapter, its upstream code, or generated protocol
