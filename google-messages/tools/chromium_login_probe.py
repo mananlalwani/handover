@@ -13,6 +13,8 @@ import subprocess
 import tempfile
 import time
 
+from chromium_auth_capture import capture
+
 
 def find_browser(explicit):
     candidates = [explicit] if explicit else [
@@ -53,8 +55,8 @@ def normal_sign_in(browser, profile):
                 process.wait()
 
 
-def run(browser, smoke):
-    url = "about:blank" if smoke else "https://messages.google.com/web/config"
+def run(browser, smoke, native_probe=None):
+    url = "about:blank" if smoke or native_probe else "https://messages.google.com/web/config"
     with tempfile.TemporaryDirectory(prefix="handover-chromium-signin-") as profile:
         if not smoke:
             normal_sign_in(browser, profile)
@@ -98,6 +100,9 @@ def run(browser, smoke):
             print("Private browser pipe ready. No authentication was captured.", flush=True)
             if smoke:
                 return
+            if native_probe:
+                capture(read_out, write_in, native_probe)
+                return
             print("Check whether the configuration page remains signed in, then close the window. "
                   "Do not open the conversation list.", flush=True)
             deadline = time.monotonic() + 600
@@ -129,12 +134,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", help="Installed Chromium-compatible executable")
     parser.add_argument("--self-test", action="store_true", help="Open only about:blank and exit")
+    parser.add_argument("--read-only-auth-probe", metavar="PATH",
+                        help="Run one native read-only check after sign-in; pause the existing receiver first")
     args = parser.parse_args()
+    if args.self_test and args.read_only_auth_probe:
+        parser.error("--self-test cannot capture authentication")
     try:
-        run(find_browser(args.browser), args.self_test)
+        run(find_browser(args.browser), args.self_test, args.read_only_auth_probe)
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
         # Browser output and arbitrary error values may contain private URLs.
-        print("Chromium sign-in probe failed. Check browser availability and display access.")
+        print("Chromium setup or its read-only authentication check could not complete.")
         return 1
     except KeyboardInterrupt:
         return 130

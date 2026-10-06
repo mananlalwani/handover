@@ -53,6 +53,37 @@ and Chrome exit. The user reported that the reopened page appeared signed in.
 This supports session retention across the restart; no account identity,
 authenticated native request, or phone pairing was checked by the prototype.
 
+The prototype now has an explicit read-only handoff experiment. It attaches
+only to its own blank setup tab before navigating to Messages, matches one POST
+to the allowlisted `SignInGaia` endpoint, and forwards bounded authorization,
+API-key, and service-cookie headers over the native probe's private stdin.
+Headers from unmatched requests are not retained. Early extra-header events
+are discarded rather than collecting an unrelated cookie jar. This can fail
+closed if the required event arrives before the matched request. No request
+body, response body, email, or network trace is exported or saved.
+
+The native `--local-read-only` entry point accepts only
+`gaia_lookup_with_cookies`. It shares bounded framing and fixed diagnostics with
+the extension transport, but does not impersonate an extension. Tests verify
+that registration, pairing, and daemon-login modes are rejected. Synthetic
+capture tests verify URL restrictions, header bounds, unmatched-cookie exclusion,
+and sending a single proof through stdin rather than command arguments.
+
+This test opens the Messages page and therefore requires a scheduled pause and
+restoration of the existing receiver. Do not run it alongside an active relay.
+It does not save credentials or establish a new Handover account.
+
+```sh
+cargo build -p handover-google-messages --bin handover-google-messages-auth-probe
+# Only during a scheduled receiver pause:
+python -B google-messages/tools/chromium_login_probe.py \
+  --read-only-auth-probe target/debug/handover-google-messages-auth-probe
+```
+
+Real authentication through this path remains unverified. The existing paired
+account is retained for restoration after the test. Installer integration and
+automatic registration/pairing are not implemented by this experiment.
+
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
 python google-messages/tools/chromium_login_probe.py

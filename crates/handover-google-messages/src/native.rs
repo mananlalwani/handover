@@ -80,6 +80,29 @@ where
     .await
 }
 
+/// One local stdin/stdout authentication check. No registration, persistence,
+/// pairing, or daemon login is allowed through this entry point.
+pub async fn run_local_read_only<R, W>(reader: R, writer: W) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    run_framed_probe(
+        reader,
+        writer,
+        true,
+        READ_TIMEOUT,
+        PROBE_TIMEOUT,
+        |proof| async move {
+            if proof.kind != "gaia_lookup_with_cookies" {
+                return Err(ProbeError::InvalidBootstrap);
+            }
+            probe(proof).await
+        },
+    )
+    .await
+}
+
 async fn login_via_daemon(proof: BrowserProof) -> Result<ProbeResult, ProbeError> {
     let store = SessionStore::default_store().map_err(|_| ProbeError::RegistrationFailed)?;
     let (account_id, bundle_b64) = build_login_bundle(&proof, &store)?;
@@ -130,8 +153,8 @@ fn persist_registration(registration: UnpairedRegistration) -> Result<(), ProbeE
 }
 
 async fn run_with_probe<R, W, F, Fut>(
-    mut reader: R,
-    mut writer: W,
+    reader: R,
+    writer: W,
     allowed_extension_id: &str,
     caller_origin: &str,
     read_timeout: Duration,
@@ -144,9 +167,34 @@ where
     F: FnOnce(BrowserProof) -> Fut,
     Fut: Future<Output = Result<ProbeResult, ProbeError>>,
 {
-    let response = if !valid_extension_id(allowed_extension_id)
-        || caller_origin != format!("chrome-extension://{allowed_extension_id}/")
-    {
+    let valid_origin = valid_extension_id(allowed_extension_id)
+        && caller_origin == format!("chrome-extension://{allowed_extension_id}/");
+    run_framed_probe(
+        reader,
+        writer,
+        valid_origin,
+        read_timeout,
+        probe_timeout,
+        probe_fn,
+    )
+    .await
+}
+
+async fn run_framed_probe<R, W, F, Fut>(
+    mut reader: R,
+    mut writer: W,
+    valid_origin: bool,
+    read_timeout: Duration,
+    probe_timeout: Duration,
+    probe_fn: F,
+) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    F: FnOnce(BrowserProof) -> Fut,
+    Fut: Future<Output = Result<ProbeResult, ProbeError>>,
+{
+    let response = if !valid_origin {
         failure("invalid_origin", None)
     } else {
         match tokio::time::timeout(read_timeout, read_proof(&mut reader)).await {
@@ -244,6 +292,28 @@ mod tests {
 
     const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
     const ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/";
+
+    #[tokio::test]
+    async fn local_read_only_rejects_every_side_effect_mode() {
+        for kind in [
+            "gaia_register",
+            "gaia_login",
+            "gaia_pairing_start",
+            "gaia_pairing",
+        ] {
+            let mut proof = pairing_proof();
+            proof.kind = kind.into();
+            let payload = serde_json::to_vec(&proof).unwrap();
+            let (host_reader, mut client_writer) = duplex(4096);
+            let (host_writer, client_reader) = duplex(4096);
+            client_writer.write_all(&frame(&payload)).await.unwrap();
+            let task = tokio::spawn(run_local_read_only(host_reader, host_writer));
+            let result = response(client_reader).await;
+            task.await.unwrap().unwrap();
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["error"], "invalid_bootstrap");
+        }
+    }
 
     fn pairing_proof() -> BrowserProof {
         BrowserProof {

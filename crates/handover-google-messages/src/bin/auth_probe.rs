@@ -23,6 +23,17 @@ fn arguments() -> Result<(String, String), &'static str> {
 
 #[tokio::main]
 async fn main() {
+    if env::args()
+        .skip(1)
+        .eq(["--local-read-only"].map(str::to_owned))
+    {
+        thread::spawn(|| {
+            thread::sleep(Duration::from_secs(30));
+            process::exit(124);
+        });
+        let result = native::run_local_read_only(stdin(), stdout()).await;
+        process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     let (extension_id, caller_origin) = match arguments() {
         Ok(args) => args,
         Err(code) => {
