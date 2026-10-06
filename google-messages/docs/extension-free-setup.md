@@ -32,6 +32,12 @@ the profile after the browser exits or the ten-minute deadline ends. Its
 blank-page private-pipe check passes with the installed Helium browser.
 Google sign-in, phone passkeys, and credential handoff still require live testing.
 
+The Helium live attempt was rejected by Google with "This browser or app may
+not be secure" before passkey authentication. The chooser initially missed the
+installed `google-chrome-stable` executable. It now discovers official Chrome
+before falling back to Helium. Testing Chrome separately keeps the profile and
+pipe settings unchanged; the rejection's cause is not established.
+
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
 python google-messages/tools/chromium_login_probe.py

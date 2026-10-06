@@ -16,7 +16,8 @@ import time
 def find_browser(explicit):
     candidates = [explicit] if explicit else [
         shutil.which("chromium"), shutil.which("chromium-browser"),
-        shutil.which("google-chrome"), "/opt/helium-browser-bin/chrome",
+        shutil.which("google-chrome-stable"), shutil.which("google-chrome"),
+        "/opt/google/chrome/chrome", "/opt/helium-browser-bin/chrome",
     ]
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
