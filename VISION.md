@@ -2,19 +2,14 @@
 
 Pair the phone once. After that, Linux treats it as part of the system.
 
-Handover is the Android integration layer for Linux, not an Android emulator
-and not a mandatory control-panel app. It owns discovery, trust, connection,
-device state, and transfers so other software does not reimplement pairing.
+Handover is the Android integration layer for Linux, not an Android emulator and not a mandatory control-panel app. It owns discovery, trust, connection, device state, and transfers so other software does not reimplement pairing.
 
 ## Success
 
-The laptop wakes and the phone is there. Calls, messages, notifications, media,
-contacts, clipboard, and files are available to Linux. Network changes, process
-restarts, and suspend recover without a new pairing dance.
+The laptop wakes and the phone is there. Calls, messages, notifications, media, contacts, clipboard, and files are available to Linux. Network changes, process restarts, and suspend recover without a new pairing dance.
 
 Apps use Handover types such as `Device`, `Notification`, `CallState`,
-`Conversation`, `Contact`, `Attachment`, and `MediaSession`. They do not use KDE Connect packets,
-Google protocol objects, or Matrix bridge types.
+`Conversation`, `Contact`, `Attachment`, and `MediaSession`. They do not use KDE Connect packets, Google protocol objects, or Matrix bridge types.
 
 The user rarely opens a Handover-specific window.
 
@@ -40,9 +35,7 @@ The user rarely opens a Handover-specific window.
  first-party apps   shell clients   third-party apps
 ```
 
-`handoverd` owns identity, presence, trust, and canonical state. Quickshell
-already reconnects and rebuilds from that state. Future Messages, Calls, or
-Contacts apps do the same. They do not open a second phone session.
+`handoverd` owns identity, presence, trust, and canonical state. Quickshell already reconnects and rebuilds from that state. Future Messages, Calls, or Contacts apps do the same. They do not open a second phone session.
 
 ## Principles
 
@@ -50,8 +43,7 @@ Local-first. No Handover account for basic phone and laptop use.
 
 Explicit pairing, then silent reconnect.
 
-Native Android is the primary path. Other backends stay replaceable. Their
-wire details stay out of clients.
+Native Android is the primary path. Other backends stay replaceable. Their wire details stay out of clients.
 
 Accepted is not completed. Report the state the backend actually gives you.
 
@@ -59,18 +51,12 @@ Frames, queues, files, history, retries, and concurrency have limits.
 
 If more than one client needs an operation, put it on the daemon.
 
-Put phone actions where Linux already works: shells, launchers, notifications,
-file managers, media, other apps. Do not require one giant Handover GUI.
+Put phone actions where Linux already works: shells, launchers, notifications, file managers, media, other apps. Do not require one giant Handover GUI.
 
 ## Communications
 
-The native Google Messages helper is a provider. It does not define the public
-messaging model. Google protocol code stays in that process; the old relay is
-optional compatibility. A carrier-level RCS stack
-is a separate problem and is not required for the current goal.
+The native Google Messages helper is a provider. It does not define the public messaging model. Google protocol code stays in that process. A carrier-level RCS stack is a separate problem and is not required for the current goal.
 
 ## Done enough
 
-Common Android and Linux workflows no longer make the user manage the device
-boundary. Capabilities look like ordinary Linux services. People forget
-Handover is running.
+Common Android and Linux workflows no longer make the user manage the device boundary. Capabilities look like ordinary Linux services. People forget Handover is running.

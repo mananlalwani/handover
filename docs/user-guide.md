@@ -110,9 +110,7 @@ hold the inhibitor.
 ## Google Messages
 
 Google Messages uses the native MIT helper bundled with Handover. It still
-requires Google Messages on the phone and Google's service. Confirmed native
-pairings reconnect after daemon restarts using the private session record and
-desktop credential store.
+requires Google Messages on the phone and Google's service.
 
 ### Browser setup
 

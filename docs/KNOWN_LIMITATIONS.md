@@ -25,10 +25,6 @@ Handover is pre-1.0. Public interfaces may change.
 - Capabilities depend on the connected phone and selected helper. The native
   helper does not support creating conversations, deleting messages, sending
   typing notifications, or marking messages read.
-- An interrupted send can have an unknown outcome. Handover does not resend it
-  automatically. Check the conversation before sending again.
-- Disconnecting a confirmed native account requires an online phone and a
-  confirmed unpair result. Failed or uncertain attempts retain saved credentials.
 - Message history is a bounded cache, not a complete persistent archive.
 
 ## Packaging
