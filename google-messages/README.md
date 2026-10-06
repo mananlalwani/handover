@@ -20,9 +20,10 @@ without automatic retries. Live text tests verified acceptance, phone-assigned
 identity correlation, and sent/delivered/displayed events. A live image send
 arrived and opened on the phone; original image downloading and daemon staging
 also passed. Registration renewal preserves the paired device identity and
-has passed a live forced-renewal check. Replies, reaction add/remove, and confirmed
-native phone unpairing are implemented with automated coverage and await live
-checks. See [mutation evidence](docs/message-mutations.md) and
+has passed a live forced-renewal check. The user also confirmed replies and
+reactions on the phone, and verified that native Disconnect removed the linked
+device. Reaction removal has automated coverage; its individual live result was
+not recorded. See [mutation evidence](docs/message-mutations.md) and
 [`docs/gmessages-sidecar.md`](../docs/gmessages-sidecar.md) for the helper contract.
 
 Confirmed pairing records stay in the restricted local session store. Required

@@ -153,7 +153,8 @@ To disconnect a confirmed native account, select it while online and click
 **Disconnect**, then confirm **Disconnect and unpair**. Handover asks the phone
 to unpair before removing saved credentials. If unpairing is not confirmed,
 credentials remain. Check the phone's linked devices before retrying an uncertain
-attempt. Native remote unpairing has automated coverage and awaits a live check.
+attempt. The user confirmed that native Disconnect removed Handover from the
+phone's linked devices.
 
 For terminal setup, run `handover-google-messages-setup`. It prints setup progress
 and the confirmation symbol. `--browser /path/to/browser` selects an executable;

@@ -1,7 +1,9 @@
 # Native replies, reactions, and unpairing
 
-Implemented 2026-10-05. These mutations have automated wire and local mock-phone
-coverage. They still need live verification with the user's phone.
+Implemented 2026-10-05 with automated wire and local mock-phone coverage. The
+user subsequently confirmed replies and reactions on the phone, and confirmed
+that Disconnect removed Handover from the phone's linked devices. These live
+results apply to the tested account and desktop.
 
 ## First-party evidence
 

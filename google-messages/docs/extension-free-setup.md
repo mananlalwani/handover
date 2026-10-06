@@ -34,8 +34,9 @@ repeating a failed attempt.
 
 **Disconnect** beside the account selector now requests native phone unpairing
 before removing saved credentials. Credentials remain if the phone does not
-confirm. This remote operation awaits live verification. The earlier confirmed
-disconnect/reconnect test exercised local credential removal.
+confirm. The user verified that this remote operation removed Handover from the
+phone's linked devices. The earlier disconnect/reconnect test exercised local
+credential removal.
 
 ## Verification
 
