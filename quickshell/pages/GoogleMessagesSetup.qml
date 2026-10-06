@@ -30,7 +30,7 @@ Dialog {
     function updateConnection() {
         if (savedAccount && HandoverService.messagingAccounts.some(account =>
             account.id === savedAccount && account.connected && account.authenticated))
-            notice = "Google Messages is connected.";
+            notice = "Google Messages is connected. Setup is complete.";
     }
     Connections {
         target: HandoverService
@@ -134,7 +134,7 @@ Dialog {
         RowLayout {
             Layout.alignment: Qt.AlignRight
             Button {
-                text: connectProcess.running ? "Cancel setup" : "Close"
+                text: connectProcess.running ? "Cancel setup" : setup.savedAccount ? "Done" : "Close"
                 enabled: !connectProcess.running || !setup.cancelling
                 onClicked: {
                     if (connectProcess.running) {
@@ -146,6 +146,7 @@ Dialog {
             }
             Button {
                 text: "Continue"
+                visible: !setup.savedAccount
                 enabled: !!setup.browserPath && !connectProcess.running && !inventory.running
                     && !setup.savedAccount
                 onClicked: {
