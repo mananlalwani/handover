@@ -148,23 +148,6 @@ For terminal setup, run `handover-google-messages-setup`. It prints setup progre
 and the confirmation symbol. `--browser /path/to/browser` selects an executable;
 `--list-browsers` lists detected choices without changing account state.
 
-### Optional legacy relay
-
-The separate AGPL-3.0-only
-[legacy relay](https://github.com/mananlalwani/handover-gmessages) remains
-available. To select it explicitly, use `systemctl --user edit handoverd`:
-
-```ini
-[Service]
-Environment=HANDOVER_GMESSAGES_HELPER=/path/to/handover-gmessages
-```
-
-Restart with `systemctl --user restart handoverd`, then follow the legacy
-[setup guide](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/user-guide.md).
-An existing explicit override continues to take precedence after upgrades.
-Removing it restores native discovery. A missing override or a failed native
-session does not silently choose another provider.
-
 ## Notifications, media, calls, and clipboard
 
 Android notification access, media control, call control, and background access
@@ -206,7 +189,7 @@ claim that the presentation or volume changed.
 - Native received files are size-limited and written through controlled storage
   paths.
 - Google Messages authentication stays inside the native helper and desktop
-  credential store, or the optional legacy adapter. It does not enter
+  credential store. It does not enter
   Handover's normalized state. Never put login bundles in command arguments,
   shell history, logs, or committed files.
 - Handover logs identifiers, counts, and state transitions, not message bodies,
@@ -242,7 +225,7 @@ make uninstall-user
 
 Uninstalling leaves local state on disk. The following command deletes all
 Handover state at this location, including pairing records, clipboard history,
-cached messages, adapter sessions, and received files. Back up anything you
+cached messages, messaging sessions, and received files. Back up anything you
 want to keep first:
 
 ```sh

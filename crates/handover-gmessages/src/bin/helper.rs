@@ -7,7 +7,7 @@
 //! [`Relay`] implementation. The only bundled relay is [`LoopbackRelay`],
 //! an in-memory stand-in built only with the `loopback-test` feature. The
 //! production adapter lives in the sibling `handover-gmessages` repository
-//! (see `docs/gmessages-sidecar.md`).
+//! (see `docs/gmessages-helper.md`).
 //!
 //! The helper owns credential bundles (0600 files via [`secrets`]), pairing
 //! ceremony state, relay RPCs, polling/recovery, and media transfer. It

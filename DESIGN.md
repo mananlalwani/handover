@@ -346,7 +346,7 @@ disappearing-message capabilities because no backend attests them.
 
 The Google Messages path runs through an optional separate helper process
 over a versioned JSON contract (see
-[`docs/gmessages-sidecar.md`](docs/gmessages-sidecar.md)). The helper owns
+[`docs/gmessages-helper.md`](docs/gmessages-helper.md)). The helper owns
 credential bundles, pairing, relay RPCs, receive streams, and media transfer; the
 daemon owns normalized accounts, conversations, bounded message windows
 (300 per conversation), statuses, typing, and read state, and validates

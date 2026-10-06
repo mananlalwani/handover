@@ -40,5 +40,3 @@ The package files live in [`handover`](handover) and
 [`handover-git`](handover-git). Current source builds include the native MIT
 Google Messages helper. The published `v0.3.4` archive predates it; that stable
 package retains its existing build until a newer source release is selected.
-The separate `handover-gmessages` package is an optional legacy compatibility
-backend and remains AGPL-3.0-only.

@@ -1,27 +1,14 @@
-# Google Messages sidecar
+# Google Messages helper contract
 
-The native `handover-google-messages-helper` is bundled with Handover and is
-the default Google Messages client. Explicit `HANDOVER_GMESSAGES_HELPER`
-overrides take precedence. Otherwise, discovery checks beside the daemon for
-the native helper, then `PATH`; only installations without a native binary
-fall back to the legacy helper on `PATH`. A native authentication or session
-failure never silently selects the legacy relay or retries a send through it.
+The bundled `handover-google-messages-helper` is the default Google Messages
+client. Explicit `HANDOVER_GMESSAGES_HELPER` overrides take precedence. Otherwise,
+discovery checks beside the daemon for the native helper, then `PATH`.
+Authentication or session failures never retry sends through another helper.
 
-The optional legacy Google Messages adapter lives in
-[handover-gmessages](https://github.com/mananlalwani/handover-gmessages) and is
-licensed under AGPL-3.0-only. This MIT repository communicates with it as a
-separate process. Two helpers live in this repository:
-`handover-gmessages-helper` is a loopback helper for development and tests, and
-`handover-google-messages-helper` is the in-tree helper for the independent
-client.
-
-Handover's independently authored replacement lives in
-[`google-messages/`](../google-messages/README.md) and
-[`crates/handover-google-messages`](../crates/handover-google-messages/src/lib.rs)
-in this repository. It must not import or copy the AGPL adapter or mautrix
-implementation. Its Google wire formats and authentication remain below the
-normalized helper contract; public daemon, IPC, CLI, and Quickshell models stay
-backend-independent.
+The [native client](../google-messages/README.md) owns Google protocol details,
+authentication, pairing, encryption, and media. The daemon and public clients use
+backend-independent Handover models. The in-tree `handover-gmessages-helper` is
+an explicitly selected loopback helper for development and tests.
 
 ## Layout
 
@@ -31,18 +18,17 @@ handoverctl / Quickshell
 handoverd (MIT)
   owns normalized messaging state
         |  helper IPC v1: JSON lines on helper stdin/stdout
-independent client, legacy adapter, or loopback helper
+native client or loopback helper
   credentials, pairing, relay, media
 ```
 
 The processes communicate over stdin/stdout and do not use FFI. The wire types
 are defined in [`contract.rs`](../crates/handover-gmessages/src/contract.rs),
 with `HELPER_PROTOCOL = 1`. Clients see `handover-core` messaging types.
-Google protocol objects and enums stay inside the adapter.
+Google protocol objects and enums stay inside the native client.
 
 `crates/handover-gmessages` is framing, normalization, staging, and
-supervision only. Do not vendor `libgm`, `gmproto`, emoji tables, key
-derivation constants, or endpoint lists here.
+supervision only. Google protocol implementations belong in the native client.
 
 ## Commands and events
 
@@ -72,19 +58,11 @@ complete their request.
 `command_result ok` is acceptance, not delivery. `sent` / `delivered` /
 `displayed` arrive only as later `status` events.
 
-## Fixture
+## Contract fixtures
 
-The adapter checks in `adapter/testdata/helper-events.jsonl`. Regenerate it
-from the adapter repository:
-
-```sh
-REGENERATE_FIXTURE=1 go test ./adapter/ -run TestContractFixtureIsCurrent
-```
-
-After a contract change, copy the updated fixture to
-`crates/handover-gmessages/tests/fixtures/helper-events.jsonl` in this repository
-and run the Rust contract tests. CI compares the two files when
-`HANDOVER_GMESSAGES_PUBLIC` is `true`.
+Update `crates/handover-gmessages/tests/fixtures/helper-events.jsonl` when changing
+the helper contract. Run the Rust workspace tests to check framing, normalization,
+loopback behavior, and daemon integration.
 
 ## Secrets and files
 
@@ -94,16 +72,15 @@ helper pipe. Keep bundles out of command arguments, logs, and crash reports.
 The limits are 1 MiB per IPC line, 192 KiB for the raw CLI bundle, and 256 KiB
 for the encoded helper login bundle. The daemon does not persist the bundle.
 
-The production adapter stores one mode-0600 session file per account under
-`${XDG_STATE_HOME:-~/.local/state}/handover/gmessages`. The directory uses mode
-0700, and writes use atomic rename. Pairing prompts are displayed without
-logging or persistence.
+Native pairing records use private files under `handover/gmessages-native` in the
+state directory. Required Google authentication uses desktop Secret Service.
+Directories use mode 0700 and files use mode 0600. Pairing prompts are displayed
+without logging or persistence.
 
 Helper attachment paths must sit under an approved root, be regular
 non-symlink files, and stay size-bounded. Loopback uses
-`.../handover/gmessages/staging`. The production adapter uses
-`.../handover/gmessages/staged`. Override with
-`HANDOVER_GMESSAGES_STAGING_DIR`. Before adding attachments to normalized state,
+`.../handover/gmessages/staging`. The native helper stages media below its private
+`staged/native-media` directory. Before adding attachments to normalized state,
 the daemon copies
 each file through a no-follow descriptor into
 `.../handover/gmessages/imported`. Clients never keep helper-controlled paths.
@@ -138,7 +115,7 @@ Logs use IDs, counts, and delivery states. Bodies, names, addresses,
 prompts, bundles, tokens, keys, and media bytes stay out. `redact_command`
 strips bundles before a command can be logged.
 
-## Loopback and production
+## Loopback helper
 
 Build the test helper explicitly with
 `cargo build -p handover-gmessages --features loopback-test --bin handover-gmessages-helper`.
@@ -149,10 +126,6 @@ The loopback helper supplies one RCS direct conversation, one SMS thread, and
 one RCS group. Login stores the bundle and finishes pairing on the next sync.
 Sends advance through `accepted → sent → delivered → displayed`, one step per
 sync. These simulated results support daemon, CLI, UI, and contract tests.
-
-The production adapter uses the same contract against the real relay. Point
-`HANDOVER_GMESSAGES_HELPER` at its binary and follow the adapter's
-[pairing runbook](https://github.com/mananlalwani/handover-gmessages/blob/main/docs/pairing-runbook.md).
 
 ## Native helper
 
@@ -165,11 +138,10 @@ resumption without claiming that any account is online. A lease expires after
 fifteen minutes. Native setup captures authentication below the provider boundary,
 performs existing registration/pairing operations, and persists only through the
 native session and desktop credential stores. The daemon's recovered snapshots
-remain authoritative. This path does not import the legacy adapter.
+remain authoritative.
 
 `handover-google-messages-helper` is the in-tree helper for the independent
-client. It is MIT and first-party, carries no AGPL source and no generated
-Google protobuf definitions, and speaks the same contract v1.
+client. It is MIT and first-party and speaks contract v1.
 
 ```sh
 cargo build -p handover-google-messages --bin handover-google-messages-helper
@@ -205,8 +177,7 @@ normalized paths. Keys and blob references remain below helper IPC.
 
 Capabilities are available only when advertised by the selected helper. The
 contract has no message edits, membership changes, or disappearing messages.
-The native helper does not implement every operation supported by the legacy
-adapter. See [known limitations](KNOWN_LIMITATIONS.md).
+See [known limitations](KNOWN_LIMITATIONS.md) for unavailable native operations.
 
 The daemon caches bounded normalized accounts, conversations, message windows,
 and read state in `handover/messaging-cache.json`. Set `HANDOVER_MESSAGING_CACHE=0`

@@ -1,9 +1,7 @@
 # Contributing to Handover
 
 Handover is a Rust daemon and CLI with an Android companion and a Quickshell
-reference client. The native Google Messages client and helper live here. The
-optional legacy Go adapter stays in a separate repository because it has a
-different license.
+reference client. The native Google Messages client and helper live here.
 
 ## Repository layout
 
@@ -34,10 +32,8 @@ Install:
 - Rust and Cargo.
 - A JDK and Android SDK for Android work.
 - Qt Quickshell and `qmllint` for QML work.
-- Go for work in the separate Google Messages adapter repository.
 
-The exact Android Gradle and Go versions are declared in their respective
-repository files.
+The Android Gradle versions are declared in the Android build files.
 
 ## Verification
 
@@ -107,24 +103,13 @@ When testing with a physical phone, record whether each result came from a
 physical device, an emulator, or automated tests. Do not commit private device
 identifiers, credentials, pairing codes, message content, or live logs.
 
-## Google Messages adapter
+## Google Messages client
 
-The optional legacy adapter is maintained in the [handover-gmessages
-repository](https://github.com/mananlalwani/handover-gmessages). Changes to its
-Go code belong there. Its public boundary with Handover is the helper IPC
-contract described in [docs/gmessages-sidecar.md](docs/gmessages-sidecar.md).
-
-Run the adapter checks from that repository:
-
-```sh
-go vet ./...
-go test ./...
-```
-
-Do not copy or vendor its AGPL implementation or upstream Google protocol code
-into this MIT repository. Keep Google protocol details, cookies, tokens, and
-keys inside the adapter process. Normalized messages and staged media may cross
-the helper contract under its validation and size limits.
+The native protocol client lives in `crates/handover-google-messages`. It uses
+[helper IPC v1](docs/gmessages-helper.md) to publish normalized state to the daemon.
+Keep Google protocol details, cookies, tokens, and keys inside the helper process.
+Normalized messages and staged media cross the contract under its validation and
+size limits. Run the Rust workspace checks for client and contract changes.
 
 ## Code and review expectations
 

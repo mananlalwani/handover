@@ -5,7 +5,7 @@
 //! AGPL source, no `mautrix-gmessages` code, and no generated Google protobuf
 //! definitions. It speaks the coarse normalized contract from
 //! [`handover_gmessages::contract`] on stdin/stdout and keeps its own secrets
-//! below that boundary. See `docs/gmessages-sidecar.md`.
+//! below that boundary. See `docs/gmessages-helper.md`.
 //!
 //! Scope: this is the process seam, not a finished client. It owns the
 //! restricted session store, restores pending unpaired registrations, and

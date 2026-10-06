@@ -2,7 +2,7 @@
 
 Handover's independent Google Messages client supports SMS and RCS through
 Google Messages on the phone and Google's companion service. The native helper
-is bundled and selected by default. The separate legacy adapter is optional.
+is bundled and selected by default.
 
 The [Rust client](../crates/handover-google-messages) handles authentication,
 registration, UKEY2 pairing, encrypted updates, paged history, text and media,
@@ -29,11 +29,10 @@ Handover state.
 
 ## Integration and licensing
 
-The helper implements [helper IPC v1](../docs/gmessages-sidecar.md). Other backends
+The helper implements [helper IPC v1](../docs/gmessages-helper.md). Other backends
 and public clients use the same Handover models. See the
 [known limitations](../docs/KNOWN_LIMITATIONS.md) for unavailable operations.
 
 Handover's client code is covered by the root MIT license. The included
 [UKEY2 dependency](../third_party/ukey2/README.md) retains Apache-2.0 licensing.
-No separate checkout is required. Do not copy, vendor, link, or import the AGPL
-adapter, its upstream implementation, or generated protocol definitions.
+No separate checkout is required.

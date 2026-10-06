@@ -112,7 +112,7 @@ helper. Bundles never travel through argv, shell history, logs, or
 crash reports. There is no password, token, or bundle argument. The
 bundle is bounded at 192 KiB raw (256 KiB encoded). Accepted means the helper took the
 bundle. Confirm pairing on the phone. See
-the [helper contract](../gmessages-sidecar.md) for storage rules. For normal native
+the [helper contract](../gmessages-helper.md) for storage rules. For normal native
 setup, use the [browser setup flow](../user-guide.md#browser-setup).
 
 ## logout

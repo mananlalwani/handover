@@ -48,7 +48,7 @@ Other state locations:
 - Messaging attachment staging and import roots live below
   `${XDG_STATE_HOME:-~/.local/state}/handover`. Operators may select a
   private absolute staging root with `HANDOVER_GMESSAGES_STAGING_DIR`.
-  See `docs/gmessages-sidecar.md`.
+  See `docs/gmessages-helper.md`.
 - Native trust records live in the native backend directory managed by
   `handover-native`.
 
@@ -57,8 +57,7 @@ Other state locations:
 - `HANDOVER_GMESSAGES_HELPER`: explicit path to the Google Messages
   helper binary. When unset, `handoverd` prefers the bundled
   `handover-google-messages-helper` beside the daemon, then the native helper
-  on `PATH`. If neither exists, it looks for the optional legacy
-  `handover-gmessages` on `PATH`. Missing explicit overrides keep messaging
+  on `PATH`. Missing explicit overrides keep messaging
   dormant. Session errors do not switch helpers or resend operations.
 - `HANDOVER_GMESSAGES_STAGING_DIR`: private absolute root for helper
   attachment staging. Optional.
@@ -75,7 +74,7 @@ Other state locations:
 - Google Messages is optional and runs in a separate helper process.
   Handover receives normalized conversations, messages, statuses,
   capabilities, and opaque identifiers only. Credentials stay with the
-  helper. See `docs/gmessages-sidecar.md`.
+  helper. See `docs/gmessages-helper.md`.
 
 ## Permissions
 
@@ -124,9 +123,8 @@ bounded retention, swept at daemon startup:
 - Daemon imports below
   `${XDG_STATE_HOME:-~/.local/state}/handover/gmessages/imported`:
   30 days or 1 GiB, oldest first.
-- The adapter sweeps its own staging directory on its own start:
-  7 days or 256 MiB, oldest first. It also clears crash-left session
-  temp files.
+- The native helper sweeps its media staging directory on startup:
+  30 days, 512 MiB total, or 1,024 files.
 - The daemon admits outbound attachment copies only while its staging
   directory is below 256 MiB and 4,096 files. It removes copies older
   than 7 days before each send and on startup. A full directory rejects

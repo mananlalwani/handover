@@ -131,10 +131,6 @@ you choose one. It needs Python 3, with no Handover extension or browser
 download. Tarball installs offer this component interactively, or accept
 `./install.sh --with-google-messages-setup`.
 
-The separate AGPL-3.0-only
-[legacy relay](https://github.com/mananlalwani/handover-gmessages) remains an
-optional compatibility backend.
-
 KDE Connect can remain paired for compatibility with its existing capabilities.
 
 ## Development and support
