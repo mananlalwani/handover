@@ -85,7 +85,11 @@ def native_setup(native, proof):
             if status not in ("progress", "failed", "saved") or not isinstance(message, str) or len(message) > 512:
                 raise RuntimeError("Invalid native setup status")
             # These records contain fixed status text and the public pairing symbol.
-            emit(message, status, **({"account": event["account"]} if status == "saved" else {}))
+            fields = {"account": event["account"]} if status == "saved" else {}
+            verification = event.get("verification")
+            if status == "progress" and isinstance(verification, str) and len(verification) <= 32:
+                fields["verification"] = verification
+            emit(message, status, **fields)
             saved = status == "saved"
         if process.wait(timeout=5) != 0 or not saved:
             raise RuntimeError("Native setup did not complete")

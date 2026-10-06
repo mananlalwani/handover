@@ -285,6 +285,10 @@ async fn write_setup_progress<W: AsyncWrite + Unpin>(
     progress: crate::login::LoginProgress,
 ) -> io::Result<()> {
     use crate::login::LoginProgress;
+    let verification = match &progress {
+        LoginProgress::Verification(symbol) => Some(symbol.clone()),
+        _ => None,
+    };
     let message = match progress {
         LoginProgress::Ready => "Account registration verified.".to_owned(),
         LoginProgress::RegistrationVerified => {
@@ -298,7 +302,7 @@ async fn write_setup_progress<W: AsyncWrite + Unpin>(
     };
     write_setup_event(
         writer,
-        serde_json::json!({"status":"progress","message":message}),
+        serde_json::json!({"status":"progress","message":message,"verification":verification}),
     )
     .await
 }
@@ -374,6 +378,30 @@ mod tests {
 
     const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
     const ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/";
+
+    #[tokio::test]
+    async fn setup_verification_is_separate_from_subsequent_status_text() {
+        use crate::login::LoginProgress;
+        let mut output = Vec::new();
+        write_setup_progress(&mut output, LoginProgress::Verification("🧺".into()))
+            .await
+            .unwrap();
+        write_setup_progress(&mut output, LoginProgress::InitialAcknowledgementAccepted)
+            .await
+            .unwrap();
+        write_setup_progress(&mut output, LoginProgress::FinalSendAccepted)
+            .await
+            .unwrap();
+        let events: Vec<Value> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(events[0]["verification"], "🧺");
+        assert!(events[1]["verification"].is_null());
+        assert!(events[2]["verification"].is_null());
+        assert_eq!(events[2]["status"], "progress");
+    }
 
     #[tokio::test]
     async fn local_read_only_rejects_every_side_effect_mode() {

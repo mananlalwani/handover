@@ -17,9 +17,11 @@ Dialog {
     property string savedAccount: ""
     property bool receivedStatus: false
     property bool cancelling: false
+    property string verificationSymbol: ""
 
     function prepare() {
         savedAccount = "";
+        verificationSymbol = "";
         browserPath = "";
         browsers = [];
         cancelling = false;
@@ -78,6 +80,10 @@ Dialog {
             onRead: data => {
                 try {
                     const event = JSON.parse(data);
+                    if (typeof event.verification === "string")
+                        setup.verificationSymbol = event.verification;
+                    if (event.status === "saved" || event.status === "failed")
+                        setup.verificationSymbol = "";
                     if (typeof event.message === "string") {
                         setup.receivedStatus = true;
                         setup.notice = event.message;
@@ -91,6 +97,7 @@ Dialog {
             }
         }
         onExited: (exitCode, exitStatus) => {
+            setup.verificationSymbol = "";
             if (!setup.receivedStatus)
                 setup.notice = "Google Messages setup could not start.";
             else if (exitCode !== 0 && setup.savedAccount)
@@ -131,6 +138,14 @@ Dialog {
             textFormat: Text.PlainText
             text: setup.notice
         }
+        Label {
+            Layout.fillWidth: true
+            visible: setup.verificationSymbol.length > 0
+            text: "Confirm " + setup.verificationSymbol + " on your phone."
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: 24
+        }
         RowLayout {
             Layout.alignment: Qt.AlignRight
             Button {
@@ -151,6 +166,7 @@ Dialog {
                     && !setup.savedAccount
                 onClicked: {
                     setup.receivedStatus = false;
+                    setup.verificationSymbol = "";
                     setup.notice = "Starting Google Messages setup...";
                     connectProcess.running = true;
                 }

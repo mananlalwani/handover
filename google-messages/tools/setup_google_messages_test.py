@@ -1,15 +1,36 @@
 import contextlib
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import setup_google_messages as setup
 from chromium_browsers import BrowserCandidate
 
 
 class SetupTests(unittest.TestCase):
+    def test_pairing_symbol_survives_native_status_forwarding(self):
+        events = [
+            {"status": "progress", "message": "Confirm on phone", "verification": "🧺"},
+            {"status": "progress", "message": "Waiting", "verification": None},
+            {"status": "saved", "message": "Saved", "account": "opaque-test"},
+        ]
+        process = Mock()
+        process.stdout = io.BytesIO(b"".join(
+            json.dumps(event).encode() + b"\n" for event in events))
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+        output = io.StringIO()
+        with patch.object(setup.subprocess, "Popen", return_value=process), \
+             contextlib.redirect_stdout(output):
+            setup.native_setup("synthetic-probe", {})
+        forwarded = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(forwarded[0]["verification"], "🧺")
+        self.assertNotIn("verification", forwarded[1])
+        self.assertEqual(forwarded[2]["status"], "saved")
+
     def test_pause_is_released_when_setup_raises(self):
         requests = []
 
