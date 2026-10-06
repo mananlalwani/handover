@@ -55,8 +55,9 @@ establishes a usable session.
 
 Install with `make install-user GOOGLE_MESSAGES_SETUP=1` or the tarball installer's
 `--with-google-messages-setup` option. Python 3 is optional for the base runtime.
-The normal Chrome sign-in and read-only handoff are live-tested. Full setup and
-other browser implementations still need live checks. See the
+The user confirmed the installed full flow for fresh pairing, restart recovery,
+and disconnect/reconnect. Normal Chrome sign-in and the read-only handoff also
+passed live checks. Other detected browsers remain unverified. See the
 [user guide](../docs/user-guide.md#browser-setup).
 
 ## Collect first-party evidence

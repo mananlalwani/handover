@@ -1,136 +1,82 @@
 # Extension-free Google Messages setup
 
-Investigated 2026-10-05. The current Handover session was left running.
-No account credentials, Google registration, phone pairing, or messages were
-accessed during this investigation.
+Updated 2026-10-05. The optional setup component is implemented and locally
+installed. The user confirmed fresh phone pairing, daemon restart recovery,
+and Disconnect followed by connecting again in the installed UI. The pairing
+symbol stays visible through subsequent handshake updates. These are live
+results for this account and desktop; other discovered browsers remain unverified.
 
-## Conclusion
+## Current setup flow
 
-The first investigated candidate was a setup window using full Chrome with a temporary,
-Handover-owned profile and a private DevTools pipe. Handover could capture the
-same narrowly scoped authentication proof as the existing extension, then use
-its existing native registration and pairing flow. The local browser connection
-works; Google sign-in acceptance and the authenticated handoff remain untested.
+Install with `make install-user GOOGLE_MESSAGES_SETUP=1`, or use the release
+installer's `--with-google-messages-setup` option. The component needs Python 3
+and an installed Chromium browser. It does not download a browser or require
+an extension.
 
-Opening the user's existing browser alone does not provide that handoff.
-No supported consumer Messages OAuth callback was found. An ordinary Google
-sign-in callback must not be treated as authorization for Messages.
+In Messages, click **Connect Google Messages** and choose a browser. Sign in in
+the normal window, then choose **Exit** in its menu. Handover reopens its own
+temporary profile with a private DevTools pipe, captures one allowlisted
+Messages authentication request, then closes the browser and removes the
+profile before native setup. The normal browser profile is never accessed.
 
-The user initially chose an optional built-in sign-in component to avoid
-installing an extension or separate Chrome browser. A small dynamically linked
-[Qt WebEngine prototype](../login-window/README.md) now builds independently of
-the Rust workspace. Its private-profile blank-page check passes. Google sign-in
-and authentication handoff remain unverified. It is not included in installers
-yet. The existing native session and extension setup remain available.
+A unique saved registration and phone match refreshes that account's credentials.
+Otherwise native setup registers a device and shows the confirmation symbol.
+Confirm that symbol on the phone. Required Google authentication is saved in
+desktop Secret Service. Handover reports connected only when the daemon reports
+an authenticated, connected account, then offers **Done**.
 
-The real Qt sign-in attempt stalled on a required phone/Bitwarden passkey.
-Successful sign-in was not observed. The user chose installed Chromium next.
-The [Chromium sign-in probe](../tools/chromium_login_probe.py) uses a fresh
-temporary profile and DevTools pipe descriptors, with no debugging TCP listener,
-extension, request capture, or access to the normal browser profile. It deletes
-the profile after the browser exits or the ten-minute deadline ends. Its
-blank-page private-pipe check passes with the installed Helium browser.
-Google sign-in, phone passkeys, and credential handoff still require live testing.
+The daemon pauses only the messaging helper under a fifteen-minute setup lease.
+Other continuity features keep running. Cancellation releases the lease, and
+expiry recovers from a crashed setup process. Interrupted registration or
+pairing is not retried automatically. Check linked devices on the phone before
+repeating a failed attempt.
 
-The Helium live attempt was rejected by Google with "This browser or app may
-not be secure" before passkey authentication. The chooser initially missed the
-installed `google-chrome-stable` executable. It now discovers official Chrome
-before falling back to Helium. Testing Chrome separately keeps the profile and
-pipe settings unchanged; the rejection's cause is not established.
+**Disconnect** beside the account selector removes that account's local saved
+credentials after confirmation. It does not revoke the linked device on the
+phone. Remove that device separately in Google Messages if desired.
 
-Official Chrome also rejected sign-in under the original launch settings.
-A normal Chrome window with a fresh profile, no debugging connection, and no
-app mode then accepted the same user's sign-in. This implicates the changed
-launch settings but does not isolate a single flag. The prototype now starts
-normal Chrome for sign-in. When the user closes it, the prototype reopens its
-own temporary profile with a private pipe at the Messages configuration page.
-No app mode or sync-disabling flag is used. Session retention after this restart
-and the native credential handoff remain unverified. Closing the first window
-only advances the experiment; it is not evidence of successful authentication.
+## Verification
 
-In the live two-stage test, the private pipe became ready after normal sign-in
-and Chrome exit. The user reported that the reopened page appeared signed in.
-This supports session retention across the restart; no account identity,
-authenticated native request, or phone pairing was checked by the prototype.
+- Official Chrome normal sign-in accepted the user's phone passkey. The bounded
+  read-only native authentication handoff passed during a receiver pause.
+- The live setup lease stopped the helper while the daemon stayed active, then
+  restored the previously online account.
+- The installed full setup reached connected for an existing pairing. The user
+  subsequently confirmed fresh pairing, restart recovery, and disconnect/reconnect.
+- Native and Python regression tests cover separate verification-symbol progress
+  and forwarding. The user confirmed the emoji display fix in Handover.
+- Browser discovery, capture bounds, cancellation, lease expiry, and rejected
+  setup modes have automated coverage. The Rust workspace, Python setup tests,
+  and QML checks pass.
 
-The prototype now has an explicit read-only handoff experiment. It attaches
-only to its own blank setup tab before navigating to Messages, matches one POST
-to the allowlisted `SignInGaia` endpoint, and forwards bounded authorization,
-API-key, and service-cookie headers over the native probe's private stdin.
-Headers from unmatched requests are not retained. Early extra-header events
-are discarded rather than collecting an unrelated cookie jar. This can fail
-closed if the required event arrives before the matched request. No request
-body, response body, email, or network trace is exported or saved.
+Discovery lists installed browsers; it does not establish Google sign-in support
+for every listed browser. The exact browser used in the final full-flow checks
+was not recorded. Official Chrome's sign-in and read-only handoff were verified
+separately.
 
-The native `--local-read-only` entry point accepts only
-`gaia_lookup_with_cookies`. It shares bounded framing and fixed diagnostics with
-the extension transport, but does not impersonate an extension. Tests verify
-that registration, pairing, and daemon-login modes are rejected. Synthetic
-capture tests verify URL restrictions, header bounds, unmatched-cookie exclusion,
-and sending a single proof through stdin rather than command arguments.
+## Investigation findings
 
-This test opens the Messages page and therefore requires a scheduled pause and
-restoration of the existing receiver. Do not run it alongside an active relay.
-It does not save credentials or establish a new Handover account.
+The Qt WebEngine prototype stalled on the required phone/Bitwarden passkey and
+is not packaged. Both Helium and official Chrome rejected the original launch
+with debugging enabled before sign-in. Normal Chrome sign-in succeeded; reopening
+that temporary profile with a private pipe preserved the session and allowed
+the native handoff. No sign-in bypass or user-agent spoofing was added.
+
+The capture matches only POST `SignInGaia` requests on allowlisted HTTPS hosts.
+It forwards bounded authentication headers over private stdin and never exports
+request bodies, response bodies, or a network trace. Unmatched headers are not
+retained. Early extra-header events are discarded and can make capture fail
+closed. Account selection uses a narrowly scoped page read during full setup.
+The `--local-read-only` probe rejects registration and pairing modes.
+
+The development probes remain available for isolated checks:
 
 ```sh
-cargo build -p handover-google-messages --bin handover-google-messages-auth-probe
+python google-messages/tools/chromium_login_probe.py --self-test
 # Only during a scheduled receiver pause:
 python -B google-messages/tools/chromium_login_probe.py \
   --read-only-auth-probe target/debug/handover-google-messages-auth-probe
 ```
-
-The existing paired account is retained for restoration after the test. Installer integration and
-automatic registration/pairing are not implemented by this experiment.
-
-The live read-only handoff subsequently passed on 2026-10-05. During a scheduled
-receiver pause, the user signed in normally with official Chrome and closed it.
-The prototype reopened its temporary profile with the private pipe, captured
-one matched authentication request, and the native probe reported successful
-read-only authentication. No credentials were saved, no registration or phone
-pairing was requested, and the temporary browser profile was deleted when the
-probe exited. Handover was restarted immediately afterward. This verifies the
-two-stage authentication handoff, not a complete installer or pairing wizard.
-
-## Implemented setup component
-
-The optional `handover-google-messages-setup` command and Messages dialog now
-implement installed-browser discovery, explicit browser selection, normal
-sign-in, the private-pipe handoff, native registration/pairing, and cancellation.
-They prefer a known supported system default. The daemon owns a bounded helper
-pause through normalized setup lease methods, so other continuity functions stay
-available. Setup releases the lease on exit; an abandoned lease expires after
-fifteen minutes. Native setup reauthenticates a unique saved registration/phone
-match from the signed-in account's attested source list. It does not select an
-account by a display name or create another device for that saved match.
-
-The browser profile is removed before native pairing begins. Google proof stays
-inside the provider's local browser/backend processes and the approved desktop
-credential store. No new helper IPC contract, separate repository, browser
-download, or Handover extension is required. Installation is optional and needs
-only Python 3 in addition to an installed Chromium browser.
-
-Synthetic discovery, capture, cancellation, lease expiry, and rejected setup-mode
-tests pass. The existing registration and pairing tests still exercise their
-protocol behavior. Full dialog reauthentication and fresh account pairing await
-live checks. Only official Chrome sign-in and the read-only handoff are currently
-verified with the user's account; discovery is not a claim that Google accepts
-every browser.
-
-The optional component is installed locally. A live lease check verified one
-online account before pause, zero during the helper pause while `handoverd`
-remained active, and one after resumption. Installed browser discovery selects
-the user's Helium default and offers Chrome. The new full setup flow has not yet
-been driven through browser sign-in or fresh phone confirmation.
-
-```sh
-python google-messages/tools/chromium_login_probe.py --self-test
-python google-messages/tools/chromium_login_probe.py
-```
-
-`--browser /path/to/chromium` selects another installed Chromium-compatible
-executable. The probe opens only account sign-in and the Messages configuration
-page. Close it after sign-in; do not open the Messages conversation list.
 
 ## Evidence
 
@@ -179,36 +125,3 @@ not isolated. No anti-detection changes or sign-in bypass are proposed.
 Sources: [Google browser policy](https://developers.google.com/identity/protocols/oauth2/policies#use_secure_browsers),
 [Google user-agent errors](https://developers.google.com/identity/protocols/oauth2/native-app#disallowed_useragent),
 [Earlier local observation](pairing-evidence.md#observed-pre-authentication-pairing-traffic).
-
-## Local feasibility check
-
-Installed Chrome 154.0.8037.97 started successfully with a new private temporary
-profile, `--remote-debugging-pipe`, and `about:blank`. DevTools returned the
-browser version and one blank page. No extension, debugging TCP listener,
-existing browser profile, or signed-in Google page was used. Chrome was closed
-and the temporary profile removed. This verifies process and pipe access only.
-
-## Proposed setup experience and next proof
-
-The user clicks Connect Google Messages. Handover opens a full Chrome setup
-window, the user signs in, and Handover captures one matched Messages request.
-The existing native client then registers and pairs its own device. The user
-confirms on the phone. Afterward Handover closes the setup window and removes
-the temporary profile; the required authentication stays in the already
-approved desktop credential store. Reconnects and renewal use that store.
-
-This trades extension installation for signing in once in a separate window.
-It does not reuse the normal browser's existing login. Chrome must be available
-unless a later packaging decision supplies a supported full browser.
-
-Before changing the supported setup flow, build a bounded login-only prototype
-and test real sign-in plus one read-only native account check. It should capture
-only the validated Messages request and transient account selection, retain no
-page contents or network trace, and keep secrets out of arguments and logs.
-Browser control must end on success, cancellation, or timeout. The authenticated
-test needs a scheduled pause of Handover's receiver because Google allows only
-one active computer session. It must restore the existing session afterward.
-No fresh registration or phone pairing is needed for that first proof.
-
-If Google rejects the login, retain the working extension flow and record the
-failure. The extension-free route is not a completed setup feature yet.

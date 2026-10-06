@@ -143,10 +143,15 @@ Cancellation resumes the helper. A crashed setup's pause expires after fifteen
 minutes. Interrupted registration or pairing is not retried automatically.
 Check your phone's linked devices before repeating a failed attempt.
 
-Normal Chrome passkey sign-in and the read-only native handoff have passed live
-tests. The complete setup dialog, credential refresh, and fresh phone pairing
-flow still need end-to-end live checks. Other detected browsers are unverified.
+The installed setup flow has passed user-confirmed live checks for fresh phone
+pairing, restart recovery, and disconnect/reconnect. Official Chrome passkey
+sign-in and the read-only native handoff also passed. Other detected browsers
+remain unverified.
 An account is shown connected only after the daemon reports a usable session.
+
+To disconnect, select the account and click **Disconnect**, then confirm. This
+removes its saved Handover credentials. It does not remove the linked device on
+the phone; use Google Messages device pairing settings for that.
 
 For terminal setup, run `handover-google-messages-setup`. It prints setup progress
 and the confirmation symbol. `--browser /path/to/browser` selects an executable;
