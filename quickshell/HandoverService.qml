@@ -39,19 +39,33 @@ Singleton {
         return sendRequest("contacts.sync", { device_id: device.id });
     }
 
+    function contactPhoneKey(phone) {
+        const digits = String(phone || "").replace(/[^0-9]/g, "");
+        // NANP national numbers have ten digits. Only the country-code 1
+        // equivalent is accepted; arbitrary suffix matches can join people
+        // from different countries or mistake short codes for contacts.
+        const national = digits.length === 11 && digits.startsWith("1")
+            ? digits.slice(1) : digits;
+        if ((digits.length === 10 || (digits.length === 11 && digits.startsWith("1")))
+            && /^[2-9][0-9]{2}[2-9][0-9]{6}$/.test(national))
+            return "nanp:" + national;
+        return digits ? "digits:" + digits : "";
+    }
+
     function contactForParticipant(participant) {
         if (!participant)
             return null;
         const address = String(participant.address || "").trim();
         if (!address)
             return null;
-        const normalized = address.replace(/[^0-9]/g, "");
         const email = address.toLowerCase();
-        return contacts.find(contact =>
-            (normalized.length > 0 && (contact.phones || []).some(phone =>
-                String(phone).replace(/[^0-9]/g, "") === normalized))
-            || (email.includes("@") && (contact.emails || []).some(candidate =>
-                String(candidate).toLowerCase() === email))) || null;
+        const key = contactPhoneKey(address);
+        const matches = contacts.filter(contact => email.includes("@")
+            ? (contact.emails || []).some(candidate =>
+                String(candidate).trim().toLowerCase() === email)
+            : (key.length > 0 && (contact.phones || []).some(phone =>
+                contactPhoneKey(phone) === key)));
+        return matches.length === 1 ? matches[0] : null;
     }
 
     function contactLabel(participant) {

@@ -18,7 +18,7 @@ function extract(file, name) {
 }
 function labels(contacts = []) {
     const context = vm.createContext({ contacts });
-    vm.runInContext(['contactForParticipant', 'contactLabel'].map(name => extract('../HandoverService.qml', name)).join('\n'), context);
+    vm.runInContext(['contactPhoneKey', 'contactForParticipant', 'contactLabel'].map(name => extract('../HandoverService.qml', name)).join('\n'), context);
     context.HandoverService = context;
     vm.runInContext(extract('../pages/MessagesPage.qml', 'conversationLabel'), context);
     return context;
@@ -45,4 +45,17 @@ test('a locally formatted numeric title uses the sole named peer', () => {
 test('a synced phone contact resolves a numeric Google participant and title', () => {
     const contact = { display_name: 'Phone contact', phones: ['+1 (555) 555-0100'], emails: [] };
     assert.equal(labels([contact]).conversationLabel({ kind: 'direct', title: '5555550100', participants: [{ ...peer, display_name: '+15555550100' }] }), 'Phone contact');
+});
+
+test('a saved national NANP number resolves an explicit +1 participant', () => {
+    const contact = { display_name: 'Phone contact', phones: ['(555) 555-0100'], emails: [] };
+    assert.equal(labels([contact]).contactLabel(peer), 'Phone contact');
+});
+test('ambiguous phone contacts do not choose the first name', () => {
+    const contacts = ['First', 'Second'].map(display_name => ({ display_name, phones: ['+15555550100'], emails: [] }));
+    assert.equal(labels(contacts).contactForParticipant(peer), null);
+});
+test('matching national numbers do not collapse different country codes', () => {
+    const contact = { display_name: 'Phone contact', phones: ['5555550100'], emails: [] };
+    assert.equal(labels([contact]).contactForParticipant({ ...peer, address: '+445555550100' }), null);
 });
