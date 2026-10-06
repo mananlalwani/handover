@@ -16,12 +16,30 @@ Opening the user's existing browser alone does not provide that handoff.
 No supported consumer Messages OAuth callback was found. An ordinary Google
 sign-in callback must not be treated as authorization for Messages.
 
-The user subsequently chose an optional built-in sign-in component to avoid
+The user initially chose an optional built-in sign-in component to avoid
 installing an extension or separate Chrome browser. A small dynamically linked
 [Qt WebEngine prototype](../login-window/README.md) now builds independently of
 the Rust workspace. Its private-profile blank-page check passes. Google sign-in
 and authentication handoff remain unverified. It is not included in installers
 yet. The existing native session and extension setup remain available.
+
+The real Qt sign-in attempt stalled on a required phone/Bitwarden passkey.
+Successful sign-in was not observed. The user chose installed Chromium next.
+The [Chromium sign-in probe](../tools/chromium_login_probe.py) uses a fresh
+temporary profile and DevTools pipe descriptors, with no debugging TCP listener,
+extension, request capture, or access to the normal browser profile. It deletes
+the profile after the browser exits or the ten-minute deadline ends. Its
+blank-page private-pipe check passes with the installed Helium browser.
+Google sign-in, phone passkeys, and credential handoff still require live testing.
+
+```sh
+python google-messages/tools/chromium_login_probe.py --self-test
+python google-messages/tools/chromium_login_probe.py
+```
+
+`--browser /path/to/chromium` selects another installed Chromium-compatible
+executable. The probe opens only account sign-in and the Messages configuration
+page. Close it after sign-in; do not open the Messages conversation list.
 
 ## Evidence
 
