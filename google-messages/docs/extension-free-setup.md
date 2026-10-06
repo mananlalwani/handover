@@ -80,9 +80,17 @@ python -B google-messages/tools/chromium_login_probe.py \
   --read-only-auth-probe target/debug/handover-google-messages-auth-probe
 ```
 
-Real authentication through this path remains unverified. The existing paired
-account is retained for restoration after the test. Installer integration and
+The existing paired account is retained for restoration after the test. Installer integration and
 automatic registration/pairing are not implemented by this experiment.
+
+The live read-only handoff subsequently passed on 2026-10-05. During a scheduled
+receiver pause, the user signed in normally with official Chrome and closed it.
+The prototype reopened its temporary profile with the private pipe, captured
+one matched authentication request, and the native probe reported successful
+read-only authentication. No credentials were saved, no registration or phone
+pairing was requested, and the temporary browser profile was deleted when the
+probe exited. Handover was restarted immediately afterward. This verifies the
+two-stage authentication handoff, not a complete installer or pairing wizard.
 
 ```sh
 python google-messages/tools/chromium_login_probe.py --self-test
