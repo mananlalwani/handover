@@ -34,6 +34,8 @@ struct MessagingCache {
     read_states: Vec<ReadState>,
     #[serde(default)]
     loaded_history: Vec<(handover_core::ConversationId, usize)>,
+    #[serde(default)]
+    contacts: Vec<handover_core::Contact>,
 }
 
 fn cache_path() -> io::Result<PathBuf> {
@@ -102,6 +104,19 @@ fn restore_from_path(
     for (id, limit) in cache.loaded_history {
         state.messaging_mut().mark_history_loaded(&id, limit);
     }
+    let mut contacts = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for contact in cache.contacts {
+        contacts
+            .entry(contact.device_id.clone())
+            .or_default()
+            .push(contact);
+    }
+    for (device_id, contacts) in contacts {
+        state.apply(StateEvent::Contacts(handover_core::ContactsEvent::Synced {
+            device_id,
+            contacts,
+        }));
+    }
     for read_state in cache.read_states {
         state.apply(StateEvent::Messaging(MessagingEvent::Read(read_state)));
     }
@@ -109,7 +124,7 @@ fn restore_from_path(
 }
 
 pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std::error::Error>> {
-    if disabled() {
+    if disabled() || cfg!(test) {
         return Ok(());
     }
     let handle = tokio::runtime::Handle::try_current()?;
@@ -203,6 +218,7 @@ async fn persist_async(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn st
             messages: guard.messaging().snapshot_messages(),
             read_states: guard.messaging().snapshot_read(),
             loaded_history: guard.messaging().snapshot_loaded_history(),
+            contacts: guard.contacts(),
         }
     };
     let path = cache_path()?;
@@ -270,6 +286,7 @@ fn prune_cache(cache: &mut MessagingCache) {
             .unwrap_or(0);
     }
     if encoded_len > MAX_CACHE_BYTES as usize {
+        cache.contacts.clear();
         cache.loaded_history.clear();
         cache.messages.clear();
         cache.read_states.clear();
@@ -355,6 +372,7 @@ mod tests {
             messages: state.messaging().snapshot_messages(),
             read_states: state.messaging().snapshot_read(),
             loaded_history: state.messaging().snapshot_loaded_history(),
+            contacts: state.contacts(),
         }
     }
 
@@ -382,6 +400,26 @@ mod tests {
         );
         assert_eq!(restored.messaging().snapshot_messages(), cache.messages);
         assert_eq!(restored.messaging().snapshot_read(), cache.read_states);
+    }
+
+    #[test]
+    fn cached_contact_names_survive_daemon_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.json");
+        let mut source = StateStore::default();
+        let mut cache = seed_cache(&mut source);
+        cache.contacts = vec![handover_core::Contact {
+            device_id: handover_core::DeviceId::new("native:fixture"),
+            local_id: "contact".into(),
+            display_name: "Saved name".into(),
+            phones: vec!["+15555550100".into()],
+            emails: Vec::new(),
+            photo: None,
+        }];
+        write_cache(&path, &cache);
+        let mut restored = StateStore::default();
+        restore_from_path(&mut restored, &path).unwrap();
+        assert_eq!(restored.contacts(), cache.contacts);
     }
 
     #[test]
@@ -415,6 +453,7 @@ mod tests {
             messages: Vec::new(),
             read_states: Vec::new(),
             loaded_history: Vec::new(),
+            contacts: Vec::new(),
         };
         write_cache(&path, &cache);
 
@@ -438,6 +477,7 @@ mod tests {
             messages: Vec::new(),
             read_states: Vec::new(),
             loaded_history: Vec::new(),
+            contacts: Vec::new(),
         };
         write_cache(&path, &cache);
         let mut restored = StateStore::default();
@@ -495,6 +535,7 @@ mod tests {
             messages,
             read_states: Vec::new(),
             loaded_history: Vec::new(),
+            contacts: Vec::new(),
         };
 
         prune_cache(&mut cache);

@@ -580,6 +580,89 @@ where
     W: AsyncWrite + Unpin,
 {
     let limit = limit.unwrap_or(25).clamp(1, 100) as usize;
+    let archive = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .message_archive
+        .clone();
+    let latest = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .messaging()
+        .history(&conversation_id, 1, None)
+        .ok()
+        .and_then(|(messages, _)| messages.into_iter().last());
+    if let Some(archive) = &archive {
+        if let Ok(Some((messages, cursor_next))) = archive
+            .history(conversation_id.clone(), limit, cursor.clone(), latest)
+            .await
+        {
+            let (messages, cursor_next) = fit_history_page(&conversation_id, messages, cursor_next);
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::History {
+                    conversation_id,
+                    messages,
+                    cursor_next,
+                }),
+            )
+            .await?;
+            return Ok(true);
+        }
+    }
+    // A sparse live window cannot prove that older pages are contiguous.
+    // Full-history and older-page requests fill archive gaps from the helper
+    // once, then reuse the exact stored provider pages on subsequent reads.
+    if let (Some(archive), Some(hub)) = (&archive, messaging) {
+        let known = state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .messaging()
+            .conversation(&conversation_id)
+            .is_some();
+        if known && (limit == 100 || cursor.is_some()) {
+            let fetched = hub
+                .fetch_through_helper(
+                    conversation_id.account_id.as_str(),
+                    &conversation_id.local_id,
+                    limit as u32,
+                    cursor.clone(),
+                )
+                .await;
+            let page = if fetched.is_ok() {
+                archive
+                    .history(conversation_id.clone(), limit, cursor.clone(), None)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            if let Some((messages, cursor_next)) = page {
+                let (messages, cursor_next) =
+                    fit_history_page(&conversation_id, messages, cursor_next);
+                write_json_line(
+                    writer,
+                    &ServerMessage::new(ServerPayload::History {
+                        conversation_id,
+                        messages,
+                        cursor_next,
+                    }),
+                )
+                .await?;
+            } else {
+                write_json_line(
+                    writer,
+                    &ServerMessage::protocol_error(
+                        ErrorCode::HistoryUnavailable,
+                        "history page is unavailable",
+                    ),
+                )
+                .await?;
+            }
+            return Ok(true);
+        }
+    }
     let read = || {
         state
             .read()
@@ -670,7 +753,19 @@ where
                 .await?;
                 return Ok(true);
             }
-            match read() {
+            let archived = if let Some(archive) = &archive {
+                archive
+                    .history(conversation_id.clone(), limit, cursor.clone(), None)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            match archived
+                .ok_or(HistoryGap::CursorOutsideWindow)
+                .or_else(|_| read())
+            {
                 Ok((messages, cursor_next)) => {
                     let (messages, cursor_next) =
                         fit_history_page(&conversation_id, messages, cursor_next);
@@ -2645,6 +2740,61 @@ mod messaging_failure_tests {
             "oversized bundle must fail closed, got {error:?}"
         );
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn older_archived_history_is_served_without_a_provider_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = crate::messaging_archive::MessageArchive::open(
+            &directory.path().join("history.sqlite"),
+        )
+        .unwrap();
+        let state = seeded_state();
+        let template = state.read().unwrap().messaging().snapshot_messages()[0].clone();
+        let id = template.id.conversation_id.clone();
+        let mut messages = Vec::new();
+        for number in 1..=100 {
+            let mut message = template.clone();
+            message.id.local_id = format!("archived-{number}");
+            message.sent_at = Some(number);
+            messages.push(message);
+        }
+        archive
+            .store_page(
+                id.clone(),
+                Some("outside-live-window".into()),
+                messages.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        state.write().unwrap().message_archive = Some(archive);
+        let hub = MessagingHub::new();
+        let (sender, mut commands) = tokio::sync::mpsc::channel(8);
+        hub.set_sender(Some(sender)).await;
+        let mut output = Vec::new();
+        handle_history(
+            id,
+            Some(100),
+            Some("outside-live-window".into()),
+            &mut output,
+            &state,
+            &Some(hub),
+        )
+        .await
+        .unwrap();
+        let result: ServerMessage = serde_json::from_slice(&output).unwrap();
+        let ServerPayload::History {
+            messages: restored,
+            cursor_next,
+            ..
+        } = result.payload
+        else {
+            panic!("expected archived history");
+        };
+        assert_eq!(restored, messages);
+        assert!(cursor_next.is_none());
+        assert!(commands.try_recv().is_err());
     }
 
     #[tokio::test]

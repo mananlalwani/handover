@@ -104,6 +104,35 @@ Singleton {
     property var conversationMessages: ({})
     property var conversationCursors: ({})
     property var exhaustiveHistoryLoads: ({})
+    property var historyRequests: ({})
+    property var historyFocus: null
+    property var automaticHistoryNext: null
+    function setHistoryFocus(conversationId) {
+        if (historyFocus && (!conversationId || !sameConversationId(historyFocus, conversationId))) {
+            const key = conversationKey(historyFocus);
+            if (exhaustiveHistoryLoads[key] && exhaustiveHistoryLoads[key].automatic) {
+                const loads = Object.assign({}, exhaustiveHistoryLoads);
+                delete loads[key];
+                exhaustiveHistoryLoads = loads;
+            }
+            automaticHistoryNext = null;
+        }
+        historyFocus = conversationId;
+    }
+    Timer {
+        id: automaticHistoryPageTimer
+        interval: 1000
+        onTriggered: {
+            const next = root.automaticHistoryNext;
+            root.automaticHistoryNext = null;
+            if (next && root.historyFocus && root.sameConversationId(root.historyFocus, next.id)
+                    && root.isLoadingAllHistory(next.id))
+                if (!root.loadHistory(next.id, 100, next.cursor)) {
+                    root.automaticHistoryNext = next;
+                    automaticHistoryPageTimer.restart();
+                }
+        }
+    }
     property var typingStates: []
     property var readStates: []
     property var outgoingOperations: []
@@ -233,18 +262,29 @@ Singleton {
     }
 
     function loadHistory(conversationId, limit, cursor) {
+        const key = conversationKey(conversationId);
+        if (historyRequests[key])
+            return false;
         const fields = { conversation_id: conversationId };
         if (limit)
             fields.limit = limit;
         if (cursor)
             fields.cursor = cursor;
-        return sendRequest("messages.history", fields);
+        const sent = sendRequest("messages.history", fields);
+        if (sent) {
+            const requests = Object.assign({}, historyRequests);
+            requests[key] = true;
+            historyRequests = requests;
+        }
+        return sent;
     }
 
-    function loadAllHistory(conversationId) {
+    function loadAllHistory(conversationId, automatic) {
+        if (historyRequests[conversationKey(conversationId)])
+            return false;
         const key = conversationKey(conversationId);
         const loads = Object.assign({}, exhaustiveHistoryLoads);
-        loads[key] = true;
+        loads[key] = { automatic: !!automatic, lastCursor: null };
         exhaustiveHistoryLoads = loads;
         // Start from the newest page. A cursor held by the UI may belong to
         // an older daemon window after reconnect/sync and would force an
@@ -620,6 +660,9 @@ Singleton {
         messagingAccounts = [];
         conversations = [];
         conversationMessages = {};
+        exhaustiveHistoryLoads = ({});
+        historyRequests = ({});
+        automaticHistoryNext = null;
         conversationCursors = {};
         typingStates = [];
         readStates = [];
@@ -903,6 +946,11 @@ Singleton {
                 replaceConversation(conversation);
             break;
         case "history":
+            {
+                const requests = Object.assign({}, historyRequests);
+                delete requests[conversationKey(message.conversation_id)];
+                historyRequests = requests;
+            }
             replaceMessages(message.conversation_id, message.messages || [], message.cursor_next);
             {
                 const key = conversationKey(message.conversation_id);
@@ -910,7 +958,20 @@ Singleton {
                     if (message.cursor_next) {
                         historyProgress(message.conversation_id, false,
                             (message.messages || []).length);
-                        loadHistory(message.conversation_id, 100, message.cursor_next);
+                        const load = exhaustiveHistoryLoads[key];
+                        if (load.lastCursor === message.cursor_next) {
+                            const loads = Object.assign({}, exhaustiveHistoryLoads);
+                            delete loads[key];
+                            exhaustiveHistoryLoads = loads;
+                            lastError = "History cursor did not advance";
+                        } else {
+                            load.lastCursor = message.cursor_next;
+                            if (load.automatic) {
+                                automaticHistoryNext = { id: message.conversation_id, cursor: message.cursor_next };
+                                automaticHistoryPageTimer.restart();
+                            } else
+                                loadHistory(message.conversation_id, 100, message.cursor_next);
+                        }
                     } else {
                         const loads = Object.assign({}, exhaustiveHistoryLoads);
                         delete loads[key];
@@ -1015,6 +1076,8 @@ Singleton {
             break;
         case "error":
             exhaustiveHistoryLoads = ({});
+            historyRequests = ({});
+            automaticHistoryNext = null;
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
             finishPending(false, lastError);

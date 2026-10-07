@@ -6,6 +6,7 @@ mod custom_commands;
 mod ipc_server;
 mod local_cmd;
 mod messaging;
+mod messaging_archive;
 mod messaging_backend;
 mod messaging_cache;
 mod outgoing;
@@ -75,6 +76,20 @@ async fn main() {
     if !messaging_cache::disabled() {
         if let Err(error) = messaging_cache::restore(&mut initial_state) {
             warn!(%error, "could not restore messaging cache");
+        }
+    }
+    if !messaging_cache::disabled() {
+        match messaging_archive::MessageArchive::open_default() {
+            Ok(archive) => {
+                if let Err(error) = archive
+                    .merge(initial_state.messaging().snapshot_messages())
+                    .await
+                {
+                    warn!(%error, "could not seed messaging archive");
+                }
+                initial_state.message_archive = Some(archive);
+            }
+            Err(error) => warn!(%error, "could not open messaging archive"),
         }
     }
     // Staged send directories left by crashed runs are orphaned;
@@ -302,7 +317,15 @@ fn apply_backend_event(
         _ => None,
     };
     if let Some(device_id) = media_device {
-        if is_native_device(device_id) {
+        let remove_contacts = matches!(
+            &event,
+            StateEvent::Device(DeviceEvent::Removed(_))
+                | StateEvent::Device(DeviceEvent::Updated(handover_core::Device {
+                    paired: false,
+                    ..
+                }))
+        );
+        if is_native_device(device_id) && remove_contacts {
             apply_backend_event(
                 state,
                 events,
@@ -330,7 +353,7 @@ fn apply_backend_event(
             );
         }
     }
-    let messaging_event = matches!(event, StateEvent::Messaging(_));
+    let messaging_event = matches!(event, StateEvent::Messaging(_) | StateEvent::Contacts(_));
     let outgoing_event = matches!(
         &event,
         StateEvent::Messaging(
@@ -670,6 +693,50 @@ mod native_coexistence_tests {
             volume_percent: None,
             controls: BTreeSet::from([handover_core::MediaControl::Pause]),
         }
+    }
+
+    #[tokio::test]
+    async fn paired_phone_disconnect_keeps_contact_names_for_messages() {
+        let (state, events) = populated_state();
+        let id = handover_core::DeviceId::new("native:cert");
+        let contacts = vec![handover_core::Contact {
+            device_id: id.clone(),
+            local_id: "fixture".into(),
+            display_name: "Saved name".into(),
+            phones: vec!["+15555550100".into()],
+            emails: Vec::new(),
+            photo: None,
+        }];
+        apply_backend_event(
+            &state,
+            &events,
+            StateEvent::Contacts(handover_core::ContactsEvent::Synced {
+                device_id: id.clone(),
+                contacts: contacts.clone(),
+            }),
+        );
+        let mut device = state
+            .read()
+            .unwrap()
+            .snapshot()
+            .devices
+            .into_iter()
+            .find(|device| device.id == id)
+            .unwrap();
+        device.connected = false;
+        apply_backend_event(
+            &state,
+            &events,
+            StateEvent::Device(DeviceEvent::Updated(device.clone())),
+        );
+        assert_eq!(state.read().unwrap().contacts(), contacts);
+        device.paired = false;
+        apply_backend_event(
+            &state,
+            &events,
+            StateEvent::Device(DeviceEvent::Updated(device)),
+        );
+        assert!(state.read().unwrap().contacts().is_empty());
     }
 
     fn populated_state() -> (Arc<RwLock<StateStore>>, broadcast::Sender<StateEvent>) {

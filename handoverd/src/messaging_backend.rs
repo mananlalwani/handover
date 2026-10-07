@@ -69,7 +69,8 @@ pub(crate) struct MessagingHub {
     inner: Arc<HubInner>,
 }
 
-type FetchWaiters = HashMap<(String, String), (u64, u32, oneshot::Sender<Result<(), ()>>)>;
+type FetchWaiters =
+    HashMap<(String, String), (u64, u32, Option<String>, oneshot::Sender<Result<(), ()>>)>;
 
 /// Open chunk generations: helper syncs split large lists and windows
 /// into size-bounded chunks. Chunks that share a generation accumulate
@@ -119,6 +120,7 @@ struct HubInner {
     /// alone. Interleaved live messages also fold in; the floor is a
     /// minimum, so at worst a page overlaps, never gaps.
     page_floors: Mutex<PageFloors>,
+    archive_pages: Mutex<HashMap<PageFloorKey, Option<Vec<handover_core::Message>>>>,
     catchup: Mutex<std::collections::BTreeSet<MessagingAccountId>>,
     catchup_changed: Notify,
     inventory_ready: Mutex<HashSet<MessagingAccountId>>,
@@ -147,6 +149,7 @@ impl MessagingHub {
                 fetch_locks: Mutex::new(HashMap::new()),
                 fetch_waiters: std::sync::atomic::AtomicUsize::new(0),
                 page_floors: Mutex::new(HashMap::new()),
+                archive_pages: Mutex::new(HashMap::new()),
                 catchup: Mutex::new(std::collections::BTreeSet::new()),
                 catchup_changed: Notify::new(),
                 inventory_ready: Mutex::new(HashSet::new()),
@@ -475,7 +478,7 @@ impl MessagingHub {
                 .fetches
                 .lock()
                 .await
-                .insert(key.clone(), (fetch_id, limit, tx));
+                .insert(key.clone(), (fetch_id, limit, cursor.clone(), tx));
         }
         if let Err(error) = self
             .submit(HelperCommand::FetchHistory {
@@ -522,8 +525,16 @@ impl MessagingHub {
     /// Remove one fetch waiter, but only if it is still ours.
     async fn take_fetch(&self, key: &(String, String), fetch_id: u64) {
         let mut fetches = self.inner.fetches.lock().await;
-        if fetches.get(key).is_some_and(|(id, _, _)| *id == fetch_id) {
+        if fetches
+            .get(key)
+            .is_some_and(|(id, _, _, _)| *id == fetch_id)
+        {
             fetches.remove(key);
+            self.inner.archive_pages.lock().await.remove(&(
+                key.0.clone(),
+                key.1.clone(),
+                Some(fetch_id),
+            ));
         }
     }
 
@@ -538,16 +549,17 @@ impl MessagingHub {
         let mut fetches = self.inner.fetches.lock().await;
         let matched = fetches
             .get(&key)
-            .is_some_and(|(expected, _, _)| fetch_id == Some(*expected));
+            .is_some_and(|(expected, _, _, _)| fetch_id == Some(*expected));
         if matched {
-            if let Some((_, _, waiter)) = fetches.remove(&key) {
+            if let Some((_, _, _, waiter)) = fetches.remove(&key) {
                 let _ = waiter.send(Ok(()));
             }
         }
     }
 
     async fn fail_fetches(&self) {
-        for (_, (_, _, waiter)) in self.inner.fetches.lock().await.drain() {
+        self.inner.archive_pages.lock().await.clear();
+        for (_, (_, _, _, waiter)) in self.inner.fetches.lock().await.drain() {
             let _ = waiter.send(Err(()));
         }
     }
@@ -556,7 +568,7 @@ impl MessagingHub {
         for (_, sender) in self.inner.pending.lock().await.drain() {
             let _ = sender.send(Err(HelperCallError::Unavailable));
         }
-        for (_, (_, _, waiter)) in self.inner.fetches.lock().await.drain() {
+        for (_, (_, _, _, waiter)) in self.inner.fetches.lock().await.drain() {
             let _ = waiter.send(Err(()));
         }
         // A dead helper never closes its open generations. Drop them so
@@ -565,6 +577,7 @@ impl MessagingHub {
         self.inner.conversation_syncs.lock().await.clear();
         self.inner.window_syncs.lock().await.clear();
         self.inner.page_floors.lock().await.clear();
+        self.inner.archive_pages.lock().await.clear();
     }
 
     /// Accumulate one conversation chunk into its generation buffer.
@@ -754,7 +767,7 @@ impl MessagingHub {
             .lock()
             .await
             .get(&(account.to_string(), conversation.to_string()))
-            .map(|(id, _, _)| *id)
+            .map(|(id, _, _, _)| *id)
     }
 
     async fn set_connection(
@@ -991,6 +1004,17 @@ async fn ingest_event(
             }
         }
         HelperEvent::AccountRemoved { account } => {
+            let archive = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_archive
+                .clone();
+            if let Some(archive) = archive {
+                if archive.remove(account.clone(), None).await.is_err() {
+                    warn!("could not remove archived messaging data");
+                }
+            }
+
             apply_backend_event(
                 state,
                 events,
@@ -1104,6 +1128,21 @@ async fn ingest_event(
             account,
             conversation,
         } => {
+            let archive = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_archive
+                .clone();
+            if let Some(archive) = archive {
+                if archive
+                    .remove(account.clone(), Some(conversation.clone()))
+                    .await
+                    .is_err()
+                {
+                    warn!("could not remove archived messaging data");
+                }
+            }
+
             hub.note_removed_conversation(&account, &conversation).await;
             apply_backend_event(
                 state,
@@ -1153,6 +1192,16 @@ async fn ingest_event(
                     Err(error) => warn!(%error, "dropping invalid message record"),
                 }
             }
+            let archive = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_archive
+                .clone();
+            if let Some(archive) = &archive {
+                if archive.merge(normalized.clone()).await.is_err() {
+                    warn!("could not archive message updates");
+                }
+            }
             // The public cursor comes from the complete accumulated page:
             // only the closing chunk carries `cursor_next`, but older
             // chunks hold older messages. Accumulation is scoped to
@@ -1171,6 +1220,24 @@ async fn ingest_event(
                     .is_some_and(|cursor| !cursor.is_empty())
                 || page_complete
                 || fetch_matches;
+            let archive_page = if archive.is_some() && fetch_matches {
+                let key = (account.clone(), conversation.clone(), fetch_id);
+                let mut pages = hub.inner.archive_pages.lock().await;
+                let page = pages.entry(key.clone()).or_insert_with(|| Some(Vec::new()));
+                if let Some(records) = page {
+                    records.extend(normalized.iter().cloned());
+                    if records.len() > 100 {
+                        *page = None;
+                    }
+                }
+                if page_complete {
+                    pages.remove(&key).flatten()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             if is_page {
                 let floor_points: Vec<(Option<i64>, String)> = normalized
                     .iter()
@@ -1195,6 +1262,23 @@ async fn ingest_event(
                     None
                 }
             };
+            if let (Some(archive), Some(page)) = (&archive, archive_page) {
+                let before = hub
+                    .inner
+                    .fetches
+                    .lock()
+                    .await
+                    .get(&(account.clone(), conversation.clone()))
+                    .filter(|(id, _, _, _)| Some(*id) == fetch_id)
+                    .and_then(|(_, _, cursor, _)| cursor.clone());
+                if archive
+                    .store_page(conversation_id.clone(), before, page, public_cursor.clone())
+                    .await
+                    .is_err()
+                {
+                    warn!("could not archive completed history page");
+                }
+            }
             let conversation_record = {
                 state
                     .read()
@@ -1312,8 +1396,8 @@ async fn ingest_event(
                         .lock()
                         .await
                         .get(&(account.clone(), conversation.clone()))
-                        .filter(|(id, _, _)| Some(*id) == fetch_id)
-                        .map_or(100, |(_, limit, _)| *limit) as usize;
+                        .filter(|(id, _, _, _)| Some(*id) == fetch_id)
+                        .map_or(100, |(_, limit, _, _)| *limit) as usize;
                 state
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1332,6 +1416,27 @@ async fn ingest_event(
             conversation,
             message,
         } => {
+            let archive = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_archive
+                .clone();
+            if let Some(archive) = archive {
+                if archive
+                    .remove_message(MessageId::new(
+                        ConversationId::new(
+                            MessagingAccountId::new(account.clone()),
+                            conversation.clone(),
+                        ),
+                        message.clone(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    warn!("could not remove archived messaging data");
+                }
+            }
+
             apply_backend_event(
                 state,
                 events,
@@ -2224,7 +2329,7 @@ mod tests {
             .fetches
             .lock()
             .await
-            .insert(key.clone(), (7, 20, tx));
+            .insert(key.clone(), (7, 20, None, tx));
         // A stale timeout must not consume a newer waiter's completion.
         hub.take_fetch(&key, 6).await;
         assert!(hub.inner.fetches.lock().await.contains_key(&key));
@@ -2242,7 +2347,7 @@ mod tests {
             .fetches
             .lock()
             .await
-            .insert(key.clone(), (7, 20, tx));
+            .insert(key.clone(), (7, 20, None, tx));
         // A background window (no id) must not complete the waiter
         // without a matching request id.
         hub.complete_fetch("a", "c", None).await;

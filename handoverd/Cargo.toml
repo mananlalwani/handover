@@ -12,6 +12,8 @@ handover-gmessages.workspace = true
 handover-ipc.workspace = true
 handover-kdeconnect.workspace = true
 handover-native.workspace = true
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

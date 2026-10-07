@@ -199,8 +199,26 @@ the daemon refreshes cached conversations in the background. Catch-up merges
 new records into the existing windows and fetches at most 300 recent messages
 per conversation, stopping when it reaches cached messages. One history request
 per account runs at a time. Live message updates continue to merge and persist
-while catch-up runs. The cache is a bounded recent-history store, not a complete
-archive.
+while catch-up runs. The live window remains bounded at 300 messages.
+
+Fetched provider history pages are stored in a separate private SQLite archive,
+`handover/messaging-history.sqlite`, so older downloaded messages remain available
+across conversation switches and daemon restarts. The archive stores normalized
+messages and normalized paging positions, with a 1 GiB storage ceiling. The same
+cache opt-out disables it. Explicit message removal, conversation removal, and
+account logout remove the corresponding archived records.
+
+Quickshell starts loading all available history after a conversation remains
+selected for five seconds. It requests one page at a time, with a one-second
+pause between automatic requests, and stops when focus changes. Already archived
+pages are served locally. The explicit Load all messages action can continue
+without keeping the conversation selected. A nonadvancing cursor stops the load
+instead of repeating requests. Media fetching still follows the native helper's
+authentication, size, and availability limits.
+
+The private messaging cache also retains the last synced phone contacts. A
+paired phone going offline keeps these names available for Messages; unpairing
+removes the contacts. Authenticated phone connections request a fresh snapshot.
 
 ## Outgoing operation recovery
 

@@ -130,7 +130,31 @@ Rectangle {
             .slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0)
                 || (a.id < b.id ? 1 : (a.id > b.id ? -1 : 0)))[0] || null
         : null
+    property bool automaticHistoryStarted: false
+    property bool selectedOnline: !!selectedAccount && selectedAccount.connected && selectedAccount.authenticated
+    onSelectedOnlineChanged: {
+        automaticHistoryStarted = false;
+        HandoverService.setHistoryFocus(visible && selectedOnline ? selectedConversation : null);
+    }
+    onVisibleChanged: {
+        automaticHistoryStarted = false;
+        HandoverService.setHistoryFocus(visible ? selectedConversation : null);
+    }
+    Timer {
+        interval: 5000
+        repeat: true
+        running: messagesCard.visible && messagesCard.selectedConversation !== null
+            && !!messagesCard.selectedAccount && messagesCard.selectedAccount.connected
+            && messagesCard.selectedAccount.authenticated && !messagesCard.automaticHistoryStarted
+            && !HandoverService.isLoadingAllHistory(messagesCard.selectedConversation)
+            && !HandoverService.historyRequests[messagesCard.selectedKey]
+        onTriggered: {
+            messagesCard.automaticHistoryStarted = HandoverService.loadAllHistory(messagesCard.selectedConversation, true);
+        }
+    }
     onSelectedConversationChanged: {
+        automaticHistoryStarted = false;
+        HandoverService.setHistoryFocus(visible ? selectedConversation : null);
         modernMessageList.followTail = true;
         Qt.callLater(() => modernMessageList.positionViewAtEnd());
     }
