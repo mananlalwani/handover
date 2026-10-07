@@ -594,7 +594,12 @@ where
             // give the helper one chance to fill the newest page before
             // declaring that history is exhausted. Default-size reads need
             // this too: a live event may have created only a partial window.
-            if cursor.is_none() && messages.len() < limit {
+            let needs_history_fetch = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .messaging()
+                .needs_history_fetch(&conversation_id, limit);
+            if cursor.is_none() && messages.len() < limit && needs_history_fetch {
                 if let Some(hub) = messaging {
                     if hub
                         .fetch_through_helper(
@@ -2640,6 +2645,46 @@ mod messaging_failure_tests {
             "oversized bundle must fail closed, got {error:?}"
         );
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn switching_short_or_empty_cached_threads_never_refetches_history() {
+        for empty in [false, true] {
+            let state = seeded_state();
+            let id = ConversationId::new(MessagingAccountId::new("gmessages:test"), "thread-1");
+            if empty {
+                state
+                    .write()
+                    .unwrap()
+                    .messaging_mut()
+                    .prune_window(&id, &std::collections::BTreeSet::new());
+            }
+            state
+                .write()
+                .unwrap()
+                .messaging_mut()
+                .mark_history_loaded(&id, 20);
+            let hub = MessagingHub::new();
+            let (sender, mut commands) = tokio::sync::mpsc::channel(8);
+            hub.set_sender(Some(sender)).await;
+            for _ in 0..2 {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    handle_history(
+                        id.clone(),
+                        Some(20),
+                        None,
+                        &mut tokio::io::sink(),
+                        &state,
+                        &Some(hub.clone()),
+                    ),
+                )
+                .await
+                .expect("cached history must respond without helper I/O")
+                .unwrap();
+            }
+            assert!(commands.try_recv().is_err());
+        }
     }
 
     #[tokio::test]

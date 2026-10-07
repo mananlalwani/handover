@@ -32,6 +32,8 @@ struct MessagingCache {
     conversations: Vec<Conversation>,
     messages: Vec<Message>,
     read_states: Vec<ReadState>,
+    #[serde(default)]
+    loaded_history: Vec<(handover_core::ConversationId, usize)>,
 }
 
 fn cache_path() -> io::Result<PathBuf> {
@@ -96,6 +98,9 @@ fn restore_from_path(
         state.apply(StateEvent::Messaging(MessagingEvent::Message(
             MessageEvent::Added(message),
         )));
+    }
+    for (id, limit) in cache.loaded_history {
+        state.messaging_mut().mark_history_loaded(&id, limit);
     }
     for read_state in cache.read_states {
         state.apply(StateEvent::Messaging(MessagingEvent::Read(read_state)));
@@ -197,6 +202,7 @@ async fn persist_async(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn st
             conversations: guard.messaging().snapshot_conversations(),
             messages: guard.messaging().snapshot_messages(),
             read_states: guard.messaging().snapshot_read(),
+            loaded_history: guard.messaging().snapshot_loaded_history(),
         }
     };
     let path = cache_path()?;
@@ -253,12 +259,18 @@ fn prune_cache(cache: &mut MessagingCache) {
         .sort_by(|a, b| (a.sent_at, &a.id.local_id).cmp(&(b.sent_at, &b.id.local_id)));
     while encoded_len > MAX_CACHE_BYTES as usize && !cache.messages.is_empty() {
         let drop = (cache.messages.len() / 4).max(1);
-        cache.messages.drain(..drop.min(cache.messages.len()));
+        let evicted: std::collections::BTreeSet<_> = cache
+            .messages
+            .drain(..drop.min(cache.messages.len()))
+            .map(|message| message.id.conversation_id)
+            .collect();
+        cache.loaded_history.retain(|(id, _)| !evicted.contains(id));
         encoded_len = serde_json::to_vec(&cache)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
     }
     if encoded_len > MAX_CACHE_BYTES as usize {
+        cache.loaded_history.clear();
         cache.messages.clear();
         cache.read_states.clear();
         cache.conversations.clear();
@@ -342,6 +354,7 @@ mod tests {
             conversations: state.messaging().snapshot_conversations(),
             messages: state.messaging().snapshot_messages(),
             read_states: state.messaging().snapshot_read(),
+            loaded_history: state.messaging().snapshot_loaded_history(),
         }
     }
 
@@ -372,6 +385,26 @@ mod tests {
     }
 
     #[test]
+    fn completed_empty_history_survives_cache_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.json");
+        let mut source = StateStore::default();
+        let mut cache = seed_cache(&mut source);
+        let id = cache.conversations[0].id.clone();
+        cache.messages.clear();
+        cache.loaded_history = vec![(id.clone(), 20)];
+        cache.conversations[0].cursor = None;
+        write_cache(&path, &cache);
+        let mut restored = StateStore::default();
+        restore_from_path(&mut restored, &path).unwrap();
+        assert!(restored.messaging().history_loaded(&id));
+        assert_eq!(
+            restored.messaging().history(&id, 20, None).unwrap(),
+            (Vec::new(), None)
+        );
+    }
+
+    #[test]
     fn cached_accounts_restore_without_runtime_connectivity_or_authentication() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cache.json");
@@ -381,6 +414,7 @@ mod tests {
             conversations: Vec::new(),
             messages: Vec::new(),
             read_states: Vec::new(),
+            loaded_history: Vec::new(),
         };
         write_cache(&path, &cache);
 
@@ -403,6 +437,7 @@ mod tests {
             conversations: Vec::new(),
             messages: Vec::new(),
             read_states: Vec::new(),
+            loaded_history: Vec::new(),
         };
         write_cache(&path, &cache);
         let mut restored = StateStore::default();
@@ -459,6 +494,7 @@ mod tests {
             conversations: Vec::new(),
             messages,
             read_states: Vec::new(),
+            loaded_history: Vec::new(),
         };
 
         prune_cache(&mut cache);

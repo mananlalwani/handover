@@ -69,7 +69,7 @@ pub(crate) struct MessagingHub {
     inner: Arc<HubInner>,
 }
 
-type FetchWaiters = HashMap<(String, String), (u64, oneshot::Sender<Result<(), ()>>)>;
+type FetchWaiters = HashMap<(String, String), (u64, u32, oneshot::Sender<Result<(), ()>>)>;
 
 /// Open chunk generations: helper syncs split large lists and windows
 /// into size-bounded chunks. Chunks that share a generation accumulate
@@ -78,8 +78,8 @@ type FetchWaiters = HashMap<(String, String), (u64, oneshot::Sender<Result<(), (
 /// Ungrouped (single-chunk and live) events bypass these buffers.
 type ConversationGenerations = HashMap<String, (u64, HashSet<String>)>;
 type WindowGenerations = HashMap<(String, String), (u64, HashSet<String>)>;
-/// One in-flight history page per conversation, serialized because
-/// helper pages carry no request identity.
+/// One in-flight history page per account, matching the native helper
+/// command queue. Completion remains correlated per conversation and fetch id.
 type FetchSerializers = HashMap<(String, String), FetchSerializer>;
 
 struct FetchSerializer {
@@ -100,7 +100,7 @@ struct HubInner {
     helper_name: Mutex<Option<String>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), HelperCallError>>>>,
     fetches: Mutex<FetchWaiters>,
-    /// Serialize fetches per conversation so their cached pages and cursors
+    /// Serialize fetches per account so their cached pages and cursors
     /// are published in request order. Waiters queue rather than share a flight.
     fetch_locks: Mutex<FetchSerializers>,
     /// Waiters queued on fetch locks. Bounds total history waiters;
@@ -119,6 +119,9 @@ struct HubInner {
     /// alone. Interleaved live messages also fold in; the floor is a
     /// minimum, so at worst a page overlaps, never gaps.
     page_floors: Mutex<PageFloors>,
+    catchup: Mutex<std::collections::BTreeSet<MessagingAccountId>>,
+    catchup_changed: Notify,
+    inventory_ready: Mutex<HashSet<MessagingAccountId>>,
 }
 
 /// Upper bound for one generation's keep-set. A malicious or broken
@@ -144,9 +147,97 @@ impl MessagingHub {
                 fetch_locks: Mutex::new(HashMap::new()),
                 fetch_waiters: std::sync::atomic::AtomicUsize::new(0),
                 page_floors: Mutex::new(HashMap::new()),
+                catchup: Mutex::new(std::collections::BTreeSet::new()),
+                catchup_changed: Notify::new(),
+                inventory_ready: Mutex::new(HashSet::new()),
                 conversation_syncs: Mutex::new(HashMap::new()),
                 window_syncs: Mutex::new(HashMap::new()),
             }),
+        }
+    }
+
+    async fn schedule_catchup(&self, account: MessagingAccountId) {
+        if !self.inner.inventory_ready.lock().await.contains(&account) {
+            return;
+        }
+        let mut pending = self.inner.catchup.lock().await;
+        if pending.len() < MAX_IN_FLIGHT {
+            pending.insert(account);
+        }
+        self.inner.catchup_changed.notify_one();
+    }
+
+    async fn catch_up(&self, state: &Arc<std::sync::RwLock<StateStore>>) {
+        loop {
+            self.inner.catchup_changed.notified().await;
+            loop {
+                let Some(account) = self.inner.catchup.lock().await.pop_first() else {
+                    break;
+                };
+                let conversations = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .cached_conversations(&account);
+                for conversation in conversations {
+                    let online = state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .messaging()
+                        .account(&account)
+                        .is_some_and(|record| record.connected && record.authenticated);
+                    if !online {
+                        break;
+                    }
+                    let known: HashSet<_> = state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .messaging()
+                        .history(
+                            &conversation,
+                            crate::messaging::MAX_STORED_PER_CONVERSATION,
+                            None,
+                        )
+                        .map(|(messages, _)| {
+                            messages
+                                .into_iter()
+                                .map(|message| message.id.local_id)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut cursor = None;
+                    for _ in 0..crate::messaging::MAX_STORED_PER_CONVERSATION.div_ceil(100) {
+                        if self
+                            .fetch_through_helper(
+                                account.as_str(),
+                                &conversation.local_id,
+                                100,
+                                cursor.clone(),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        let page = state
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .messaging()
+                            .history(&conversation, 100, cursor.as_deref());
+                        let Ok((messages, _)) = page else {
+                            break;
+                        };
+                        if messages.len() < 100
+                            || messages
+                                .iter()
+                                .any(|message| known.contains(&message.id.local_id))
+                        {
+                            break;
+                        }
+                        cursor = messages.first().map(|message| message.id.local_id.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -364,12 +455,15 @@ impl MessagingHub {
         limit: u32,
         cursor: Option<String>,
     ) -> Result<(), HelperCallError> {
+        let serial_key = (account.to_string(), String::new());
         let serializer = {
             let mut locks = self.inner.fetch_locks.lock().await;
-            let serializer = locks.entry(key.clone()).or_insert_with(|| FetchSerializer {
-                lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-                waiters: 0,
-            });
+            let serializer = locks
+                .entry(serial_key.clone())
+                .or_insert_with(|| FetchSerializer {
+                    lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                    waiters: 0,
+                });
             serializer.waiters += 1;
             serializer.lock.clone()
         };
@@ -381,7 +475,7 @@ impl MessagingHub {
                 .fetches
                 .lock()
                 .await
-                .insert(key.clone(), (fetch_id, tx));
+                .insert(key.clone(), (fetch_id, limit, tx));
         }
         if let Err(error) = self
             .submit(HelperCommand::FetchHistory {
@@ -394,7 +488,7 @@ impl MessagingHub {
             .await
         {
             self.take_fetch(key, fetch_id).await;
-            self.release_serializer(key).await;
+            self.release_serializer(&serial_key).await;
             return Err(error);
         }
         let outcome = match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
@@ -408,7 +502,7 @@ impl MessagingHub {
                 Err(HelperCallError::Timeout)
             }
         };
-        self.release_serializer(key).await;
+        self.release_serializer(&serial_key).await;
         outcome
     }
 
@@ -428,7 +522,7 @@ impl MessagingHub {
     /// Remove one fetch waiter, but only if it is still ours.
     async fn take_fetch(&self, key: &(String, String), fetch_id: u64) {
         let mut fetches = self.inner.fetches.lock().await;
-        if fetches.get(key).is_some_and(|(id, _)| *id == fetch_id) {
+        if fetches.get(key).is_some_and(|(id, _, _)| *id == fetch_id) {
             fetches.remove(key);
         }
     }
@@ -444,16 +538,16 @@ impl MessagingHub {
         let mut fetches = self.inner.fetches.lock().await;
         let matched = fetches
             .get(&key)
-            .is_some_and(|(expected, _)| fetch_id == Some(*expected));
+            .is_some_and(|(expected, _, _)| fetch_id == Some(*expected));
         if matched {
-            if let Some((_, waiter)) = fetches.remove(&key) {
+            if let Some((_, _, waiter)) = fetches.remove(&key) {
                 let _ = waiter.send(Ok(()));
             }
         }
     }
 
     async fn fail_fetches(&self) {
-        for (_, (_, waiter)) in self.inner.fetches.lock().await.drain() {
+        for (_, (_, _, waiter)) in self.inner.fetches.lock().await.drain() {
             let _ = waiter.send(Err(()));
         }
     }
@@ -462,7 +556,7 @@ impl MessagingHub {
         for (_, sender) in self.inner.pending.lock().await.drain() {
             let _ = sender.send(Err(HelperCallError::Unavailable));
         }
-        for (_, (_, waiter)) in self.inner.fetches.lock().await.drain() {
+        for (_, (_, _, waiter)) in self.inner.fetches.lock().await.drain() {
             let _ = waiter.send(Err(()));
         }
         // A dead helper never closes its open generations. Drop them so
@@ -660,7 +754,7 @@ impl MessagingHub {
             .lock()
             .await
             .get(&(account.to_string(), conversation.to_string()))
-            .map(|(id, _)| *id)
+            .map(|(id, _, _)| *id)
     }
 
     async fn set_connection(
@@ -685,12 +779,24 @@ impl MessagingHub {
     }
 }
 
+struct CatchupTask(tokio::task::JoinHandle<()>);
+impl Drop for CatchupTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub(crate) fn spawn_supervisor(
     state: Arc<std::sync::RwLock<StateStore>>,
     events: broadcast::Sender<StateEvent>,
     hub: MessagingHub,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let catchup_hub = hub.clone();
+        let catchup_state = state.clone();
+        let catchup_task = CatchupTask(tokio::spawn(async move {
+            catchup_hub.catch_up(&catchup_state).await;
+        }));
         let mut restarts: u32 = 0;
         loop {
             if hub.is_shutdown() {
@@ -748,6 +854,7 @@ pub(crate) fn spawn_supervisor(
                 _ = hub.inner.setup_changed.notified() => {},
             }
         }
+        catchup_task.0.abort();
     })
 }
 
@@ -757,6 +864,8 @@ async fn run_session(
     hub: &MessagingHub,
     mut process: HelperProcess,
 ) {
+    hub.inner.inventory_ready.lock().await.clear();
+    hub.inner.catchup.lock().await.clear();
     let (tx, mut rx) = mpsc::channel::<HelperCommand>(128);
     hub.set_connection(Some(process.name.clone()), Some(tx))
         .await;
@@ -842,12 +951,18 @@ async fn ingest_event(
             match normalize_account(&account, &label, connected, authenticated) {
                 Ok(record) => {
                     let id = record.id.clone();
-                    let known = state
+                    let previous = state
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .messaging()
                         .account(&id)
-                        .is_some();
+                        .cloned();
+                    let known = previous.is_some();
+                    let came_online = connected
+                        && authenticated
+                        && previous
+                            .as_ref()
+                            .is_none_or(|record| !record.connected || !record.authenticated);
                     let change = if known {
                         MessagingAccountEvent::Updated(record)
                     } else {
@@ -858,6 +973,9 @@ async fn ingest_event(
                         events,
                         StateEvent::Messaging(MessagingEvent::Account(change)),
                     );
+                    if came_online {
+                        hub.schedule_catchup(id.clone()).await;
+                    }
                     if !known {
                         // Fresh account (e.g. just logged in): ask the helper
                         // for its authoritative state now; session-start
@@ -967,6 +1085,19 @@ async fn ingest_event(
                     }
                 }
                 (None, _) => {}
+            }
+            {
+                let id = MessagingAccountId::new(account.clone());
+                let first_inventory = hub.inner.inventory_ready.lock().await.insert(id.clone());
+                let online = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .account(&id)
+                    .is_some_and(|record| record.connected && record.authenticated);
+                if online && (first_inventory || full) {
+                    hub.schedule_catchup(id).await;
+                }
             }
         }
         HelperEvent::ConversationRemoved {
@@ -1172,6 +1303,24 @@ async fn ingest_event(
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .messaging_mut()
                         .sort_window(&conversation_id);
+                }
+            }
+            if page_complete && is_page {
+                let fetched_limit =
+                    hub.inner
+                        .fetches
+                        .lock()
+                        .await
+                        .get(&(account.clone(), conversation.clone()))
+                        .filter(|(id, _, _)| Some(*id) == fetch_id)
+                        .map_or(100, |(_, limit, _)| *limit) as usize;
+                state
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging_mut()
+                    .mark_history_loaded(&conversation_id, fetched_limit);
+                if let Err(error) = crate::messaging_cache::persist(state) {
+                    warn!(%error, "could not persist completed history page");
                 }
             }
             if page_complete {
@@ -1643,6 +1792,120 @@ mod tests {
         WireConversation, WireConversationKind, WireMessage, WireParticipant, WireTransport,
     };
 
+    #[tokio::test]
+    async fn reconnect_catches_up_cached_messages_without_dropping_older_records() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        let account = MessagingAccountId::new("personal");
+        let conversation = ConversationId::new(account.clone(), "thread");
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: false,
+                authenticated: true,
+            },
+        )
+        .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: "personal".into(),
+                conversations: vec![wire_conversation("thread")],
+                full: false,
+                generation: None,
+            },
+        )
+        .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Messages {
+                account: "personal".into(),
+                conversation: "thread".into(),
+                messages: vec![wire_message("old")],
+                full: false,
+                cursor_next: None,
+                page_complete: false,
+                generation: None,
+                fetch_id: None,
+            },
+        )
+        .await;
+        let (sender, mut commands) = mpsc::channel(8);
+        hub.set_sender(Some(sender)).await;
+        let worker_hub = hub.clone();
+        let worker_state = state.clone();
+        let worker = CatchupTask(tokio::spawn(async move {
+            worker_hub.catch_up(&worker_state).await;
+        }));
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+        let command = tokio::time::timeout(Duration::from_secs(1), commands.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let HelperCommand::FetchHistory {
+            account,
+            conversation: thread,
+            cursor,
+            fetch_id,
+            ..
+        } = command
+        else {
+            panic!("expected catch-up history");
+        };
+        assert!(cursor.is_none());
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Messages {
+                account,
+                conversation: thread,
+                messages: vec![wire_message("new")],
+                full: false,
+                cursor_next: None,
+                page_complete: true,
+                generation: None,
+                fetch_id,
+            },
+        )
+        .await;
+        assert_eq!(window_ids(&state, &conversation), vec!["new", "old"]);
+        assert!(
+            state
+                .read()
+                .unwrap()
+                .messaging()
+                .history_loaded(&conversation)
+        );
+        worker.0.abort();
+    }
+
     fn wire_conversation(id: &str) -> WireConversation {
         WireConversation {
             local_id: id.into(),
@@ -1957,7 +2220,11 @@ mod tests {
         let hub = MessagingHub::new();
         let key = ("a".to_string(), "c".to_string());
         let (tx, rx) = oneshot::channel();
-        hub.inner.fetches.lock().await.insert(key.clone(), (7, tx));
+        hub.inner
+            .fetches
+            .lock()
+            .await
+            .insert(key.clone(), (7, 20, tx));
         // A stale timeout must not consume a newer waiter's completion.
         hub.take_fetch(&key, 6).await;
         assert!(hub.inner.fetches.lock().await.contains_key(&key));
@@ -1971,7 +2238,11 @@ mod tests {
         let hub = MessagingHub::new();
         let key = ("a".to_string(), "c".to_string());
         let (tx, rx) = oneshot::channel();
-        hub.inner.fetches.lock().await.insert(key.clone(), (7, tx));
+        hub.inner
+            .fetches
+            .lock()
+            .await
+            .insert(key.clone(), (7, 20, tx));
         // A background window (no id) must not complete the waiter
         // without a matching request id.
         hub.complete_fetch("a", "c", None).await;

@@ -189,7 +189,18 @@ See [known limitations](KNOWN_LIMITATIONS.md) for unavailable native operations.
 The daemon caches bounded normalized accounts, conversations, message windows,
 and read state in `handover/messaging-cache.json`. Set `HANDOVER_MESSAGING_CACHE=0`
 to disable cache loading and writes. Cached accounts start disconnected until
-the helper reports their current state.
+the helper reports their current state. Completed history page sizes are also
+cached, including empty conversations. Switching conversations serves local
+history without fetching the same short page again. A larger page request or
+an older-history gap can still fetch additional records.
+
+When an account returns online and its conversation inventory is available,
+the daemon refreshes cached conversations in the background. Catch-up merges
+new records into the existing windows and fetches at most 300 recent messages
+per conversation, stopping when it reaches cached messages. One history request
+per account runs at a time. Live message updates continue to merge and persist
+while catch-up runs. The cache is a bounded recent-history store, not a complete
+archive.
 
 ## Outgoing operation recovery
 

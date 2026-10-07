@@ -34,6 +34,7 @@ pub(crate) struct MessagingStore {
     accounts: BTreeMap<MessagingAccountId, MessagingAccount>,
     conversations: BTreeMap<ConversationId, Conversation>,
     messages: BTreeMap<ConversationId, VecDeque<Message>>,
+    loaded_history: BTreeMap<ConversationId, usize>,
     statuses: BTreeMap<MessageId, MessageStatus>,
     typing: BTreeMap<ConversationId, TypingState>,
     read: BTreeMap<ConversationId, ReadState>,
@@ -207,6 +208,49 @@ impl MessagingStore {
                 .skip(1)
                 .any(|message| message.id.local_id == cursor)
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_loaded(&self, id: &ConversationId) -> bool {
+        self.loaded_history.contains_key(id)
+    }
+
+    pub(crate) fn needs_history_fetch(&self, id: &ConversationId, limit: usize) -> bool {
+        match self.loaded_history.get(id) {
+            None => true,
+            Some(loaded) => {
+                *loaded < limit
+                    && self
+                        .conversations
+                        .get(id)
+                        .is_some_and(|record| record.cursor.is_some())
+            }
+        }
+    }
+
+    pub(crate) fn mark_history_loaded(&mut self, id: &ConversationId, limit: usize) {
+        if self.conversations.contains_key(id) {
+            self.loaded_history
+                .entry(id.clone())
+                .and_modify(|loaded| *loaded = (*loaded).max(limit))
+                .or_insert(limit);
+            self.messages.entry(id.clone()).or_default();
+        }
+    }
+
+    pub(crate) fn snapshot_loaded_history(&self) -> Vec<(ConversationId, usize)> {
+        self.loaded_history
+            .iter()
+            .map(|(id, limit)| (id.clone(), *limit))
+            .collect()
+    }
+
+    pub(crate) fn cached_conversations(&self, account: &MessagingAccountId) -> Vec<ConversationId> {
+        self.messages
+            .keys()
+            .filter(|id| &id.account_id == account)
+            .cloned()
+            .collect()
     }
 
     /// Serve the local window newest-last, honoring an opaque cursor.
@@ -434,6 +478,7 @@ impl MessagingStore {
                 self.statuses.remove(&message.id);
             }
         }
+        self.loaded_history.remove(id);
         self.typing.remove(id);
         self.read.remove(id);
         if self.conversations.remove(id).is_some() {
@@ -448,6 +493,7 @@ impl MessagingStore {
                 self.upsert_message(message)
             }
             MessageEvent::Removed(id) => {
+                self.loaded_history.remove(&id.conversation_id);
                 let removed = self
                     .messages
                     .get_mut(&id.conversation_id)
