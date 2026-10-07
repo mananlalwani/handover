@@ -204,8 +204,12 @@ while catch-up runs. The live window remains bounded at 300 messages.
 Fetched provider history pages are stored in a separate private SQLite archive,
 `handover/messaging-history.sqlite`, so older downloaded messages remain available
 across conversation switches and daemon restarts. The archive stores normalized
-messages and normalized paging positions, with a 1 GiB storage ceiling. The same
-cache opt-out disables it. Explicit message removal, conversation removal, and
+messages and normalized paging positions, with a default 1 GiB storage ceiling.
+Change it using **Archive size** on the Messages page (16 MiB to 1 TiB). The daemon applies and saves the limit immediately
+for future sessions. A limit below the space already used is rejected without
+deleting stored history. This limit covers the SQLite database; temporary journal
+files and separately cached media are outside it. The same cache opt-out disables
+it. Explicit message removal, conversation removal, and
 account logout remove the corresponding archived records.
 
 Quickshell starts loading all available history after a conversation remains

@@ -189,6 +189,11 @@ pub enum Method {
     MessagesAccounts,
     #[serde(rename = "messages.conversations")]
     MessagesConversations { account_id: MessagingAccountId },
+    #[serde(rename = "messages.archive_settings")]
+    MessagesArchiveSettings {
+        #[serde(default)]
+        limit_mib: Option<u32>,
+    },
     #[serde(rename = "messages.history")]
     MessagesHistory {
         conversation_id: ConversationId,
@@ -546,6 +551,10 @@ pub enum ServerPayload {
     ConversationsChunk {
         conversations: Vec<Conversation>,
         done: bool,
+    },
+    ArchiveSettings {
+        limit_mib: u32,
+        used_bytes: u64,
     },
     History {
         conversation_id: ConversationId,

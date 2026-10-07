@@ -38,14 +38,39 @@ impl MessageArchive {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        // Bound disk use to 1 GiB. A full archive fails writes instead of
-        // claiming that history was stored. Provider page IDs remain private.
-        let page_size: i64 = db.pragma_query_value(None, "page_size", |row| row.get(0))?;
-        db.pragma_update(None, "max_page_count", (1024 * 1024 * 1024_i64) / page_size)?;
         db.execute_batch("
+            CREATE TABLE IF NOT EXISTS archive_settings(id INTEGER PRIMARY KEY CHECK(id=1), limit_mib INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS messages(account TEXT, thread TEXT, id TEXT, payload TEXT NOT NULL, PRIMARY KEY(account,thread,id));
             CREATE TABLE IF NOT EXISTS pages(account TEXT, thread TEXT, before_id TEXT, ids TEXT NOT NULL, next_id TEXT, PRIMARY KEY(account,thread,before_id));")?;
+        let limit: u32 = db
+            .query_row(
+                "SELECT limit_mib FROM archive_settings WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(1024);
+        apply_limit(&db, limit)?;
         Ok(Arc::new(Self(Mutex::new(db))))
+    }
+    pub(crate) async fn settings(
+        self: &Arc<Self>,
+        limit: Option<u32>,
+    ) -> Result<(u32, u64), Error> {
+        self.run(move |db| {
+            if let Some(limit) = limit {
+                let old: i64 = db.pragma_query_value(None, "max_page_count", |row| row.get(0))?;
+                apply_limit(db, limit)?;
+                if let Err(error) = db.execute("INSERT INTO archive_settings VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET limit_mib=excluded.limit_mib", [limit]) {
+                    db.pragma_update(None, "max_page_count", old)?;
+                    return Err(error.into());
+                }
+            }
+            let pages: i64 = db.pragma_query_value(None, "page_count", |row| row.get(0))?;
+            let size: i64 = db.pragma_query_value(None, "page_size", |row| row.get(0))?;
+            let max: i64 = db.pragma_query_value(None, "max_page_count", |row| row.get(0))?;
+            Ok(((max * size / (1024 * 1024)) as u32, (pages * size) as u64))
+        }).await
     }
     async fn run<T: Send + 'static>(
         self: &Arc<Self>,
@@ -162,6 +187,21 @@ impl MessageArchive {
         })
         .await
     }
+}
+fn apply_limit(db: &Connection, limit: u32) -> Result<(), Error> {
+    if !(16..=1_048_576).contains(&limit) {
+        return Err("Archive size must be between 16 and 1048576 MiB".into());
+    }
+    let size: i64 = db.pragma_query_value(None, "page_size", |row| row.get(0))?;
+    let used: i64 = db.pragma_query_value(None, "page_count", |row| row.get(0))?;
+    let pages = i64::from(limit) * 1024 * 1024 / size;
+    if pages < used {
+        return Err(
+            "Archive size is smaller than the stored history; choose a larger limit".into(),
+        );
+    }
+    db.pragma_update(None, "max_page_count", pages)?;
+    Ok(())
 }
 fn upsert(db: &Connection, message: &Message) -> Result<(), Error> {
     db.execute("INSERT INTO messages VALUES(?1,?2,?3,?4) ON CONFLICT(account,thread,id) DO UPDATE SET payload=excluded.payload",
@@ -283,6 +323,29 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    #[tokio::test]
+    async fn limit_is_persisted_and_invalid_or_destructive_changes_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite");
+        let archive = MessageArchive::open(&path).unwrap();
+        assert_eq!(archive.settings(None).await.unwrap().0, 1024);
+        assert_eq!(archive.settings(Some(32)).await.unwrap().0, 32);
+        assert!(archive.settings(Some(0)).await.is_err());
+        assert!(archive.settings(Some(u32::MAX)).await.is_err());
+        drop(archive);
+        let archive = MessageArchive::open(&path).unwrap();
+        assert_eq!(archive.settings(None).await.unwrap().0, 32);
+        archive
+            .run(|db| {
+                db.execute("CREATE TABLE bulk(payload BLOB)", [])?;
+                db.execute("INSERT INTO bulk VALUES(zeroblob(18000000))", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(archive.settings(Some(16)).await.is_err());
+        assert_eq!(archive.settings(None).await.unwrap().0, 32);
     }
     #[test]
     fn refuses_symlink_archive() {

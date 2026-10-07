@@ -704,6 +704,33 @@ where
         Method::MessagesConversations { account_id } => {
             return handle_conversations(account_id, writer, state).await;
         }
+        Method::MessagesArchiveSettings { limit_mib } => {
+            let archive = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_archive
+                .clone();
+            let response = match archive {
+                Some(archive) => match archive.settings(limit_mib).await {
+                    Ok((limit_mib, used_bytes)) => {
+                        ServerMessage::new(ServerPayload::ArchiveSettings {
+                            limit_mib,
+                            used_bytes,
+                        })
+                    }
+                    Err(error) => ServerMessage::protocol_error(
+                        ErrorCode::InvalidMessagingCommand,
+                        error.to_string(),
+                    ),
+                },
+                None => ServerMessage::protocol_error(
+                    ErrorCode::HistoryUnavailable,
+                    "Message archive unavailable",
+                ),
+            };
+            write_json_line(writer, &response).await?;
+            return Ok(true);
+        }
         Method::MessagesHistory {
             conversation_id,
             limit,

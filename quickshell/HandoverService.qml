@@ -13,6 +13,7 @@ Singleton {
     readonly property bool connected: socketLoader.item
         ? socketLoader.item.connected
         : false
+    property var archiveSettings: null
     property var devices: []
     property var notifications: []
     property var mediaSessions: []
@@ -630,6 +631,7 @@ Singleton {
         sendRequest("hello", null, socket);
         sendRequest("devices.list", null, socket);
         sendRequest("contacts.list", null, socket);
+        sendRequest("messages.archive_settings", {}, socket);
         sendRequest("native.pending", null, socket);
         sendRequest("custom.commands", null, socket);
         sendRequest("clipboard.mirror_status", null, socket);
@@ -944,6 +946,9 @@ Singleton {
         case "conversations":
             for (const conversation of message.conversations || [])
                 replaceConversation(conversation);
+            break;
+        case "archive_settings":
+            archiveSettings = { limitMiB: message.limit_mib, usedBytes: message.used_bytes };
             break;
         case "history":
             {

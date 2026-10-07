@@ -1015,6 +1015,10 @@ fn print_notification_table(devices: &[Device], notifications: &[Notification]) 
 
 fn print_message(payload: ServerPayload) {
     match payload {
+        ServerPayload::ArchiveSettings {
+            limit_mib,
+            used_bytes,
+        } => println!("Archive limit: {limit_mib} MiB; used: {used_bytes} bytes"),
         ServerPayload::CallUpdated { call } => {
             println!("call state: {} {:?}", call.device_id, call.phase)
         }

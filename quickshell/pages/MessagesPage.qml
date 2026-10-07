@@ -21,6 +21,61 @@ Rectangle {
     property string accountNotice: ""
     GoogleMessagesSetup { id: googleSetup }
     Dialog {
+        id: archiveDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Private archive size"
+        property bool saving: false
+        property bool refreshing: false
+        standardButtons: Dialog.Cancel
+        footer: DialogButtonBox {
+            standardButtons: DialogButtonBox.Cancel
+            onRejected: archiveDialog.reject()
+            Button {
+                text: "Save"
+                enabled: !archiveDialog.saving && !archiveDialog.refreshing && HandoverService.connected
+                onClicked: {
+                    HandoverService.lastError = "";
+                    archiveDialog.saving = HandoverService.sendRequest("messages.archive_settings", { limit_mib: archiveLimit.value });
+                }
+            }
+        }
+        Connections {
+            target: HandoverService
+            function onArchiveSettingsChanged() {
+                archiveDialog.refreshing = false;
+                if (archiveDialog.saving) {
+                    archiveDialog.saving = false;
+                    archiveDialog.accept();
+                } else if (archiveDialog.visible && HandoverService.archiveSettings)
+                    archiveLimit.value = HandoverService.archiveSettings.limitMiB;
+            }
+            function onLastErrorChanged() {
+                if (HandoverService.lastError) {
+                    archiveDialog.saving = false;
+                    archiveDialog.refreshing = false;
+                }
+            }
+        }
+        onOpened: {
+            saving = false;
+            HandoverService.lastError = "";
+            refreshing = HandoverService.sendRequest("messages.archive_settings", {});
+            archiveLimit.value = HandoverService.archiveSettings ? HandoverService.archiveSettings.limitMiB : 1024;
+        }
+        contentItem: ColumnLayout {
+            Label { text: "Maximum stored message history (MiB)" }
+            SpinBox { id: archiveLimit; from: 16; to: 1048576; stepSize: 256; editable: true }
+            Label {
+                text: HandoverService.archiveSettings
+                    ? "Currently used: " + (HandoverService.archiveSettings.usedBytes / 1048576).toFixed(1) + " MiB"
+                    : "Archive unavailable"
+            }
+            Label { text: "Default: 1024 MiB (1 GiB). Stored history is preserved." }
+            Label { text: HandoverService.lastError; color: "#fca5a5"; visible: text.length > 0 }
+        }
+    }
+    Dialog {
         id: disconnectDialog
         property string accountId: ""
         property string accountLabel: ""
@@ -232,6 +287,11 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+            Button {
+                text: "Archive size"
+                enabled: HandoverService.connected && !!HandoverService.archiveSettings
+                onClicked: archiveDialog.open()
+            }
             Button {
                 text: "Connect Google Messages"
                 enabled: HandoverService.connected
