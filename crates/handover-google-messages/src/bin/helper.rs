@@ -240,14 +240,19 @@ fn reconnect_delay(
     error: &handover_google_messages::ProbeError,
     attempt: u8,
 ) -> Option<std::time::Duration> {
-    use handover_google_messages::ProbeError;
+    use handover_google_messages::{ProbeError, credential_store::CredentialError};
     let transient = matches!(
         error,
-        ProbeError::Network | ProbeError::Timeout | ProbeError::ReceiveFailed
+        ProbeError::Network
+            | ProbeError::Timeout
+            | ProbeError::ReceiveFailed
+            | ProbeError::CredentialStore(
+                CredentialError::Locked | CredentialError::Unavailable | CredentialError::Timeout
+            )
     ) || error
         .http_status()
         .is_some_and(|status| (500..=599).contains(&status));
-    (transient && attempt < 5).then(|| std::time::Duration::from_secs(1 << attempt))
+    transient.then(|| std::time::Duration::from_secs((1_u64 << attempt.min(6)).min(60)))
 }
 
 struct LiveWorker {
@@ -1160,7 +1165,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         if let Err(error) = result {
                             let attempt = *attempts.get(&account).unwrap_or(&0);
                             if let Some(delay) = reconnect_delay(&error, attempt) {
-                                attempts.insert(account.clone(), attempt + 1);
+                                attempts.insert(account.clone(), attempt.saturating_add(1));
                                 retries.insert(account.clone(), tokio::time::Instant::now() + delay);
                             }
                             let category = match error {
@@ -2782,7 +2787,26 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_is_bounded_and_never_retries_preemption_or_invalid_authentication() {
+    fn reconnect_survives_locked_credentials_and_a_prolonged_network_outage() {
+        use handover_google_messages::{ProbeError, credential_store::CredentialError};
+        for error in [
+            ProbeError::CredentialStore(CredentialError::Locked),
+            ProbeError::CredentialStore(CredentialError::Unavailable),
+            ProbeError::CredentialStore(CredentialError::Timeout),
+            ProbeError::Network,
+            ProbeError::Timeout,
+            ProbeError::ReceiveFailed,
+        ] {
+            for attempt in 0..=u8::MAX {
+                let delay = reconnect_delay(&error, attempt)
+                    .expect("saved accounts must recover after unlock or network restoration");
+                assert!(delay.as_secs() > 0 && delay.as_secs() <= 60);
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_delay_is_capped_and_never_retries_preemption_or_invalid_authentication() {
         use handover_google_messages::{ProbeError, receive::ReceiveError, session::SessionError};
         assert_eq!(
             reconnect_delay(&ProbeError::Network, 0).unwrap().as_secs(),
@@ -2794,8 +2818,22 @@ mod tests {
                 .as_secs(),
             16
         );
-        assert!(reconnect_delay(&ProbeError::Network, 5).is_none());
+        assert_eq!(
+            reconnect_delay(&ProbeError::Network, 5).unwrap().as_secs(),
+            32
+        );
+        assert_eq!(
+            reconnect_delay(&ProbeError::Network, 6).unwrap().as_secs(),
+            60
+        );
         for error in [
+            ProbeError::CredentialStore(
+                handover_google_messages::credential_store::CredentialError::Invalid,
+            ),
+            ProbeError::CredentialStore(
+                handover_google_messages::credential_store::CredentialError::Ambiguous,
+            ),
+            ProbeError::InvalidCredentials,
             ProbeError::HttpError(401),
             ProbeError::SessionExpired,
             ProbeError::RegistrationRenewalDue,

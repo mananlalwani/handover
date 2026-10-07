@@ -98,7 +98,12 @@ The helper is optional. `HANDOVER_GMESSAGES_HELPER` selects an explicit binary.
 Otherwise discovery follows the native-first order described above.
 If no helper is available, messaging stays disabled. Other backends keep working.
 
-Reconnect backoff ranges from 1 to 60 seconds. After connecting, the daemon
+Reconnect backoff ranges from 1 to 60 seconds. Native sessions keep retrying
+network failures and temporarily locked or unavailable desktop credentials,
+with a 60-second maximum delay. Invalid credentials and authenticated session
+preemption stop automatic recovery. Recovery never replays sends.
+
+After connecting, the daemon
 syncs known accounts and requests catch-up syncs for accounts the helper
 announces. It allows at most 64 in-flight requests and waits up to four minutes
 for a command. Message windows hold 300 messages per conversation, and history
