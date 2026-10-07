@@ -305,3 +305,202 @@ mod tests {
         );
     }
 }
+
+/// Wake recovery on Secret Service unlock notifications. The bounded channel
+/// coalesces notifications; retry timers remain the fallback if D-Bus is absent.
+pub async fn watch_unlocks(notify: tokio::sync::mpsc::Sender<()>) {
+    use futures_util::StreamExt;
+    use zbus::Connection;
+    loop {
+        let watch = async {
+            let connection = Connection::session().await?;
+            let mut stream = unlock_stream(&connection).await?;
+            while let Some(message) = stream.next().await {
+                let message = message?;
+                if unlock_notification(&message, &connection).await {
+                    let _ = notify.try_send(());
+                }
+            }
+            Ok::<_, zbus::Error>(())
+        };
+        let _ = watch.await;
+        if notify.is_closed() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+async fn unlock_notification(message: &zbus::Message, connection: &zbus::Connection) -> bool {
+    let header = message.header();
+    let interface = header.interface().map(|value| value.as_str());
+    let member = header.member().map(|value| value.as_str());
+    let (path, target) = match (interface, member) {
+        (Some("org.freedesktop.DBus.Properties"), Some("PropertiesChanged")) => {
+            let Ok((target, changed, invalidated)) = message.body().deserialize::<(
+                String,
+                HashMap<String, zbus::zvariant::OwnedValue>,
+                Vec<String>,
+            )>() else {
+                return false;
+            };
+            if !matches!(
+                target.as_str(),
+                "org.freedesktop.Secret.Collection" | "org.freedesktop.Secret.Item"
+            ) {
+                return false;
+            }
+            if let Some(locked) = changed.get("Locked") {
+                return bool::try_from(locked).is_ok_and(|locked| !locked);
+            }
+            if !invalidated.iter().any(|property| property == "Locked") {
+                return false;
+            }
+            let Some(path) = header.path() else {
+                return false;
+            };
+            (path.to_owned(), target)
+        }
+        (Some("org.freedesktop.Secret.Service"), Some("CollectionChanged")) => {
+            let Ok(path) = message
+                .body()
+                .deserialize::<zbus::zvariant::OwnedObjectPath>()
+            else {
+                return false;
+            };
+            (path.into(), "org.freedesktop.Secret.Collection".into())
+        }
+        (Some("org.freedesktop.Secret.Collection"), Some("ItemChanged")) => {
+            let Ok(path) = message
+                .body()
+                .deserialize::<zbus::zvariant::OwnedObjectPath>()
+            else {
+                return false;
+            };
+            (path.into(), "org.freedesktop.Secret.Item".into())
+        }
+        _ => return false,
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let proxy = zbus::Proxy::new(connection, "org.freedesktop.secrets", path, target).await?;
+        proxy.get_property::<bool>("Locked").await
+    })
+    .await
+    .is_ok_and(|result| result.is_ok_and(|locked| !locked))
+}
+
+async fn unlock_stream(connection: &zbus::Connection) -> Result<zbus::MessageStream, zbus::Error> {
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.secrets")?
+        .path_namespace("/org/freedesktop/secrets")?
+        .build();
+    zbus::MessageStream::for_match_rule(rule, connection, Some(16)).await
+}
+
+#[cfg(test)]
+mod unlock_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    struct TestCollection(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    #[zbus::interface(name = "org.freedesktop.Secret.Collection")]
+    impl TestCollection {
+        #[zbus(property)]
+        fn locked(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[tokio::test]
+    async fn secret_service_unlock_signals_wake_recovery_but_lock_signals_do_not() {
+        let mut bus = tokio::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("private test D-Bus");
+        let mut address = String::new();
+        BufReader::new(bus.stdout.take().unwrap())
+            .read_line(&mut address)
+            .await
+            .unwrap();
+        let subscriber = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let service = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        service
+            .request_name("org.freedesktop.secrets")
+            .await
+            .unwrap();
+        let locked_state = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        service
+            .object_server()
+            .at(
+                "/org/freedesktop/secrets/collection/test",
+                TestCollection(locked_state.clone()),
+            )
+            .await
+            .unwrap();
+        let mut stream = unlock_stream(&subscriber).await.unwrap();
+        for target in [
+            "org.freedesktop.Secret.Collection",
+            "org.freedesktop.Secret.Item",
+            "unrelated.Interface",
+        ] {
+            for locked in [true, false] {
+                let changed = HashMap::from([("Locked", zbus::zvariant::Value::from(locked))]);
+                service
+                    .emit_signal(
+                        None::<&str>,
+                        "/org/freedesktop/secrets/collection/test",
+                        "org.freedesktop.DBus.Properties",
+                        "PropertiesChanged",
+                        &(target, changed, Vec::<String>::new()),
+                    )
+                    .await
+                    .unwrap();
+                let message = tokio::time::timeout(Duration::from_secs(2), stream.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    unlock_notification(&message, &subscriber).await,
+                    !locked && target != "unrelated.Interface"
+                );
+            }
+        }
+        for locked in [true, false] {
+            locked_state.store(locked, std::sync::atomic::Ordering::Relaxed);
+            service
+                .emit_signal(
+                    None::<&str>,
+                    "/org/freedesktop/secrets",
+                    "org.freedesktop.Secret.Service",
+                    "CollectionChanged",
+                    &zbus::zvariant::ObjectPath::try_from(
+                        "/org/freedesktop/secrets/collection/test",
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(unlock_notification(&message, &subscriber).await, !locked);
+        }
+        bus.kill().await.unwrap();
+    }
+}

@@ -255,6 +255,18 @@ fn reconnect_delay(
     transient.then(|| std::time::Duration::from_secs((1_u64 << attempt.min(6)).min(60)))
 }
 
+fn expedite_credential_retries(
+    retries: &mut BTreeMap<String, tokio::time::Instant>,
+    waiters: &std::collections::BTreeSet<String>,
+) {
+    let now = tokio::time::Instant::now();
+    for (account, deadline) in retries.iter_mut() {
+        if waiters.contains(account) {
+            *deadline = now;
+        }
+    }
+}
+
 struct LiveWorker {
     generation: u64,
     ready: bool,
@@ -820,6 +832,10 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let mut workers = BTreeMap::<String, LiveWorker>::new();
     let mut retries = BTreeMap::<String, tokio::time::Instant>::new();
     let mut attempts = BTreeMap::<String, u8>::new();
+    let mut credential_waiters = std::collections::BTreeSet::<String>::new();
+    let (unlock_tx, mut unlock_rx) = mpsc::channel(1);
+    let unlock_watch = handover_google_messages::credential_store::watch_unlocks(unlock_tx);
+    tokio::pin!(unlock_watch);
     let mut sends = BTreeMap::<String, (String, String)>::new();
     let mut mutations = JoinSet::<(String, Option<String>, bool)>::new();
     let mut mutating = std::collections::BTreeSet::<String>::new();
@@ -938,6 +954,11 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
             MAX_LINE_READ.saturating_sub(line.len() as u64),
         );
         tokio::select! {
+            _ = &mut unlock_watch => {},
+            Some(()) = unlock_rx.recv() => {
+                credential_waiters.retain(|account| retries.contains_key(account));
+                expedite_credential_retries(&mut retries, &credential_waiters);
+            }
             read = bounded.read_until(b'\n', &mut line) => {
                 if read? == 0 {
                     jobs.abort_all();
@@ -1122,6 +1143,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 } else { continue; }
                             }
                             LiveEvent::Online => {
+                                credential_waiters.remove(&account);
                                 helper.online.insert(account.clone());
                                 attempts.remove(&account);
                                 publish(writer, HelperEvent::Account { account: account.clone(), label: "Google Messages".into(), connected: true, authenticated: true }).await?;
@@ -1163,6 +1185,11 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             continue;
                         }
                         if let Err(error) = result {
+                            if matches!(error, handover_google_messages::ProbeError::CredentialStore(_)) {
+                                credential_waiters.insert(account.clone());
+                            } else {
+                                credential_waiters.remove(&account);
+                            }
                             let attempt = *attempts.get(&account).unwrap_or(&0);
                             if let Some(delay) = reconnect_delay(&error, attempt) {
                                 attempts.insert(account.clone(), attempt.saturating_add(1));
@@ -2784,6 +2811,17 @@ mod tests {
             "the old request must not start another worker outside the retry policy"
         );
         assert_eq!(helper.pending_sync.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn keyring_unlock_expedites_only_accounts_waiting_for_credentials() {
+        let later = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut retries = BTreeMap::from([("locked".into(), later), ("network".into(), later)]);
+        let waiters = std::collections::BTreeSet::from(["locked".into(), "terminal".into()]);
+        expedite_credential_retries(&mut retries, &waiters);
+        assert!(retries["locked"] <= tokio::time::Instant::now());
+        assert_eq!(retries["network"], later);
+        assert!(!retries.contains_key("terminal"));
     }
 
     #[test]

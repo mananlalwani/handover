@@ -15,6 +15,8 @@ path = "src/bin/helper.rs"
 
 [dependencies]
 base64 = "0.22.1"
+futures-util.workspace = true
+zbus.workspace = true
 handover-core.workspace = true
 handover-gmessages.workspace = true
 handover-ipc.workspace = true

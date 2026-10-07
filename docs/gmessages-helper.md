@@ -100,8 +100,10 @@ If no helper is available, messaging stays disabled. Other backends keep working
 
 Reconnect backoff ranges from 1 to 60 seconds. Native sessions keep retrying
 network failures and temporarily locked or unavailable desktop credentials,
-with a 60-second maximum delay. Invalid credentials and authenticated session
-preemption stop automatic recovery. Recovery never replays sends.
+with a 60-second maximum delay. Secret Service unlock notifications immediately
+reschedule accounts waiting for desktop credentials. Timer retries remain the
+fallback when notifications are unavailable. Invalid credentials and
+authenticated session preemption stop automatic recovery. Recovery never replays sends.
 
 After connecting, the daemon
 syncs known accounts and requests catch-up syncs for accounts the helper
