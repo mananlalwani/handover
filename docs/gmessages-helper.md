@@ -215,7 +215,9 @@ account logout remove the corresponding archived records.
 Quickshell starts loading all available history after a conversation remains
 selected for five seconds. It requests one page at a time, with a one-second
 pause between automatic requests, and stops when focus changes. Already archived
-pages are served locally. The explicit Load all messages action can continue
+pages are served locally. Loading older messages preserves the visible message
+and its position in the viewport. New messages follow the bottom only when the
+reader is already following the latest messages. The explicit Load all messages action can continue
 without keeping the conversation selected. A nonadvancing cursor stops the load
 instead of repeating requests. Media fetching still follows the native helper's
 authentication, size, and availability limits.

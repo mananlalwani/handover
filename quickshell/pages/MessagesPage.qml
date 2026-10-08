@@ -532,29 +532,13 @@ Item {
                             color: "#8db8e8"
                         }
                     }
-                    ListView {
+                    MessageList {
                         id: modernMessageList
-                        property bool followTail: true
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
                         spacing: 8
-                        model: messagesCard.selectedMessages
-                        onCountChanged: {
-                            if (followTail)
-                                Qt.callLater(() => positionViewAtEnd());
-                        }
-                        onContentHeightChanged: {
-                            if (followTail)
-                                Qt.callLater(() => positionViewAtEnd());
-                        }
-                        onContentYChanged: {
-                            if (moving && !atYEnd)
-                                followTail = false;
-                            else if (atYEnd)
-                                followTail = true;
-                        }
-                        onMovementEnded: followTail = atYEnd
+                        messages: messagesCard.selectedMessages
                         ScrollBar.vertical: ScrollBar {
                             policy: ScrollBar.AsNeeded
                             implicitWidth: 14

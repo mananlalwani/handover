@@ -61,6 +61,8 @@ install -Dm644 packaging/handover.desktop \
 	"$STAGE_DIR/share/applications/handover.desktop"
 install -Dm644 quickshell/HandoverService.qml \
 	"$STAGE_DIR/share/handover/quickshell/HandoverService.qml"
+install -Dm644 quickshell/MessageList.qml \
+	"$STAGE_DIR/share/handover/quickshell/MessageList.qml"
 install -Dm644 quickshell/*.js "$STAGE_DIR/share/handover/quickshell/"
 install -Dm644 quickshell/example.qml \
 	"$STAGE_DIR/share/handover/quickshell/example.qml"
