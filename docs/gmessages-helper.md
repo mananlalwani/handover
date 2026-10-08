@@ -102,7 +102,12 @@ Reconnect backoff ranges from 1 to 60 seconds. Native sessions keep retrying
 network failures and temporarily locked or unavailable desktop credentials,
 with a 60-second maximum delay. Secret Service unlock notifications immediately
 reschedule accounts waiting for desktop credentials. Timer retries remain the
-fallback when notifications are unavailable. Invalid credentials and
+fallback when notifications are unavailable. A login1 resume notification
+reopens existing receive connections and expedites pending retries. Accepted
+sends and mutations finish before their connection is replaced and are never
+replayed. Expired session tokens use the existing registration-renewal path;
+a stale conversation inventory triggers a fresh connection and inventory.
+Invalid credentials and
 authenticated session preemption stop automatic recovery. Recovery never replays sends.
 
 After connecting, the daemon

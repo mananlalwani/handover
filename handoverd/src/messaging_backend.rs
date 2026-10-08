@@ -1591,7 +1591,22 @@ async fn ingest_event(
         HelperEvent::Error { message } => {
             // Helper text may contain credentials or message content. Keep
             // only stable metadata in the journal.
-            warn!(error_len = message.len(), "messaging helper error");
+            // Match only fixed native diagnostics; never journal arbitrary helper text.
+            let category = match message.as_str() {
+                "native receive ended (session_protocol, UnknownUpdateConversation)" => {
+                    "stale_conversation_inventory"
+                }
+                "native receive ended (session_protocol, UnsupportedHistoryContent)" => {
+                    "unsupported_history_content"
+                }
+                "native receive ended (receive_protocol, SessionPreempted)" => "session_preempted",
+                _ => "unclassified",
+            };
+            warn!(
+                category,
+                error_len = message.len(),
+                "messaging helper error"
+            );
             hub.fail_fetches().await;
         }
     }

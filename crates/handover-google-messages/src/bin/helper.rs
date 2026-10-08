@@ -15,6 +15,9 @@
 //! It never logs bundles, tokens, keys, account email, message bodies, or
 //! media bytes.
 
+#[path = "helper/resume.rs"]
+mod resume;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[cfg(test)]
@@ -246,6 +249,10 @@ fn reconnect_delay(
         ProbeError::Network
             | ProbeError::Timeout
             | ProbeError::ReceiveFailed
+            | ProbeError::SessionExpired
+            | ProbeError::SessionProtocol(
+                handover_google_messages::session::SessionError::UnknownUpdateConversation
+            )
             | ProbeError::CredentialStore(
                 CredentialError::Locked | CredentialError::Unavailable | CredentialError::Timeout
             )
@@ -836,11 +843,31 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     let (unlock_tx, mut unlock_rx) = mpsc::channel(1);
     let unlock_watch = handover_google_messages::credential_store::watch_unlocks(unlock_tx);
     tokio::pin!(unlock_watch);
+    let (resume_tx, mut resume_rx) = mpsc::channel(1);
+    let resume_watch = resume::watch(resume_tx);
+    tokio::pin!(resume_watch);
+    let mut resume_pending = BTreeSet::<String>::new();
     let mut sends = BTreeMap::<String, (String, String)>::new();
     let mut mutations = JoinSet::<(String, Option<String>, bool)>::new();
     let mut mutating = std::collections::BTreeSet::<String>::new();
     let mut line = Zeroizing::new(Vec::new());
     loop {
+        // Let accepted sends and mutations finish before replacing their worker.
+        // Reads are disposable; neither sends nor mutations are replayed.
+        let restart: Vec<_> = resume_pending
+            .iter()
+            .filter(|account| !sends.contains_key(*account) && !mutating.contains(*account))
+            .cloned()
+            .collect();
+        for account in restart {
+            resume_pending.remove(&account);
+            if let Some(worker) = workers.remove(&account) {
+                worker.stop().await;
+                helper.end_live_session(&account);
+                publish(writer, disconnected(&account)).await?;
+                retries.insert(account, tokio::time::Instant::now());
+            }
+        }
         if jobs.is_empty() {
             let requested = helper
                 .pending_history
@@ -955,6 +982,13 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
         );
         tokio::select! {
             _ = &mut unlock_watch => {},
+            _ = &mut resume_watch => {},
+            Some(()) = resume_rx.recv() => {
+                resume_pending.extend(workers.keys().cloned());
+                for deadline in retries.values_mut() {
+                    *deadline = tokio::time::Instant::now();
+                }
+            }
             Some(()) = unlock_rx.recv() => {
                 credential_waiters.retain(|account| retries.contains_key(account));
                 expedite_credential_retries(&mut retries, &credential_waiters);
@@ -2825,6 +2859,24 @@ mod tests {
     }
 
     #[test]
+    fn expired_session_after_suspend_retries_the_existing_registration_renewal_path() {
+        assert!(
+            reconnect_delay(&handover_google_messages::ProbeError::SessionExpired, 0).is_some()
+        );
+    }
+
+    #[test]
+    fn stale_conversation_inventory_reconnects_instead_of_staying_offline() {
+        let error = handover_google_messages::ProbeError::SessionProtocol(
+            handover_google_messages::session::SessionError::UnknownUpdateConversation,
+        );
+        assert!(
+            reconnect_delay(&error, 0).is_some(),
+            "A valid push for an uncached conversation must refresh the session inventory"
+        );
+    }
+
+    #[test]
     fn reconnect_survives_locked_credentials_and_a_prolonged_network_outage() {
         use handover_google_messages::{ProbeError, credential_store::CredentialError};
         for error in [
@@ -2873,7 +2925,6 @@ mod tests {
             ),
             ProbeError::InvalidCredentials,
             ProbeError::HttpError(401),
-            ProbeError::SessionExpired,
             ProbeError::RegistrationRenewalDue,
             ProbeError::RegistrationFailed,
             ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted),
