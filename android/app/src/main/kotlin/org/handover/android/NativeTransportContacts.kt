@@ -84,7 +84,7 @@ private fun NativeTransport.readContacts(chunked: Boolean): ContactSnapshot? {
     val cursor = context.contentResolver.query(
         ContactsContract.Contacts.CONTENT_URI, projection, null, null,
         ContactsContract.Contacts.DISPLAY_NAME + " COLLATE NOCASE ASC",
-    ) ?: return if (chunked) null else ContactSnapshot(emptyList(), false)
+    ) ?: return if (chunked) null else ContactSnapshot(emptyList(), true)
     cursor.use {
         val idIndex = it.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
         val nameIndex = it.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME)
