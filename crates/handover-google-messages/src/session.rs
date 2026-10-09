@@ -95,6 +95,7 @@ pub struct RecoveredSession {
     pairing: ConfirmedPairing,
     proof: BrowserProof,
     session_id: Uuid,
+    rcs: crate::rcs::Context,
 }
 impl fmt::Debug for RecoveredSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -211,6 +212,7 @@ impl RecoveredSession {
             pairing,
             proof,
             session_id: Uuid::new_v4(),
+            rcs: crate::rcs::Context::default(),
         })
     }
     pub fn account_id(&self) -> &str {

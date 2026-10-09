@@ -195,6 +195,10 @@ impl fmt::Debug for UnpairedRegistration {
 }
 
 impl UnpairedRegistration {
+    pub(crate) fn device_id(&self) -> &str {
+        &self._device_id
+    }
+
     /// Mode-1 account lookup for this registration, without token or key fields.
     pub(crate) fn lookup_request(&self) -> Value {
         crate::lookup_request_for_device(&self._device_id)

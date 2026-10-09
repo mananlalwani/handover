@@ -964,6 +964,9 @@ async fn ingest_event(
             match normalize_account(&account, &label, connected, authenticated) {
                 Ok(record) => {
                     let id = record.id.clone();
+                    if !connected || !authenticated {
+                        clear_account_typing(state, events, &id);
+                    }
                     let previous = state
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1739,6 +1742,31 @@ fn publish_outcome(
     }
 }
 
+fn clear_account_typing(
+    state: &Arc<std::sync::RwLock<StateStore>>,
+    events: &broadcast::Sender<StateEvent>,
+    account: &MessagingAccountId,
+) {
+    let typing = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .messaging()
+        .snapshot_typing();
+    for typing in typing
+        .into_iter()
+        .filter(|typing| &typing.conversation_id.account_id == account)
+    {
+        apply_backend_event(
+            state,
+            events,
+            StateEvent::Messaging(MessagingEvent::Typing(TypingState {
+                conversation_id: typing.conversation_id,
+                participant_ids: Vec::new(),
+            })),
+        );
+    }
+}
+
 fn mark_helper_accounts_down(
     state: &Arc<std::sync::RwLock<StateStore>>,
     events: &broadcast::Sender<StateEvent>,
@@ -1749,6 +1777,7 @@ fn mark_helper_accounts_down(
         .messaging()
         .snapshot_accounts();
     for mut account in accounts {
+        clear_account_typing(state, events, &account.id);
         if !account.connected {
             continue;
         }
@@ -1916,6 +1945,97 @@ mod tests {
     use handover_gmessages::contract::{
         WireConversation, WireConversationKind, WireMessage, WireParticipant, WireTransport,
     };
+
+    #[tokio::test]
+    async fn typing_is_cleared_and_published_on_account_or_helper_disconnect() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "personal".into(),
+                label: "Messages".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: "personal".into(),
+                conversations: vec![wire_conversation("thread")],
+                full: false,
+                generation: None,
+            },
+        )
+        .await;
+        for helper_exit in [false, true] {
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::Account {
+                    account: "personal".into(),
+                    label: "Messages".into(),
+                    connected: true,
+                    authenticated: true,
+                },
+            )
+            .await;
+            ingest_event(
+                &state,
+                &events,
+                &hub,
+                &mut seen,
+                HelperEvent::Typing {
+                    account: "personal".into(),
+                    conversation: "thread".into(),
+                    participants: vec!["peer".into()],
+                },
+            )
+            .await;
+            assert_eq!(state.read().unwrap().messaging().snapshot_typing().len(), 1);
+            let mut received = events.subscribe();
+            if helper_exit {
+                mark_helper_accounts_down(&state, &events);
+            } else {
+                ingest_event(
+                    &state,
+                    &events,
+                    &hub,
+                    &mut seen,
+                    HelperEvent::Account {
+                        account: "personal".into(),
+                        label: "Messages".into(),
+                        connected: false,
+                        authenticated: true,
+                    },
+                )
+                .await;
+            }
+            assert!(
+                state
+                    .read()
+                    .unwrap()
+                    .messaging()
+                    .snapshot_typing()
+                    .is_empty()
+            );
+            assert!(
+                matches!(received.try_recv().unwrap(), StateEvent::Messaging(MessagingEvent::Typing(state)) if state.participant_ids.is_empty())
+            );
+        }
+    }
 
     #[tokio::test]
     async fn reconnect_catches_up_cached_messages_without_dropping_older_records() {

@@ -24,7 +24,9 @@ Handover is pre-1.0. Public interfaces may change.
   It is not a direct carrier RCS implementation.
 - Capabilities depend on the connected phone and selected helper. The native
   helper does not support creating conversations, deleting messages, sending
-  typing notifications, receiving typing indicators, or marking messages read.
+  typing notifications or marking messages read. Incoming typing supports direct
+  RCS conversations with one configured RCS SIM and an exact known sender match.
+  Group and encrypted composing events are not supported.
   See the [incoming typing investigation](gmessages-typing.md).
 - Message history is a bounded cache, not a complete persistent archive.
 

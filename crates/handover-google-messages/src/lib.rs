@@ -12,6 +12,7 @@ pub mod media;
 mod mutation;
 pub mod native;
 pub mod pairing;
+mod rcs;
 pub mod receive;
 pub mod registration;
 mod send;
@@ -990,12 +991,23 @@ async fn receive_stream_when_ready(
     endpoint: &str,
     headers: HeaderMap,
     request: &registration::ReceiveRequest,
-    mut emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
+    emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
     ready: impl FnOnce(),
 ) -> Result<u8, ProbeError> {
     let body = request
         .request_bytes()
         .map_err(|_| ProbeError::SessionExpired)?;
+    receive_json_when_ready(http, endpoint, headers, body, emit, ready).await
+}
+
+async fn receive_json_when_ready(
+    http: &Client,
+    endpoint: &str,
+    headers: HeaderMap,
+    body: &[u8],
+    mut emit: impl FnMut(receive::ReceiveEvent) -> Result<(), receive::ReceiveError>,
+    ready: impl FnOnce(),
+) -> Result<u8, ProbeError> {
     let mut response = http
         .post(endpoint)
         .headers(headers)

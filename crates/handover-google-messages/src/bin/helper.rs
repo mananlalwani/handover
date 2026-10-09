@@ -1173,6 +1173,9 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 match signal {
                     LiveSignal::Output(output) => {
                         match output.event {
+                            LiveEvent::Typing { conversation, participants } => {
+                                publish(writer, HelperEvent::Typing { account: account.clone(), conversation, participants }).await?;
+                            }
                             LiveEvent::SendResult { request_id, conversation, message, status } => {
                                 if sends.get(&account).is_some_and(|pending| pending.0 == request_id && pending.1 == conversation) {
                                     publish(writer, HelperEvent::SendStatus { request_id, account: account.clone(), conversation, message, status: status.into() }).await?;

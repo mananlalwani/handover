@@ -38,6 +38,10 @@ pub enum LiveCommand {
     },
 }
 pub enum LiveEvent {
+    Typing {
+        conversation: String,
+        participants: Vec<String>,
+    },
     HistoryUnavailable,
     SendResult {
         request_id: String,
@@ -185,15 +189,22 @@ impl RecoveredSession {
         commands: mpsc::Receiver<LiveCommand>,
         events: mpsc::Sender<LiveOutput>,
     ) -> Result<(), ProbeError> {
-        self.run_live_at(
+        let main = self.run_live_at(
             &self.proof.endpoint,
             crate::client(true)?,
             crate::streaming_client()?,
             commands,
-            events,
+            events.clone(),
             None,
-        )
-        .await
+        );
+        let rcs = self
+            .rcs
+            .run(&self.proof, self.pairing.registration.device_id(), events);
+        tokio::pin!(main, rcs);
+        tokio::select! {
+            result = &mut main => result,
+            _ = &mut rcs => main.await,
+        }
     }
     pub(crate) async fn run_live_at(
         &self,
@@ -628,6 +639,7 @@ impl RecoveredSession {
                             }
                         }
                         merge(&mut known, &records)?;
+                        self.rcs.conversations(&known);
                         publish(&events, LiveEvent::Conversations(records)).await?;
                         pending = Some(LiveCommand::SendingCapability);
                     }
@@ -742,6 +754,7 @@ impl RecoveredSession {
                     }
                 }
                 merge(known, &records)?;
+                self.rcs.conversations(known);
                 publish(events, LiveEvent::ConversationUpdates(records)).await?;
             }
             crate::updates::Update::Messages {
@@ -771,6 +784,10 @@ impl RecoveredSession {
             }
             // Unsupported families are left in the inbox, without pretending
             // their contents were processed or erasing them with an ACK.
+            crate::updates::Update::Unsupported(5) => {
+                self.rcs.settings(plaintext.as_bytes());
+                return Ok(());
+            }
             crate::updates::Update::Unsupported(_) => return Ok(()),
         }
         self.acknowledge(http, endpoint, push.message_id).await
