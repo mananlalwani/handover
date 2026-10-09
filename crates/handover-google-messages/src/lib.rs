@@ -1035,7 +1035,12 @@ async fn receive_json_when_ready(
                 if let receive::ReceiveEvent::Status(code) = &event {
                     terminal_status = RpcStatus::from_code(u64::from(*code));
                 }
-                emit(event)
+                emit(event)?;
+                if terminal_status.is_some() {
+                    Err(receive::ReceiveError::Failed)
+                } else {
+                    Ok(())
+                }
             })
             .map_err(|error| {
                 terminal_status
@@ -1870,6 +1875,10 @@ mod tests {
                 ProbeError::RpcErrorWithStatus(RpcStatus::Unauthenticated),
             ),
             (
+                b"[[],[14]]".as_slice(),
+                ProbeError::RpcErrorWithStatus(RpcStatus::Unavailable),
+            ),
+            (
                 b"not-json".as_slice(),
                 ProbeError::ReceiveProtocol(receive::ReceiveError::Malformed),
             ),
@@ -1892,13 +1901,7 @@ mod tests {
                 &endpoint,
                 registration_proof().validate_messaging().unwrap(),
                 &request,
-                |event| {
-                    if matches!(event, receive::ReceiveEvent::Status(code) if code != 0) {
-                        Err(receive::ReceiveError::Failed)
-                    } else {
-                        Ok(())
-                    }
-                },
+                |_| Ok(()),
             )
             .await;
             assert_eq!(result.unwrap_err(), expected);

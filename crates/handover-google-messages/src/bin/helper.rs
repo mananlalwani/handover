@@ -245,7 +245,22 @@ fn reconnect_delay(
     error: &handover_google_messages::ProbeError,
     attempt: u8,
 ) -> Option<std::time::Duration> {
-    use handover_google_messages::{ProbeError, credential_store::CredentialError};
+    use handover_google_messages::{ProbeError, RpcStatus, credential_store::CredentialError};
+    // Explicit authentication/request failures take precedence over an HTTP
+    // envelope that would otherwise be considered temporary.
+    if matches!(error.http_status(), Some(400 | 401 | 403))
+        || error.rpc_reason().is_some()
+        || matches!(
+            error.rpc_status(),
+            Some(
+                RpcStatus::Unauthenticated
+                    | RpcStatus::PermissionDenied
+                    | RpcStatus::InvalidArgument
+            )
+        )
+    {
+        return None;
+    }
     let transient = matches!(
         error,
         ProbeError::Network
@@ -265,9 +280,17 @@ fn reconnect_delay(
             | ProbeError::CredentialStore(
                 CredentialError::Locked | CredentialError::Unavailable | CredentialError::Timeout
             )
+    ) || matches!(
+        error.rpc_status(),
+        Some(
+            RpcStatus::DeadlineExceeded
+                | RpcStatus::ResourceExhausted
+                | RpcStatus::Internal
+                | RpcStatus::Unavailable
+        )
     ) || error
         .http_status()
-        .is_some_and(|status| (500..=599).contains(&status));
+        .is_some_and(|status| matches!(status, 408 | 429) || (500..=599).contains(&status));
     transient.then(|| std::time::Duration::from_secs((1_u64 << attempt.min(6)).min(60)))
 }
 
@@ -2922,6 +2945,35 @@ mod tests {
                     .expect("saved accounts must recover after unlock or network restoration");
                 assert!(delay.as_secs() > 0 && delay.as_secs() <= 60);
             }
+        }
+    }
+
+    #[test]
+    fn temporary_server_rejections_recover_without_retrying_authentication() {
+        use handover_google_messages::{ProbeError, RpcStatus};
+        for error in [
+            ProbeError::HttpError(408),
+            ProbeError::HttpError(429),
+            ProbeError::RpcErrorWithStatus(RpcStatus::DeadlineExceeded),
+            ProbeError::RpcErrorWithStatus(RpcStatus::ResourceExhausted),
+            ProbeError::RpcErrorWithStatus(RpcStatus::Internal),
+            ProbeError::RpcErrorWithStatus(RpcStatus::Unavailable),
+            ProbeError::HttpErrorWithStatus(429, RpcStatus::ResourceExhausted),
+        ] {
+            assert!(
+                reconnect_delay(&error, 0).is_some(),
+                "temporary server rejection must schedule recovery: {error:?}"
+            );
+        }
+        for error in [
+            ProbeError::HttpErrorWithStatus(503, RpcStatus::Unauthenticated),
+            ProbeError::HttpErrorWithStatus(429, RpcStatus::PermissionDenied),
+            ProbeError::RpcErrorWithStatus(RpcStatus::InvalidArgument),
+        ] {
+            assert!(
+                reconnect_delay(&error, 0).is_none(),
+                "server authentication and invalid requests must stay terminal"
+            );
         }
     }
 
