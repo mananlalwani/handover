@@ -1080,9 +1080,15 @@ Singleton {
                 finishPending(true, "");
             break;
         case "error":
-            exhaustiveHistoryLoads = ({});
-            historyRequests = ({});
-            automaticHistoryNext = null;
+            // Only history failures or loss of messaging availability end
+            // page loads. An unrelated rejected command must not stop them.
+            if (message.code === "history_unavailable"
+                    || message.code === "unknown_conversation"
+                    || message.code === "messaging_unavailable") {
+                exhaustiveHistoryLoads = ({});
+                historyRequests = ({});
+                automaticHistoryNext = null;
+            }
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
             finishPending(false, lastError);

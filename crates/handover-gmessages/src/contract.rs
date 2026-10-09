@@ -356,7 +356,7 @@ impl std::fmt::Display for ContractError {
 impl std::error::Error for ContractError {}
 
 /// Encode a daemon command as one JSON line (no trailing secrets in logs:
-/// callers must redact `Login` before logging).
+/// callers must redact payloads before logging).
 pub fn encode_command(command: &HelperCommand) -> Result<String, serde_json::Error> {
     serde_json::to_string(command)
 }
@@ -367,7 +367,14 @@ pub fn decode_event(line: &[u8]) -> Result<HelperEvent, ContractError> {
     if line.len() > MAX_HELPER_LINE_BYTES {
         return Err(ContractError::OversizedLine(line.len()));
     }
-    serde_json::from_slice(line).map_err(|error| ContractError::Malformed(error.to_string()))
+    serde_json::from_slice(line).map_err(|error| {
+        // Serde's data errors can quote a rejected string or enum token.
+        ContractError::Malformed(format!(
+            "invalid JSON event at line {}, column {}",
+            error.line(),
+            error.column()
+        ))
+    })
 }
 
 /// Check a hello handshake immediately after spawn.
@@ -389,6 +396,18 @@ pub fn check_hello(event: &HelperEvent) -> Result<String, ContractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_field_values_never_escape_in_errors() {
+        for line in [
+            br#"{"type":"private-message-body"}"#.as_slice(),
+            br#"{"type":"account","account":"work","label":"label","connected":"private-message-body","authenticated":true}"#.as_slice(),
+        ] {
+            let error = decode_event(line).unwrap_err();
+            assert!(!error.to_string().contains("private-message-body"));
+            assert!(!format!("{error:?}").contains("private-message-body"));
+        }
+    }
 
     #[test]
     fn oversized_and_malformed_helper_lines_are_rejected_without_echo() {

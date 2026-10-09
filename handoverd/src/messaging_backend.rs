@@ -30,7 +30,9 @@ use handover_gmessages::staging::{
     adapter_staging_directory, default_staging_directory, import_staged_path,
     imported_staging_directory,
 };
-use handover_gmessages::supervisor::{HelperProcess, backoff_delay, find_helper, redact_command};
+use handover_gmessages::supervisor::{
+    HelperProcess, SpawnError, backoff_delay, find_helper, redact_command,
+};
 use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -535,6 +537,11 @@ impl MessagingHub {
                 key.1.clone(),
                 Some(fetch_id),
             ));
+            self.inner.page_floors.lock().await.remove(&(
+                key.0.clone(),
+                key.1.clone(),
+                Some(fetch_id),
+            ));
         }
     }
 
@@ -559,6 +566,7 @@ impl MessagingHub {
 
     async fn fail_fetches(&self) {
         self.inner.archive_pages.lock().await.clear();
+        self.inner.page_floors.lock().await.clear();
         for (_, (_, _, _, waiter)) in self.inner.fetches.lock().await.drain() {
             let _ = waiter.send(Err(()));
         }
@@ -932,6 +940,10 @@ async fn run_session(
                         ingest_event(state, events, hub, &mut seen, event).await;
                     }
                     Ok(None) => break,
+                    Err(SpawnError::Io(error)) => {
+                        warn!(%error, "messaging helper event stream failed; restarting helper");
+                        break;
+                    }
                     Err(error) => {
                         warn!(%error, "dropping malformed helper message");
                     }
@@ -2489,6 +2501,47 @@ mod tests {
         hub.complete_fetch("a", "c", Some(7)).await;
         assert!(rx.await.expect("waiter completes").is_ok());
         assert!(!hub.inner.fetches.lock().await.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn timed_out_fetch_removes_its_partial_page_floor() {
+        let hub = MessagingHub::new();
+        let key = ("a".to_string(), "c".to_string());
+        let (tx, _rx) = oneshot::channel();
+        hub.inner
+            .fetches
+            .lock()
+            .await
+            .insert(key.clone(), (7, 20, None, tx));
+        hub.accumulate_page_floor("a", "c", Some(7), &[(Some(1), "m1".into())])
+            .await;
+
+        hub.take_fetch(&key, 7).await;
+
+        assert!(!hub.inner.page_floors.lock().await.contains_key(&(
+            "a".into(),
+            "c".into(),
+            Some(7)
+        )));
+    }
+
+    #[tokio::test]
+    async fn helper_fetch_failure_clears_partial_page_floors() {
+        let hub = MessagingHub::new();
+        let key = ("a".to_string(), "c".to_string());
+        let (tx, rx) = oneshot::channel();
+        hub.inner
+            .fetches
+            .lock()
+            .await
+            .insert(key, (7, 20, None, tx));
+        hub.accumulate_page_floor("a", "c", Some(7), &[(Some(1), "m1".into())])
+            .await;
+
+        hub.fail_fetches().await;
+
+        assert!(hub.inner.page_floors.lock().await.is_empty());
+        assert!(rx.await.expect("failed waiter completes").is_err());
     }
 
     #[tokio::test]

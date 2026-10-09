@@ -17,23 +17,23 @@ use crate::contract::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum NormalizeError {
     Invalid(String),
-    UnknownStatus(String),
+    UnknownStatus,
     UnknownConversationKind,
-    UnsupportedCapability(String),
+    UnsupportedCapability,
 }
 
 impl std::fmt::Display for NormalizeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(detail) => write!(formatter, "invalid helper record: {detail}"),
-            Self::UnknownStatus(status) => {
-                write!(formatter, "unknown message status {status:?}")
+            Self::UnknownStatus => {
+                write!(formatter, "unknown message status")
             }
             Self::UnknownConversationKind => {
                 write!(formatter, "conversation kind not attested")
             }
-            Self::UnsupportedCapability(name) => {
-                write!(formatter, "unsupported capability {name:?}")
+            Self::UnsupportedCapability => {
+                write!(formatter, "unsupported capability")
             }
         }
     }
@@ -135,7 +135,7 @@ pub fn parse_capability(name: &str) -> Result<MessagingCapability, NormalizeErro
         "attachment_download" => Ok(MessagingCapability::AttachmentDownload),
         // Closed attested set: unknown names are rejected, never promoted.
         // There is intentionally no edit/membership/disappearing name.
-        other => Err(NormalizeError::UnsupportedCapability(other.into())),
+        _ => Err(NormalizeError::UnsupportedCapability),
     }
 }
 
@@ -217,7 +217,7 @@ pub fn parse_status(status: &str) -> Result<MessageStatus, NormalizeError> {
         "failed:disconnected" => Ok(MessageStatus::Failed(SendFailure::Disconnected)),
         "failed:transport" => Ok(MessageStatus::Failed(SendFailure::Transport)),
         // Never coerce an unknown token into a known state.
-        other => Err(NormalizeError::UnknownStatus(other.into())),
+        _ => Err(NormalizeError::UnknownStatus),
     }
 }
 
@@ -262,14 +262,20 @@ pub fn event_ids(event: &HelperEvent) -> String {
             conversation,
             message,
             status,
-        } => format!("status {account}:{conversation}:{message} {status}"),
+        } => format!(
+            "status {account}:{conversation}:{message} {:?}",
+            parse_status(status)
+        ),
         HelperEvent::SendStatus {
             request_id,
             account,
             conversation,
             status,
             ..
-        } => format!("send_status {request_id} {account}:{conversation} {status}"),
+        } => format!(
+            "send_status {request_id} {account}:{conversation} {:?}",
+            parse_status(status)
+        ),
         HelperEvent::Typing {
             account,
             conversation,
@@ -287,5 +293,38 @@ pub fn event_ids(event: &HelperEvent) -> String {
             format!("command_result {request_id} ok={ok}")
         }
         HelperEvent::Error { .. } => "error".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_tokens_are_not_retained_in_errors_or_event_logs() {
+        for error in [
+            parse_status("private-message-body").unwrap_err(),
+            parse_capability("private-message-body").unwrap_err(),
+        ] {
+            assert!(!error.to_string().contains("private-message-body"));
+            assert!(!format!("{error:?}").contains("private-message-body"));
+        }
+        for event in [
+            HelperEvent::Status {
+                account: "a".into(),
+                conversation: "c".into(),
+                message: "m".into(),
+                status: "private-message-body".into(),
+            },
+            HelperEvent::SendStatus {
+                request_id: "r".into(),
+                account: "a".into(),
+                conversation: "c".into(),
+                message: None,
+                status: "private-message-body".into(),
+            },
+        ] {
+            assert!(!event_ids(&event).contains("private-message-body"));
+        }
     }
 }

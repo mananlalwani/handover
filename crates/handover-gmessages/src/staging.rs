@@ -67,7 +67,10 @@ impl From<std::io::Error> for StageError {
 /// Copy `source` into `directory` under a sanitized name derived from the
 /// source basename. Returns the staged path.
 pub fn stage_upload(source: &Path, directory: &Path) -> Result<PathBuf, StageError> {
-    let metadata = std::fs::metadata(source)?;
+    // Inspect and copy from the same opened object so a path replacement
+    // cannot change the file after its type and size have been checked.
+    let mut input = open_nofollow(source)?;
+    let metadata = input.metadata()?;
     if !metadata.is_file() {
         return Err(StageError::NotAFile);
     }
@@ -80,57 +83,46 @@ pub fn stage_upload(source: &Path, directory: &Path) -> Result<PathBuf, StageErr
         .unwrap_or("");
     let safe = sanitize_file_name(raw_name).ok_or(StageError::UnsafeName)?;
     std::fs::create_dir_all(directory)?;
-    let target = unique_path(directory, &safe)?;
-    copy_bounded(source, &target)?;
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
-    Ok(target)
-}
+    let mut staged = tempfile::Builder::new()
+        .prefix(".handover-upload-")
+        .tempfile_in(directory)?;
+    copy_upload_bounded(&mut input, staged.as_file_mut())?;
+    staged.as_file().sync_all()?;
 
-fn unique_path(directory: &Path, name: &str) -> Result<PathBuf, StageError> {
-    let candidate = directory.join(name);
-    if !candidate.exists() {
-        return Ok(candidate);
-    }
-    for counter in 2..1000 {
-        let suffixed = format!("{counter}-{name}");
-        let candidate = directory.join(&suffixed);
-        if !candidate.exists() {
-            return Ok(candidate);
+    // Use exclusive publication. The suffix is part of the basename so
+    // distinct original extensions remain distinct, and persist_noclobber
+    // handles concurrent uploads that race on the same candidate.
+    for counter in 1..1000 {
+        let name = if counter == 1 {
+            safe.clone()
+        } else {
+            format!("{counter}-{safe}")
+        };
+        let target = directory.join(name);
+        match staged.persist_noclobber(&target) {
+            Ok(_) => return Ok(target),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                staged = error.file;
+            }
+            Err(error) => return Err(StageError::Io(error.error)),
         }
     }
     Err(StageError::UnsafeName)
 }
 
-fn copy_bounded(source: &Path, target: &Path) -> Result<(), StageError> {
-    let mut input = std::fs::File::open(source)?;
-    let tmp = target.with_extension("partial");
-    let result = (|| -> Result<u64, StageError> {
-        let mut output = std::fs::File::create(&tmp)?;
-        let mut buffer = vec![0u8; COPY_BUFFER];
-        let mut total: u64 = 0;
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            total += read as u64;
-            if total > MAX_STAGED_BYTES {
-                return Err(StageError::TooLarge(total));
-            }
-            output.write_all(&buffer[..read])?;
+fn copy_upload_bounded(input: &mut impl Read, output: &mut impl Write) -> Result<(), StageError> {
+    let mut buffer = vec![0u8; COPY_BUFFER];
+    let mut total = 0u64;
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
         }
-        output.sync_all()?;
-        Ok(total)
-    })();
-    match result {
-        Ok(_) => {
-            std::fs::rename(&tmp, target)?;
-            Ok(())
+        total += read as u64;
+        if total > MAX_STAGED_BYTES {
+            return Err(StageError::TooLarge(total));
         }
-        Err(error) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(error)
-        }
+        output.write_all(&buffer[..read])?;
     }
 }
 
@@ -743,6 +735,64 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_same_name_uploads_publish_distinct_contents() {
+        let source_dir = tempfile::tempdir().expect("source dir");
+        let stage_dir = tempfile::tempdir().expect("stage dir");
+        std::fs::create_dir(source_dir.path().join("first")).expect("first source dir");
+        std::fs::create_dir(source_dir.path().join("second")).expect("second source dir");
+        let first = write_file(source_dir.path(), "first/photo.jpg", b"first contents");
+        let second = write_file(source_dir.path(), "second/photo.jpg", b"second contents");
+
+        let (first_staged, second_staged) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| stage_upload(&first, stage_dir.path()).expect("first"));
+            let second = scope.spawn(|| stage_upload(&second, stage_dir.path()).expect("second"));
+            (
+                first.join().expect("first thread"),
+                second.join().expect("second thread"),
+            )
+        });
+
+        assert_ne!(first_staged, second_staged);
+        let mut contents = [
+            std::fs::read(first_staged).expect("read first"),
+            std::fs::read(second_staged).expect("read second"),
+        ];
+        contents.sort();
+        assert_eq!(
+            contents,
+            [b"first contents".to_vec(), b"second contents".to_vec()]
+        );
+        assert_eq!(
+            std::fs::read_dir(stage_dir.path())
+                .expect("entries")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn upload_does_not_touch_preexisting_partial_name() {
+        let source_dir = tempfile::tempdir().expect("source dir");
+        let stage_dir = tempfile::tempdir().expect("stage dir");
+        let source = write_file(source_dir.path(), "photo.jpg", b"upload");
+        let partial = write_file(stage_dir.path(), "photo.partial", b"keep this file");
+
+        let staged = stage_upload(&source, stage_dir.path()).expect("stage");
+
+        assert_eq!(
+            std::fs::read(&partial).expect("read partial"),
+            b"keep this file"
+        );
+        assert_eq!(std::fs::read(staged).expect("read staged"), b"upload");
+        assert_eq!(
+            std::fs::read_dir(stage_dir.path())
+                .expect("entries")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn rejects_directories_and_oversize_by_metadata() {
         let stage_dir = tempfile::tempdir().expect("tempdir");
         assert!(matches!(
@@ -754,19 +804,6 @@ mod tests {
         // Fake oversize by pointing at a sparse check: use metadata path via
         // a direct TooLarge assertion on the copy path is covered below.
         assert!(std::fs::metadata(&big).is_ok());
-    }
-
-    #[test]
-    fn copy_bounded_enforces_limit_and_cleans_partial() {
-        let source_dir = tempfile::tempdir().expect("tempdir");
-        let stage_dir = tempfile::tempdir().expect("tempdir");
-        let source = write_file(source_dir.path(), "src.bin", b"0123456789abcdef");
-        let target = stage_dir.path().join("dst.bin");
-        // Temporarily exercise the bounded path with a tiny cap by copying
-        // through the public API on a small file (limit is generous here).
-        copy_bounded(&source, &target).expect("copy");
-        assert_eq!(std::fs::read(&target).expect("read"), b"0123456789abcdef");
-        assert!(!stage_dir.path().join("dst.partial").exists());
     }
 
     #[test]

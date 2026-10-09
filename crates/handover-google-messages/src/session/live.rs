@@ -94,6 +94,62 @@ fn media_failure(error: crate::media::MediaError) -> &'static str {
         _ => "failed:transport",
     }
 }
+#[derive(Default)]
+struct LiveState {
+    known: Vec<Conversation>,
+    online: bool,
+    can_send: bool,
+}
+
+impl LiveState {
+    fn apply_capabilities(&self, records: &mut [Conversation]) {
+        use handover_core::messaging::{MessagingCapability as Capability, TransportKind};
+        for record in records {
+            for capability in [
+                Capability::Text,
+                Capability::Media,
+                Capability::Replies,
+                Capability::Reactions,
+            ] {
+                record.capabilities.remove(&capability);
+            }
+            if self.can_send {
+                record
+                    .capabilities
+                    .extend([Capability::Text, Capability::Media]);
+                if record.transport == TransportKind::Rcs {
+                    record
+                        .capabilities
+                        .extend([Capability::Replies, Capability::Reactions]);
+                }
+            }
+        }
+    }
+
+    fn conversations(
+        &mut self,
+        records: &mut [Conversation],
+        replace: bool,
+    ) -> Result<(), ProbeError> {
+        self.apply_capabilities(records);
+        let mut known = if replace {
+            Vec::new()
+        } else {
+            self.known.clone()
+        };
+        merge(&mut known, records)?;
+        self.known = known;
+        Ok(())
+    }
+
+    fn sending_capability(&mut self, allowed: bool) {
+        self.can_send = allowed;
+        let mut records = std::mem::take(&mut self.known);
+        self.apply_capabilities(&mut records);
+        self.known = records;
+    }
+}
+
 fn merge(known: &mut Vec<Conversation>, records: &[Conversation]) -> Result<(), ProbeError> {
     for record in records {
         if let Some(previous) = known.iter_mut().find(|previous| previous.id == record.id) {
@@ -295,10 +351,8 @@ impl RecoveredSession {
         tokio::pin!(expiry);
         let renewal = tokio::time::sleep(renewal_after.unwrap_or_else(|| renewal_delay(lifetime)));
         tokio::pin!(renewal);
-        let mut known = Vec::<Conversation>::new();
+        let mut state = LiveState::default();
         let mut pending = Some(LiveCommand::Conversations);
-        let mut online = false;
-        let mut can_send = false;
         loop {
             // Let the current request and its publication finish before rotating
             // receive ownership. Never cancel or replay an active send to renew.
@@ -319,9 +373,9 @@ impl RecoveredSession {
                             result,
                         } => {
                             if result.is_closed()
-                                || !online
-                                || !can_send
-                                || !known.iter().any(|model| {
+                                || !state.online
+                                || !state.can_send
+                                || !state.known.iter().any(|model| {
                                     model.id.local_id == conversation
                                         && model.transport
                                             == handover_core::messaging::TransportKind::Rcs
@@ -337,7 +391,7 @@ impl RecoveredSession {
                             )
                         }
                         LiveCommand::Unpair { result } => {
-                            if result.is_closed() || !online {
+                            if result.is_closed() || !state.online {
                                 let _ = result.send(false);
                                 continue;
                             }
@@ -366,7 +420,7 @@ impl RecoveredSession {
                             receive_result = &mut receive => { receive_result?; return Err(ProbeError::ReceiveFailed); }
                             _ = &mut expiry => return Err(ProbeError::SessionExpired),
                             outcome = &mut mutation => break outcome.map_err(|_| ProbeError::Timeout)??,
-                            push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                            push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?,
                         }
                     };
                     // A later ACK failure cannot erase an attested phone result.
@@ -411,9 +465,12 @@ impl RecoveredSession {
                         _ => unreachable!(),
                     };
                     accepted.await.map_err(|_| ProbeError::NativeError)?;
-                    if !online
-                        || !can_send
-                        || !known.iter().any(|model| model.id.local_id == conversation)
+                    if !state.online
+                        || !state.can_send
+                        || !state
+                            .known
+                            .iter()
+                            .any(|model| model.id.local_id == conversation)
                     {
                         publish(
                             &events,
@@ -458,7 +515,7 @@ impl RecoveredSession {
                                 result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
                                 _ = &mut expiry => return Err(ProbeError::SessionExpired),
                                 result = &mut upload => break result.unwrap_or(Err(crate::media::MediaError::Network)),
-                                push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                                push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?,
                             }
                         };
                         let uploaded = match uploaded {
@@ -495,7 +552,7 @@ impl RecoveredSession {
                             result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
                             _ = &mut expiry => return Err(ProbeError::SessionExpired),
                             result = &mut send => break result.map_err(|_| ProbeError::Timeout)??,
-                            push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                            push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?,
                         }
                     };
                     let (message, status) = match reply {
@@ -599,8 +656,8 @@ impl RecoveredSession {
                         result = &mut read => break result.map_err(|_| ProbeError::Timeout).and_then(|result| result),
                         // The initial inventory supplies participant identities.
                         // Its bounded startup pushes remain queued until then.
-                        push = push_rx.recv(), if !known.is_empty() => {
-                            self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?;
+                        push = push_rx.recv(), if !state.known.is_empty() => {
+                            self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?;
                         }
                     }
                 };
@@ -619,27 +676,12 @@ impl RecoveredSession {
                     Err(error) => return Err(error),
                 };
                 if let Some(allowed) = result.1 {
-                    can_send = allowed;
+                    state.sending_capability(allowed);
                 }
                 match result.0 {
                     ReadResult::Conversations(mut records) => {
-                        for record in &mut records {
-                            if can_send {
-                                if record.transport == handover_core::messaging::TransportKind::Rcs
-                                {
-                                    record.capabilities.extend([
-                                        handover_core::messaging::MessagingCapability::Replies,
-                                        handover_core::messaging::MessagingCapability::Reactions,
-                                    ]);
-                                }
-                                record.capabilities.extend([
-                                    handover_core::messaging::MessagingCapability::Text,
-                                    handover_core::messaging::MessagingCapability::Media,
-                                ]);
-                            }
-                        }
-                        merge(&mut known, &records)?;
-                        self.rcs.conversations(&known);
+                        state.conversations(&mut records, true)?;
+                        self.rcs.conversations(&state.known);
                         publish(&events, LiveEvent::Conversations(records)).await?;
                         pending = Some(LiveCommand::SendingCapability);
                     }
@@ -658,34 +700,8 @@ impl RecoveredSession {
                         .await?;
                     }
                     ReadResult::Startup if matches!(command, LiveCommand::SendingCapability) => {
-                        for model in &mut known {
-                            if can_send {
-                                if model.transport == handover_core::messaging::TransportKind::Rcs {
-                                    model.capabilities.extend([
-                                        handover_core::messaging::MessagingCapability::Replies,
-                                        handover_core::messaging::MessagingCapability::Reactions,
-                                    ]);
-                                }
-                                model.capabilities.extend([
-                                    handover_core::messaging::MessagingCapability::Text,
-                                    handover_core::messaging::MessagingCapability::Media,
-                                ]);
-                            } else {
-                                model.capabilities.remove(
-                                    &handover_core::messaging::MessagingCapability::Reactions,
-                                );
-                                model.capabilities.remove(
-                                    &handover_core::messaging::MessagingCapability::Replies,
-                                );
-                                model
-                                    .capabilities
-                                    .remove(&handover_core::messaging::MessagingCapability::Text);
-                                model
-                                    .capabilities
-                                    .remove(&handover_core::messaging::MessagingCapability::Media);
-                            }
-                        }
-                        publish(&events, LiveEvent::ConversationUpdates(known.clone())).await?;
+                        publish(&events, LiveEvent::ConversationUpdates(state.known.clone()))
+                            .await?;
                     }
                     ReadResult::Startup => return Err(ProbeError::UnexpectedResponse),
                 }
@@ -701,7 +717,7 @@ impl RecoveredSession {
                         pending = Some(command);
                     }
                     push = push_rx.recv() => {
-                        self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?;
+                        self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?;
                     }
                 }
             }
@@ -712,25 +728,19 @@ impl RecoveredSession {
         http: &reqwest::Client,
         endpoint: &str,
         events: &mpsc::Sender<LiveOutput>,
-        known: &mut Vec<Conversation>,
-        online: &mut bool,
+        state: &mut LiveState,
         push: crate::receive::session_reply::SessionReply,
     ) -> Result<(), ProbeError> {
-        let can_send = known.iter().any(|model| {
-            model
-                .capabilities
-                .contains(&handover_core::messaging::MessagingCapability::Text)
-        });
         let plaintext = self
             .pairing
             .pairing
             .decrypt_payload(&push.ciphertext)
             .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
-        match crate::updates::decode(self.account_id(), known, plaintext.as_bytes(), true)? {
+        match crate::updates::decode(self.account_id(), &state.known, plaintext.as_bytes(), true)? {
             crate::updates::Update::Active => {
-                if !*online {
+                if !state.online {
                     publish(events, LiveEvent::Online).await?;
-                    *online = true;
+                    state.online = true;
                 }
             }
             crate::updates::Update::Inactive => {
@@ -749,22 +759,8 @@ impl RecoveredSession {
                 ));
             }
             crate::updates::Update::Conversations(mut records) => {
-                for record in &mut records {
-                    if can_send {
-                        if record.transport == handover_core::messaging::TransportKind::Rcs {
-                            record.capabilities.extend([
-                                handover_core::messaging::MessagingCapability::Replies,
-                                handover_core::messaging::MessagingCapability::Reactions,
-                            ]);
-                        }
-                        record.capabilities.extend([
-                            handover_core::messaging::MessagingCapability::Text,
-                            handover_core::messaging::MessagingCapability::Media,
-                        ]);
-                    }
-                }
-                merge(known, &records)?;
-                self.rcs.conversations(known);
+                state.conversations(&mut records, false)?;
+                self.rcs.conversations(&state.known);
                 publish(events, LiveEvent::ConversationUpdates(records)).await?;
             }
             crate::updates::Update::Messages {
@@ -801,5 +797,64 @@ impl RecoveredSession {
             crate::updates::Update::Unsupported(_) => return Ok(()),
         }
         self.acknowledge(http, endpoint, push.message_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use handover_core::messaging::{
+        ConversationId, ConversationKind, MessagingAccountId, MessagingCapability, TransportKind,
+    };
+
+    fn conversation(id: &str) -> Conversation {
+        Conversation {
+            id: ConversationId::new(MessagingAccountId::new("fixture"), id),
+            kind: ConversationKind::Direct,
+            transport: TransportKind::Rcs,
+            title: None,
+            participants: Vec::new(),
+            latest_message_id: None,
+            last_activity_at: None,
+            unread_count: None,
+            cursor: None,
+            capabilities: Default::default(),
+        }
+    }
+
+    #[test]
+    fn first_conversation_push_uses_permission_received_with_empty_inventory() {
+        let mut state = LiveState::default();
+        state.sending_capability(true);
+        let mut records = vec![conversation("new")];
+        state.conversations(&mut records, false).unwrap();
+        assert!(records[0].capabilities.contains(&MessagingCapability::Text));
+        assert!(
+            records[0]
+                .capabilities
+                .contains(&MessagingCapability::Reactions)
+        );
+        assert_eq!(state.known, records);
+        state.sending_capability(false);
+        assert!(state.known[0].capabilities.is_empty());
+        state.conversations(&mut records, false).unwrap();
+        assert!(records[0].capabilities.is_empty());
+    }
+
+    #[test]
+    fn refreshed_inventory_does_not_restore_missing_threads_on_permission_update() {
+        let mut state = LiveState::default();
+        state
+            .conversations(&mut [conversation("old"), conversation("kept")], true)
+            .unwrap();
+        state
+            .conversations(&mut [conversation("kept")], true)
+            .unwrap();
+        state.sending_capability(true);
+        assert_eq!(state.known.len(), 1);
+        assert_eq!(state.known[0].id.local_id, "kept");
+        state.conversations(&mut [], true).unwrap();
+        state.sending_capability(false);
+        assert!(state.known.is_empty());
     }
 }

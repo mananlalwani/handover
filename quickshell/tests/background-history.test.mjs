@@ -23,7 +23,7 @@ function service() {
         automaticHistoryNext: null, conversationMessages: {}, conversationCursors: {},
         sendRequest: (type, fields) => { requests.push({type, fields}); return true; },
         historyProgress: () => {}, automaticHistoryPageTimer: { restart() {} },
-        console, lastError: '',
+        console, lastError: '', finishPending() {}, nativePending: false, pendingMessaging: null,
     });
     vm.runInContext(['sameConversationId','conversationKey','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
     return { context, requests };
@@ -61,4 +61,17 @@ test('a repeated provider cursor stops loading instead of downloading forever', 
     c.handleLine(response);
     assert.equal(c.isLoadingAllHistory(thread), false);
     assert.equal(requests.length, 2);
+});
+
+test('an unrelated command error does not interrupt a history load', () => {
+    const {context:c,requests} = service();
+    c.loadAllHistory(thread, false);
+    c.handleLine(JSON.stringify({protocol:1,type:'error',code:'backend_rejected',message:'command rejected'}));
+    assert.equal(c.isLoadingAllHistory(thread), true);
+    c.handleLine(JSON.stringify({protocol:1,type:'history',conversation_id:thread,messages:[],cursor_next:'older'}));
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].fields.cursor, 'older');
+    c.handleLine(JSON.stringify({protocol:1,type:'error',code:'history_unavailable',message:'history unavailable'}));
+    assert.equal(c.isLoadingAllHistory(thread), false);
+    assert.equal(Object.keys(c.historyRequests).length, 0);
 });

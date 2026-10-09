@@ -21,7 +21,7 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// be restarted, not waited on forever.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::contract::{
@@ -107,8 +107,97 @@ impl std::error::Error for SpawnError {}
 pub struct HelperProcess {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    stdout: EventReader<BufReader<ChildStdout>>,
     pub name: String,
+}
+
+/// Persistent framing state for the helper's newline-delimited event stream.
+/// `next_event` is cancellation-safe: bytes consumed from the underlying
+/// reader remain in `line` or `discarded` if the future is dropped.
+struct EventReader<R> {
+    reader: R,
+    line: Vec<u8>,
+    discarding: bool,
+    discarded: usize,
+}
+
+impl<R> EventReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            line: Vec::new(),
+            discarding: false,
+            discarded: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.line.clear();
+        self.discarding = false;
+        self.discarded = 0;
+    }
+}
+
+impl<R: AsyncBufRead + Unpin> EventReader<R> {
+    async fn next_event(&mut self) -> Result<Option<HelperEvent>, SpawnError> {
+        const MAX_DISCARD_BYTES: usize = 10 * 1024 * 1024;
+        loop {
+            let available = self.reader.fill_buf().await.map_err(SpawnError::Io)?;
+            if available.is_empty() {
+                if self.discarding {
+                    let size = self.discarded;
+                    self.reset();
+                    return Err(SpawnError::Handshake(
+                        crate::contract::ContractError::OversizedLine(size),
+                    ));
+                }
+                if self.line.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            let newline = available.iter().position(|byte| *byte == b'\n');
+            let consumed = newline.map_or(available.len(), |position| position + 1);
+            let content_length = newline.unwrap_or(available.len());
+            // The limit applies to the complete wire line, including its
+            // newline, matching outbound framing and the helper contract.
+            let wire_length = content_length + usize::from(newline.is_some());
+            if self.discarding {
+                self.discarded = self.discarded.saturating_add(wire_length);
+            } else if self.line.len().saturating_add(wire_length) > MAX_HELPER_LINE_BYTES {
+                self.discarding = true;
+                self.discarded = self.line.len().saturating_add(wire_length);
+                self.line.clear();
+            } else {
+                self.line.extend_from_slice(&available[..content_length]);
+            }
+            self.reader.consume(consumed);
+
+            if self.discarded > MAX_DISCARD_BYTES {
+                // The record never terminated. Restart the helper rather than
+                // treating its remaining bytes as a new event.
+                return Err(SpawnError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "helper event exceeded discard limit",
+                )));
+            }
+            if newline.is_some() {
+                if self.discarding {
+                    let size = self.discarded;
+                    self.reset();
+                    return Err(SpawnError::Handshake(
+                        crate::contract::ContractError::OversizedLine(size),
+                    ));
+                }
+                break;
+            }
+        }
+
+        let line = std::mem::take(&mut self.line);
+        self.reset();
+        decode_event(&line).map(Some).map_err(SpawnError::Handshake)
+    }
 }
 
 impl HelperProcess {
@@ -131,7 +220,7 @@ impl HelperProcess {
         let mut process = Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            stdout: EventReader::new(BufReader::new(stdout)),
             name: String::new(),
         };
         // A started-but-hung helper must not stall the supervisor
@@ -189,58 +278,7 @@ impl HelperProcess {
     /// to the next newline (bounded) and reports the oversize, so a
     /// corrupt stream restarts the helper instead of desyncing it.
     pub async fn next_event(&mut self) -> Result<Option<HelperEvent>, SpawnError> {
-        const MAX_DISCARD_BYTES: usize = 10 * 1024 * 1024;
-        let mut line = Vec::new();
-        let mut discarding = false;
-        let mut discarded = 0;
-        loop {
-            let available = self.stdout.fill_buf().await.map_err(SpawnError::Io)?;
-            if available.is_empty() {
-                if discarding || line.is_empty() {
-                    return if discarding {
-                        Err(SpawnError::Handshake(
-                            crate::contract::ContractError::OversizedLine(line.len() + discarded),
-                        ))
-                    } else {
-                        Ok(None)
-                    };
-                }
-                break;
-            }
-
-            let newline = available.iter().position(|byte| *byte == b'\n');
-            let consumed = newline.map_or(available.len(), |position| position + 1);
-            let content_length = newline.unwrap_or(available.len());
-            if discarding {
-                discarded += content_length;
-                if discarded > MAX_DISCARD_BYTES {
-                    return Err(SpawnError::Handshake(
-                        crate::contract::ContractError::OversizedLine(discarded),
-                    ));
-                }
-            } else if line.len() + content_length > MAX_HELPER_LINE_BYTES {
-                discarding = true;
-                discarded = line.len() + content_length;
-                line.clear();
-                if discarded > MAX_DISCARD_BYTES {
-                    return Err(SpawnError::Handshake(
-                        crate::contract::ContractError::OversizedLine(discarded),
-                    ));
-                }
-            } else {
-                line.extend_from_slice(&available[..content_length]);
-            }
-            self.stdout.consume(consumed);
-            if newline.is_some() {
-                if discarding {
-                    return Err(SpawnError::Handshake(
-                        crate::contract::ContractError::OversizedLine(discarded),
-                    ));
-                }
-                break;
-            }
-        }
-        decode_event(&line).map(Some).map_err(SpawnError::Handshake)
+        self.stdout.next_event().await
     }
 
     pub async fn shutdown(mut self) {
@@ -250,16 +288,33 @@ impl HelperProcess {
     }
 }
 
-/// Redact a command for logging: `Login` bundles never appear in logs.
+/// Return a log-safe command summary. Keep this as an allowlist: command
+/// payloads can contain credentials, message content, filesystem paths,
+/// phone numbers, and other private data.
 pub fn redact_command(command: &HelperCommand) -> String {
-    match serde_json::to_value(command) {
-        Ok(mut value) => {
-            if let Some(object) = value.as_object_mut() {
-                object.remove("bundle_b64");
-            }
-            value.to_string()
+    match command {
+        HelperCommand::Hello => "hello".into(),
+        HelperCommand::Login { .. } => "login".into(),
+        HelperCommand::Logout { .. } => "logout".into(),
+        HelperCommand::ListConversations { .. } => "list_conversations".into(),
+        HelperCommand::FetchHistory { .. } => "fetch_history".into(),
+        HelperCommand::SendText { request_id, .. } => {
+            format!("send_text request_id={request_id}")
         }
-        Err(_) => "unserializable command".to_string(),
+        HelperCommand::SendMedia { request_id, .. } => {
+            format!("send_media request_id={request_id}")
+        }
+        HelperCommand::React { request_id, .. } => format!("react request_id={request_id}"),
+        HelperCommand::MarkRead { .. } => "mark_read".into(),
+        HelperCommand::Typing { .. } => "typing".into(),
+        HelperCommand::DeleteMessage { request_id, .. } => {
+            format!("delete_message request_id={request_id}")
+        }
+        HelperCommand::OpenConversation { request_id, .. } => {
+            format!("open_conversation request_id={request_id}")
+        }
+        HelperCommand::Sync { .. } => "sync".into(),
+        HelperCommand::Shutdown => "shutdown".into(),
     }
 }
 
@@ -325,12 +380,134 @@ mod tests {
     }
 
     #[test]
-    fn login_command_is_redacted_for_logs() {
+    fn command_logs_only_include_allowlisted_summaries() {
         let redacted = redact_command(&HelperCommand::Login {
-            account: "work".into(),
-            bundle_b64: "c2VjcmV0LWJ5dGVz".into(),
+            account: "private-account".into(),
+            bundle_b64: "private-bundle".into(),
         });
-        assert!(!redacted.contains("c2VjcmV0LWJ5dGVz"));
-        assert!(redacted.contains("work"));
+        assert_eq!(redacted, "login");
+
+        let commands = [
+            HelperCommand::SendText {
+                request_id: "request".into(),
+                account: "account".into(),
+                conversation: "conversation".into(),
+                text: "private-text".into(),
+                reply_to: Some("private-reply-id".into()),
+            },
+            HelperCommand::SendMedia {
+                request_id: "request".into(),
+                account: "account".into(),
+                conversation: "conversation".into(),
+                path: "/private/path".into(),
+                caption: Some("private-caption".into()),
+            },
+            HelperCommand::React {
+                request_id: "request".into(),
+                account: "account".into(),
+                conversation: "conversation".into(),
+                message: "private-message-id".into(),
+                emoji: "private-emoji".into(),
+                add: true,
+            },
+            HelperCommand::OpenConversation {
+                request_id: "request".into(),
+                account: "account".into(),
+                addresses: vec!["private-phone-number".into()],
+            },
+        ];
+        for command in commands {
+            let summary = redact_command(&command);
+            for private_value in [
+                "private-text",
+                "private-reply-id",
+                "/private/path",
+                "private-caption",
+                "private-message-id",
+                "private-emoji",
+                "private-phone-number",
+            ] {
+                assert!(!summary.contains(private_value), "leaked {private_value}");
+            }
+            assert!(summary.contains("request_id=request"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_partial_event_read_resumes_without_losing_bytes() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let mut events = EventReader::new(BufReader::new(reader));
+        let event = br#"{"type":"hello","helper_protocol":1,"name":"test"}"#;
+        writer.write_all(&event[..12]).await.expect("write prefix");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), events.next_event())
+                .await
+                .is_err()
+        );
+
+        writer.write_all(&event[12..]).await.expect("write suffix");
+        writer.write_all(b"\n").await.expect("write newline");
+        assert_eq!(
+            events.next_event().await.expect("event").expect("record"),
+            HelperEvent::Hello {
+                helper_protocol: 1,
+                name: "test".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn unterminated_oversized_record_requires_helper_restart() {
+        let prefix = vec![b'x'; 10 * 1024 * 1024 + 1];
+        let mut events = EventReader::new(BufReader::new(prefix.as_slice()));
+        assert!(
+            matches!(events.next_event().await, Err(SpawnError::Io(error))
+            if error.kind() == std::io::ErrorKind::InvalidData)
+        );
+        assert!(events.discarding);
+    }
+
+    #[tokio::test]
+    async fn cancelled_oversized_discard_does_not_parse_its_remainder() {
+        let (mut writer, reader) = tokio::io::duplex(MAX_HELPER_LINE_BYTES + 4096);
+        let mut events = EventReader::new(BufReader::new(reader));
+        let oversized_prefix = vec![b'x'; MAX_HELPER_LINE_BYTES + 8];
+        writer
+            .write_all(&oversized_prefix)
+            .await
+            .expect("write oversized prefix");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), events.next_event())
+                .await
+                .is_err()
+        );
+
+        let valid = br#"{"type":"hello","helper_protocol":1,"name":"test"}"#;
+        writer
+            .write_all(b"\n")
+            .await
+            .expect("finish oversized line");
+        writer.write_all(valid).await.expect("write valid event");
+        writer.write_all(b"\n").await.expect("write event newline");
+
+        assert!(matches!(
+            events.next_event().await,
+            Err(SpawnError::Handshake(
+                crate::contract::ContractError::OversizedLine(_)
+            ))
+        ));
+        assert_eq!(
+            events
+                .next_event()
+                .await
+                .expect("next event")
+                .expect("record"),
+            HelperEvent::Hello {
+                helper_protocol: 1,
+                name: "test".into()
+            }
+        );
     }
 }
