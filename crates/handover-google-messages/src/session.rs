@@ -725,9 +725,14 @@ impl RecoveredSession {
                                 }
                             }
                         }
-                        let inactive = matches!(update, crate::updates::Update::Inactive);
+                        let inactive = match update {
+                            crate::updates::Update::Inactive => Some(crate::receive::ReceiveError::SessionPreempted),
+                            crate::updates::Update::SessionTimeout => Some(crate::receive::ReceiveError::SessionTimeout),
+                            crate::updates::Update::InactivityTimeout => Some(crate::receive::ReceiveError::InactivityTimeout),
+                            _ => None,
+                        };
                         emit(update)?;
-                        if inactive { return Err(ProbeError::ReceiveProtocol(crate::receive::ReceiveError::SessionPreempted)); }
+                        if let Some(reason) = inactive { return Err(ProbeError::ReceiveProtocol(reason)); }
                     }
                 }
             }

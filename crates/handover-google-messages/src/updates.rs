@@ -14,6 +14,8 @@ pub enum Update {
     },
     Active,
     Inactive,
+    SessionTimeout,
+    InactivityTimeout,
     PresenceCheck,
     Unsupported(u8),
 }
@@ -149,7 +151,9 @@ pub(crate) fn decode(
             let alert = Alert::decode(*payload).map_err(|_| invalid())?;
             match alert.kind {
                 2 if own_session => Ok(Update::Active),
-                1 | 7 | 8 if own_session => Ok(Update::Inactive),
+                1 if own_session => Ok(Update::Inactive),
+                7 if own_session => Ok(Update::SessionTimeout),
+                8 if own_session => Ok(Update::InactivityTimeout),
                 _ => Ok(Update::Unsupported(6)),
             }
         }
@@ -424,6 +428,24 @@ mod tests {
         malformed.pop();
         assert!(decode("fixture", &[conversation], &push(vec![malformed]), true).is_err());
     }
+    #[test]
+    fn session_timeouts_are_not_reported_as_another_client_taking_over() {
+        assert!(matches!(
+            decode("fixture", &[], &[0x32, 2, 0x10, 7], true).unwrap(),
+            Update::SessionTimeout
+        ));
+        assert!(matches!(
+            decode("fixture", &[], &[0x32, 2, 0x10, 8], true).unwrap(),
+            Update::InactivityTimeout
+        ));
+        for kind in [7, 8] {
+            assert!(matches!(
+                decode("fixture", &[], &[0x32, 2, 0x10, kind], false).unwrap(),
+                Update::Unsupported(6)
+            ));
+        }
+    }
+
     #[test]
     fn session_control_requires_the_current_session() {
         assert!(matches!(

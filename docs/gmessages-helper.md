@@ -99,8 +99,9 @@ Otherwise discovery follows the native-first order described above.
 If no helper is available, messaging stays disabled. Other backends keep working.
 
 Reconnect backoff ranges from 1 to 60 seconds. Native sessions keep retrying
-network failures, bounded receive-queue overflow, and temporarily locked or
-unavailable desktop credentials,
+network failures, authenticated session and inactivity timeouts, receive streams
+interrupted before their final status, bounded receive-queue overflow, and
+temporarily locked or unavailable desktop credentials,
 with a 60-second maximum delay. Secret Service unlock notifications immediately
 reschedule accounts waiting for desktop credentials. Timer retries remain the
 fallback when notifications are unavailable. A login1 resume notification

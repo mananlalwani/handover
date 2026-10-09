@@ -738,6 +738,16 @@ impl RecoveredSession {
                     crate::receive::ReceiveError::SessionPreempted,
                 ));
             }
+            crate::updates::Update::SessionTimeout => {
+                return Err(ProbeError::ReceiveProtocol(
+                    crate::receive::ReceiveError::SessionTimeout,
+                ));
+            }
+            crate::updates::Update::InactivityTimeout => {
+                return Err(ProbeError::ReceiveProtocol(
+                    crate::receive::ReceiveError::InactivityTimeout,
+                ));
+            }
             crate::updates::Update::Conversations(mut records) => {
                 for record in &mut records {
                     if can_send {

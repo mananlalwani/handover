@@ -28,6 +28,8 @@ pub enum ReceiveError {
     MissingStatus,
     Failed,
     SessionPreempted,
+    SessionTimeout,
+    InactivityTimeout,
     Backpressure,
 }
 

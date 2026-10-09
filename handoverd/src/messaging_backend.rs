@@ -1598,6 +1598,19 @@ async fn ingest_event(
             let category = match message.as_str() {
                 "native receive ended (receive_protocol, TooLarge)" => "receive_payload_limit",
                 "native receive ended (receive_protocol, Backpressure)" => "receive_backpressure",
+                "native receive ended (receive_protocol, MissingStatus)" => {
+                    "receive_eof_without_status"
+                }
+                "native receive ended (receive_protocol, Truncated)" => "receive_eof_truncated",
+                "native receive ended (receive_protocol, SessionTimeout)" => {
+                    "receive_session_timeout"
+                }
+                "native receive ended (receive_protocol, InactivityTimeout)" => {
+                    "receive_inactivity_timeout"
+                }
+                "native receive ended (receive_protocol, InvalidEvents)" => {
+                    "receive_event_shape_invalid"
+                }
                 "native history content unavailable" => "history_page_unavailable",
                 "native receive ended (timeout)" => "receive_timeout",
 

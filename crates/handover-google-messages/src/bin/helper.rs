@@ -109,6 +109,8 @@ async fn main() {
                             Update::Inactive => {
                                 println!("Authenticated current-session preemption observed.")
                             }
+                            Update::SessionTimeout => println!("Authenticated session timeout observed."),
+                            Update::InactivityTimeout => println!("Authenticated inactivity timeout observed."),
                             Update::PresenceCheck => println!(
                                 "Authenticated presence check observed; no presence response sent."
                             ),
@@ -252,6 +254,10 @@ fn reconnect_delay(
             | ProbeError::SessionExpired
             | ProbeError::ReceiveProtocol(
                 handover_google_messages::receive::ReceiveError::Backpressure
+                    | handover_google_messages::receive::ReceiveError::MissingStatus
+                    | handover_google_messages::receive::ReceiveError::Truncated
+                    | handover_google_messages::receive::ReceiveError::SessionTimeout
+                    | handover_google_messages::receive::ReceiveError::InactivityTimeout
             )
             | ProbeError::SessionProtocol(
                 handover_google_messages::session::SessionError::UnknownUpdateConversation
@@ -2904,12 +2910,49 @@ mod tests {
             ProbeError::Network,
             ProbeError::Timeout,
             ProbeError::ReceiveFailed,
+            ProbeError::ReceiveProtocol(
+                handover_google_messages::receive::ReceiveError::SessionTimeout,
+            ),
+            ProbeError::ReceiveProtocol(
+                handover_google_messages::receive::ReceiveError::InactivityTimeout,
+            ),
         ] {
             for attempt in 0..=u8::MAX {
                 let delay = reconnect_delay(&error, attempt)
                     .expect("saved accounts must recover after unlock or network restoration");
                 assert!(delay.as_secs() > 0 && delay.as_secs() <= 60);
             }
+        }
+    }
+
+    #[test]
+    fn interrupted_receive_documents_schedule_bounded_recovery() {
+        use handover_google_messages::{
+            ProbeError,
+            receive::{ReceiveError, ReceiveStream},
+        };
+        for body in [b"[[]]".as_slice(), b"[[[1]".as_slice()] {
+            let mut stream = ReceiveStream::default();
+            stream.feed(body, |_| Ok(())).unwrap();
+            let error = stream.finish().unwrap_err();
+            assert!(matches!(
+                error,
+                ReceiveError::MissingStatus | ReceiveError::Truncated
+            ));
+            for attempt in [0, 1, 8] {
+                assert!(
+                    reconnect_delay(&ProbeError::ReceiveProtocol(error), attempt)
+                        .is_some_and(|delay| delay.as_secs() > 0 && delay.as_secs() <= 60),
+                    "an interrupted receive stream must not leave the account offline"
+                );
+            }
+        }
+        for error in [
+            ReceiveError::InvalidEvents,
+            ReceiveError::Malformed,
+            ReceiveError::SessionPreempted,
+        ] {
+            assert!(reconnect_delay(&ProbeError::ReceiveProtocol(error), 0).is_none());
         }
     }
 
