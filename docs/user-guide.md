@@ -53,13 +53,6 @@ phone when needed.
 If multicast discovery does not work, enter the Linux address and port `24837`
 in the Android app. A reachable Tailscale address works as well.
 
-## KDE Connect compatibility backend
-
-KDE Connect is optional. Use it only if you still want a capability that lives
-there. Install KDE Connect, pair the phone in that app, and let Handover
-discover it. Native clipboard is documented below. KDE Connect may still run
-its own background clipboard sync if you keep that backend.
-
 ## Common commands
 
 The [CLI reference](cli/handoverctl.md) links to the command pages for
@@ -164,7 +157,6 @@ The native path limits each clipboard text value to 32 KiB. Text received from
 the phone is kept in the daemon's bounded clipboard history, with up to 25
 recent and 25 pinned entries, and is stored at
 `${XDG_STATE_HOME:-$HOME/.local/state}/handover/clipboard-history.json`.
-KDE Connect may still provide its own background clipboard behavior.
 An opt-in Android setting can mirror text clipboard changes while the Handover
 foreground service is active. It uses content hashes to avoid echoing a change
 back to its origin.

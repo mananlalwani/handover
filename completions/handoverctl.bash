@@ -1021,7 +1021,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__devices)
-            opts="-h --include-compatibility --help"
+            opts="-h --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

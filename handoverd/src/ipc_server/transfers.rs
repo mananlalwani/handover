@@ -111,88 +111,59 @@ where
         }
     };
 
-    if let Some(peer_id) = device_id.as_str().strip_prefix("native:") {
-        let result = native_backend()
-            .ok_or(handover_native::NativeCommandError::Offline)
-            .and_then(|native| {
-                if is_file {
-                    let path = Url::parse(&url)
-                        .ok()
-                        .and_then(|url| url.to_file_path().ok())
-                        .ok_or(handover_native::NativeCommandError::QueueFull)?;
-                    // Copy into private staging before queueing: the
-                    // backend opens the path later, and the source may
-                    // live in a directory writable by another local user.
-                    let staged = crate::send_staging::stage_send_file(&path)
-                        .map_err(|_| handover_native::NativeCommandError::QueueFull)?;
-                    match native.share_file(peer_id, staged.clone()) {
-                        Ok(transfer_id) => {
-                            crate::send_staging::note_accepted(&transfer_id, &staged);
-                            Ok(transfer_id)
-                        }
-                        Err(error) => {
-                            // Never queued: remove the staged copy now.
-                            if let Some(directory) = staged.parent() {
-                                let _ = std::fs::remove_dir_all(directory);
-                            }
-                            Err(error)
-                        }
-                    }
-                } else {
-                    native.share_url(peer_id, url)
-                }
-            });
-        let payload = match result {
-            Ok(transfer_id) => ServerMessage::new(ServerPayload::ShareAccepted {
-                device_id,
-                transfer_id: Some(transfer_id),
-            }),
-            Err(handover_native::NativeCommandError::Offline) => ServerMessage::protocol_error(
-                ErrorCode::DeviceDisconnected,
-                "native device is disconnected",
-            ),
-            Err(handover_native::NativeCommandError::QueueFull) => ServerMessage::protocol_error(
-                ErrorCode::BackendRejected,
-                "native backend could not accept the share",
-            ),
-        };
-        write_json_line(writer, &payload).await?;
+    let Some(peer_id) = device_id.as_str().strip_prefix("native:") else {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(ErrorCode::UnknownDevice, "device is not known"),
+        )
+        .await?;
         return Ok(true);
-    }
-
-    match handover_kdeconnect::KdeConnectBackend::share_url(&device_id, &url).await {
-        Ok(()) => {
-            write_json_line(
-                writer,
-                &ServerMessage::new(ServerPayload::ShareAccepted {
-                    device_id,
-                    transfer_id: None,
-                }),
-            )
-            .await?;
-        }
-        Err(error) => {
-            let unavailable =
-                matches!(error, handover_kdeconnect::CommandError::BackendUnavailable);
-            warn!(%device_id, is_file, unavailable, "KDE Connect rejected share request");
-            write_json_line(
-                writer,
-                &ServerMessage::protocol_error(
-                    if unavailable {
-                        ErrorCode::BackendUnavailable
-                    } else {
-                        ErrorCode::BackendRejected
-                    },
-                    if unavailable {
-                        "sharing backend is unavailable"
-                    } else {
-                        "sharing backend could not accept the request"
-                    },
-                ),
-            )
-            .await?;
-        }
-    }
+    };
+    let result = native_backend()
+        .ok_or(handover_native::NativeCommandError::Offline)
+        .and_then(|native| {
+            if is_file {
+                let path = Url::parse(&url)
+                    .ok()
+                    .and_then(|url| url.to_file_path().ok())
+                    .ok_or(handover_native::NativeCommandError::QueueFull)?;
+                // Copy into private staging before queueing: the
+                // backend opens the path later, and the source may
+                // live in a directory writable by another local user.
+                let staged = crate::send_staging::stage_send_file(&path)
+                    .map_err(|_| handover_native::NativeCommandError::QueueFull)?;
+                match native.share_file(peer_id, staged.clone()) {
+                    Ok(transfer_id) => {
+                        crate::send_staging::note_accepted(&transfer_id, &staged);
+                        Ok(transfer_id)
+                    }
+                    Err(error) => {
+                        // Never queued: remove the staged copy now.
+                        if let Some(directory) = staged.parent() {
+                            let _ = std::fs::remove_dir_all(directory);
+                        }
+                        Err(error)
+                    }
+                }
+            } else {
+                native.share_url(peer_id, url)
+            }
+        });
+    let payload = match result {
+        Ok(transfer_id) => ServerMessage::new(ServerPayload::ShareAccepted {
+            device_id,
+            transfer_id: Some(transfer_id),
+        }),
+        Err(handover_native::NativeCommandError::Offline) => ServerMessage::protocol_error(
+            ErrorCode::DeviceDisconnected,
+            "native device is disconnected",
+        ),
+        Err(handover_native::NativeCommandError::QueueFull) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "native backend could not accept the share",
+        ),
+    };
+    write_json_line(writer, &payload).await?;
     Ok(true)
 }
 

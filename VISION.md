@@ -9,7 +9,7 @@ Handover is the Android integration layer for Linux, not an Android emulator and
 The laptop wakes and the phone is there. Calls, messages, notifications, media, contacts, clipboard, and files are available to Linux. Network changes, process restarts, and suspend recover without a new pairing dance.
 
 Apps use Handover types such as `Device`, `Notification`, `CallState`,
-`Conversation`, `Contact`, `Attachment`, and `MediaSession`. They do not use KDE Connect packets, Google protocol objects, or Matrix bridge types.
+`Conversation`, `Contact`, `Attachment`, and `MediaSession`. They do not use backend protocol objects or bridge-specific types.
 
 The user rarely opens a Handover-specific window.
 

@@ -10,7 +10,6 @@ reference client. The native Google Messages client and helper live here.
 - `crates/handover-core/` contains backend-independent domain types.
 - `crates/handover-ipc/` contains the Unix-socket protocol.
 - `crates/handover-native/` contains the Linux native transport.
-- `crates/handover-kdeconnect/` contains the KDE Connect adapter.
 - `crates/handover-gmessages/` contains the helper contract, normalization,
   staging, and supervision code. It does not contain Google protocol code.
 - `crates/handover-google-messages/` contains the independent Google Messages

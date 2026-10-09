@@ -6,8 +6,8 @@ and exposes calls and contacts. The Android app also provides presentation,
 pointer, keyboard, and Linux volume controls.
 
 `handoverd` runs in the background. Use `handoverctl` from the terminal or the
-included Quickshell reference client. The native Android connection works
-without KDE Connect, which remains an optional compatibility backend.
+included Quickshell reference client. The Android app connects directly to the
+native Linux backend.
 
 Handover is pre-1.0. Some features need Android permissions or depend on the
 phone model. The IPC contract is still experimental. See the [known
@@ -130,8 +130,6 @@ The optional setup component discovers installed Chromium browsers and lets
 you choose one. It needs Python 3, with no Handover extension or browser
 download. Tarball installs offer this component interactively, or accept
 `./install.sh --with-google-messages-setup`.
-
-KDE Connect can remain paired for compatibility with its existing capabilities.
 
 ## Development and support
 

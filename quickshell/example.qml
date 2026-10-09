@@ -14,11 +14,9 @@ ShellRoot {
         color: "#10141c"
         title: "Handover"
         property string page: "overview"
-        // The reference UI is focused on the native Handover path for now.
-        // Keep KDE Connect available in the daemon, but do not mix its
-        // compatibility devices (or the development emulator) into this UI.
+        // Hide the development emulator from the reference UI.
         property var appDevices: HandoverService.devices.filter(device =>
-            device.id.startsWith("native:") && !device.name.includes("sdk_gphone"))
+            !device.name.includes("sdk_gphone"))
         property var shareDevices: window.appDevices.filter(device =>
             device.connected && device.paired && device.capabilities.includes("file_transfer"))
         property string shareStatus: ""

@@ -25,7 +25,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
-            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List native devices known to handoverd')
+            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List devices known to handoverd')
             [CompletionResult]::new('native', 'native', [CompletionResultType]::ParameterValue, 'Inspect and manage native Android pairing and device commands')
             [CompletionResult]::new('notifications', 'notifications', [CompletionResultType]::ParameterValue, 'List active remote notifications from the daemon snapshot')
             [CompletionResult]::new('contacts', 'contacts', [CompletionResultType]::ParameterValue, 'List or request an on-demand native contacts snapshot')
@@ -46,7 +46,6 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;devices' {
-            [CompletionResult]::new('--include-compatibility', '--include-compatibility', [CompletionResultType]::ParameterName, 'Include devices supplied by the optional KDE Connect backend')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
@@ -608,7 +607,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help' {
-            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List native devices known to handoverd')
+            [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List devices known to handoverd')
             [CompletionResult]::new('native', 'native', [CompletionResultType]::ParameterValue, 'Inspect and manage native Android pairing and device commands')
             [CompletionResult]::new('notifications', 'notifications', [CompletionResultType]::ParameterValue, 'List active remote notifications from the daemon snapshot')
             [CompletionResult]::new('contacts', 'contacts', [CompletionResultType]::ParameterValue, 'List or request an on-demand native contacts snapshot')

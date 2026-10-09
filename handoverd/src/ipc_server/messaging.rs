@@ -1346,8 +1346,7 @@ mod tests {
             )));
         let mut client = Client::connect_to(path).await.expect("connect");
         // No native backend is running in this test, so routing must report
-        // an unavailable native path rather than attempting a KDE D-Bus call
-        // for a `native:` device.
+        // an unavailable native path for a `native:` device.
         let error = client
             .dismiss_notification(native.id)
             .await
@@ -1402,8 +1401,7 @@ mod tests {
             .apply(StateEvent::Media(MediaEvent::Added(session.clone())));
         let mut client = Client::connect_to(path).await.expect("connect");
         // No native backend is running in this test, so routing must report
-        // an unavailable native path rather than attempting a KDE D-Bus call
-        // for a `native:` session.
+        // an unavailable native path for a `native:` session.
         let error = client
             .media_command(MediaCommand::Pause { id: session.id })
             .await

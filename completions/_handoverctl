@@ -30,7 +30,6 @@ _handoverctl() {
         case $line[1] in
             (devices)
 _arguments "${_arguments_options[@]}" : \
-'--include-compatibility[Include devices supplied by the optional KDE Connect backend]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 && ret=0
@@ -1146,7 +1145,7 @@ esac
 (( $+functions[_handoverctl_commands] )) ||
 _handoverctl_commands() {
     local commands; commands=(
-'devices:List native devices known to handoverd' \
+'devices:List devices known to handoverd' \
 'native:Inspect and manage native Android pairing and device commands' \
 'notifications:List active remote notifications from the daemon snapshot' \
 'contacts:List or request an on-demand native contacts snapshot' \
@@ -1372,7 +1371,7 @@ _handoverctl__subcmd__devices_commands() {
 (( $+functions[_handoverctl__subcmd__help_commands] )) ||
 _handoverctl__subcmd__help_commands() {
     local commands; commands=(
-'devices:List native devices known to handoverd' \
+'devices:List devices known to handoverd' \
 'native:Inspect and manage native Android pairing and device commands' \
 'notifications:List active remote notifications from the daemon snapshot' \
 'contacts:List or request an on-demand native contacts snapshot' \

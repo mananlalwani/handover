@@ -1905,7 +1905,7 @@ mod tests {
         assert!(
             !serde_json::to_string(&message)
                 .expect("event serializes")
-                .contains("kdeconnect")
+                .contains(r#""backend""#)
         );
     }
 
@@ -1970,7 +1970,7 @@ mod tests {
             ServerPayload::NotificationAdded { .. }
         ));
         assert!(json.contains(r#""type":"notification_added""#));
-        assert!(!json.contains("kdeconnect"));
+        assert!(!json.contains(r#""backend""#));
     }
 
     #[test]
@@ -2222,7 +2222,7 @@ mod tests {
         }));
         let json = serde_json::to_string(&message).expect("serializes");
         assert!(json.contains(r#""type":"typing""#));
-        assert!(!json.contains("kdeconnect"));
+        assert!(!json.contains(r#""backend""#));
         assert!(!json.contains("bugle"));
         assert_eq!(
             serde_json::from_str::<ServerMessage>(&json).expect("deserializes"),

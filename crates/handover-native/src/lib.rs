@@ -221,8 +221,8 @@ impl Drop for Session<'_> {
             };
             // Clearing per-peer notification keys here keeps a disconnect from
             // leaving ghost state while a replacement connection resyncs from
-            // the phone's current list. KDE-derived entries are untouched:
-            // their device IDs never carry the `native:` prefix.
+            // the phone's current list. Only this peer's `native:` device id
+            // is cleared.
             for id in removals {
                 pending_events.push(StateEvent::Notification(NotificationEvent::Removed(id)));
             }

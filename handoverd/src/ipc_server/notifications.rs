@@ -40,30 +40,7 @@ where
     }
 
     let notification_id = command.notification_id().clone();
-    if notification_id.device_id.as_str().starts_with("native:") {
-        return handle_native_notification_command(command, notification_id, writer).await;
-    }
-    match handover_kdeconnect::KdeConnectBackend::execute(&command).await {
-        Ok(()) => {
-            write_json_line(
-                writer,
-                &ServerMessage::new(ServerPayload::CommandCompleted { notification_id }),
-            )
-            .await?;
-        }
-        Err(error) => {
-            warn!(%error, %notification_id, "KDE Connect rejected notification command");
-            write_json_line(
-                writer,
-                &ServerMessage::protocol_error(
-                    ErrorCode::BackendRejected,
-                    "notification backend could not complete the command",
-                ),
-            )
-            .await?;
-        }
-    }
-    Ok(true)
+    handle_native_notification_command(command, notification_id, writer).await
 }
 
 /// Route a validated notification command to the paired native session.

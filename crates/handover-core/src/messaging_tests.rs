@@ -330,7 +330,7 @@ fn file_names_are_sanitized_to_one_safe_basename() {
 fn messaging_wire_forms_carry_no_device_or_protocol_names() {
     let event = MessagingEvent::Message(MessageEvent::Added(sample_message()));
     let json = serde_json::to_string(&event).expect("event serializes");
-    assert!(!json.contains("kdeconnect"));
+    assert!(!json.contains(r#""backend""#));
     assert!(!json.contains("bugle"));
     assert!(!json.contains("tachyon"));
     assert_eq!(
@@ -344,7 +344,7 @@ fn messaging_wire_forms_carry_no_device_or_protocol_names() {
         reply_to: None,
     };
     let json = serde_json::to_string(&command).expect("command serializes");
-    assert!(!json.contains("kdeconnect"));
+    assert!(!json.contains(r#""backend""#));
     assert_eq!(
         serde_json::from_str::<MessagingCommand>(&json).expect("command deserializes"),
         command

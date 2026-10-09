@@ -67,10 +67,8 @@ Other state locations:
 - `HANDOVER_NATIVE_SMOKE_PORT`: debug builds only. Forces the native
   backend to listen on a fixed port for smoke tests.
 
-## Optional backends
+## Optional integrations
 
-- Native Android is the primary path. KDE Connect is optional
-  compatibility for capabilities the native connection lacks.
 - Google Messages is optional and runs in a separate helper process.
   Handover receives normalized conversations, messages, statuses,
   capabilities, and opaque identifiers only. Credentials stay with the

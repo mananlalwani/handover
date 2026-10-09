@@ -2,7 +2,7 @@
 
 This directory contains a small Quickshell client for Handover protocol 1. It
 connects to `$XDG_RUNTIME_DIR/handover/handoverd.sock`. It does not run
-`handoverctl` and it does not talk to KDE Connect.
+`handoverctl`.
 
 ## Run the client
 
@@ -43,15 +43,11 @@ seconds.
 `dismiss(notification)`, `invokeAction(notification, action)`, and
 `reply(notification, text)` send commands over the socket. `commandFinished`
 reports whether the daemon accepted each command. `lastError` shows failures.
-The KDE Connect backend currently exposes no action list over D-Bus, so
-`invokeAction` is ready for advertised actions but current KDE Connect
-notifications have no action buttons.
 
 `sendFile(device, fileUrl)` and `sendUrl(device, url)` address one device from
 `devices`. `shareFinished` reports whether the daemon accepted the request, not
 delivery. The example includes a one-file chooser and a URL field. Incoming
-share events carry the source device. On the KDE Connect backend, the file or
-URL is already handled before that signal reaches Handover.
+share events carry the source device.
 
 ## Media
 

@@ -3,7 +3,6 @@ exclude = ["third_party/ukey2"]
 resolver = "3"
 members = [
     "crates/handover-core",
-    "crates/handover-kdeconnect",
     "crates/handover-native",
     "crates/handover-gmessages",
     "crates/handover-google-messages",
@@ -24,7 +23,6 @@ clap_mangen = "0.2"
 handover-core = { version = "0.4.0", path = "crates/handover-core" }
 handover-gmessages = { version = "0.4.0", path = "crates/handover-gmessages" }
 handover-ipc = { version = "0.4.0", path = "crates/handover-ipc" }
-handover-kdeconnect = { version = "0.4.0", path = "crates/handover-kdeconnect" }
 handover-native = { version = "0.4.0", path = "crates/handover-native" }
 futures-util = "0.3"
 libc = "0.2"

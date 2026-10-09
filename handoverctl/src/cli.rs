@@ -26,15 +26,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List native devices known to handoverd.
+    /// List devices known to handoverd.
     ///
     /// Prints the current daemon snapshot: name, connection state, pairing
     /// state, and battery. Requires a running handoverd.
-    Devices {
-        /// Include devices supplied by the optional KDE Connect backend.
-        #[arg(long)]
-        include_compatibility: bool,
-    },
+    Devices,
     /// Inspect and manage native Android pairing and device commands.
     ///
     /// Peer selection accepts a peer ID or, when unique, a device name.

@@ -13,7 +13,6 @@ optdepends=(
   'quickshell: example panel'
   'playerctl: pause local MPRIS players during phone calls'
   'python: optional Google Messages setup with an installed Chromium browser'
-  'kdeconnect: optional compatibility backend'
 )
 provides=('handover')
 conflicts=('handover')

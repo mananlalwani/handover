@@ -18,7 +18,6 @@ body:
       description: Which backend does this request concern
       options:
         - Native
-        - KDE Connect
         - Google Messages helper
         - Backend independent
     validations:

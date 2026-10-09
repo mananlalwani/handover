@@ -21,7 +21,6 @@ body:
       label: Backend
       options:
         - Native
-        - KDE Connect
         - Google Messages helper
         - Unknown or not applicable
     validations:

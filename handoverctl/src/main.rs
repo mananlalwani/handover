@@ -39,9 +39,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Command::Devices {
-            include_compatibility,
-        }) => list_devices(include_compatibility).await,
+        Some(Command::Devices) => list_devices().await,
         Some(Command::Native { command }) => native(command).await,
         Some(Command::Notifications) => list_notifications().await,
         Some(Command::Contacts { command }) => contacts(command).await,
@@ -200,17 +198,9 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
     Ok(())
 }
 
-async fn list_devices(include_compatibility: bool) -> Result<(), CliError> {
+async fn list_devices() -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let devices = client.devices().await?;
-    let devices = if include_compatibility {
-        devices
-    } else {
-        devices
-            .into_iter()
-            .filter(|device| device.id.as_str().starts_with("native:"))
-            .collect()
-    };
     print_table(&devices);
     Ok(())
 }

@@ -646,7 +646,7 @@ pub struct ReceivedShare {
     pub resource: SharedResource,
 }
 
-/// A transient result for one native share. KDE Connect cannot confirm delivery.
+/// A transient result for a native share with an explicit receiver response.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ShareResult {
     pub device_id: DeviceId,
@@ -863,6 +863,6 @@ mod tests {
             serde_json::from_str::<MediaCommand>(&json).expect("deserialize"),
             command
         );
-        assert!(!json.contains("kdeconnect"));
+        assert!(!json.contains(r#""backend""#));
     }
 }

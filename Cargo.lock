@@ -1064,19 +1064,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "handover-kdeconnect"
-version = "0.4.0"
-dependencies = [
- "futures-util",
- "handover-core",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "url",
- "zbus 5.13.2",
-]
-
-[[package]]
 name = "handover-native"
 version = "0.4.0"
 dependencies = [
@@ -1116,7 +1103,6 @@ dependencies = [
  "handover-core",
  "handover-gmessages",
  "handover-ipc",
- "handover-kdeconnect",
  "handover-native",
  "libc",
  "rusqlite",

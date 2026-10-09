@@ -7,33 +7,14 @@ Frontends consume normalized Handover types. Backend names, object paths,
 plugin IDs, D-Bus interfaces, and Google protocol objects stay inside their
 adapters.
 
-Native Android is the primary backend. KDE Connect provides optional compatibility.
-Both feed the same `StateStore`. Clients do not pick a backend.
-
-The KDE Connect path is:
-
-```text
-kdeconnectd
-    -> session D-Bus
-    -> handover-kdeconnect
-    -> handover-core StateEvent
-    -> handoverd device and notification maps
-    -> Unix socket
-    -> handoverctl and Quickshell
-```
-
-`handover-kdeconnect` owns KDE Connect service names, object paths, interfaces,
-properties, and signal decoding. It converts each D-Bus snapshot into a
-validated `handover-core::Device`. It watches KDE Connect's D-Bus owner and
-re-enumerates after a restart.
+The native Android backend feeds normalized events into `StateStore`. Clients
+consume the same backend-independent IPC models.
 
 ## Native Android backend
 
-The native backend is the main provider of the same normalized device events.
-`handoverd` can start it alongside the KDE Connect adapter and merge both
-event streams into `StateStore`. Native device IDs are namespaced as
-`native:<certificate fingerprint>`. KDE Connect IDs stay as they are. Clients
-still consume `Device`, `BatteryState`, capabilities, and the existing
+The native backend publishes normalized device events into `StateStore`.
+Native device IDs are namespaced as `native:<certificate fingerprint>`.
+Clients consume `Device`, `BatteryState`, capabilities, and the existing
 snapshot/event IPC.
 
 The Linux native adapter persists its self-signed identity certificate and key,
@@ -90,11 +71,6 @@ observation. Android lifecycle restarts and network changes recreate the
 connection from the persisted identity and allowlist. They do not bypass
 pairing.
 
-KDE Connect remains optional and independent. Its disappearance removes only
-KDE-derived runtime entries; a native paired phone remains present and can
-continue reporting state. Re-enabling KDE Connect may restore its own device
-entry alongside the native entry.
-
 ## Clipboard boundary
 
 Native Handover owns explicit clipboard transfer on the primary path. Bounded
@@ -104,25 +80,6 @@ Contents never enter logs or ordinary daemon snapshots.
 Optional Android background mirroring is an in-app setting while the foreground
 service runs. Linux-to-phone send uses `handoverctl clipboard` or the IPC
 equivalent.
-
-KDE Connect still has its own clipboard plugin if that backend is enabled:
-
-```text
-Android Clipboard
-    <-> KDE Connect clipboard plugin and transport
-    <-> Linux system clipboard
-```
-
-That plugin reads and writes the Linux clipboard. Its per-device D-Bus
-interface exposes `sendClipboard()` for Linux-to-device transfer. It does not
-expose remote clipboard text or a signal for remote updates. Those stay inside
-`kdeconnectd`.
-
-KDE Connect suppresses clipboard write-back by comparing content and type,
-without a timer. Its enabled per-device plugins receive local changes, so a
-Linux copy can reach multiple connected devices. Remote writes share one Linux
-clipboard; the last write wins when simultaneous updates differ. Handover does
-not select a default device.
 
 Handover persists up to 25 recent native phone-to-Linux text
 entries and 25 user-pinned strings in a mode-0600 state file. The serialized
@@ -143,195 +100,49 @@ maps. It applies normalized events synchronously, logs meaningful state
 transitions, and publishes the result to clients. The runtime device,
 notification, and media-session maps are in-memory only. The native backend's
 own identity certificate/key and peer allowlist are persisted as described in
-the native section above; KDE Connect remains responsible for its pairing
-data.
+the native section above.
 
 ## File and URL handoff
 
-The KDE Connect share plugin accepts outgoing URLs and local-file URLs through
-its per-device D-Bus object. Handover validates an explicit paired, connected,
-share-capable target, then forwards one resource through that adapter. A
-successful D-Bus return means the request was accepted, not delivered.
+The daemon routes file and URL shares to one explicitly selected, paired native
+device. URLs travel in a bounded control frame. Files are copied into private
+staging before queueing, then streamed over the authenticated TLS session in
+bounded chunks. Acceptance means the daemon queued the request. The receiver
+reports completion or a normalized failure when it handles the transfer.
 
-KDE Connect owns incoming file writes, destination naming, and incoming URL
-handling. Its `shareReceived` signal gives Handover a coarse event with the
-source device after an incoming file has been saved or a URL has been handed
-to the desktop handler. The signal exposes no active transfer ID, progress,
-failure, or cancellation. Handover therefore has `ReceivedShare` and
-`SharedResource` types but no speculative `Transfer` state machine. These
-events are transient: the daemon broadcasts them without adding a transfer
-history to snapshots. Slow or disconnected clients may miss the display event,
-but KDE Connect's file write or URL handling does not depend on a UI client.
-
-KDE Connect also emits this signal for a temporary file when the user chooses
-to open shared text in an editor. A file event alone does not prove that
-Android sent a file payload.
-
-KDE Connect may open an incoming file when the sender sets its `open` flag;
-Handover does not open files and cannot override that upstream behavior through
-the current D-Bus interface.
-
-The socket's `share.url` and `share.file` requests use protocol 1. `share.file`
-contains a standard local `file://` URL, which preserves spaces and Unicode
-without shell parsing; the daemon checks that it identifies a readable regular
-file. On the KDE Connect path, `share_accepted` confirms only D-Bus acceptance.
-Incoming events use `share_received`. Subscribers request these transient events with
-`"shares": true`; older protocol-1 subscribers omit the flag and continue to
-receive only device and notification events. Normal logs and
-`handoverctl monitor` report resource kind and source device, not file
-contents, full paths, or URL queries.
-
-Native sharing uses these same daemon, CLI, and Quickshell APIs. The daemon
-selects the explicitly requested paired device and routes the request to its
-available backend; a native and a KDE Connect representation may therefore
-coexist without exposing backend names to clients. Native share messages are
-sent only on an already authenticated, paired TLS 1.3 session. A URL is one
-bounded control frame, `{"type":"share_url","protocol":1,"transfer_id":"...","url":"..."}`.
-For a file, the sender first sends
-`{"type":"share_file","protocol":1,"transfer_id":"...","name":"...","size":N}` and then
-exactly `N` raw bytes on the same TLS stream. The JSON frame remains subject to
-the 64 KiB control-frame limit; file bytes never enter a JSON frame.
-
-Native file transfers are limited to 100 MiB and use at most a 32 KiB transfer
-buffer. The advertised name must be one safe basename, at most 255 UTF-8
-bytes: path separators, `.` and `..`, NUL, control characters, and invalid
-UTF-8 are rejected. The receiver writes into a private temporary file below
-`${XDG_STATE_HOME:-~/.local/state}/handover/native/received`, then atomically renames
-it to the sanitized final name only after all bytes arrive and the size matches.
-Temporary files are removed on cancellation, EOF, timeout, size mismatch,
-authentication failure, or any other transfer error; an interrupted transfer
-never leaves a usable partial file. Received files are never opened or executed
-automatically.
-
-Each native outgoing share carries an opaque sender-generated `transfer_id`.
-`share_accepted` means only that the daemon queued the request for the authenticated peer.
-After handling finishes, the receiver sends `share_result` with `completed` or
-`failed`. Failed results use only the normalized reasons `invalid_resource`,
-`size_limit`, `storage`, `interrupted`, `rejected`, `timed_out`, `disconnected`, or `transport`; platform
-exception text and paths never cross the wire. A disconnect cannot become a
-completion after reconnect.
-
-The daemon keeps at most 32 pending native transfers per peer in memory; final
-results are removed immediately and stale IDs expire after 120 seconds.
-There is no persistent transfer history. A transient backend-independent
-transfer-result event may be exposed through the existing share subscription.
-The existing `share_received` event remains the handling event and includes
-the normalized source-device identity. KDE Connect remains accepted-only
-because its D-Bus API cannot confirm delivery; no native completion guarantee
-is claimed for KDE requests.
+Received files use a safe basename and a private temporary file under
+`${XDG_STATE_HOME:-~/.local/state}/handover/native/received`. The daemon
+publishes the share only after all bytes arrive and the size matches. Errors,
+timeouts, and disconnects remove partial files. Handover never opens or runs a
+received file automatically. Incoming and outgoing share events are transient;
+they do not appear in snapshots or a transfer history.
 
 ## Notifications
 
-Notifications use an ID made from the source `DeviceId` and a device-local
-notification ID. This prevents collisions between phones. The normalized
-record carries app name, title, body, optional icon path, clearable state,
-optional actions, and reply availability. KDE Connect's D-Bus API does not
-currently expose action identifiers or labels, so its adapter publishes an
-empty action list. It does expose reply and dismissal operations.
+Notification IDs combine the native device ID and the phone's notification key.
+The normalized record carries app name, title, body, clearable state, actions,
+and reply availability. The Android listener publishes updates and removals,
+and sends a full snapshot after pairing, listener reconnect, or a daemon
+request. Revoking notification access clears stale entries.
 
-Clients request dismissal, action invocation, or reply over IPC. The daemon
-checks the current notification and its advertised capabilities before the
-KDE adapter makes a D-Bus call. A successful response means KDE Connect
-accepted the call, not that Android or the app confirmed delivery. Commands
-do not optimistically remove daemon state; subsequent KDE Connect signals
-update it.
-
-The native path carries the same normalized records over the paired TLS
-session. The Android app reads the platform notification stream through its
-notification-listener service. A denied permission reports `enabled: false`
-so the daemon clears stale entries. The service sends `notification_post`
-upserts, `notification_removed` retractions, and full `notifications_sync` snapshots after pairing, on
-listener reconnect, and on daemon request. The phone's notification key
-becomes the Handover `local_id` inside the existing `native:<fingerprint>`
-device scope, so native and KDE Connect entries coexist without collisions
-and clients never select a backend. Android actions map by index to the
-existing id/label pairs with no invented capabilities; the first
-free-form-input action advertises `reply_supported`, and `clearable` follows
-the platform flag. Desktop dismissal, action, and reply commands are queued
-for the live session and report IPC acceptance exactly like the KDE path:
-success means the command reached the session, not that Android confirmed
-the effect. A disconnect removes the peer's native notifications so a
-reconnect resyncs from current phone state.
+The daemon checks current notification state before queueing a dismissal,
+action, or reply. Acceptance means the command entered the live session queue;
+it does not confirm that Android or the source app acted. Subsequent notification
+events remain the source of truth.
 
 ## Media sessions
 
-Media state follows the same backend boundary:
+Android's `MediaSessionManager` publishes active sessions and supported
+actions over the authenticated native connection. A session ID combines the
+source device with its package name. The model carries playback state,
+metadata, position, duration, and supported controls. It does not carry volume
+or album art. Relative seeks are not advertised because Android has no matching
+platform action.
 
-```text
-Android media sessions
-    -> KDE Connect mprisremote D-Bus object
-    -> existing KDE Connect MPRIS player objects
-    -> handover-kdeconnect
-    -> normalized MediaSession events
-    -> handoverd media-session map
-    -> Unix socket clients
-```
-
-`handover-core` exposes `MediaSessionId`, `MediaSession`, `PlaybackState`,
-`MediaControl`, `MediaEvent`, and `MediaCommand`. A session ID is the pair of
-the source `DeviceId` and a device-local opaque player identifier. The KDE
-adapter currently uses KDE Connect's player name as that device-local value,
-so the same name on two phones cannot collide. Position and duration are milliseconds;
-available volume is normalized to an integer percentage. Album art is not
-copied into the Handover model or ordinary IPC messages.
-
-The KDE adapter treats the `mprisremote` `playerList` as the authoritative set
-of current players. It reads per-player metadata, playback state, position,
-duration, volume, and control capabilities from KDE Connect's dynamically
-created standard MPRIS services. KDE service names, object paths, and action
-details remain inside `handover-kdeconnect`; clients treat `player_id` as opaque.
-KDE's synthesized MPRIS identity combines player and device display names.
-If two devices share a name, the adapter withholds their sessions rather than
-risk routing a command to the wrong phone. KDE's MPRIS position getter uses
-the selected player, so Handover reports position only for that player.
-KDE does not expose trustworthy stop or volume-control capability flags, so
-Handover keeps volume read-only and does not expose those commands yet.
-
-`handoverd` owns the authoritative in-memory media-session map. It removes
-sessions when KDE Connect no longer advertises them or when their device
-disconnects, and rebuilds them after KDE Connect restarts. Media state is not
-persisted. Snapshots include all current media sessions, and subscriptions
-receive `media_added`, `media_updated`, and `media_removed` events through the
-existing bounded channel and snapshot-recovery behavior.
-
-Media controls are validated against the current session, connected paired
-device, advertised media capability, and the session's normalized controls.
-The D-Bus call is a request: `media_accepted` means KDE Connect accepted it,
-not that Android has already changed playback. The subsequent media update is
-the source of truth. Unsupported controls, unknown sessions, disconnected
-devices, and invalid numeric values return controlled protocol errors.
-
-The native path carries the same normalized sessions over the paired TLS
-session:
-
-```text
-Android MediaSessionManager active sessions
-    -> native media observer (notification-listener component)
-    -> media_post / media_removed / media_sync frames
-    -> normalized MediaSession events
-    -> handoverd media-session map
-    -> Unix socket clients
-```
-
-The phone's package name becomes the Handover `player_id` inside the
-existing `native:<fingerprint>` device scope, so native and KDE Connect
-sessions coexist without collisions and clients never select a backend.
-Playback maps playing/paused/stopped directly; transitional states report
-unknown rather than guessing. Only the controls behind the platform actions
-bitmask are advertised (absolute `seekTo` maps to `SetPosition`; relative
-seeks have no genuine platform API and are rejected if advertised), with the
-combined toggle derived exactly like the KDE adapter. Position and duration
-are reported only when the platform supplies them; volume is never
-transported. Desktop commands are queued for the live session and report IPC
-acceptance exactly like the KDE path; a disconnect removes the peer's native
-sessions so a reconnect resyncs, and a revoked listener clears them with the
-notifications.
-
-KDE Connect already exports remote Android players through standard MPRIS
-services named `org.mpris.MediaPlayer2.kdeconnect.mpris_<id>`. Handover should
-not expose another MPRIS player for the same sessions because that would
-duplicate players in desktop media menus. The public integration uses
-the Handover IPC API and its CLI/Quickshell clients.
+The daemon validates each media command against the current session, device
+connection, and advertised controls. It queues accepted commands for the live
+session and waits for later media updates to reflect playback state. Disconnects
+and revoked notification-listener access remove stale sessions.
 
 ## Messaging
 
@@ -352,7 +163,7 @@ daemon owns normalized accounts, conversations, bounded message windows
 (300 per conversation), statuses, typing, and read state, and validates
 every helper record and outbound command. Google protocol types stay below
 the normalized model; no AGPL material enters the MIT tree. A missing or dead helper only marks its
-accounts offline; native and KDE Connect state are untouched.
+accounts offline; device state is untouched.
 
 The daemon caches normalized accounts, conversations, message windows, and read
 state in `handover/messaging-cache.json` under its state directory. Restored
@@ -407,8 +218,8 @@ device actions. The complete request types are defined in
 Server messages also carry `protocol: 1`. Snapshots serialize normalized
 devices and notifications, plus media and messaging state when requested. Battery
 deserialization still runs the core model's percentage validation. Device and
-notification events use add/update/remove forms; no KDE Connect object paths
-or reply tokens cross the socket.
+notification events use add/update/remove forms. Transport identities and
+authentication material stay below the public socket contract.
 
 A subscription response includes current devices and notifications, closing
 the race between fetching state and beginning event delivery. The daemon then

@@ -2,9 +2,9 @@
 
 ## Milestone 1: native device connection, complete
 
-Native Handover is the primary Android/Linux connection. KDE Connect remains an
-optional compatibility backend. Device pairing, notifications, clipboard, file
-sharing, and media controls use backend-independent Handover models.
+Native Handover is the Android/Linux connection. Device pairing, notifications,
+clipboard, file sharing, and media controls use backend-independent Handover
+models.
 
 ## Milestone 2: own communications, complete
 

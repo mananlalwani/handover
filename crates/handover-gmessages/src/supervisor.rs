@@ -3,7 +3,7 @@
 //! The helper is optional: when no helper binary is configured or found,
 //! messaging is simply unavailable and every other subsystem keeps working.
 //! A crashing or misbehaving helper marks its accounts disconnected; it can
-//! never disturb native battery/notifications/media/sharing or KDE Connect.
+//! never disturb native battery/notifications/media/sharing.
 //!
 //! Restart policy is bounded exponential backoff with jitter-free steps
 //! (1s, 2s, 4s, … capped at 60s). After every (re)connect the daemon sends

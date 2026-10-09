@@ -36,30 +36,7 @@ where
     }
 
     let id = command.id().clone();
-    if id.device_id.as_str().starts_with("native:") {
-        return handle_native_media_command(command, id, writer).await;
-    }
-    match handover_kdeconnect::KdeConnectBackend::execute_media(&command).await {
-        Ok(()) => {
-            write_json_line(
-                writer,
-                &ServerMessage::new(ServerPayload::MediaAccepted { id }),
-            )
-            .await?
-        }
-        Err(error) => {
-            warn!(device_id = %id.device_id, player_id = %id.player_id, %error, "KDE Connect rejected media command");
-            write_json_line(
-                writer,
-                &ServerMessage::protocol_error(
-                    ErrorCode::BackendRejected,
-                    "media backend could not accept the command",
-                ),
-            )
-            .await?;
-        }
-    }
-    Ok(true)
+    handle_native_media_command(command, id, writer).await
 }
 
 /// Route a validated media command to the paired native session.
