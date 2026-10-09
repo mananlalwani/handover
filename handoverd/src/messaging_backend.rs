@@ -1593,6 +1593,11 @@ async fn ingest_event(
             // only stable metadata in the journal.
             // Match only fixed native diagnostics; never journal arbitrary helper text.
             let category = match message.as_str() {
+                "native receive ended (receive_protocol, TooLarge)" => "receive_payload_limit",
+                "native receive ended (receive_protocol, Backpressure)" => "receive_backpressure",
+                "native history content unavailable" => "history_page_unavailable",
+                "native receive ended (timeout)" => "receive_timeout",
+
                 "native receive ended (session_protocol, UnknownUpdateConversation)" => {
                     "stale_conversation_inventory"
                 }

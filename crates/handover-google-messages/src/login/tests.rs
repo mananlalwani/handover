@@ -1286,15 +1286,16 @@ async fn update_observer_validates_pushes_and_closes_without_acknowledging() {
 #[tokio::test]
 async fn live_session_shares_receive_with_history_and_requires_push_publication_before_ack() {
     use crate::session::{LiveCommand, LiveEvent};
-    for (reject_push, send_code, renewal, unpair_ack_failure) in [
-        (false, 1_i32, false, false),
-        (false, 1, false, true),
-        (false, 2, false, false),
-        (false, 5, false, false), // Explicit success without an assigned message ID.
-        (false, 0, false, false),
-        (false, -1, false, false),
-        (true, 1, false, false),
-        (false, 1, true, false),
+    for (reject_push, send_code, renewal, unpair_ack_failure, unsupported_history) in [
+        (false, 1_i32, false, false, false),
+        (false, 1, false, true, false),
+        (false, 2, false, false, false),
+        (false, 5, false, false, false), // Explicit success without an assigned message ID.
+        (false, 0, false, false, false),
+        (false, -1, false, false, false),
+        (true, 1, false, false, false),
+        (false, 1, true, false, false),
+        (false, 1, false, false, true),
     ] {
         let (outcome, _, _) = exercise(Scenario::Success, true).await;
         let LoginOutcome::PhoneConfirmed { pairing, .. } = outcome.unwrap() else {
@@ -1312,7 +1313,7 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         };
         let sent = pairing.encrypt(&send_reply).unwrap().as_bytes().to_vec();
         let history = pairing
-            .encrypt(&synthetic_history_page())
+            .encrypt(&synthetic_history_page_with_content(!unsupported_history))
             .unwrap()
             .as_bytes()
             .to_vec();
@@ -1379,13 +1380,26 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             let wrapper = rpc_request(&body);
             assert_eq!(wrapper.action, 1);
             response(&mut list, "application/json+protobuf", b"[]").await;
+            if unsupported_history {
+                for i in 0..5 {
+                    rpc_push(
+                        &mut receive,
+                        &session_id,
+                        16,
+                        unsupported.clone(),
+                        &format!("startup-burst-{i}"),
+                        i > 0,
+                    )
+                    .await;
+                }
+            }
             rpc_push(
                 &mut receive,
                 &wrapper.request_id,
                 1,
                 inventory,
                 "inventory",
-                false,
+                unsupported_history,
             )
             .await;
             expect_ack(&listener, "inventory").await;
@@ -1466,7 +1480,9 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                     true,
                 )
                 .await;
-                expect_ack(&listener, "history-page").await;
+                if !unsupported_history {
+                    expect_ack(&listener, "history-page").await;
+                }
                 assert!(
                     tokio::time::timeout(Duration::from_millis(50), listener.accept())
                         .await
@@ -1580,7 +1596,19 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 )
                 .await
         });
-        let inventory = outgoing.recv().await.unwrap();
+        let inventory = match outgoing.recv().await {
+            Some(inventory) => inventory,
+            None => {
+                let error = network.await.unwrap().unwrap_err();
+                assert!(matches!(
+                    error,
+                    ProbeError::ReceiveProtocol(crate::receive::ReceiveError::Backpressure)
+                ));
+                panic!(
+                    "A bounded startup burst must not close the session before inventory publication"
+                );
+            }
+        };
         assert!(
             matches!(inventory.event, LiveEvent::Conversations(ref records) if records.len() == 1)
         );
@@ -1634,10 +1662,17 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 })
                 .await
                 .unwrap();
-            let page = outgoing.recv().await.unwrap();
-            assert!(
-                matches!(page.event, LiveEvent::History { fetch_id: Some(77), ref page, .. } if page.messages.len() == 1)
-            );
+            let page = outgoing
+                .recv()
+                .await
+                .expect("A failed history page must publish a failure, not close the live session");
+            if unsupported_history {
+                assert!(matches!(page.event, LiveEvent::HistoryUnavailable));
+            } else {
+                assert!(
+                    matches!(page.event, LiveEvent::History { fetch_id: Some(77), ref page, .. } if page.messages.len() == 1)
+                );
+            }
             page.accepted.send(()).unwrap();
             let (media_accepted, media_gate) = tokio::sync::oneshot::channel();
             commands

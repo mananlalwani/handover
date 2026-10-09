@@ -38,6 +38,7 @@ pub enum LiveCommand {
     },
 }
 pub enum LiveEvent {
+    HistoryUnavailable,
     SendResult {
         request_id: String,
         conversation: String,
@@ -229,7 +230,10 @@ impl RecoveredSession {
         let correlation = std::sync::Mutex::new((Zeroizing::new(String::new()), 0));
         let session_id = self.session_id.to_string();
         let (reply_tx, mut reply_rx) = mpsc::channel(1);
-        let (push_tx, mut push_rx) = mpsc::channel(4);
+        // Startup needs its participant inventory before it can project pushes.
+        // Allow a bounded inbox burst while that read is in flight; overflow
+        // still leaves updates unacknowledged and restarts with backoff.
+        let (push_tx, mut push_rx) = mpsc::channel(16);
         let (ready_tx, ready_rx) = oneshot::channel();
         let receive_url = format!("{endpoint}{}", crate::RECEIVE_MESSAGES_PATH);
         let receive = crate::receive_stream_when_ready(
@@ -247,13 +251,13 @@ impl RecoveredSession {
                     {
                         reply_tx
                             .try_send(reply)
-                            .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
+                            .map_err(|_| crate::receive::ReceiveError::Backpressure)?;
                     } else if let Some(push) =
                         record.session_reply(&session_id, 16, self.pairing.pairing.peer())?
                     {
                         push_tx
                             .try_send(push)
-                            .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
+                            .map_err(|_| crate::receive::ReceiveError::Backpressure)?;
                     }
                 }
                 Ok(())
@@ -581,13 +585,27 @@ impl RecoveredSession {
                     tokio::select! {
                         result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
                         _ = &mut expiry => return Err(ProbeError::SessionExpired),
-                        result = &mut read => break result.map_err(|_| ProbeError::Timeout)??,
+                        result = &mut read => break result.map_err(|_| ProbeError::Timeout).and_then(|result| result),
                         // The initial inventory supplies participant identities.
                         // Its bounded startup pushes remain queued until then.
                         push = push_rx.recv(), if !known.is_empty() => {
                             self.apply_live_push(&short, endpoint, &events, &mut known, &mut online, push.ok_or(ProbeError::ReceiveFailed)?).await?;
                         }
                     }
+                };
+                let result = match result {
+                    Ok(result) => result,
+                    Err(ProbeError::SessionProtocol(SessionError::UnsupportedHistoryContent))
+                        if matches!(command, LiveCommand::History { .. }) =>
+                    {
+                        // Reject an unprojectable page without acknowledging it or
+                        // replacing the authenticated live receive connection.
+                        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+                            (Zeroizing::new(String::new()), 0);
+                        publish(&events, LiveEvent::HistoryUnavailable).await?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 };
                 if let Some(allowed) = result.1 {
                     can_send = allowed;

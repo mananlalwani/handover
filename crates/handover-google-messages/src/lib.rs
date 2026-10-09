@@ -587,12 +587,15 @@ fn client(https_only: bool) -> Result<Client, ProbeError> {
 }
 
 fn streaming_client() -> Result<Client, ProbeError> {
+    streaming_client_for(true)
+}
+
+fn streaming_client_for(https_only: bool) -> Result<Client, ProbeError> {
     Client::builder()
-        .https_only(true)
+        .https_only(https_only)
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|_| ProbeError::Network)
 }
@@ -1312,6 +1315,47 @@ fn lookup_records(body: &[u8]) -> Result<Vec<Value>, ProbeError> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(start_paused = true)]
+    async fn live_receive_does_not_disconnect_at_five_minutes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).await.unwrap();
+                header.push(byte[0]);
+                assert!(header.len() <= 2048);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n")
+                .await
+                .unwrap();
+            finished.await.unwrap();
+            socket.write_all(b"1\r\ny\r\n0\r\n\r\n").await.unwrap();
+        });
+        let mut response = super::streaming_client_for(false)
+            .unwrap()
+            .get(url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"x");
+        let read = tokio::spawn(async move { response.chunk().await });
+        tokio::time::advance(std::time::Duration::from_secs(301)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !read.is_finished(),
+            "The receive stream must not expire after five minutes"
+        );
+        finish.send(()).unwrap();
+        assert_eq!(read.await.unwrap().unwrap().unwrap().as_ref(), b"y");
+        server.await.unwrap();
+    }
+
     use super::*;
     use base64::{Engine, engine::general_purpose};
 

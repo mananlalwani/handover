@@ -99,14 +99,17 @@ Otherwise discovery follows the native-first order described above.
 If no helper is available, messaging stays disabled. Other backends keep working.
 
 Reconnect backoff ranges from 1 to 60 seconds. Native sessions keep retrying
-network failures and temporarily locked or unavailable desktop credentials,
+network failures, bounded receive-queue overflow, and temporarily locked or
+unavailable desktop credentials,
 with a 60-second maximum delay. Secret Service unlock notifications immediately
 reschedule accounts waiting for desktop credentials. Timer retries remain the
 fallback when notifications are unavailable. A login1 resume notification
 reopens existing receive connections and expedites pending retries. Accepted
 sends and mutations finish before their connection is replaced and are never
 replayed. Expired session tokens use the existing registration-renewal path;
-a stale conversation inventory triggers a fresh connection and inventory.
+a stale conversation inventory triggers a fresh connection and inventory. The
+long-lived receive HTTP connection has no fixed total lifetime; connection
+attempts and ordinary requests retain their timeouts.
 Invalid credentials and
 authenticated session preemption stop automatic recovery. Recovery never replays sends.
 
@@ -215,7 +218,9 @@ for future sessions. A limit below the space already used is rejected without
 deleting stored history. This limit covers the SQLite database; temporary journal
 files and separately cached media are outside it. The same cache opt-out disables
 it. Explicit message removal, conversation removal, and
-account logout remove the corresponding archived records.
+account logout remove the corresponding archived records. A history page with
+unsupported content fails that read without closing the authenticated live
+connection or acknowledging the unprojectable page.
 
 Quickshell starts loading all available history after a conversation remains
 selected for five seconds. It requests one page at a time, with a one-second

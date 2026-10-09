@@ -42,4 +42,5 @@ hmac = "0.12.1"
 secret-service = { version = "4.0.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 ukey2_proto = { version = "0.1.0", path = "../../third_party/ukey2/connections/ukey2/ukey2_proto" }

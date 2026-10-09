@@ -250,6 +250,9 @@ fn reconnect_delay(
             | ProbeError::Timeout
             | ProbeError::ReceiveFailed
             | ProbeError::SessionExpired
+            | ProbeError::ReceiveProtocol(
+                handover_google_messages::receive::ReceiveError::Backpressure
+            )
             | ProbeError::SessionProtocol(
                 handover_google_messages::session::SessionError::UnknownUpdateConversation
             )
@@ -1175,6 +1178,9 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                     publish(writer, HelperEvent::SendStatus { request_id, account: account.clone(), conversation, message, status: status.into() }).await?;
                                     sends.remove(&account);
                                 } else { continue; }
+                            }
+                            LiveEvent::HistoryUnavailable => {
+                                publish(writer, HelperEvent::Error { message: "native history content unavailable".into() }).await?;
                             }
                             LiveEvent::Online => {
                                 credential_waiters.remove(&account);
@@ -2856,6 +2862,15 @@ mod tests {
         assert!(retries["locked"] <= tokio::time::Instant::now());
         assert_eq!(retries["network"], later);
         assert!(!retries.contains_key("terminal"));
+    }
+
+    #[test]
+    fn a_bounded_receive_queue_overflow_retries_without_relaxing_payload_limits() {
+        use handover_google_messages::{ProbeError, receive::ReceiveError};
+        assert!(
+            reconnect_delay(&ProbeError::ReceiveProtocol(ReceiveError::Backpressure), 0).is_some()
+        );
+        assert!(reconnect_delay(&ProbeError::ReceiveProtocol(ReceiveError::TooLarge), 0).is_none());
     }
 
     #[test]

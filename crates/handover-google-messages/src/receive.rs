@@ -28,6 +28,7 @@ pub enum ReceiveError {
     MissingStatus,
     Failed,
     SessionPreempted,
+    Backpressure,
 }
 
 /// A data record never logs its body. The callback owns it until drop.
