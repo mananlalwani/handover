@@ -668,7 +668,7 @@ impl RecoveredSession {
         let activation = self.prepare_activation()?;
         let session_id = self.session_id.to_string();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let (push_tx, mut push_rx) = tokio::sync::mpsc::channel(4);
+        let (push_tx, mut push_rx) = tokio::sync::mpsc::channel(16);
         let receive_url = format!("{endpoint}{}", crate::RECEIVE_MESSAGES_PATH);
         let receive = crate::receive_stream_when_ready(
             &stream,
