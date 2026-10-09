@@ -12,7 +12,11 @@ pub(crate) fn normalize_native_notification(
     wire: &WireNotification,
 ) -> Result<Notification, NativeError> {
     let key = wire.key.trim();
-    if key.is_empty() || key.len() > MAX_NOTIFICATION_KEY || key.chars().any(char::is_control) {
+    if key.is_empty()
+        || key != wire.key
+        || key.len() > MAX_NOTIFICATION_KEY
+        || key.chars().any(char::is_control)
+    {
         return Err(NativeError::InvalidFrame);
     }
     if wire.app.len() > MAX_NOTIFICATION_APP
@@ -97,7 +101,11 @@ impl NativeBackend {
         key: &str,
         event: &Arc<dyn Fn(StateEvent) + Send + Sync>,
     ) -> Result<(), NativeError> {
-        if key.is_empty() || key.len() > MAX_NOTIFICATION_KEY {
+        if key.is_empty()
+            || key.trim() != key
+            || key.len() > MAX_NOTIFICATION_KEY
+            || key.chars().any(char::is_control)
+        {
             return Err(NativeError::InvalidFrame);
         }
         let mut inner = self.inner.lock().unwrap();
