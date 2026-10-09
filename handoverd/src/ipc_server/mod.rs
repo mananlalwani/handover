@@ -268,10 +268,12 @@ where
                 Some(Err(_)) => ServerPayload::Error {
                     code: ErrorCode::BackendRejected,
                     message: "unknown pending peer or comparison code".into(),
+                    conversation_id: None,
                 },
                 None => ServerPayload::Error {
                     code: ErrorCode::BackendUnavailable,
                     message: "native backend unavailable".into(),
+                    conversation_id: None,
                 },
             }
         }
@@ -287,14 +289,17 @@ where
             Some(Ok(false)) => ServerPayload::Error {
                 code: ErrorCode::UnknownDevice,
                 message: "unknown native peer".into(),
+                conversation_id: None,
             },
             Some(Err(_)) => ServerPayload::Error {
                 code: ErrorCode::BackendRejected,
                 message: "native unpair failed".into(),
+                conversation_id: None,
             },
             None => ServerPayload::Error {
                 code: ErrorCode::BackendUnavailable,
                 message: "native backend unavailable".into(),
+                conversation_id: None,
             },
         },
         Method::NativePing { id } => native_command_response(
@@ -387,6 +392,7 @@ where
                 None => ServerPayload::Error {
                     code: ErrorCode::BackendRejected,
                     message: "unknown call action".into(),
+                    conversation_id: None,
                 },
             }
         }
@@ -421,10 +427,12 @@ where
                         }
                     },
                     message: "notification was not accepted".into(),
+                    conversation_id: None,
                 },
                 None => ServerPayload::Error {
                     code: ErrorCode::BackendUnavailable,
                     message: "native backend unavailable".into(),
+                    conversation_id: None,
                 },
             }
         }
@@ -450,10 +458,12 @@ where
                         }
                     },
                     message: "clipboard was not accepted".into(),
+                    conversation_id: None,
                 },
                 None => ServerPayload::Error {
                     code: ErrorCode::BackendUnavailable,
                     message: "native backend unavailable".into(),
+                    conversation_id: None,
                 },
             }
         }
@@ -465,6 +475,7 @@ where
             None => ServerPayload::Error {
                 code: ErrorCode::BackendUnavailable,
                 message: "clipboard mirroring is unavailable".into(),
+                conversation_id: None,
             },
         },
         Method::ClipboardMirrorStatus => ServerPayload::ClipboardMirror {
@@ -479,10 +490,12 @@ where
                 Ok(false) => ServerPayload::Error {
                     code: ErrorCode::ResourceNotFound,
                     message: "clipboard history entry was not found".into(),
+                    conversation_id: None,
                 },
                 Err(_) => ServerPayload::Error {
                     code: ErrorCode::BackendRejected,
                     message: "clipboard history could not be saved".into(),
+                    conversation_id: None,
                 },
             }
         }
@@ -496,6 +509,7 @@ where
                         ErrorCode::BackendRejected
                     },
                     message: error.to_string(),
+                    conversation_id: None,
                 },
             }
         }
@@ -505,11 +519,13 @@ where
                 Err(_) => ServerPayload::Error {
                     code: ErrorCode::BackendRejected,
                     message: "clipboard history entry could not be copied".into(),
+                    conversation_id: None,
                 },
             },
             None => ServerPayload::Error {
                 code: ErrorCode::ResourceNotFound,
                 message: "clipboard history entry was not found".into(),
+                conversation_id: None,
             },
         },
         Method::ClipboardHistoryClear { include_pinned } => {
@@ -518,6 +534,7 @@ where
                 Err(_) => ServerPayload::Error {
                     code: ErrorCode::BackendRejected,
                     message: "clipboard history could not be cleared".into(),
+                    conversation_id: None,
                 },
             }
         }
@@ -533,10 +550,12 @@ where
                     Some(Err(_)) => ServerPayload::Error {
                         code: ErrorCode::BackendRejected,
                         message: "clipboard was not accepted".into(),
+                        conversation_id: None,
                     },
                     None => ServerPayload::Error {
                         code: ErrorCode::BackendUnavailable,
                         message: "native backend unavailable".into(),
+                        conversation_id: None,
                     },
                 }
             }
@@ -553,6 +572,7 @@ where
                         ServerPayload::Error {
                             code: ErrorCode::BackendUnavailable,
                             message: "native backend unavailable".into(),
+                            conversation_id: None,
                         }
                     }
                     Some(native) => match native.clipboard_file(peer_id, path, mime) {
@@ -560,6 +580,7 @@ where
                         Err(_) => ServerPayload::Error {
                             code: ErrorCode::BackendRejected,
                             message: "clipboard file was not accepted".into(),
+                            conversation_id: None,
                         },
                     },
                 }
@@ -567,6 +588,7 @@ where
             _ => ServerPayload::Error {
                 code: ErrorCode::BackendRejected,
                 message: "could not read the Wayland clipboard".into(),
+                conversation_id: None,
             },
         },
         Method::ContactsList => {
@@ -583,10 +605,12 @@ where
                 Some(false) => ServerPayload::Error {
                     code: ErrorCode::DeviceDisconnected,
                     message: "contacts sync was not accepted".into(),
+                    conversation_id: None,
                 },
                 None => ServerPayload::Error {
                     code: ErrorCode::BackendUnavailable,
                     message: "native backend unavailable".into(),
+                    conversation_id: None,
                 },
             }
         }

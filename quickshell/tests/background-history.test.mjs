@@ -20,12 +20,13 @@ function service() {
     const requests = [];
     const context = vm.createContext({
         protocolVersion: 1, historyRequests: {}, exhaustiveHistoryLoads: {}, historyFocus: null,
+        messagingAccounts: [], conversations: [], outgoingOperations: [],
         automaticHistoryNext: null, conversationMessages: {}, conversationCursors: {},
         sendRequest: (type, fields) => { requests.push({type, fields}); return true; },
         historyProgress: () => {}, automaticHistoryPageTimer: { restart() {} },
         console, lastError: '', finishPending() {}, nativePending: false, pendingMessaging: null,
     });
-    vm.runInContext(['sameConversationId','conversationKey','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
+    vm.runInContext(['sameConversationId','conversationKey','dropAccountEntries','stopHistoryLoad','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
     return { context, requests };
 }
 test('automatic loading waits for the current page, then stops when focus moves', () => {
@@ -72,6 +73,35 @@ test('an unrelated command error does not interrupt a history load', () => {
     assert.equal(requests.length, 2);
     assert.equal(requests[1].fields.cursor, 'older');
     c.handleLine(JSON.stringify({protocol:1,type:'error',code:'history_unavailable',message:'history unavailable'}));
+    assert.equal(c.isLoadingAllHistory(thread), true);
+    const other = {...thread, local_id: 'other'};
+    c.handleLine(JSON.stringify({protocol:1,type:'error',code:'messaging_unavailable',message:'helper down',conversation_id:other}));
+    assert.equal(c.isLoadingAllHistory(thread), true);
+    c.handleLine(JSON.stringify({protocol:1,type:'error',code:'history_unavailable',message:'history unavailable',conversation_id:thread}));
     assert.equal(c.isLoadingAllHistory(thread), false);
     assert.equal(Object.keys(c.historyRequests).length, 0);
+});
+
+test('removing an account drops that account\'s cached threads', () => {
+    const {context:c} = service();
+    const other = { account_id: 'other', local_id: 'thread' };
+    c.conversationMessages = { 'fixture:thread': [{id:{conversation_id:thread,local_id:'m'}}], 'other:thread': [{id:{conversation_id:other,local_id:'n'}}] };
+    c.conversationCursors = { 'fixture:thread': 'older', 'other:thread': 'keep' };
+    c.historyRequests = { 'fixture:thread': true };
+    c.exhaustiveHistoryLoads = { 'fixture:thread': { automatic: true } };
+    c.messagingAccounts = [{id:'fixture'}, {id:'other'}];
+    c.conversations = [{id:thread}, {id:other}];
+    c.outgoingOperations = [{conversation_id:thread}, {conversation_id:other}];
+    c.handleLine(JSON.stringify({protocol:1,type:'account_removed',account_id:'fixture'}));
+    assert.deepEqual(Object.keys(c.conversationMessages), ['other:thread']);
+    assert.deepEqual(Object.keys(c.conversationCursors), ['other:thread']);
+    assert.equal(c.conversationCursors['other:thread'], 'keep');
+    assert.deepEqual(Object.keys(c.historyRequests), []);
+    assert.deepEqual(Object.keys(c.exhaustiveHistoryLoads), []);
+    assert.deepEqual(c.messagingAccounts.map(account => account.id), ['other']);
+    assert.equal(c.conversations.length, 1);
+    assert.equal(c.conversations[0].id.local_id, 'thread');
+    assert.equal(c.conversations[0].id.account_id, 'other');
+    assert.equal(c.outgoingOperations.length, 1);
+    assert.equal(c.outgoingOperations[0].conversation_id.account_id, 'other');
 });

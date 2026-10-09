@@ -12,10 +12,12 @@ pub(crate) fn native_command_response(
                 handover_native::NativeCommandError::QueueFull => ErrorCode::BackendRejected,
             },
             message: format!("{operation} was not accepted"),
+            conversation_id: None,
         },
         None => ServerPayload::Error {
             code: ErrorCode::BackendUnavailable,
             message: "native backend unavailable".into(),
+            conversation_id: None,
         },
     }
 }

@@ -31,29 +31,86 @@ were performed.
 - Interrupted history fetches left page-floor entries behind. Timeout and helper
   failure cleanup now remove them.
 - Unrelated command errors stopped UI history loads. Errors such as a rejected
-  send now leave paging active; history and availability failures still stop it.
+  send now leave paging active. History and availability failures name the
+  conversation they address, and the UI stops only that conversation's load.
 
 Regression tests cover partial-read cancellation, oversized framing, payload
 redaction, upload collisions, inventory replacement, empty-inventory permissions,
-history cleanup, and paging after an unrelated command error.
-
-## Remaining limitation
-
-Public IPC errors do not identify their originating request or conversation.
-The UI still clears all history loads for `history_unavailable`,
-`unknown_conversation`, and `messaging_unavailable`. These errors can concern a
-different conversation or command. Fully targeted recovery requires correlated
-errors in the public IPC contract and corresponding client handling.
+history cleanup, paging after an unrelated command error, and history recovery
+scoped to the conversation named on the error.
 
 ## Verification
 
 - `cargo fmt --all -- --check` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed.
-- `cargo test --workspace` passed, with 510 tests passing and 3 ignored.
-- Browser-setup Python tests passed, with 12 tests passing.
+- `cargo test --workspace` passed, with 511 tests passing and 3 ignored.
+- Browser-setup Python tests were not re-run; that code did not change.
 - All four Quickshell JavaScript test files passed.
 - QML lint passed for the service, example, and pages.
 
-Android tests and builds were not run because no Android code or public wire
-contract changed. Live pairing, phone mutations, Google service behavior, and
-real-account media transfer remain unverified by this audit.
+The desktop IPC error payload now carries an optional `conversation_id`.
+Android tests and builds were not run because no Android code changed. Live
+pairing, phone mutations, Google service behavior, and real-account media
+transfer remain unverified.
+
+## Follow-up fixes
+
+The open findings from the second pass are fixed in the working tree.
+
+- A completed native inventory is one generation. The last chunk is `full: true`,
+  including an empty inventory. Live conversation updates stay incremental.
+- Helper `error` events carry an optional `fetch_id`. Only that history read
+  fails. Other helper errors leave in-flight history alone.
+- Catch-up requests 50-message pages, the native maximum, and continues while
+  the provider cursor advances, up to 300 messages or the cached window.
+- A history page made only of system notices is followed, up to eight hops,
+  before it is published. The history reply is acknowledged after that
+  publication. Direct history reads acknowledge after the page is returned.
+- Registration renewal drains a queued command before it replaces the worker.
+- Logout, session end, and a lost receive session complete the affected history
+  read with `native history interrupted` instead of waiting out the command
+  timeout.
+- Authoritative conversation removal and window pruning delete the matching
+  archive rows.
+- Quickshell account removal clears that account's messages, cursors, and
+  history loads.
+- A confirmed phone unpair deletes local session records even when Secret
+  Service cleanup fails, and reports that failure afterward. An unconfirmed
+  logout deletes the Secret Service item only after session removal succeeds.
+  The loopback helper reports an error and keeps the account when credential
+  deletion fails.
+
+Conversation-list pages are still acknowledged as each page is decoded so the
+next page can be requested. That acknowledgement happens before the finished
+inventory is published.
+
+## What held up
+
+- Sends are not replayed after reconnect, resume, logout, or worker death.
+  Delivery evidence is bound by message id and the daemon operation id. Body
+  text and timestamps are not used as identity.
+- Send permission comes from the phone permission result and is kept separately
+  from the conversation inventory. `delete_message` and `open_conversation`
+  report failure. `mark_read` and outgoing typing report no success.
+- Invalid credentials, HTTP 401 and 403, API-key failures, and session
+  preemption are not retried. Network failures, timeouts, rate limits,
+  temporary RPC failures, interrupted receive streams, and a locked keyring
+  are retried with a 60-second cap.
+- Browser proofs and login bundles travel on stdin and the helper pipe. The
+  daemon does not persist the bundle. Session files use mode `0700`/`0600`,
+  `O_NOFOLLOW`, owner checks, and atomic replace. Media upload and download
+  refuse redirects and proxies, cap bodies while reading, and stage through
+  no-follow descriptors.
+- Outgoing journal records hold ids, kind, and outcome. Restart and helper
+  death turn submitting and accepted operations into `unknown` and do not
+  resend. Eviction skips those active states.
+- Middle sync chunks stay buffered. The daemon prunes once, on the closing
+  `full: true` chunk, and drops `full: true` when no generation is set.
+- Incoming typing is published before its acknowledgement, and only for one
+  direct RCS conversation whose peer address matches exactly.
+
+The follow-up was checked with `cargo fmt --all -- --check`, Clippy on
+`handover-google-messages`, `handover-gmessages`, and `handoverd`, the tests for
+those three packages, and the Quickshell history script. Android builds were
+not run. No live Google account was used. The full workspace suite was not
+re-run.

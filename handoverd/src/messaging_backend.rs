@@ -211,12 +211,13 @@ impl MessagingHub {
                         })
                         .unwrap_or_default();
                     let mut cursor = None;
-                    for _ in 0..crate::messaging::MAX_STORED_PER_CONVERSATION.div_ceil(100) {
+                    let mut fetched = 0usize;
+                    while fetched < crate::messaging::MAX_STORED_PER_CONVERSATION {
                         if self
                             .fetch_through_helper(
                                 account.as_str(),
                                 &conversation.local_id,
-                                100,
+                                50,
                                 cursor.clone(),
                             )
                             .await
@@ -224,22 +225,32 @@ impl MessagingHub {
                         {
                             break;
                         }
-                        let page = state
+                        let messaging = state
                             .read()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .messaging()
-                            .history(&conversation, 100, cursor.as_deref());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let page =
+                            messaging
+                                .messaging()
+                                .history(&conversation, 50, cursor.as_deref());
                         let Ok((messages, _)) = page else {
                             break;
                         };
-                        if messages.len() < 100
+                        let next = messaging
+                            .messaging()
+                            .conversation(&conversation)
+                            .and_then(|record| record.cursor.clone());
+                        if messages.is_empty()
                             || messages
                                 .iter()
                                 .any(|message| known.contains(&message.id.local_id))
                         {
                             break;
                         }
-                        cursor = messages.first().map(|message| message.id.local_id.clone());
+                        fetched += messages.len();
+                        if next.is_none() || next == cursor {
+                            break;
+                        }
+                        cursor = next;
                     }
                 }
             }
@@ -572,20 +583,48 @@ impl MessagingHub {
         }
     }
 
+    async fn fail_fetch(&self, fetch_id: u64) {
+        let key = {
+            let fetches = self.inner.fetches.lock().await;
+            fetches
+                .iter()
+                .find_map(|(key, (id, _, _, _))| (*id == fetch_id).then(|| key.clone()))
+        };
+        let Some(key) = key else {
+            return;
+        };
+        let mut fetches = self.inner.fetches.lock().await;
+        if fetches
+            .get(&key)
+            .is_some_and(|(id, _, _, _)| *id == fetch_id)
+        {
+            if let Some((_, _, _, waiter)) = fetches.remove(&key) {
+                let _ = waiter.send(Err(()));
+            }
+        }
+        drop(fetches);
+        self.inner.archive_pages.lock().await.remove(&(
+            key.0.clone(),
+            key.1.clone(),
+            Some(fetch_id),
+        ));
+        self.inner
+            .page_floors
+            .lock()
+            .await
+            .remove(&(key.0, key.1, Some(fetch_id)));
+    }
+
     async fn fail_all(&self) {
         for (_, sender) in self.inner.pending.lock().await.drain() {
             let _ = sender.send(Err(HelperCallError::Unavailable));
         }
-        for (_, (_, _, _, waiter)) in self.inner.fetches.lock().await.drain() {
-            let _ = waiter.send(Err(()));
-        }
+        self.fail_fetches().await;
         // A dead helper never closes its open generations. Drop them so
         // the next helper generation starts from clean buffers instead
         // of reconciling against a stale partial set.
         self.inner.conversation_syncs.lock().await.clear();
         self.inner.window_syncs.lock().await.clear();
-        self.inner.page_floors.lock().await.clear();
-        self.inner.archive_pages.lock().await.clear();
     }
 
     /// Accumulate one conversation chunk into its generation buffer.
@@ -1107,7 +1146,7 @@ async fn ingest_event(
                         .accumulate_conversations(&account, generation, announced.clone())
                         .await
                     {
-                        reconcile_against(state, events, &account_id, &announced);
+                        reconcile_against(state, events, &account_id, &announced).await;
                     }
                 }
                 (Some(generation), true) => {
@@ -1116,10 +1155,10 @@ async fn ingest_event(
                         .await
                     {
                         Some(keep) => {
-                            reconcile_against(state, events, &account_id, &keep);
+                            reconcile_against(state, events, &account_id, &keep).await;
                         }
                         None => {
-                            reconcile_against(state, events, &account_id, &announced);
+                            reconcile_against(state, events, &account_id, &announced).await;
                         }
                     }
                 }
@@ -1352,7 +1391,7 @@ async fn ingest_event(
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .messaging_mut()
                                 .prune_window(&conversation_id, &keep);
-                            publish_outcome(state, events, outcome);
+                            publish_outcome(state, events, outcome).await;
                             if let Err(error) = crate::messaging_cache::persist(state) {
                                 warn!(%error, "could not persist messaging cache");
                             }
@@ -1367,7 +1406,7 @@ async fn ingest_event(
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .messaging_mut()
                                 .prune_window(&conversation_id, &keep);
-                            publish_outcome(state, events, outcome);
+                            publish_outcome(state, events, outcome).await;
                             if let Err(error) = crate::messaging_cache::persist(state) {
                                 warn!(%error, "could not persist messaging cache");
                             }
@@ -1603,7 +1642,7 @@ async fn ingest_event(
             )
             .await;
         }
-        HelperEvent::Error { message } => {
+        HelperEvent::Error { message, fetch_id } => {
             // Helper text may contain credentials or message content. Keep
             // only stable metadata in the journal.
             // Match only fixed native diagnostics; never journal arbitrary helper text.
@@ -1640,7 +1679,9 @@ async fn ingest_event(
                 error_len = message.len(),
                 "messaging helper error"
             );
-            hub.fail_fetches().await;
+            if let Some(fetch_id) = fetch_id {
+                hub.fail_fetch(fetch_id).await;
+            }
         }
     }
 }
@@ -1704,7 +1745,7 @@ fn merge_messages(
 
 /// Remove stored conversations for one account that are absent from a
 /// complete keep-set (one full list or one closed generation).
-fn reconcile_against(
+async fn reconcile_against(
     state: &Arc<std::sync::RwLock<StateStore>>,
     events: &broadcast::Sender<StateEvent>,
     account_id: &MessagingAccountId,
@@ -1719,7 +1760,21 @@ fn reconcile_against(
         .map(|conversation| conversation.id)
         .filter(|id| &id.account_id == account_id && !keep.contains(&id.local_id))
         .collect();
+    let archive = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .message_archive
+        .clone();
     for id in stale {
+        if let Some(archive) = &archive {
+            if archive
+                .remove(id.account_id.as_str().to_owned(), Some(id.local_id.clone()))
+                .await
+                .is_err()
+            {
+                warn!("could not remove archived messaging data");
+            }
+        }
         apply_backend_event(
             state,
             events,
@@ -1731,12 +1786,17 @@ fn reconcile_against(
 /// Publish an already-applied reconcile outcome: translate each stored
 /// change back into its event form so subscribers observe the same
 /// authoritative window the daemon now holds.
-fn publish_outcome(
+async fn publish_outcome(
     state: &Arc<std::sync::RwLock<StateStore>>,
     events: &broadcast::Sender<StateEvent>,
     outcome: crate::messaging::MessagingOutcome,
 ) {
     use crate::messaging::MessagingChange;
+    let archive = state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .message_archive
+        .clone();
     for change in outcome.changes {
         crate::log_messaging_change(change.clone());
         let event = match &change {
@@ -1756,9 +1816,16 @@ fn publish_outcome(
                     None => None,
                 }
             }
-            MessagingChange::MessageRemoved(id) => Some(StateEvent::Messaging(
-                MessagingEvent::Message(MessageEvent::Removed(id.clone())),
-            )),
+            MessagingChange::MessageRemoved(id) => {
+                if let Some(archive) = &archive {
+                    if archive.remove_message(id.clone()).await.is_err() {
+                        warn!("could not remove archived messaging data");
+                    }
+                }
+                Some(StateEvent::Messaging(MessagingEvent::Message(
+                    MessageEvent::Removed(id.clone()),
+                )))
+            }
             _ => None,
         };
         if let Some(event) = event {
@@ -2542,6 +2609,65 @@ mod tests {
 
         assert!(hub.inner.page_floors.lock().await.is_empty());
         assert!(rx.await.expect("failed waiter completes").is_err());
+    }
+
+    #[tokio::test]
+    async fn helper_error_fails_only_the_named_history_fetch() {
+        let hub = MessagingHub::new();
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(8);
+        let mut seen = HashSet::new();
+        let (first_tx, mut first_rx) = oneshot::channel();
+        let (second_tx, second_rx) = oneshot::channel();
+        hub.inner
+            .fetches
+            .lock()
+            .await
+            .insert(("a".into(), "kept".into()), (1, 20, None, first_tx));
+        hub.inner
+            .fetches
+            .lock()
+            .await
+            .insert(("a".into(), "failed".into()), (2, 20, None, second_tx));
+        hub.accumulate_page_floor("a", "failed", Some(2), &[(Some(1), "m1".into())])
+            .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Error {
+                message: "desktop credentials could not be forgotten".into(),
+                fetch_id: None,
+            },
+        )
+        .await;
+        assert!(hub.inner.fetches.lock().await.len() == 2);
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Error {
+                message: "native history content unavailable".into(),
+                fetch_id: Some(2),
+            },
+        )
+        .await;
+        assert!(second_rx.await.expect("named fetch fails").is_err());
+        assert!(
+            hub.inner
+                .fetches
+                .lock()
+                .await
+                .contains_key(&("a".into(), "kept".into()))
+        );
+        assert!(first_rx.try_recv().is_err());
+        assert!(!hub.inner.page_floors.lock().await.contains_key(&(
+            "a".into(),
+            "failed".into(),
+            Some(2)
+        )));
     }
 
     #[tokio::test]

@@ -60,7 +60,8 @@ fn stage(error: ProbeError, category: SessionError) -> ProbeError {
 pub(crate) enum ReadResult {
     Startup,
     Conversations(Vec<handover_core::messaging::Conversation>),
-    History(crate::history::HistoryPage),
+    /// History page and the inbox reply to acknowledge after publication.
+    History(crate::history::HistoryPage, Zeroizing<String>),
 }
 
 fn unique_conversations(
@@ -249,7 +250,7 @@ impl RecoveredSession {
         {
             ReadResult::Startup => Ok(None),
             ReadResult::Conversations(records) => Ok(Some(records)),
-            ReadResult::History(_) => Err(ProbeError::UnexpectedResponse),
+            ReadResult::History(_, _) => Err(ProbeError::UnexpectedResponse),
         }
     }
 
@@ -273,7 +274,11 @@ impl RecoveredSession {
             )
             .await?;
         match result {
-            ReadResult::History(page) => Ok(page),
+            ReadResult::History(page, reply_id) => {
+                self.acknowledge(&crate::client(true)?, &self.proof.endpoint, reply_id)
+                    .await?;
+                Ok(page)
+            }
             _ => Err(ProbeError::UnexpectedResponse),
         }
     }
@@ -286,6 +291,7 @@ impl RecoveredSession {
         conversation: &handover_core::messaging::Conversation,
     ) -> Result<crate::history::HistoryPage, ProbeError> {
         let payload = crate::history::request(conversation, None, 20)?;
+        let ack_client = http.clone();
         match self
             .run_at(
                 endpoint,
@@ -296,7 +302,10 @@ impl RecoveredSession {
             )
             .await?
         {
-            ReadResult::History(page) => Ok(page),
+            ReadResult::History(page, reply_id) => {
+                self.acknowledge(&ack_client, endpoint, reply_id).await?;
+                Ok(page)
+            }
             _ => Err(ProbeError::UnexpectedResponse),
         }
     }
@@ -429,7 +438,7 @@ impl RecoveredSession {
                 .decrypt_payload(&reply.ciphertext)
                 .map_err(|_| ProbeError::ReceiveFailed)?;
             let mut page = crate::history::decode(conversation, plaintext.as_bytes())?;
-            self.acknowledge(short, endpoint, reply.message_id).await?;
+            let reply_id = reply.message_id;
             // The original can be absent from history even when a display
             // preview exists. Request it from the phone without substituting
             // the preview. Optional enrichment is bounded per history page.
@@ -504,7 +513,7 @@ impl RecoveredSession {
             // A reply may already have entered the bounded channel when the
             // optional deadline expired. It cannot satisfy the next RPC.
             while reply_rx.try_recv().is_ok() {}
-            return Ok(ReadResult::History(page));
+            return Ok(ReadResult::History(page, reply_id));
         }
         if !conversations {
             return Ok(ReadResult::Startup);

@@ -234,6 +234,10 @@ pub enum HelperEvent {
     },
     Error {
         message: String,
+        /// History request this failure completes. Absent errors leave other
+        /// history reads running.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fetch_id: Option<u64>,
     },
 }
 

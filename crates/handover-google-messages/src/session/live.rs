@@ -42,7 +42,9 @@ pub enum LiveEvent {
         conversation: String,
         participants: Vec<String>,
     },
-    HistoryUnavailable,
+    HistoryUnavailable {
+        fetch_id: Option<u64>,
+    },
     SendResult {
         request_id: String,
         conversation: String,
@@ -357,7 +359,13 @@ impl RecoveredSession {
             // Let the current request and its publication finish before rotating
             // receive ownership. Never cancel or replay an active send to renew.
             if pending.is_none() && renewal.is_elapsed() {
-                return Err(ProbeError::RegistrationRenewalDue);
+                match commands.try_recv() {
+                    Ok(command) => pending = Some(command),
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        return Err(ProbeError::RegistrationRenewalDue);
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => return Ok(()),
+                }
             }
             if let Some(command) = pending.take() {
                 if matches!(
@@ -623,7 +631,7 @@ impl RecoveredSession {
                                 &mut reply_rx,
                             )
                             .await?;
-                        if let ReadResult::History(page) = &mut result {
+                        if let ReadResult::History(page, _) = &mut result {
                             // Optional file enrichment must not turn a valid
                             // slow history reply into a timed-out request.
                             let budget = Duration::from_secs(30)
@@ -648,16 +656,18 @@ impl RecoveredSession {
                         Ok::<_, ProbeError>((result, allowed))
                     },
                 );
-                tokio::pin!(read);
-                let result = loop {
-                    tokio::select! {
-                        result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
-                        _ = &mut expiry => return Err(ProbeError::SessionExpired),
-                        result = &mut read => break result.map_err(|_| ProbeError::Timeout).and_then(|result| result),
-                        // The initial inventory supplies participant identities.
-                        // Its bounded startup pushes remain queued until then.
-                        push = push_rx.recv(), if !state.known.is_empty() => {
-                            self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?;
+                let result = {
+                    tokio::pin!(read);
+                    loop {
+                        tokio::select! {
+                            result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
+                            _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                            result = &mut read => break result.map_err(|_| ProbeError::Timeout).and_then(|result| result),
+                            // The initial inventory supplies participant identities.
+                            // Its bounded startup pushes remain queued until then.
+                            push = push_rx.recv(), if !state.known.is_empty() => {
+                                self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?;
+                            }
                         }
                     }
                 };
@@ -670,7 +680,7 @@ impl RecoveredSession {
                         // replacing the authenticated live receive connection.
                         *correlation.lock().map_err(|_| ProbeError::NativeError)? =
                             (Zeroizing::new(String::new()), 0);
-                        publish(&events, LiveEvent::HistoryUnavailable).await?;
+                        publish(&events, LiveEvent::HistoryUnavailable { fetch_id }).await?;
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -685,19 +695,78 @@ impl RecoveredSession {
                         publish(&events, LiveEvent::Conversations(records)).await?;
                         pending = Some(LiveCommand::SendingCapability);
                     }
-                    ReadResult::History(page) => {
-                        let LiveCommand::History { conversation, .. } = &command else {
+                    ReadResult::History(mut page, reply_id) => {
+                        let LiveCommand::History {
+                            conversation,
+                            limit,
+                            ..
+                        } = &command
+                        else {
                             return Err(ProbeError::UnexpectedResponse);
                         };
-                        publish(
-                            &events,
-                            LiveEvent::History {
-                                conversation: conversation.id.local_id.clone(),
-                                fetch_id,
-                                page,
-                            },
-                        )
-                        .await?;
+                        let mut acknowledgements = vec![reply_id];
+                        let mut hops = 0;
+                        while page.messages.is_empty()
+                            && page
+                                .cursor_next
+                                .as_ref()
+                                .is_some_and(|cursor| !cursor.is_empty())
+                            && hops < 8
+                        {
+                            hops += 1;
+                            let payload = crate::history::request(
+                                conversation,
+                                page.cursor_next.as_deref(),
+                                *limit,
+                            )?;
+                            let followed = tokio::select! {
+                                result = &mut receive => {
+                                    result?;
+                                    return Err(ProbeError::ReceiveFailed);
+                                }
+                                _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                                result = self.read_on_stream(
+                                    &short,
+                                    endpoint,
+                                    false,
+                                    Some((
+                                        conversation.as_ref(),
+                                        payload,
+                                        tokio::time::Instant::now() + Duration::from_secs(30),
+                                    )),
+                                    &correlation,
+                                    &mut reply_rx,
+                                ) => result?,
+                            };
+                            match followed {
+                                ReadResult::History(next, reply_id) => {
+                                    acknowledgements.push(reply_id);
+                                    page = next;
+                                }
+                                _ => return Err(ProbeError::UnexpectedResponse),
+                            }
+                        }
+                        if page.messages.is_empty()
+                            && page
+                                .cursor_next
+                                .as_ref()
+                                .is_some_and(|cursor| !cursor.is_empty())
+                        {
+                            publish(&events, LiveEvent::HistoryUnavailable { fetch_id }).await?;
+                        } else {
+                            publish(
+                                &events,
+                                LiveEvent::History {
+                                    conversation: conversation.id.local_id.clone(),
+                                    fetch_id,
+                                    page,
+                                },
+                            )
+                            .await?;
+                        }
+                        for reply_id in acknowledgements {
+                            self.acknowledge(&short, endpoint, reply_id).await?;
+                        }
                     }
                     ReadResult::Startup if matches!(command, LiveCommand::SendingCapability) => {
                         publish(&events, LiveEvent::ConversationUpdates(state.known.clone()))
@@ -709,9 +778,8 @@ impl RecoveredSession {
                     (Zeroizing::new(String::new()), 0);
             } else {
                 tokio::select! {
+                    biased;
                     result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
-                    _ = &mut expiry => return Err(ProbeError::SessionExpired),
-                    _ = &mut renewal => return Err(ProbeError::RegistrationRenewalDue),
                     command = commands.recv() => {
                         let Some(command) = command else { return Ok(()); };
                         pending = Some(command);
@@ -719,6 +787,8 @@ impl RecoveredSession {
                     push = push_rx.recv() => {
                         self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?;
                     }
+                    _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                    _ = &mut renewal => return Err(ProbeError::RegistrationRenewalDue),
                 }
             }
         }

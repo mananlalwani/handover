@@ -370,9 +370,28 @@ impl ServerMessage {
     }
 
     pub fn protocol_error(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::correlated_error(code, message, None)
+    }
+
+    /// An error that names the conversation the failed command addressed.
+    /// Clients use this to recover one conversation without stopping others.
+    pub fn conversation_error(
+        code: ErrorCode,
+        message: impl Into<String>,
+        conversation_id: ConversationId,
+    ) -> Self {
+        Self::correlated_error(code, message, Some(conversation_id))
+    }
+
+    fn correlated_error(
+        code: ErrorCode,
+        message: impl Into<String>,
+        conversation_id: Option<ConversationId>,
+    ) -> Self {
         Self::new(ServerPayload::Error {
             code,
             message: message.into(),
+            conversation_id,
         })
     }
 }
@@ -638,6 +657,10 @@ pub enum ServerPayload {
     Error {
         code: ErrorCode,
         message: String,
+        /// Conversation the failed command addressed, when the command had one.
+        /// Absent errors are not conversation-scoped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<ConversationId>,
     },
 }
 
@@ -710,7 +733,11 @@ pub enum IpcError {
     #[error("unexpected daemon response: {0}")]
     UnexpectedResponse(String),
     #[error("daemon rejected the request ({code:?}): {message}")]
-    Server { code: ErrorCode, message: String },
+    Server {
+        code: ErrorCode,
+        message: String,
+        conversation_id: Option<ConversationId>,
+    },
 }
 
 pub fn runtime_directory() -> Result<PathBuf, IpcError> {
@@ -1716,8 +1743,17 @@ async fn receive_message(reader: &mut BufReader<OwnedReadHalf>) -> Result<Server
             message.protocol
         )));
     }
-    if let ServerPayload::Error { code, message } = message.payload {
-        return Err(IpcError::Server { code, message });
+    if let ServerPayload::Error {
+        code,
+        message,
+        conversation_id,
+    } = message.payload
+    {
+        return Err(IpcError::Server {
+            code,
+            message,
+            conversation_id,
+        });
     }
     Ok(message)
 }
@@ -1758,6 +1794,38 @@ mod tests {
             serde_json::from_str::<Request>(&json).expect("request deserializes"),
             request
         );
+    }
+
+    #[test]
+    fn error_names_a_conversation_only_when_the_command_addressed_one() {
+        let plain = ServerMessage::protocol_error(ErrorCode::BackendRejected, "rejected");
+        assert_eq!(
+            serde_json::to_string(&plain).expect("serializes"),
+            r#"{"protocol":1,"type":"error","code":"backend_rejected","message":"rejected"}"#
+        );
+
+        let conversation = ConversationId::new(MessagingAccountId::new("acct"), "thread");
+        let correlated = ServerMessage::conversation_error(
+            ErrorCode::HistoryUnavailable,
+            "history page is unavailable",
+            conversation,
+        );
+        let encoded = serde_json::to_string(&correlated).expect("serializes");
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).expect("deserializes"),
+            correlated
+        );
+
+        let legacy = r#"{"protocol":1,"type":"error","code":"history_unavailable","message":"history page is unavailable"}"#;
+        let decoded: ServerMessage =
+            serde_json::from_str(legacy).expect("legacy error deserializes");
+        assert!(matches!(
+            decoded.payload,
+            ServerPayload::Error {
+                conversation_id: None,
+                ..
+            }
+        ));
     }
 
     #[test]

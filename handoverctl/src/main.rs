@@ -1202,7 +1202,7 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::Pairing { account_id, prompt } => {
             println!("pairing for {account_id}: {prompt}");
         }
-        ServerPayload::Error { code, message } => {
+        ServerPayload::Error { code, message, .. } => {
             eprintln!("daemon error ({code:?}): {message}");
         }
         ServerPayload::Hello { .. }

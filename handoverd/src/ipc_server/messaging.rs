@@ -653,9 +653,10 @@ where
             } else {
                 write_json_line(
                     writer,
-                    &ServerMessage::protocol_error(
+                    &ServerMessage::conversation_error(
                         ErrorCode::HistoryUnavailable,
                         "history page is unavailable",
+                        conversation_id.clone(),
                     ),
                 )
                 .await?;
@@ -716,9 +717,10 @@ where
         Err(HistoryGap::UnknownConversation) => {
             write_json_line(
                 writer,
-                &ServerMessage::protocol_error(
+                &ServerMessage::conversation_error(
                     ErrorCode::UnknownConversation,
                     "conversation is not known",
+                    conversation_id.clone(),
                 ),
             )
             .await?;
@@ -730,7 +732,11 @@ where
             let hub = match require_messaging_hub(messaging) {
                 Ok(hub) => hub,
                 Err((code, message)) => {
-                    write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+                    write_json_line(
+                        writer,
+                        &ServerMessage::conversation_error(code, message, conversation_id.clone()),
+                    )
+                    .await?;
                     return Ok(true);
                 }
             };
@@ -745,9 +751,10 @@ where
             if fetched.is_err() {
                 write_json_line(
                     writer,
-                    &ServerMessage::protocol_error(
+                    &ServerMessage::conversation_error(
                         ErrorCode::HistoryUnavailable,
                         "older history is unavailable",
+                        conversation_id.clone(),
                     ),
                 )
                 .await?;
@@ -783,9 +790,10 @@ where
                 Err(_) => {
                     write_json_line(
                         writer,
-                        &ServerMessage::protocol_error(
+                        &ServerMessage::conversation_error(
                             ErrorCode::HistoryUnavailable,
                             "older history is unavailable",
+                            conversation_id,
                         ),
                     )
                     .await?;
@@ -793,6 +801,18 @@ where
                 }
             }
         }
+    }
+}
+
+fn command_error(
+    code: ErrorCode,
+    message: impl Into<String>,
+    conversation_id: &ConversationId,
+) -> ServerMessage {
+    if conversation_id.local_id.is_empty() {
+        ServerMessage::protocol_error(code, message)
+    } else {
+        ServerMessage::conversation_error(code, message, conversation_id.clone())
     }
 }
 
@@ -810,6 +830,7 @@ where
     W: AsyncWrite + Unpin,
 {
     use handover_core::{MessageStatus, OutgoingOperationKind, OutgoingOutcome};
+    let conversation_id = command.conversation_id();
     let validation = state
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -817,13 +838,13 @@ where
         .validate_messaging_command(&command);
     if let Err(error) = validation {
         let (code, message) = messaging_validation_error(&error);
-        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
         return Ok(true);
     }
     let hub = match require_messaging_hub(messaging) {
         Ok(hub) => hub,
         Err((code, message)) => {
-            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
             return Ok(true);
         }
     };
@@ -837,9 +858,10 @@ where
         Err(_) => {
             write_json_line(
                 writer,
-                &ServerMessage::protocol_error(
+                &command_error(
                     ErrorCode::BackendRejected,
                     "outgoing operation could not be recorded; send was not submitted",
+                    &conversation_id,
                 ),
             )
             .await?;
@@ -896,7 +918,7 @@ where
                     format!("send outcome unknown; operation {id}; do not automatically resend"),
                 )
             };
-            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
         }
     }
     Ok(true)
@@ -912,6 +934,7 @@ pub(crate) async fn request_messaging<W>(
 where
     W: AsyncWrite + Unpin,
 {
+    let conversation_id = command.conversation_id();
     let validation = state
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -919,13 +942,13 @@ where
         .validate_messaging_command(&command);
     if let Err(error) = validation {
         let (code, message) = messaging_validation_error(&error);
-        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
         return Ok(true);
     }
     let hub = match require_messaging_hub(messaging) {
         Ok(hub) => hub,
         Err((code, message)) => {
-            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
             return Ok(true);
         }
     };
@@ -942,7 +965,7 @@ where
         }
         Err(error) => {
             let (code, message) = helper_call_error(error);
-            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
             Ok(true)
         }
     }
@@ -968,13 +991,13 @@ where
         .validate_messaging_command(&command);
     if let Err(error) = validation {
         let (code, message) = messaging_validation_error(&error);
-        write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+        write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
         return Ok(true);
     }
     let hub = match require_messaging_hub(messaging) {
         Ok(hub) => hub,
         Err((code, message)) => {
-            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
             return Ok(true);
         }
     };
@@ -989,7 +1012,7 @@ where
         }
         Err(error) => {
             let (code, message) = helper_call_error(error);
-            write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
             Ok(true)
         }
     }
@@ -2059,20 +2082,18 @@ mod messaging_live_tests {
         assert_eq!(refilled.len(), page.len() + older.len());
 
         // Unknown conversations stay unknown; bogus cursors report a gap.
+        let missing = ConversationId::new(MessagingAccountId::new("gmessages:test"), "missing");
         let unknown = client
-            .messaging_history(
-                ConversationId::new(MessagingAccountId::new("gmessages:test"), "missing"),
-                None,
-                None,
-            )
+            .messaging_history(missing.clone(), None, None)
             .await
             .expect_err("unknown conversation");
         assert!(matches!(
             unknown,
             IpcError::Server {
                 code: ErrorCode::UnknownConversation,
+                conversation_id: Some(id),
                 ..
-            }
+            } if id == missing
         ));
         let gap = client
             .messaging_history(rcs.id.clone(), None, Some("missing-cursor".into()))
@@ -2082,8 +2103,9 @@ mod messaging_live_tests {
             gap,
             IpcError::Server {
                 code: ErrorCode::HistoryUnavailable,
+                conversation_id: Some(id),
                 ..
-            }
+            } if id == rcs.id
         ));
 
         // Reactions need an attested capability: the SMS thread has none.
@@ -2667,36 +2689,34 @@ mod messaging_failure_tests {
         assert_eq!(client.devices().await.expect("devices").len(), 1);
 
         // Validation still runs first: unknown targets report as unknown.
+        let missing = ConversationId::new(MessagingAccountId::new("gmessages:test"), "missing");
         let unknown = client
-            .send_message_text(
-                ConversationId::new(MessagingAccountId::new("gmessages:test"), "missing"),
-                "hi".into(),
-            )
+            .send_message_text(missing.clone(), "hi".into())
             .await
             .expect_err("unknown conversation");
         assert!(matches!(
             unknown,
             IpcError::Server {
                 code: ErrorCode::UnknownConversation,
+                conversation_id: Some(id),
                 ..
-            }
+            } if id == missing
         ));
 
         // Known targets fail closed with MessagingUnavailable, never with a
         // guessed acceptance.
+        let thread = ConversationId::new(MessagingAccountId::new("gmessages:test"), "thread-1");
         let down = client
-            .send_message_text(
-                ConversationId::new(MessagingAccountId::new("gmessages:test"), "thread-1"),
-                "hi".into(),
-            )
+            .send_message_text(thread.clone(), "hi".into())
             .await
             .expect_err("helper down");
         assert!(matches!(
             down,
             IpcError::Server {
                 code: ErrorCode::MessagingUnavailable,
+                conversation_id: Some(id),
                 ..
-            }
+            } if id == thread
         ));
         task.abort();
     }

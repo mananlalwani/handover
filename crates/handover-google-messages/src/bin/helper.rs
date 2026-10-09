@@ -632,58 +632,82 @@ async fn publish_page<W: AsyncWrite + Unpin>(
     writer: &mut W,
     account: String,
     page: Vec<handover_core::messaging::Conversation>,
+    generation: Option<u64>,
 ) -> std::io::Result<()> {
-    let mut event = HelperEvent::Conversations {
-        account,
-        conversations: Vec::new(),
-        full: false,
-        generation: None,
-    };
+    let mut chunks: Vec<Vec<handover_gmessages::contract::WireConversation>> = Vec::new();
+    let mut current = Vec::new();
     for conversation in page {
-        let HelperEvent::Conversations { conversations, .. } = &mut event else {
-            unreachable!()
+        current.push(wire_conversation(conversation));
+        let event = HelperEvent::Conversations {
+            account: account.clone(),
+            conversations: current.clone(),
+            full: false,
+            generation,
         };
-        conversations.push(wire_conversation(conversation));
         if encode(&event).len() > MAX_HELPER_LINE_BYTES {
-            let HelperEvent::Conversations { conversations, .. } = &mut event else {
-                unreachable!()
-            };
-            let last = conversations.pop().expect("just added");
-            if conversations.is_empty() {
+            let overflow = current.pop().expect("just added");
+            if current.is_empty() {
                 publish(
                     writer,
                     HelperEvent::Error {
                         message: "native conversation exceeds helper contract bound".into(),
+                        fetch_id: None,
                     },
                 )
                 .await?;
                 continue;
             }
-            publish(writer, event.clone()).await?;
-            let HelperEvent::Conversations { conversations, .. } = &mut event else {
-                unreachable!()
+            chunks.push(std::mem::take(&mut current));
+            current.push(overflow);
+            let event = HelperEvent::Conversations {
+                account: account.clone(),
+                conversations: current.clone(),
+                full: false,
+                generation,
             };
-            conversations.clear();
-            conversations.push(last);
             if encode(&event).len() > MAX_HELPER_LINE_BYTES {
-                let HelperEvent::Conversations { conversations, .. } = &mut event else {
-                    unreachable!()
-                };
-                conversations.clear();
+                current.clear();
                 publish(
                     writer,
                     HelperEvent::Error {
                         message: "native conversation exceeds helper contract bound".into(),
+                        fetch_id: None,
                     },
                 )
                 .await?;
             }
         }
     }
-    if let HelperEvent::Conversations { conversations, .. } = &event {
-        if !conversations.is_empty() {
-            publish(writer, event).await?;
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    if chunks.is_empty() {
+        if generation.is_some() {
+            publish(
+                writer,
+                HelperEvent::Conversations {
+                    account,
+                    conversations: Vec::new(),
+                    full: true,
+                    generation,
+                },
+            )
+            .await?;
         }
+        return Ok(());
+    }
+    let last = chunks.len() - 1;
+    for (index, conversations) in chunks.into_iter().enumerate() {
+        publish(
+            writer,
+            HelperEvent::Conversations {
+                account: account.clone(),
+                conversations,
+                full: generation.is_some() && index == last,
+                generation,
+            },
+        )
+        .await?;
     }
     Ok(())
 }
@@ -895,7 +919,17 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
             resume_pending.remove(&account);
             if let Some(worker) = workers.remove(&account) {
                 worker.stop().await;
-                helper.end_live_session(&account);
+                let interrupted = helper.end_live_session(&account);
+                for request in interrupted {
+                    publish(
+                        writer,
+                        HelperEvent::Error {
+                            message: "native history interrupted".into(),
+                            fetch_id: request.fetch_id,
+                        },
+                    )
+                    .await?;
+                }
                 publish(writer, disconnected(&account)).await?;
                 retries.insert(account, tokio::time::Instant::now());
             }
@@ -911,12 +945,13 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     retries.remove(&account);
                     attempts.remove(&account);
                     if workers.len() >= 8 {
-                        helper.pending_history = None;
+                        let request = helper.pending_history.take();
                         helper.pending_sync = None;
                         publish(
                             writer,
                             HelperEvent::Error {
                                 message: "native live account limit reached".into(),
+                                fetch_id: request.and_then(|request| request.fetch_id),
                             },
                         )
                         .await?;
@@ -950,7 +985,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             fetch_id: request.fetch_id,
                         };
                         match worker.commands.try_send(command) {
-                            Ok(()) => {}
+                            Ok(()) => helper.inflight_history = Some(request),
                             Err(mpsc::error::TrySendError::Full(_)) => {
                                 helper.pending_history = Some(request)
                             }
@@ -959,6 +994,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                     writer,
                                     HelperEvent::Error {
                                         message: "native receive session unavailable".into(),
+                                        fetch_id: request.fetch_id,
                                     },
                                 )
                                 .await?
@@ -969,6 +1005,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             writer,
                             HelperEvent::Error {
                                 message: "native history conversation unavailable".into(),
+                                fetch_id: request.fetch_id,
                             },
                         )
                         .await?;
@@ -980,6 +1017,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         writer,
                         HelperEvent::Error {
                             message: "native receive session unavailable".into(),
+                            fetch_id: request.fetch_id,
                         },
                     )
                     .await?;
@@ -997,6 +1035,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 writer,
                                 HelperEvent::Error {
                                     message: "native receive session unavailable".into(),
+                                    fetch_id: None,
                                 },
                             )
                             .await?
@@ -1068,7 +1107,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             } else if let Some(request_id) = request_id {
                                 publish(writer, HelperEvent::CommandResult { request_id, ok: false, error: Some(UNAVAILABLE.into()) }).await?;
                             } else {
-                                publish(writer, HelperEvent::Error { message: "Unpair unavailable. Saved credentials were retained.".into() }).await?;
+                                publish(writer, HelperEvent::Error { message: "Unpair unavailable. Saved credentials were retained.".into(), fetch_id: None}).await?;
                             }
                             line.zeroize();
                             continue;
@@ -1102,17 +1141,22 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                             helper.login_active = None;
                             helper.pending_login = None;
                             helper.pending_sync = None;
-                            helper.pending_history = None;
-                        }
-                        if control.kind == "logout" && helper.desktop_credentials {
-                            if let Some(account) = control.account.as_deref().filter(|account| helper.accounts.contains(*account)) {
-                                if handover_google_messages::credential_store::DesktopCredentialStore::delete(account).await.is_err() {
-                                    publish(writer, HelperEvent::Error { message: "desktop credentials could not be forgotten".into() }).await?;
-                                    line.zeroize();
-                                    continue;
-                                }
+                            let account = control.account.clone().unwrap_or_default();
+                            for request in helper.take_history_for(&account) {
+                                publish(
+                                    writer,
+                                    HelperEvent::Error {
+                                        message: "native history interrupted".into(),
+                                        fetch_id: request.fetch_id,
+                                    },
+                                )
+                                .await?;
                             }
                         }
+                        // Session records are removed by logout. Secret Service
+                        // deletion follows a successful removal so a failed
+                        // session cleanup does not drop the browser credential
+                        // while the registration remains.
                     }
                 }
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
@@ -1121,11 +1165,24 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendMedia { request_id, account, conversation, path, caption }) = serde_json::from_slice::<HelperCommand>(&line) {
                         queue_media(helper, &workers, &mut sends, writer, MediaSend { request_id, account, conversation, path: Zeroizing::new(path), caption: caption.map(Zeroizing::new) }).await?;
                     } else {
+                    let logout_account = (line.len() <= MAX_HELPER_LINE_BYTES)
+                        .then(|| serde_json::from_slice::<HelperCommand>(&line).ok())
+                        .flatten()
+                        .and_then(|command| match command {
+                            HelperCommand::Logout { account } => Some(account),
+                            _ => None,
+                        });
                     for response in helper.handle_line(&line) {
                         writer.write_all(response.as_bytes()).await?;
                         writer.write_all(b"\n").await?;
                     }
                     writer.flush().await?;
+                    if let Some(account) = logout_account.filter(|account| !helper.accounts.contains(account))
+                        && helper.desktop_credentials
+                        && handover_google_messages::credential_store::DesktopCredentialStore::delete(&account).await.is_err()
+                    {
+                        publish(writer, HelperEvent::Error { message: "desktop credentials could not be forgotten".into(), fetch_id: None }).await?;
+                    }
                     }
                 }
                 line.zeroize();
@@ -1140,7 +1197,10 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     attempts.remove(&account);
                     if let Some(worker) = workers.remove(&account) {
                         worker.stop().await;
-                        helper.end_live_session(&account);
+                        let interrupted = helper.end_live_session(&account);
+                        for request in interrupted {
+                            publish(writer, HelperEvent::Error { message: "native history interrupted".into(), fetch_id: request.fetch_id }).await?;
+                        }
                         publish(writer, disconnected(&account)).await?;
                     }
                     generation = generation.wrapping_add(1);
@@ -1184,13 +1244,14 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     if let Some(worker) = workers.remove(&account) { worker.stop().await; }
                     helper.online.remove(&account);
                     publish(writer, disconnected(&account)).await?;
-                    if helper.desktop_credentials && handover_google_messages::credential_store::DesktopCredentialStore::delete(&account).await.is_err() {
-                        publish(writer, HelperEvent::Error { message: "Phone unpaired, but desktop credential cleanup failed.".into() }).await?;
-                    } else {
-                        for event in helper.logout(&account) { publish(writer, event).await?; }
+                    let events = helper.logout(&account);
+                    let removed = events.iter().any(|event| matches!(event, HelperEvent::AccountRemoved { .. }));
+                    for event in events { publish(writer, event).await?; }
+                    if removed && helper.desktop_credentials && handover_google_messages::credential_store::DesktopCredentialStore::delete(&account).await.is_err() {
+                        publish(writer, HelperEvent::Error { message: "Phone unpaired, but desktop credential cleanup failed.".into(), fetch_id: None }).await?;
                     }
                 } else {
-                    publish(writer, HelperEvent::Error { message: "Phone unpairing was not confirmed. Saved credentials were retained; check linked devices before retrying.".into() }).await?;
+                    publish(writer, HelperEvent::Error { message: "Phone unpairing was not confirmed. Saved credentials were retained; check linked devices before retrying.".into(), fetch_id: None}).await?;
                     if !workers.contains_key(&account) && helper.confirmed.contains_key(&account) {
                         // Recover receive only; never replay an uncertain unpair.
                         helper.pending_sync = Some(account);
@@ -1211,8 +1272,11 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                     sends.remove(&account);
                                 } else { continue; }
                             }
-                            LiveEvent::HistoryUnavailable => {
-                                publish(writer, HelperEvent::Error { message: "native history content unavailable".into() }).await?;
+                            LiveEvent::HistoryUnavailable { fetch_id } => {
+                                if helper.inflight_history.as_ref().is_some_and(|request| request.account == account) {
+                                    helper.inflight_history = None;
+                                }
+                                publish(writer, HelperEvent::Error { message: "native history content unavailable".into(), fetch_id }).await?;
                             }
                             LiveEvent::Online => {
                                 credential_waiters.remove(&account);
@@ -1224,19 +1288,23 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 helper.conversations.retain(|(owner, _), _| owner != &account);
                                 if let Some(worker) = workers.get_mut(&account) { worker.ready = true; }
                                 for record in &records { helper.conversations.insert((account.clone(), record.id.local_id.clone()), record.clone()); }
-                                publish_page(writer, account.clone(), records).await?;
+                                let generation = helper.next_conversation_generation();
+                                publish_page(writer, account.clone(), records, Some(generation)).await?;
                             }
                             LiveEvent::ConversationUpdates(records) => {
                                 for record in &records { helper.conversations.insert((account.clone(), record.id.local_id.clone()), record.clone()); }
-                                publish_page(writer, account.clone(), records).await?;
+                                publish_page(writer, account.clone(), records, None).await?;
                             }
                             LiveEvent::History { conversation, fetch_id, page } => {
+                                if helper.inflight_history.as_ref().is_some_and(|request| request.account == account) {
+                                    helper.inflight_history = None;
+                                }
                                 helper.remember_cursor(&account, &conversation, &page);
                                 if helper.save_cursor_links().is_err() {
-                                    publish(writer, HelperEvent::Error { message: "native history cursor storage failed".into() }).await?;
-                                    continue;
+                                    publish(writer, HelperEvent::Error { message: "native history cursor storage failed".into(), fetch_id }).await?;
+                                } else {
+                                    publish_history(writer, account.clone(), conversation, fetch_id, page).await?;
                                 }
-                                publish_history(writer, account.clone(), conversation, fetch_id, page).await?;
                             }
                             LiveEvent::Messages { records, statuses, correlations } => {
                                 publish_message_updates(writer, account.clone(), records, statuses, correlations).await?;
@@ -1247,7 +1315,10 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     LiveSignal::Ended(result) => {
                         abandon_send(writer, &mut sends, &account).await?;
                         if let Some(worker) = workers.remove(&account) { worker.stop().await; }
-                        helper.end_live_session(&account);
+                        let interrupted = helper.end_live_session(&account);
+                        for request in interrupted {
+                            publish(writer, HelperEvent::Error { message: "native history interrupted".into(), fetch_id: request.fetch_id }).await?;
+                        }
                         publish(writer, disconnected(&account)).await?;
                         if mutating.contains(&account) { continue; }
                         if matches!(result, Err(handover_google_messages::ProbeError::RegistrationRenewalDue)) {
@@ -1272,7 +1343,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 handover_google_messages::ProbeError::ReceiveProtocol(category) => format!("receive_protocol, {category:?}"),
                                 _ => error.code().to_owned(),
                             };
-                            publish(writer, HelperEvent::Error { message: format!("native receive ended ({category})") }).await?;
+                            publish(writer, HelperEvent::Error { message: format!("native receive ended ({category})"), fetch_id: None}).await?;
                         }
                     }
                 }
@@ -1295,7 +1366,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     Err(_) => {
                         helper.login_active = None;
                         active_account = None;
-                        publish(writer, HelperEvent::Error { message: "native operation interrupted".into() }).await?;
+                        publish(writer, HelperEvent::Error { message: "native operation interrupted".into(), fetch_id: None}).await?;
                         continue;
                     }
                 };
@@ -1427,6 +1498,8 @@ struct NativeHelper {
     pending_login: Option<(String, LoginBootstrap)>,
     pending_sync: Option<String>,
     pending_history: Option<HistoryRequest>,
+    inflight_history: Option<HistoryRequest>,
+    conversation_generation: u64,
     cursor_links: VecDeque<CursorLink>,
     cursor_links_loaded: bool,
     conversations: BTreeMap<(String, String), handover_core::messaging::Conversation>,
@@ -1445,6 +1518,8 @@ impl NativeHelper {
             pending_login: None,
             pending_sync: None,
             pending_history: None,
+            inflight_history: None,
+            conversation_generation: 0,
             cursor_links: VecDeque::new(),
             cursor_links_loaded: false,
             conversations: BTreeMap::new(),
@@ -1464,6 +1539,7 @@ impl NativeHelper {
         if line.len() > MAX_HELPER_LINE_BYTES {
             return vec![encode(&HelperEvent::Error {
                 message: "helper line too large".into(),
+                fetch_id: None,
             })];
         }
         let command: HelperCommand = match serde_json::from_slice(line) {
@@ -1471,6 +1547,7 @@ impl NativeHelper {
             Err(_) => {
                 return vec![encode(&HelperEvent::Error {
                     message: "malformed command".into(),
+                    fetch_id: None,
                 })];
             }
         };
@@ -1479,6 +1556,7 @@ impl NativeHelper {
             if bundle_b64.len() > MAX_BUNDLE_BYTES {
                 return vec![encode(&HelperEvent::Error {
                     message: "credential bundle too large".into(),
+                    fetch_id: None,
                 })];
             }
         }
@@ -1498,8 +1576,7 @@ impl NativeHelper {
                 Vec::new()
             }
             // One pending read coalesces repeated requests while network work
-            // is active. Conversation reads remain incremental until atomic
-            // snapshot reconciliation is implemented.
+            // is active. A completed inventory is published as one generation.
             HelperCommand::ListConversations { account } | HelperCommand::Sync { account } => {
                 if self.desktop_credentials && self.confirmed.contains_key(&account) {
                     self.pending_sync = Some(account);
@@ -1532,6 +1609,7 @@ impl NativeHelper {
                             None => {
                                 return vec![HelperEvent::Error {
                                     message: "native history cursor is no longer available".into(),
+                                    fetch_id,
                                 }];
                             }
                         },
@@ -1548,6 +1626,7 @@ impl NativeHelper {
                 } else {
                     vec![HelperEvent::Error {
                         message: UNAVAILABLE.into(),
+                        fetch_id,
                     }]
                 }
             }
@@ -1575,6 +1654,7 @@ impl NativeHelper {
         let Some(store) = &self.store else {
             events.push(HelperEvent::Error {
                 message: "native session store unavailable".into(),
+                fetch_id: None,
             });
             return events;
         };
@@ -1606,6 +1686,7 @@ impl NativeHelper {
             Err(_) => {
                 events.push(HelperEvent::Error {
                     message: "native confirmed session store is unreadable".into(),
+                    fetch_id: None,
                 });
                 return events;
             }
@@ -1624,11 +1705,13 @@ impl NativeHelper {
             // announced as a usable account.
             Err(_) => events.push(HelperEvent::Error {
                 message: "native session store is unreadable".into(),
+                fetch_id: None,
             }),
         }
         if self.restore_cursor_links().is_err() {
             events.push(HelperEvent::Error {
                 message: "native history cursor cache unavailable".into(),
+                fetch_id: None,
             });
         }
         events
@@ -1638,16 +1721,19 @@ impl NativeHelper {
         if check_account_id(account).is_err() {
             return vec![HelperEvent::Error {
                 message: "login rejected: invalid account name".into(),
+                fetch_id: None,
             }];
         }
         if self.login_active.is_some() {
             return vec![HelperEvent::Error {
                 message: "native operation already active for an account".into(),
+                fetch_id: None,
             }];
         }
         let Some(store) = &self.store else {
             return vec![HelperEvent::Error {
                 message: "native session store unavailable".into(),
+                fetch_id: None,
             }];
         };
         let bootstrap = match LoginBootstrap::from_bundle(account, bundle_b64, store) {
@@ -1655,6 +1741,7 @@ impl NativeHelper {
             Err(error) => {
                 return vec![HelperEvent::Error {
                     message: format!("native login rejected ({})", error.code()),
+                    fetch_id: None,
                 }];
             }
         };
@@ -1762,29 +1849,54 @@ impl NativeHelper {
         }
     }
 
-    fn clear_pending_reads(&mut self, account: &str) {
+    fn take_history_for(&mut self, account: &str) -> Vec<HistoryRequest> {
+        let mut dropped = Vec::new();
         if self
             .pending_history
             .as_ref()
             .is_some_and(|request| request.account == account)
         {
-            self.pending_history = None;
+            dropped.extend(self.pending_history.take());
         }
+        if self
+            .inflight_history
+            .as_ref()
+            .is_some_and(|request| request.account == account)
+        {
+            dropped.extend(self.inflight_history.take());
+        }
+        dropped
+    }
+
+    fn next_conversation_generation(&mut self) -> u64 {
+        self.conversation_generation = self.conversation_generation.wrapping_add(1).max(1);
+        self.conversation_generation
+    }
+
+    fn end_live_session(&mut self, account: &str) -> Vec<HistoryRequest> {
+        self.online.remove(account);
+        let dropped = self.take_history_for(account);
         if self.pending_sync.as_deref() == Some(account) {
             self.pending_sync = None;
         }
-    }
-
-    fn end_live_session(&mut self, account: &str) {
-        self.online.remove(account);
-        self.clear_pending_reads(account);
+        dropped
     }
 
     fn logout(&mut self, account: &str) -> Vec<HelperEvent> {
         if !self.accounts.contains(account) {
             return Vec::new();
         }
-        self.clear_pending_reads(account);
+        let mut events = self
+            .take_history_for(account)
+            .into_iter()
+            .map(|request| HelperEvent::Error {
+                message: "native history interrupted".into(),
+                fetch_id: request.fetch_id,
+            })
+            .collect::<Vec<_>>();
+        if self.pending_sync.as_deref() == Some(account) {
+            self.pending_sync = None;
+        }
         self.conversations.retain(|(owner, _), _| owner != account);
         self.cursor_links.retain(|link| link.account != account);
         // Stop this account's transient work before forgetting local credentials.
@@ -1794,9 +1906,11 @@ impl NativeHelper {
             self.pending_login = None;
         }
         if self.save_cursor_links().is_err() {
-            return vec![HelperEvent::Error {
+            events.push(HelperEvent::Error {
                 message: "native history cursor cleanup failed".into(),
-            }];
+                fetch_id: None,
+            });
+            return events;
         }
         let forgotten = (|| {
             let store = self.store.as_ref().ok_or(())?;
@@ -1817,16 +1931,19 @@ impl NativeHelper {
             Ok::<_, ()>(())
         })();
         if forgotten.is_err() {
-            return vec![HelperEvent::Error {
+            events.push(HelperEvent::Error {
                 message: "native credentials could not be forgotten".into(),
-            }];
+                fetch_id: None,
+            });
+            return events;
         }
         self.confirmed.remove(account);
         self.accounts.remove(account);
         self.online.remove(account);
-        vec![HelperEvent::AccountRemoved {
+        events.push(HelperEvent::AccountRemoved {
             account: account.to_owned(),
-        }]
+        });
+        events
     }
 }
 
@@ -2205,7 +2322,7 @@ mod tests {
             });
         }
         let mut output = Vec::new();
-        publish_page(&mut output, account.as_str().into(), page)
+        publish_page(&mut output, account.as_str().into(), page, None)
             .await
             .unwrap();
         let mut count = 0;
@@ -2250,6 +2367,72 @@ mod tests {
         }
         assert_eq!(count, 12);
         assert!(chunks > 1);
+    }
+
+    #[tokio::test]
+    async fn authoritative_inventory_closes_including_an_empty_list() {
+        use handover_core::messaging::{
+            Conversation, ConversationId, ConversationKind, MessagingAccountId, TransportKind,
+        };
+        let mut output = Vec::new();
+        publish_page(&mut output, "acct".into(), Vec::new(), Some(3))
+            .await
+            .unwrap();
+        let event: HelperEvent = serde_json::from_slice(
+            output
+                .split(|byte| *byte == b'\n')
+                .find(|line| !line.is_empty())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            event,
+            HelperEvent::Conversations {
+                full: true,
+                generation: Some(3),
+                ref conversations,
+                ..
+            } if conversations.is_empty()
+        ));
+
+        output.clear();
+        publish_page(&mut output, "acct".into(), Vec::new(), None)
+            .await
+            .unwrap();
+        assert!(output.is_empty());
+
+        output.clear();
+        let conversation = Conversation {
+            id: ConversationId::new(MessagingAccountId::new("acct"), "thread"),
+            kind: ConversationKind::Direct,
+            transport: TransportKind::Sms,
+            title: None,
+            participants: Vec::new(),
+            latest_message_id: None,
+            last_activity_at: None,
+            unread_count: None,
+            cursor: None,
+            capabilities: Default::default(),
+        };
+        publish_page(&mut output, "acct".into(), vec![conversation], Some(4))
+            .await
+            .unwrap();
+        let event: HelperEvent = serde_json::from_slice(
+            output
+                .split(|byte| *byte == b'\n')
+                .find(|line| !line.is_empty())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            event,
+            HelperEvent::Conversations {
+                full: true,
+                generation: Some(4),
+                ref conversations,
+                ..
+            } if conversations.len() == 1
+        ));
     }
 
     fn helper_with_store(directory: &std::path::Path) -> NativeHelper {
@@ -2384,7 +2567,7 @@ mod tests {
                 ..
             }
         )));
-        helper.end_live_session(&account);
+        let _ = helper.end_live_session(&account);
         assert!(hello_events(&mut helper).iter().any(|event| matches!(
             event,
             HelperEvent::Account {
@@ -2750,6 +2933,7 @@ mod tests {
             helper.handle_line(b"{\"type\":\"unknown\"}"),
             vec![encode(&HelperEvent::Error {
                 message: "malformed command".into(),
+                fetch_id: None
             })]
         );
         assert!(!helper.shutdown_requested());
@@ -2769,6 +2953,7 @@ mod tests {
             helper.handle_line(&oversized),
             vec![encode(&HelperEvent::Error {
                 message: "helper line too large".into(),
+                fetch_id: None
             })]
         );
         assert!(!helper.shutdown_requested());
@@ -2806,6 +2991,7 @@ mod tests {
                 },
                 HelperEvent::Error {
                     message: "malformed command".into(),
+                    fetch_id: None
                 },
             ],
             "blank and whitespace lines are skipped, and shutdown is terminal: \
@@ -2835,6 +3021,7 @@ mod tests {
             events,
             vec![HelperEvent::Error {
                 message: "helper line too large".into(),
+                fetch_id: None
             }],
             "the read stops at the cap, so the oversized line is never echoed and \
              the command after it is never reached"
@@ -2876,7 +3063,7 @@ mod tests {
             fetch_id: Some(7),
         });
         helper.pending_sync = Some("second".into());
-        helper.end_live_session("first");
+        let _ = helper.end_live_session("first");
         assert!(!helper.online.contains("first"));
         assert!(
             helper.pending_history.is_none(),

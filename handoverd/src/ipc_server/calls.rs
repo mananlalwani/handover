@@ -27,6 +27,7 @@ pub(crate) fn route_call(
         return ServerPayload::Error {
             code: ErrorCode::BackendRejected,
             message: "call action unavailable in current phone state or invalid address".into(),
+            conversation_id: None,
         };
     }
     let result = device_id.as_str().strip_prefix("native:").and_then(|id| {
@@ -37,10 +38,12 @@ pub(crate) fn route_call(
         Some(Err(_)) => ServerPayload::Error {
             code: ErrorCode::BackendRejected,
             message: "call command could not be queued".into(),
+            conversation_id: None,
         },
         None => ServerPayload::Error {
             code: ErrorCode::BackendUnavailable,
             message: "call backend unavailable".into(),
+            conversation_id: None,
         },
     }
 }

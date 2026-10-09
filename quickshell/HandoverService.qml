@@ -147,6 +147,16 @@ Singleton {
         return id.account_id + ":" + id.local_id;
     }
 
+    function dropAccountEntries(entries, accountId) {
+        const prefix = accountId + ":";
+        const next = Object.assign({}, entries);
+        for (const key of Object.keys(next)) {
+            if (key.startsWith(prefix))
+                delete next[key];
+        }
+        return next;
+    }
+
     function sameConversationId(first, second) {
         return first.account_id === second.account_id && first.local_id === second.local_id;
     }
@@ -260,6 +270,18 @@ Singleton {
         const next = outgoingOperations.filter(existing => existing.id !== operation.id);
         next.push(operation);
         outgoingOperations = next;
+    }
+
+    function stopHistoryLoad(conversationId) {
+        const key = conversationKey(conversationId);
+        const requests = Object.assign({}, historyRequests);
+        delete requests[key];
+        historyRequests = requests;
+        const loads = Object.assign({}, exhaustiveHistoryLoads);
+        delete loads[key];
+        exhaustiveHistoryLoads = loads;
+        if (automaticHistoryNext && sameConversationId(automaticHistoryNext.id, conversationId))
+            automaticHistoryNext = null;
     }
 
     function loadHistory(conversationId, limit, cursor) {
@@ -1009,6 +1031,10 @@ Singleton {
                 existing.id.account_id !== message.account_id);
             outgoingOperations = outgoingOperations.filter(operation =>
                 operation.conversation_id.account_id !== message.account_id);
+            conversationMessages = dropAccountEntries(conversationMessages, message.account_id);
+            conversationCursors = dropAccountEntries(conversationCursors, message.account_id);
+            historyRequests = dropAccountEntries(historyRequests, message.account_id);
+            exhaustiveHistoryLoads = dropAccountEntries(exhaustiveHistoryLoads, message.account_id);
             break;
         case "conversation_added":
         case "conversation_updated":
@@ -1080,15 +1106,13 @@ Singleton {
                 finishPending(true, "");
             break;
         case "error":
-            // Only history failures or loss of messaging availability end
-            // page loads. An unrelated rejected command must not stop them.
-            if (message.code === "history_unavailable"
+            // Stop the history load this error names. An error for another
+            // conversation, or one with no conversation, leaves other loads running.
+            if ((message.code === "history_unavailable"
                     || message.code === "unknown_conversation"
-                    || message.code === "messaging_unavailable") {
-                exhaustiveHistoryLoads = ({});
-                historyRequests = ({});
-                automaticHistoryNext = null;
-            }
+                    || message.code === "messaging_unavailable")
+                    && message.conversation_id)
+                stopHistoryLoad(message.conversation_id);
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
             finishPending(false, lastError);

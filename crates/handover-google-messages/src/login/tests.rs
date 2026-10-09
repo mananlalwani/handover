@@ -893,7 +893,7 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                                 .is_err(),
                             "invalid MAC must not be acknowledged"
                         );
-                    } else {
+                    } else if !original {
                         let (mut ack, _) = listener.accept().await.unwrap();
                         let (path, body) = request(&mut ack).await;
                         assert_eq!(path, crate::ACK_MESSAGES_PATH);
@@ -920,6 +920,7 @@ async fn restored_startup_opens_receive_before_activation_and_rejects_wrong_acco
                 )
                 .await;
                 expect_ack(&listener, "original-media").await;
+                expect_ack(&listener, "session-reply").await;
             }
             let mut byte = [0];
             assert_eq!(
@@ -1667,7 +1668,10 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 .await
                 .expect("A failed history page must publish a failure, not close the live session");
             if unsupported_history {
-                assert!(matches!(page.event, LiveEvent::HistoryUnavailable));
+                assert!(matches!(
+                    page.event,
+                    LiveEvent::HistoryUnavailable { fetch_id: Some(77) }
+                ));
             } else {
                 assert!(
                     matches!(page.event, LiveEvent::History { fetch_id: Some(77), ref page, .. } if page.messages.len() == 1)

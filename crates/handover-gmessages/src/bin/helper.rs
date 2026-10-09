@@ -453,6 +453,7 @@ impl Relay for LoopbackRelay {
         if bundle.is_empty() {
             return vec![HelperEvent::Error {
                 message: format!("login rejected for {account}: empty bundle"),
+                fetch_id: None,
             }];
         }
         self.accounts
@@ -588,6 +589,7 @@ impl Relay for LoopbackRelay {
         let Some(thread) = stored.conversations.get(conversation) else {
             return vec![HelperEvent::Error {
                 message: format!("unknown conversation {account}:{conversation}"),
+                fetch_id: None,
             }];
         };
         let (page, next) = Self::page(thread, limit, cursor);
@@ -856,11 +858,13 @@ impl Relay for LoopbackRelay {
         let Some(stored) = self.account_mut(account) else {
             return vec![HelperEvent::Error {
                 message: format!("unknown account {account}"),
+                fetch_id: None,
             }];
         };
         let Some(thread) = stored.conversations.get_mut(conversation) else {
             return vec![HelperEvent::Error {
                 message: format!("unknown conversation {account}:{conversation}"),
+                fetch_id: None,
             }];
         };
         if let Some(message) = message {
@@ -1057,6 +1061,7 @@ impl LoopbackHelper {
             Err(_) => {
                 return vec![encode(&HelperEvent::Error {
                     message: "malformed command".into(),
+                    fetch_id: None,
                 })];
             }
         };
@@ -1065,6 +1070,7 @@ impl LoopbackHelper {
             if bundle_b64.len() > MAX_BUNDLE_BYTES {
                 return vec![encode(&HelperEvent::Error {
                     message: "credential bundle too large".into(),
+                    fetch_id: None,
                 })];
             }
         }
@@ -1114,6 +1120,7 @@ impl LoopbackHelper {
                         if bundle.is_empty() || bundle.len() > MAX_BUNDLE_BYTES {
                             return vec![HelperEvent::Error {
                                 message: format!("login rejected for {account}: bad bundle"),
+                                fetch_id: None,
                             }];
                         }
                         // Persist before acting: a crash after ack must not
@@ -1123,17 +1130,24 @@ impl LoopbackHelper {
                         {
                             return vec![HelperEvent::Error {
                                 message: format!("login storage failed for {account}: {error}"),
+                                fetch_id: None,
                             }];
                         }
                         self.relay.login(&account, &bundle)
                     }
                     Err(_) => vec![HelperEvent::Error {
                         message: format!("login rejected for {account}: bad encoding"),
+                        fetch_id: None,
                     }],
                 }
             }
             HelperCommand::Logout { account } => {
-                let _ = secrets::delete_bundle(&self.directory, &account);
+                if secrets::delete_bundle(&self.directory, &account).is_err() {
+                    return vec![HelperEvent::Error {
+                        message: "credentials could not be forgotten".into(),
+                        fetch_id: None,
+                    }];
+                }
                 self.relay.logout(&account)
             }
             HelperCommand::ListConversations { account } => self.relay.sync(&account),

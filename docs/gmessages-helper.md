@@ -44,7 +44,8 @@ prompt), `conversations`, `conversation_removed`, `messages`,
 Unknown protocol versions fail the handshake. Lines over 1 MiB and bad JSON
 are dropped without echoing content. Unknown status tokens and capability
 names are rejected, not coerced. There are no capabilities for edits,
-membership changes, or disappearing messages.
+membership changes, or disappearing messages. An `error` completes a history
+read only when it carries that read's `fetch_id`.
 
 `full: true` marks an authoritative window. The daemon inserts or updates the
 supplied records and removes records missing from that window. `full: false`
@@ -166,7 +167,10 @@ HANDOVER_GMESSAGES_HELPER=target/debug/handover-google-messages-helper handoverd
 ```
 
 The helper owns pairing attempts and saved credentials. One receive stream per
-active account carries updates, reads, and bounded sends. Accounts become online
+active account carries updates, reads, and bounded sends. A completed
+conversation inventory is one generation: the last chunk is `full: true`, and
+an empty inventory is published so removed threads leave the daemon. Live
+conversation updates stay incremental. Accounts become online
 only after authenticated phone activation. Sending capabilities require an
 authenticated phone permission response.
 
@@ -207,7 +211,9 @@ an older-history gap can still fetch additional records.
 When an account returns online and its conversation inventory is available,
 the daemon refreshes cached conversations in the background. Catch-up merges
 new records into the existing windows and fetches at most 300 recent messages
-per conversation, stopping when it reaches cached messages. One history request
+per conversation. The native helper returns at most 50 messages per request, so
+catch-up follows the provider cursor until it reaches cached messages, the
+provider reports no older page, or the 300-message bound. One history request
 per account runs at a time. Live message updates continue to merge and persist
 while catch-up runs. The live window remains bounded at 300 messages.
 
