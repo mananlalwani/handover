@@ -47,6 +47,14 @@ impl Request {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "method")]
 pub enum Method {
+    #[serde(rename = "audio.start")]
+    AudioStart { device_id: DeviceId },
+    #[serde(rename = "audio.stop")]
+    AudioStop { device_id: DeviceId },
+    #[serde(rename = "audio.list")]
+    AudioList,
+    #[serde(rename = "audio.subscribe")]
+    AudioSubscribe,
     #[serde(rename = "hello")]
     Hello,
     #[serde(rename = "devices.list")]
@@ -399,6 +407,12 @@ impl ServerMessage {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerPayload {
+    AudioStreams {
+        streams: Vec<handover_core::AudioStreamStatus>,
+    },
+    AudioStreamUpdated {
+        status: handover_core::AudioStreamStatus,
+    },
     Hello {
         supported_protocols: Vec<u32>,
     },
@@ -906,6 +920,33 @@ impl Client {
         }
     }
 
+    pub async fn audio_streams(
+        &mut self,
+    ) -> Result<Vec<handover_core::AudioStreamStatus>, IpcError> {
+        self.send(Method::AudioList).await?;
+        match self.receive().await?.payload {
+            ServerPayload::AudioStreams { streams } => Ok(streams),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn set_audio_stream(
+        &mut self,
+        device_id: DeviceId,
+        enable: bool,
+    ) -> Result<(), IpcError> {
+        self.send(if enable {
+            Method::AudioStart { device_id }
+        } else {
+            Method::AudioStop { device_id }
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     pub async fn native_tethering(&mut self, id: String) -> Result<(), IpcError> {
         self.send(Method::NativeTethering { id }).await?;
         match self.receive().await?.payload {
@@ -1303,6 +1344,16 @@ impl Client {
             } if completed == notification_id => Ok(()),
             payload => Err(unexpected(payload)),
         }
+    }
+
+    pub async fn subscribe_with_audio(self) -> Result<Subscription, IpcError> {
+        let mut subscription = self.subscribe().await?;
+        write_json_line(
+            &mut subscription._writer,
+            &Request::new(Method::AudioSubscribe),
+        )
+        .await?;
+        Ok(subscription)
     }
 
     pub async fn subscribe(mut self) -> Result<Subscription, IpcError> {

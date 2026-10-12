@@ -10,8 +10,8 @@ use handover_core::{
 use handover_ipc::{Client, IpcError, PROTOCOL_VERSION, ServerPayload};
 use handoverctl::Cli;
 use handoverctl::cli::{
-    ClipboardHistoryCommand, Command, ContactsCommand, CustomCommand, MediaSubcommand,
-    MessagesCommand, NativeCommand,
+    AudioCommand, ClipboardHistoryCommand, Command, ContactsCommand, CustomCommand,
+    MediaSubcommand, MessagesCommand, NativeCommand,
 };
 use thiserror::Error;
 use url::Url;
@@ -39,6 +39,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Some(Command::Audio { command }) => audio(command).await,
         Some(Command::Devices) => list_devices().await,
         Some(Command::Native { command }) => native(command).await,
         Some(Command::Notifications) => list_notifications().await,
@@ -198,6 +199,24 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
     Ok(())
 }
 
+async fn audio(command: AudioCommand) -> Result<(), CliError> {
+    let mut client = connected_client().await?;
+    let (selector, enable) = match command {
+        AudioCommand::Start { device } => (device, true),
+        AudioCommand::Stop { device } => (device, false),
+        AudioCommand::Status => {
+            for status in client.audio_streams().await? {
+                println!("{}  {:?}", status.device_id, status.state);
+            }
+            return Ok(());
+        }
+    };
+    let device = select_device(&client.devices().await?, &selector)?;
+    client.set_audio_stream(device, enable).await?;
+    println!("Audio request accepted; use audio status to check receiver playback");
+    Ok(())
+}
+
 async fn list_devices() -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let devices = client.devices().await?;
@@ -291,7 +310,7 @@ impl MediaAction {
 async fn monitor() -> Result<(), CliError> {
     loop {
         match connected_client().await {
-            Ok(client) => match client.subscribe().await {
+            Ok(client) => match client.subscribe_with_audio().await {
                 Ok(mut subscription) => {
                     println!(
                         "subscribed: {} device(s), {} notification(s)",
@@ -1022,6 +1041,14 @@ fn print_message(payload: ServerPayload) {
             result.device_id, result.action, result.accepted, result.failure
         ),
         ServerPayload::CallQueued { request_id } => println!("call command queued: {request_id}"),
+        ServerPayload::AudioStreams { streams } => {
+            for status in streams {
+                println!("audio {} {:?}", status.device_id, status.state);
+            }
+        }
+        ServerPayload::AudioStreamUpdated { status } => {
+            println!("audio {} {:?}", status.device_id, status.state)
+        }
         ServerPayload::Calls { .. } | ServerPayload::CallAudio { .. } => {}
         ServerPayload::DeviceAdded { device } => {
             println!("device added: {}", describe_device(&device));

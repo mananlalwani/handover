@@ -61,6 +61,9 @@ impl NativeBackend {
         validate_peer_certificate(&cert)?;
         let peer_fp = fingerprint(&cert)?;
         let hello = read_frame(&mut tls)?;
+        if let Message::AudioReceive { stream_id, .. } = hello {
+            return self.handle_audio(tls, &peer_fp, &stream_id, event);
+        }
         let Message::Hello {
             protocol: WIRE_VERSION,
             id,
@@ -1256,6 +1259,23 @@ impl NativeBackend {
                 }) => {
                     last_received = Instant::now();
                     self.handle_media_sync(&peer, sessions, event)?;
+                }
+                Ok(Message::AudioReady { .. }) => {
+                    last_received = Instant::now();
+                    self.audio_ready(&id, event);
+                }
+                Ok(Message::AudioPlaying { stream_id, .. }) => {
+                    last_received = Instant::now();
+                    self.audio_playing(&id, &stream_id, event);
+                }
+                Ok(Message::AudioStop { stream_id, .. }) => {
+                    last_received = Instant::now();
+                    self.finish_audio(
+                        &id,
+                        &stream_id,
+                        handover_core::AudioStreamPhase::Failed,
+                        event,
+                    );
                 }
                 Ok(Message::Ping {
                     protocol: WIRE_VERSION,

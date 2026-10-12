@@ -25,6 +25,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('audio', 'audio', [CompletionResultType]::ParameterValue, 'Stream laptop output to a paired phone')
             [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List devices known to handoverd')
             [CompletionResult]::new('native', 'native', [CompletionResultType]::ParameterValue, 'Inspect and manage native Android pairing and device commands')
             [CompletionResult]::new('notifications', 'notifications', [CompletionResultType]::ParameterValue, 'List active remote notifications from the daemon snapshot')
@@ -43,6 +44,49 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('calls', 'calls', [CompletionResultType]::ParameterValue, 'Print current normalized call state for one device')
             [CompletionResult]::new('messages', 'messages', [CompletionResultType]::ParameterValue, 'Inspect and use messaging accounts and conversations')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'handoverctl;audio' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Capture all audio from the current default laptop output')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'handoverctl;audio;start' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'handoverctl;audio;stop' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'handoverctl;audio;status' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'handoverctl;audio;help' {
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Capture all audio from the current default laptop output')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'handoverctl;audio;help;start' {
+            break
+        }
+        'handoverctl;audio;help;stop' {
+            break
+        }
+        'handoverctl;audio;help;status' {
+            break
+        }
+        'handoverctl;audio;help;help' {
             break
         }
         'handoverctl;devices' {
@@ -607,6 +651,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help' {
+            [CompletionResult]::new('audio', 'audio', [CompletionResultType]::ParameterValue, 'Stream laptop output to a paired phone')
             [CompletionResult]::new('devices', 'devices', [CompletionResultType]::ParameterValue, 'List devices known to handoverd')
             [CompletionResult]::new('native', 'native', [CompletionResultType]::ParameterValue, 'Inspect and manage native Android pairing and device commands')
             [CompletionResult]::new('notifications', 'notifications', [CompletionResultType]::ParameterValue, 'List active remote notifications from the daemon snapshot')
@@ -625,6 +670,21 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('calls', 'calls', [CompletionResultType]::ParameterValue, 'Print current normalized call state for one device')
             [CompletionResult]::new('messages', 'messages', [CompletionResultType]::ParameterValue, 'Inspect and use messaging accounts and conversations')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'handoverctl;help;audio' {
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Capture all audio from the current default laptop output')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
+            break
+        }
+        'handoverctl;help;audio;start' {
+            break
+        }
+        'handoverctl;help;audio;stop' {
+            break
+        }
+        'handoverctl;help;audio;status' {
             break
         }
         'handoverctl;help;devices' {

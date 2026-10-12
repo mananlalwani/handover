@@ -374,6 +374,170 @@ fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
     assert_eq!(contacts["chunked"], true);
 }
 
+#[test]
+fn audio_offers_require_readiness_and_the_paired_certificate() {
+    use handover_core::AudioStreamPhase;
+    let harness = harness();
+    let identity = test_identity();
+    let mut control = connect(harness.port, &identity);
+    pair_client(&harness, &identity, &mut control);
+    let event: Arc<dyn Fn(StateEvent) + Send + Sync> = Arc::new(|_| {});
+    assert!(
+        harness
+            .backend
+            .start_audio(&identity.fingerprint, event.clone())
+            .is_err()
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_ready","protocol":1}),
+    );
+    loop {
+        if matches!(
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            StateEvent::AudioStream(_)
+        ) {
+            break;
+        }
+    }
+    harness
+        .backend
+        .start_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    // Wake the control reader so it drains the queued offer.
+    send(
+        &mut control,
+        serde_json::json!({"type":"pong","protocol":1}),
+    );
+    let offer = recv(&mut control);
+    assert_eq!(offer["type"], "audio_offer");
+    let old_id = offer["stream_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Starting
+    );
+
+    let attacker = test_identity();
+    let mut unauthorized = connect(harness.port, &attacker);
+    send(
+        &mut unauthorized,
+        serde_json::json!({"type":"audio_receive","protocol":1,"stream_id":old_id}),
+    );
+    recv_err(&mut unauthorized);
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Starting
+    );
+
+    harness
+        .backend
+        .stop_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Idle
+    );
+    harness
+        .backend
+        .start_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stop","protocol":1,"stream_id":old_id}),
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    // The pong proves that the stale stop was processed first.
+    while recv(&mut control)["type"] != "pong" {}
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Starting
+    );
+    harness
+        .backend
+        .stop_audio(&identity.fingerprint, event)
+        .unwrap();
+}
+
+#[test]
+#[ignore = "requires parec and a live local PulseAudio or PipeWire output"]
+fn audio_stream_captures_pcm_over_a_separate_authenticated_socket() {
+    use handover_core::AudioStreamPhase;
+    let harness = harness();
+    let identity = test_identity();
+    let mut control = connect(harness.port, &identity);
+    pair_client(&harness, &identity, &mut control);
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_ready","protocol":1}),
+    );
+    loop {
+        if matches!(
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            StateEvent::AudioStream(_)
+        ) {
+            break;
+        }
+    }
+    let (tx, rx) = mpsc::channel();
+    let event: Arc<dyn Fn(StateEvent) + Send + Sync> = Arc::new(move |ev| {
+        let _ = tx.send(ev);
+    });
+    harness
+        .backend
+        .start_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    send(
+        &mut control,
+        serde_json::json!({"type":"pong","protocol":1}),
+    );
+    let offer = recv(&mut control);
+    assert_eq!(offer["type"], "audio_offer");
+    let id = offer["stream_id"].as_str().unwrap();
+    let mut audio = connect(harness.port, &identity);
+    send(
+        &mut audio,
+        serde_json::json!({"type":"audio_receive","protocol":1,"stream_id":id}),
+    );
+    assert_eq!(recv(&mut audio)["type"], "audio_format");
+    let mut previous = 0;
+    for _ in 0..10 {
+        let mut timestamp = [0; 8];
+        audio.tls.read_exact(&mut timestamp).unwrap();
+        let timestamp = u64::from_be_bytes(timestamp);
+        assert!(timestamp >= previous);
+        previous = timestamp;
+        audio.tls.read_exact(&mut [0; 1920]).unwrap();
+    }
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_playing","protocol":1,"stream_id":id}),
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    assert_eq!(recv(&mut control)["type"], "pong");
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Streaming
+    );
+    harness
+        .backend
+        .stop_audio(&identity.fingerprint, event)
+        .unwrap();
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Idle
+    );
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        StateEvent::AudioStream(_)
+    ));
+}
+
 fn wait_share_result(harness: &Harness, id: &str) -> handover_core::ShareResult {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {

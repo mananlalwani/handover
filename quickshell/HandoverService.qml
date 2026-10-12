@@ -90,6 +90,7 @@ Singleton {
     property var customCommands: []
     property var customResult: null
     property var pendingPeers: []
+    property var audioStreams: []
     property var snapshotBuffer: null
     property string lastError: ""
     property string nativeNotice: ""
@@ -659,11 +660,13 @@ Singleton {
         sendRequest("clipboard.mirror_status", null, socket);
         sendRequest("clipboard.history_list", null, socket);
         sendRequest("subscribe", { shares: true, media: true, messages: true }, socket);
+        sendRequest("audio.subscribe", {}, socket);
         loadOutgoingOperations();
     }
 
     function scheduleReconnect(message) {
         lastError = message;
+        audioStreams = [];
         devices = [];
         notifications = [];
         mediaSessions = [];
@@ -814,6 +817,12 @@ Singleton {
         case "notifications":
             notifications = message.notifications || [];
             break;
+        case "audio_streams":
+            audioStreams = message.streams || [];
+            break;
+        case "audio_stream_updated":
+            audioStreams = audioStreams.filter(s => s.device_id !== message.status.device_id).concat([message.status]);
+            break;
         case "media":
             mediaSessions = message.media_sessions || [];
             break;
@@ -909,6 +918,8 @@ Singleton {
             callAudio = message.status;
             break;
         case "native_accepted":
+            if (pendingCommand && (pendingCommand.method === "audio.start" || pendingCommand.method === "audio.stop"))
+                finishPending(true, "");
             if (nativePending) {
                 nativePending = false;
                 nativeNotice = "Phone action accepted";

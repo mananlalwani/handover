@@ -13,6 +13,7 @@ import android.os.IBinder
 
 /** Owns the native transport while the user has enabled Handover connectivity. */
 class HandoverForegroundService : Service() {
+    private var laptopAudioId: String? = null
     private lateinit var batteryObserver: BatteryObserver
     private lateinit var mediaObserver: MediaObserver
     private lateinit var transport: NativeTransport
@@ -22,7 +23,7 @@ class HandoverForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, notification())
+        updateAudioNotification(null)
         transport = NativeTransport(applicationContext)
         connectivityManager = getSystemService(ConnectivityManager::class.java)
         connectivityCallback = object : ConnectivityManager.NetworkCallback() {
@@ -33,6 +34,7 @@ class HandoverForegroundService : Service() {
             }
         }
         connectivityManager.registerDefaultNetworkCallback(connectivityCallback)
+        activeService = this
         activeTransport = transport
         HandoverNotificationService.transport = transport
         MediaObserver.transport = transport
@@ -47,6 +49,7 @@ class HandoverForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = when (intent?.action) {
+        ACTION_STOP_AUDIO -> transport.laptopAudio.stop().let { START_STICKY }
         ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
@@ -66,6 +69,7 @@ class HandoverForegroundService : Service() {
         mediaObserver.stop()
         connectivityManager.unregisterNetworkCallback(connectivityCallback)
         if (activeTransport === transport) activeTransport = null
+        if (activeService === this) activeService = null
         transport.stop()
         if (HandoverNotificationService.transport === transport) {
             HandoverNotificationService.transport = null
@@ -83,9 +87,17 @@ class HandoverForegroundService : Service() {
         manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Handover connection", NotificationManager.IMPORTANCE_LOW))
     }
 
+    private fun updateAudioNotification(id: String?) {
+        laptopAudioId = id
+        val connected = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val types = if (id == null) connected else connected or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        if (android.os.Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification(), types)
+        else startForeground(NOTIFICATION_ID, notification())
+    }
+
     private fun notification(): Notification = Notification.Builder(this, CHANNEL_ID)
-        .setContentTitle("Handover is ready")
-        .setContentText("Waiting for a trusted desktop connection")
+        .setContentTitle(if (laptopAudioId != null) "Playing laptop audio" else "Handover is ready")
+        .setContentText(if (laptopAudioId != null) "Using the phone media output" else "Waiting for a trusted desktop connection")
         .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
         .setOngoing(true)
         .addAction(Notification.Action.Builder(
@@ -98,9 +110,25 @@ class HandoverForegroundService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             ),
         ).build())
+        .apply {
+            if (laptopAudioId != null) addAction(Notification.Action.Builder(null, "Stop audio",
+                PendingIntent.getService(this@HandoverForegroundService, 3,
+                    Intent(this@HandoverForegroundService, HandoverForegroundService::class.java).setAction(ACTION_STOP_AUDIO),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())
+        }
         .build()
 
     companion object {
+        @Volatile private var activeService: HandoverForegroundService? = null
+        internal fun audioStarted(id: String) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post { activeService?.updateAudioNotification(id) }
+        }
+        internal fun audioStopped(id: String) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                activeService?.let { if (it.laptopAudioId == id) it.updateAudioNotification(null) }
+            }
+        }
+        const val ACTION_STOP_AUDIO = "org.handover.android.STOP_AUDIO"
         @Volatile private var activeTransport: NativeTransport? = null
         fun refreshCallsIfRunning() { activeTransport?.refreshCalls() }
         fun presentation(action: String, deltaX: Int = 0, deltaY: Int = 0) {

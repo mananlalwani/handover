@@ -65,6 +65,7 @@ class NativeTransport(internal val context: Context) {
     internal val callObserver = CallObserver(context) { frame ->
         if (serverFingerprint != null) send(frame)
     }
+    internal val laptopAudio = LaptopAudioReceiver(this)
     internal val identity = DeviceIdentityStore(context)
     internal val nsd = context.getSystemService(NsdManager::class.java)
     internal val multicastLock = context.getSystemService(WifiManager::class.java)
@@ -143,6 +144,7 @@ class NativeTransport(internal val context: Context) {
     fun refreshCalls() = callObserver.refresh()
 
     fun stop() {
+        laptopAudio.stop()
         running = false
         contactsChunkedSupported = false
         releaseWakeLock()
@@ -411,6 +413,7 @@ class NativeTransport(internal val context: Context) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
+                laptopAudio.stop()
                 contactsChunkedSupported = false
                 broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "offline"))
                 failPendingTransfers(TRANSFER_DISCONNECTED)
@@ -559,11 +562,11 @@ class NativeTransport(internal val context: Context) {
         if (writerExecutor.isShutdown) false else { writerExecutor.execute(operation); true }
     } catch (_: java.util.concurrent.RejectedExecutionException) { false }
 
-    internal fun sslContext(): SSLContext {
+    internal fun sslContext(pin: String? = serverFingerprint): SSLContext {
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
             init(identity.keyStore(), null)
         }.keyManagers
-        val trust = pinnedTrustManager(serverFingerprint)
+        val trust = pinnedTrustManager(pin)
         return SSLContext.getInstance("TLSv1.3").apply { init(keyManagers, arrayOf(trust), SecureRandom()) }
     }
 

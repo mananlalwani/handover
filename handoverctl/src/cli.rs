@@ -26,6 +26,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Stream laptop output to a paired phone.
+    Audio {
+        #[command(subcommand)]
+        command: AudioCommand,
+    },
     /// List devices known to handoverd.
     ///
     /// Prints the current daemon snapshot: name, connection state, pairing
@@ -521,4 +526,14 @@ pub enum MediaSubcommand {
         #[arg(value_name = "SESSION")]
         session: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AudioCommand {
+    /// Capture all audio from the current default laptop output.
+    Start { device: String },
+    /// Stop capture and phone playback.
+    Stop { device: String },
+    /// Show receivers and their reported playback state.
+    Status,
 }

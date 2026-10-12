@@ -79,6 +79,7 @@ pub(crate) fn fit_history_page(
 
 #[derive(Default)]
 pub(crate) struct SubscriptionFlags {
+    audio: bool,
     shares: bool,
     media: bool,
     messages: bool,
@@ -229,7 +230,49 @@ where
         return Ok(true);
     }
 
+    let audio_enable = matches!(request.method, Method::AudioStart { .. });
     let response = match request.method {
+        Method::AudioSubscribe => {
+            flags.audio = true;
+            if subscription.is_none() {
+                *subscription = Some(events.subscribe());
+            }
+            ServerPayload::AudioStreams {
+                streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
+            }
+        }
+        Method::AudioList => ServerPayload::AudioStreams {
+            streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
+        },
+        Method::AudioStart { device_id } | Method::AudioStop { device_id } => {
+            let enable = audio_enable;
+            let Some(peer) = device_id.as_str().strip_prefix("native:") else {
+                write_json_line(
+                    writer,
+                    &ServerMessage::protocol_error(
+                        ErrorCode::UnknownDevice,
+                        "audio receiver unavailable",
+                    ),
+                )
+                .await?;
+                return Ok(true);
+            };
+            let audio_state = state.clone();
+            let audio_events = events.clone();
+            let callback = std::sync::Arc::new(move |event| {
+                apply_backend_event(&audio_state, &audio_events, event)
+            });
+            native_command_response(
+                native_backend().map(|native| {
+                    if enable {
+                        native.start_audio(peer, callback)
+                    } else {
+                        native.stop_audio(peer, callback)
+                    }
+                }),
+                "audio stream",
+            )
+        }
         Method::Hello => ServerPayload::Hello {
             supported_protocols: vec![PROTOCOL_VERSION],
         },
@@ -891,6 +934,16 @@ where
             .await?;
         } else {
             write_json_line(writer, &full).await?;
+        }
+        if flags.audio {
+            write_json_line(
+                writer,
+                &ServerMessage::new(ServerPayload::AudioStreams {
+                    streams: native_backend()
+                        .map_or_else(Vec::new, |native| native.audio_streams()),
+                }),
+            )
+            .await?;
         }
         if flags.messages {
             let operations = state

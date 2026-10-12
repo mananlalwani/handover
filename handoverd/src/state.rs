@@ -23,6 +23,10 @@ pub(crate) struct StateStore {
 impl StateStore {
     pub(crate) fn apply(&mut self, event: StateEvent) -> ApplyOutcome {
         match event {
+            StateEvent::AudioStream(status) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::AudioStream(status)],
+            },
             StateEvent::Device(event) => self.apply_device(event),
             StateEvent::Notification(event) => self.apply_notification(event),
             StateEvent::Media(event) => self.apply_media(event),
@@ -404,6 +408,7 @@ pub(crate) enum NotificationChange {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum StateChange {
+    AudioStream(handover_core::AudioStreamStatus),
     Device(DeviceChange),
     Notification(NotificationChange),
     Media(MediaChange),

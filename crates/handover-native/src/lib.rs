@@ -1,5 +1,6 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
 
+mod audio;
 mod contacts;
 mod discovery;
 mod errors;
@@ -67,6 +68,7 @@ pub(crate) struct Candidate {
     pub(crate) created: Instant,
 }
 pub(crate) struct Runtime {
+    pub(crate) audio: BTreeMap<String, audio::AudioSession>,
     pub(crate) peers: PeerFile,
     pub(crate) pending: BTreeMap<String, Candidate>,
     pub(crate) active: BTreeMap<String, TcpStream>,
@@ -171,6 +173,12 @@ impl Drop for Session<'_> {
             }
             let mut pending_events = Vec::new();
             inner.active.remove(&self.peer.id);
+            if let Some(audio) = inner.audio.remove(&self.peer.id) {
+                audio.cancel();
+                pending_events.push(StateEvent::AudioStream(
+                    audio.status(&self.peer.id, handover_core::AudioStreamPhase::Idle),
+                ));
+            }
             let abandoned = inner.outbox.remove(&self.peer.id).unwrap_or_default();
             for message in &abandoned {
                 delete_clipboard_temp(message);
@@ -317,6 +325,7 @@ impl NativeBackend {
         };
         Ok(Self {
             inner: Arc::new(Mutex::new(Runtime {
+                audio: BTreeMap::new(),
                 peers,
                 pending: BTreeMap::new(),
                 active: BTreeMap::new(),
@@ -412,6 +421,9 @@ impl NativeBackend {
     pub fn unpair(&self, id: &str) -> Result<bool, NativeError> {
         let mut inner = self.inner.lock().unwrap();
         inner.pending.remove(id);
+        if let Some(audio) = inner.audio.remove(id) {
+            audio.cancel();
+        }
         let mut peers = inner.peers.clone();
         let removed = peers.peers.remove(id).is_some();
         if removed {

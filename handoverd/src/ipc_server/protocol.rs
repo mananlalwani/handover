@@ -208,6 +208,9 @@ pub(crate) fn snapshot_payload(
 
 pub(crate) fn message_from_event(event: StateEvent) -> ServerMessage {
     match event {
+        StateEvent::AudioStream(status) => {
+            ServerMessage::new(ServerPayload::AudioStreamUpdated { status })
+        }
         StateEvent::Device(event) => ServerMessage::from_device_event(event),
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
         StateEvent::Media(event) => ServerMessage::from_media_event(event),

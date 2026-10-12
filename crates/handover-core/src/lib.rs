@@ -500,6 +500,7 @@ impl NotificationCommand {
 /// A normalized device, notification, media, share, or messaging transition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StateEvent {
+    AudioStream(AudioStreamStatus),
     Device(DeviceEvent),
     Notification(NotificationEvent),
     Media(MediaEvent),
@@ -517,6 +518,23 @@ pub enum StateEvent {
     RemoteInput(RemoteInputCommand),
     Filesystem(FilesystemResult),
     Contacts(ContactsEvent),
+}
+
+/// Playback reported by the receiving device. Streaming means its audio
+/// output started, not that sound reached the listener.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AudioStreamStatus {
+    pub device_id: DeviceId,
+    pub state: AudioStreamPhase,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioStreamPhase {
+    Idle,
+    Starting,
+    Streaming,
+    Failed,
 }
 
 /// A media player identity scoped to its source device.

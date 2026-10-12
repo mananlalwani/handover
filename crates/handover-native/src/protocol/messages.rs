@@ -104,6 +104,28 @@ pub(crate) struct WireFileEntry {
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Message {
+    AudioFormat {
+        protocol: u32,
+    },
+    AudioReady {
+        protocol: u32,
+    },
+    AudioOffer {
+        protocol: u32,
+        stream_id: String,
+    },
+    AudioReceive {
+        protocol: u32,
+        stream_id: String,
+    },
+    AudioStop {
+        protocol: u32,
+        stream_id: String,
+    },
+    AudioPlaying {
+        protocol: u32,
+        stream_id: String,
+    },
     Hello {
         protocol: u32,
         id: String,
@@ -484,7 +506,13 @@ fn is_true(value: &bool) -> bool {
 impl Message {
     pub(crate) fn version(&self) -> u32 {
         match self {
-            Self::Hello { protocol, .. }
+            Self::AudioFormat { protocol }
+            | Self::AudioReady { protocol }
+            | Self::AudioOffer { protocol, .. }
+            | Self::AudioReceive { protocol, .. }
+            | Self::AudioStop { protocol, .. }
+            | Self::AudioPlaying { protocol, .. }
+            | Self::Hello { protocol, .. }
             | Self::PairOpen { protocol, .. }
             | Self::PairConfirm { protocol, .. }
             | Self::Paired { protocol }

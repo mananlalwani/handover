@@ -22,6 +22,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand --help 'Print help (see more with ''--help'')'
             cand -V 'Print version'
             cand --version 'Print version'
+            cand audio 'Stream laptop output to a paired phone'
             cand devices 'List devices known to handoverd'
             cand native 'Inspect and manage native Android pairing and device commands'
             cand notifications 'List active remote notifications from the daemon snapshot'
@@ -40,6 +41,40 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand calls 'Print current normalized call state for one device'
             cand messages 'Inspect and use messaging accounts and conversations'
             cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'handoverctl;audio'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
+            cand start 'Capture all audio from the current default laptop output'
+            cand stop 'Stop capture and phone playback'
+            cand status 'Show receivers and their reported playback state'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'handoverctl;audio;start'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
+        }
+        &'handoverctl;audio;stop'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
+        }
+        &'handoverctl;audio;status'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
+        }
+        &'handoverctl;audio;help'= {
+            cand start 'Capture all audio from the current default laptop output'
+            cand stop 'Stop capture and phone playback'
+            cand status 'Show receivers and their reported playback state'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'handoverctl;audio;help;start'= {
+        }
+        &'handoverctl;audio;help;stop'= {
+        }
+        &'handoverctl;audio;help;status'= {
+        }
+        &'handoverctl;audio;help;help'= {
         }
         &'handoverctl;devices'= {
             cand -h 'Print help (see more with ''--help'')'
@@ -490,6 +525,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;messages;help;help'= {
         }
         &'handoverctl;help'= {
+            cand audio 'Stream laptop output to a paired phone'
             cand devices 'List devices known to handoverd'
             cand native 'Inspect and manage native Android pairing and device commands'
             cand notifications 'List active remote notifications from the daemon snapshot'
@@ -508,6 +544,17 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand calls 'Print current normalized call state for one device'
             cand messages 'Inspect and use messaging accounts and conversations'
             cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'handoverctl;help;audio'= {
+            cand start 'Capture all audio from the current default laptop output'
+            cand stop 'Stop capture and phone playback'
+            cand status 'Show receivers and their reported playback state'
+        }
+        &'handoverctl;help;audio;start'= {
+        }
+        &'handoverctl;help;audio;stop'= {
+        }
+        &'handoverctl;help;audio;status'= {
         }
         &'handoverctl;help;devices'= {
         }

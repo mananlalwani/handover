@@ -100,12 +100,17 @@ Replace `"Phone"` with a device name or ID from `handoverctl devices`.
 handoverctl devices
 handoverctl notifications
 handoverctl media
+handoverctl audio start "Phone"
+handoverctl audio stop "Phone"
 handoverctl send-url "Phone" https://example.com
 handoverctl send-file "Phone" ./photo.jpg
 handoverctl clipboard "Phone" "Text to copy to the phone"
 handoverctl notify "Phone" app title body
 handoverctl monitor
 ```
+
+The [laptop audio guide](docs/laptop-audio.md) explains phone playback,
+dependencies, and latency limits.
 
 To send the current Wayland clipboard, run `handoverctl clipboard "Phone"`
 without a text argument. For the other direction, use "Send current clipboard

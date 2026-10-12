@@ -24,6 +24,40 @@ Rectangle {
             font.pixelSize: 16
             font.bold: true
         }
+        Text {
+            text: "Laptop audio to phone"
+            color: "#ffffff"
+            font.pixelSize: 15
+        }
+        Repeater {
+            model: HandoverService.audioStreams
+            delegate: RowLayout {
+                required property var modelData
+                property var device: HandoverService.devices.find(d => d.id === modelData.device_id)
+                property bool active: modelData.state === "starting" || modelData.state === "streaming"
+                Layout.fillWidth: true
+                Text {
+                    Layout.fillWidth: true
+                    color: "#b9c2cf"
+                    text: (device ? device.name : modelData.device_id) + " · " + modelData.state
+                }
+                Button {
+                    text: active ? "Stop audio" : "Stream audio"
+                    enabled: !!device && device.connected && !HandoverService.pendingCommand
+                    onClicked: HandoverService.sendCommand(active ? "audio.stop" : "audio.start", {
+                        device_id: modelData.device_id
+                    })
+                }
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: "#b9c2cf"
+            text: HandoverService.audioStreams.length === 0
+                ? "Connect a phone with laptop audio support."
+                : "Uses the phone's media output. Bluetooth headphones add delay."
+        }
         ListView {
             Layout.fillWidth: true
             Layout.fillHeight: true

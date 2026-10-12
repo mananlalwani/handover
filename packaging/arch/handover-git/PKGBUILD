@@ -10,6 +10,7 @@ license=('MIT')
 depends=('gcc-libs' 'glibc' 'openssl' 'dbus')
 makedepends=('git' 'rust' 'cargo')
 optdepends=(
+  'libpulse: capture laptop audio for phone playback'
   'quickshell: example panel'
   'playerctl: pause local MPRIS players during phone calls'
   'python: optional Google Messages setup with an installed Chromium browser'

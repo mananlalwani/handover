@@ -415,6 +415,9 @@ fn is_native_device(id: &DeviceId) -> bool {
 
 fn log_change(change: StateChange) {
     match change {
+        StateChange::AudioStream(status) => {
+            info!(device_id = %status.device_id, state = ?status.state, "audio stream state")
+        }
         StateChange::Device(change) => log_device_change(change),
         StateChange::Notification(change) => log_notification_change(change),
         StateChange::Media(change) => log_media_change(change),
