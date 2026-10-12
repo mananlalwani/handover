@@ -40,9 +40,19 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
     }
     when (message.optString("type")) {
         "audio_offer" -> {
-            if (serverFingerprint != null && serverId != null) laptopAudio.start(message.optString("stream_id"))
+            if (serverFingerprint != null && serverId != null) {
+                realtimeAudio.stop()
+                laptopAudio.start(message.optString("stream_id"))
+            }
         }
-        "audio_stop" -> laptopAudio.stop(message.optString("stream_id"))
+        "audio_rtc_offer" -> {
+            val id = message.optString("stream_id")
+            if (serverFingerprint != null && serverId != null && isTransferId(id)) {
+                stopLaptopAudio()
+                realtimeAudio.acceptOffer(id, message.optString("sdp"))
+            }
+        }
+        "audio_stop" -> stopLaptopAudio(message.optString("stream_id"))
         "ping" -> send(JSONObject().put("type", "pong").put("protocol", 1))
         "pong" -> Unit
         "filesystem_list" -> {
@@ -114,7 +124,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             serverFingerprint = fingerprint
             preferences.edit().remove(PENDING_CODE_KEY).apply()
             broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
-            send(JSONObject().put("type", "audio_ready").put("protocol", 1))
+            send(JSONObject().put("type", "audio_ready").put("protocol", 1).put("realtime", true))
             sendBattery()
             publishConnectivity()
             // Proactively share the current notification list; the server
@@ -130,7 +140,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             if (desktopAwakeRequested()) requestDesktopAwake(true)
         }
         "revoke" -> {
-            laptopAudio.stop()
+            stopLaptopAudio()
             preferences.edit().remove(PIN_KEY).apply()
             serverFingerprint = null
             releaseWakeLock()

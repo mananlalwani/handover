@@ -1,0 +1,2 @@
+# Preserve the upstream WebRTC license bundle byte for byte.
+android/app/src/main/assets/licenses/webrtc-LICENSE.md -whitespace

@@ -1260,9 +1260,13 @@ impl NativeBackend {
                     last_received = Instant::now();
                     self.handle_media_sync(&peer, sessions, event)?;
                 }
-                Ok(Message::AudioReady { .. }) => {
+                Ok(Message::AudioReady { realtime, .. }) => {
                     last_received = Instant::now();
-                    self.audio_ready(&id, event);
+                    self.audio_ready(&id, realtime, event);
+                }
+                Ok(Message::AudioRtcAnswer { stream_id, sdp, .. }) => {
+                    last_received = Instant::now();
+                    self.audio_rtc_answer(&id, &stream_id, sdp);
                 }
                 Ok(Message::AudioPlaying { stream_id, .. }) => {
                     last_received = Instant::now();

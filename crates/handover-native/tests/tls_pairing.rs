@@ -536,6 +536,283 @@ fn audio_stream_captures_pcm_over_a_separate_authenticated_socket() {
         rx.recv_timeout(Duration::from_secs(1)).unwrap(),
         StateEvent::AudioStream(_)
     ));
+    harness.backend.stop_all_audio();
+}
+
+#[test]
+#[ignore = "requires a live PulseAudio or PipeWire output and parec"]
+fn realtime_audio_negotiates_and_decodes_opus_over_the_paired_control_channel() {
+    use handover_core::AudioStreamPhase;
+    use webrtc::api::{
+        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
+    };
+    use webrtc::interceptor::registry::Registry;
+    use webrtc::peer_connection::{
+        RTCPeerConnection, configuration::RTCConfiguration,
+        sdp::session_description::RTCSessionDescription,
+    };
+    use webrtc::rtp_transceiver::{
+        RTCRtpTransceiverInit, rtp_codec::RTPCodecType,
+        rtp_transceiver_direction::RTCRtpTransceiverDirection,
+    };
+
+    struct StopAudioOnDrop {
+        backend: NativeBackend,
+        peer: String,
+    }
+    impl Drop for StopAudioOnDrop {
+        fn drop(&mut self) {
+            let event: Arc<dyn Fn(StateEvent) + Send + Sync> = Arc::new(|_| {});
+            let _ = self.backend.stop_audio(&self.peer, event);
+            self.backend.stop_all_audio();
+        }
+    }
+
+    struct ClosePeerOnDrop {
+        handle: tokio::runtime::Handle,
+        peer: Arc<RTCPeerConnection>,
+        closed: bool,
+    }
+    impl ClosePeerOnDrop {
+        fn close(&mut self) {
+            if !self.closed {
+                let _ = self.handle.block_on(self.peer.close());
+                self.closed = true;
+            }
+        }
+    }
+    impl Drop for ClosePeerOnDrop {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+
+    fn recv_audio_offer(peer: &mut TlsPeer) -> serde_json::Value {
+        loop {
+            let message = recv(peer);
+            match message["type"].as_str() {
+                Some("audio_rtc_offer") => return message,
+                Some("pong" | "audio_stop") => continue,
+                other => {
+                    panic!("unexpected control frame while waiting for audio offer: {other:?}")
+                }
+            }
+        }
+    }
+
+    let harness = harness();
+    let identity = test_identity();
+    let cleanup = StopAudioOnDrop {
+        backend: harness.backend.clone(),
+        peer: identity.fingerprint.clone(),
+    };
+    let mut control = connect(harness.port, &identity);
+    pair_client(&harness, &identity, &mut control);
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_ready","protocol":1,"realtime":true}),
+    );
+    loop {
+        match harness.events.recv_timeout(Duration::from_secs(10)) {
+            Ok(StateEvent::AudioStream(_)) => break,
+            Ok(_) => continue,
+            Err(error) => panic!("timed out waiting for realtime audio readiness: {error}"),
+        }
+    }
+
+    let event: Arc<dyn Fn(StateEvent) + Send + Sync> = Arc::new(|_| {});
+    harness
+        .backend
+        .start_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    let old_offer = recv_audio_offer(&mut control);
+    let old_id = old_offer["stream_id"].as_str().unwrap().to_owned();
+
+    // Replace a still-starting stream. A delayed answer for its old ID must
+    // not be delivered to the new peer connection's answer channel.
+    harness
+        .backend
+        .stop_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    harness
+        .backend
+        .start_audio(&identity.fingerprint, event.clone())
+        .unwrap();
+    send(
+        &mut control,
+        serde_json::json!({
+            "type":"audio_rtc_answer",
+            "protocol":1,
+            "stream_id":old_id,
+            "sdp":"not a valid SDP answer"
+        }),
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    let mut pending_offer = None;
+    loop {
+        let message = recv(&mut control);
+        match message["type"].as_str() {
+            Some("pong") => break,
+            Some("audio_rtc_offer") => pending_offer = Some(message),
+            Some("audio_stop") => {}
+            other => panic!("unexpected control frame after stale answer: {other:?}"),
+        }
+    }
+    let offer = pending_offer.unwrap_or_else(|| recv_audio_offer(&mut control));
+    let id = offer["stream_id"].as_str().unwrap().to_owned();
+    assert_ne!(id, old_id);
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Starting
+    );
+    let offer_sdp = offer["sdp"].as_str().unwrap().to_owned();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (track_tx, mut track_rx) = tokio::sync::mpsc::channel(1);
+    let (peer, answer_result) = runtime.block_on(async {
+        let mut media = MediaEngine::default();
+        if let Err(error) = media.register_default_codecs() {
+            return (None, Err(error.to_string()));
+        }
+        let registry = match register_default_interceptors(Registry::new(), &mut media) {
+            Ok(registry) => registry,
+            Err(error) => return (None, Err(error.to_string())),
+        };
+        let api = APIBuilder::new()
+            .with_media_engine(media)
+            .with_interceptor_registry(registry)
+            .build();
+        let peer = match api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+        {
+            Ok(peer) => Arc::new(peer),
+            Err(error) => return (None, Err(error.to_string())),
+        };
+        let tx = track_tx;
+        peer.on_track(Box::new(move |track, _, _| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let Ok(mut decoder) = opus::Decoder::new(48_000, opus::Channels::Stereo) else {
+                    return;
+                };
+                let mut pcm = vec![0_i16; 5760 * 2];
+                while let Ok((packet, _)) = track.read_rtp().await {
+                    if matches!(decoder.decode(&packet.payload, &mut pcm, false), Ok(samples) if samples > 0) {
+                        let _ = tx.send(()).await;
+                        break;
+                    }
+                }
+            })
+        }));
+        let answer_result = async {
+            peer.add_transceiver_from_kind(
+                RTPCodecType::Audio,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: vec![],
+                }),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            let offer = RTCSessionDescription::offer(offer_sdp)
+                .map_err(|error| error.to_string())?;
+            peer.set_remote_description(offer)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut gathering = peer.gathering_complete_promise().await;
+            let answer = peer
+                .create_answer(None)
+                .await
+                .map_err(|error| error.to_string())?;
+            peer.set_local_description(answer)
+                .await
+                .map_err(|error| error.to_string())?;
+            tokio::time::timeout(Duration::from_secs(10), gathering.recv())
+                .await
+                .map_err(|_| "ICE gathering timed out".to_owned())?;
+            peer.local_description()
+                .await
+                .map(|description| description.sdp)
+                .ok_or_else(|| "missing local answer".to_owned())
+        }
+        .await;
+        (Some(peer), answer_result)
+    });
+
+    let mut close_peer = peer.map(|peer| ClosePeerOnDrop {
+        handle: runtime.handle().clone(),
+        peer,
+        closed: false,
+    });
+    let mut result = match answer_result {
+        Ok(answer) => {
+            send(
+                &mut control,
+                serde_json::json!({
+                    "type":"audio_rtc_answer",
+                    "protocol":1,
+                    "stream_id":id,
+                    "sdp":answer
+                }),
+            );
+            match runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), track_rx.recv()).await
+            }) {
+                Ok(Some(())) => Ok(()),
+                Ok(None) => Err("WebRTC track ended before Opus decode".to_owned()),
+                Err(_) => Err("timed out waiting for a decodable Opus RTP packet".to_owned()),
+            }
+        }
+        Err(error) => Err(error),
+    };
+    if result.is_ok() {
+        send(
+            &mut control,
+            serde_json::json!({"type":"audio_playing","protocol":1,"stream_id":id}),
+        );
+        send(
+            &mut control,
+            serde_json::json!({"type":"ping","protocol":1}),
+        );
+        loop {
+            if recv(&mut control)["type"] == "pong" {
+                break;
+            }
+        }
+        result = if harness.backend.audio_streams()[0].state == AudioStreamPhase::Streaming {
+            Ok(())
+        } else {
+            Err("audio_playing was not accepted for the current stream".to_owned())
+        };
+    }
+    if let Some(peer) = close_peer.as_mut() {
+        peer.close();
+    }
+    let _ = harness
+        .backend
+        .stop_audio(&identity.fingerprint, event.clone());
+    harness.backend.stop_all_audio();
+    drop(cleanup);
+    assert!(
+        result.is_ok(),
+        "realtime audio integration failed: {result:?}"
+    );
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Idle
+    );
 }
 
 fn wait_share_result(harness: &Harness, id: &str) -> handover_core::ShareResult {

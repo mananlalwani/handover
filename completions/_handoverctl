@@ -1268,7 +1268,7 @@ _handoverctl_commands() {
 (( $+functions[_handoverctl__subcmd__audio_commands] )) ||
 _handoverctl__subcmd__audio_commands() {
     local commands; commands=(
-'start:Capture all audio from the current default laptop output' \
+'start:Route all laptop app audio to the phone and silence laptop outputs' \
 'stop:Stop capture and phone playback' \
 'status:Show receivers and their reported playback state' \
 'help:Print this message or the help of the given subcommand(s)' \
@@ -1278,7 +1278,7 @@ _handoverctl__subcmd__audio_commands() {
 (( $+functions[_handoverctl__subcmd__audio__subcmd__help_commands] )) ||
 _handoverctl__subcmd__audio__subcmd__help_commands() {
     local commands; commands=(
-'start:Capture all audio from the current default laptop output' \
+'start:Route all laptop app audio to the phone and silence laptop outputs' \
 'stop:Stop capture and phone playback' \
 'status:Show receivers and their reported playback state' \
 'help:Print this message or the help of the given subcommand(s)' \
@@ -1550,7 +1550,7 @@ _handoverctl__subcmd__help_commands() {
 (( $+functions[_handoverctl__subcmd__help__subcmd__audio_commands] )) ||
 _handoverctl__subcmd__help__subcmd__audio_commands() {
     local commands; commands=(
-'start:Capture all audio from the current default laptop output' \
+'start:Route all laptop app audio to the phone and silence laptop outputs' \
 'stop:Stop capture and phone playback' \
 'status:Show receivers and their reported playback state' \
     )

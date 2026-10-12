@@ -45,7 +45,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;audio'= {
             cand -h 'Print help'
             cand --help 'Print help'
-            cand start 'Capture all audio from the current default laptop output'
+            cand start 'Route all laptop app audio to the phone and silence laptop outputs'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
             cand help 'Print this message or the help of the given subcommand(s)'
@@ -63,7 +63,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand --help 'Print help'
         }
         &'handoverctl;audio;help'= {
-            cand start 'Capture all audio from the current default laptop output'
+            cand start 'Route all laptop app audio to the phone and silence laptop outputs'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
             cand help 'Print this message or the help of the given subcommand(s)'
@@ -546,7 +546,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'handoverctl;help;audio'= {
-            cand start 'Capture all audio from the current default laptop output'
+            cand start 'Route all laptop app audio to the phone and silence laptop outputs'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
         }

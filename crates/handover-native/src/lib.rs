@@ -1,6 +1,8 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
 
 mod audio;
+mod audio_output;
+mod audio_rtc;
 mod contacts;
 mod discovery;
 mod errors;
@@ -143,6 +145,7 @@ pub(crate) fn release_source(inner: &mut Runtime, source: IpAddr) {
 
 #[derive(Clone)]
 pub struct NativeBackend {
+    pub(crate) audio_output: Arc<Mutex<audio_output::OutputRouter>>,
     pub(crate) inner: Arc<Mutex<Runtime>>,
     pub(crate) directory: PathBuf,
     pub(crate) certificate: X509,
@@ -324,6 +327,7 @@ impl NativeBackend {
             PeerFile::default()
         };
         Ok(Self {
+            audio_output: Arc::new(Mutex::new(audio_output::OutputRouter::new(&directory))),
             inner: Arc::new(Mutex::new(Runtime {
                 audio: BTreeMap::new(),
                 peers,

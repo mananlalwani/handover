@@ -49,7 +49,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
         'handoverctl;audio' {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Capture all audio from the current default laptop output')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
@@ -71,7 +71,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;audio;help' {
-            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Capture all audio from the current default laptop output')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
@@ -673,7 +673,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help;audio' {
-            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Capture all audio from the current default laptop output')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
             break

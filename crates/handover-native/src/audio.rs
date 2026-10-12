@@ -1,4 +1,4 @@
-//! A separate, pinned TLS connection carries fixed-size PCM blocks.
+//! Authoritative audio sessions. Legacy PCM uses a separate pinned TLS connection.
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::process::{Command, Stdio};
@@ -11,7 +11,7 @@ use openssl::ssl::SslStream;
 use crate::protocol::{Message, write_frame};
 use crate::{NativeBackend, NativeCommandError, NativeError, WIRE_VERSION};
 
-type Event = Arc<dyn Fn(StateEvent) + Send + Sync>;
+pub(crate) type Event = Arc<dyn Fn(StateEvent) + Send + Sync>;
 const BLOCK_BYTES: usize = 1920; // 480 frames, stereo signed 16-bit LE, 48 kHz.
 type StartupSignal = Arc<(Mutex<bool>, std::sync::Condvar)>;
 
@@ -20,11 +20,16 @@ pub(crate) struct AudioSession {
     phase: AudioStreamPhase,
     socket: Option<TcpStream>,
     startup: Option<StartupSignal>,
+    realtime: bool,
+    rtc: Option<crate::audio_rtc::RtcControl>,
 }
 
 impl AudioSession {
     pub(crate) fn cancel(&self) {
         self.finish_startup();
+        if let Some(rtc) = &self.rtc {
+            rtc.cancel();
+        }
         if let Some(socket) = &self.socket {
             let _ = socket.shutdown(Shutdown::Both);
         }
@@ -56,7 +61,7 @@ impl NativeBackend {
             .collect()
     }
 
-    pub(crate) fn audio_ready(&self, peer: &str, event: &Event) {
+    pub(crate) fn audio_ready(&self, peer: &str, realtime: bool, event: &Event) {
         let status = {
             let mut inner = self.inner.lock().unwrap();
             let audio = inner.audio.entry(peer.to_owned()).or_insert(AudioSession {
@@ -64,7 +69,10 @@ impl NativeBackend {
                 phase: AudioStreamPhase::Idle,
                 socket: None,
                 startup: None,
+                realtime,
+                rtc: None,
             });
+            audio.realtime = realtime;
             audio.status(peer, audio.phase)
         };
         event(StateEvent::AudioStream(status));
@@ -75,28 +83,43 @@ impl NativeBackend {
         openssl::rand::rand_bytes(&mut nonce).map_err(|_| NativeCommandError::QueueFull)?;
         let id = hex::encode(nonce);
         let startup: StartupSignal = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (rtc_control, rtc_input) = crate::audio_rtc::RtcControl::new();
+        let realtime;
         let status = {
             let mut inner = self.inner.lock().unwrap();
             if !inner.active.contains_key(peer) || !inner.audio.contains_key(peer) {
                 return Err(NativeCommandError::Offline);
             }
+            realtime = inner.audio[peer].realtime;
             let queue = inner.outbox.entry(peer.to_owned()).or_default();
             if queue.len() >= crate::limits::MAX_OUTBOX_PER_PEER {
                 return Err(NativeCommandError::QueueFull);
             }
-            queue.push(Message::AudioOffer {
-                protocol: WIRE_VERSION,
-                stream_id: id.clone(),
-            });
+            if !realtime {
+                queue.push(Message::AudioOffer {
+                    protocol: WIRE_VERSION,
+                    stream_id: id.clone(),
+                });
+            }
             let audio = inner.audio.get_mut(peer).unwrap();
             audio.cancel();
             audio.id.clone_from(&id);
             audio.phase = AudioStreamPhase::Starting;
             audio.socket = None;
+            audio.rtc = realtime.then_some(rtc_control);
             audio.startup = Some(startup.clone());
             audio.status(peer, audio.phase)
         };
         event(StateEvent::AudioStream(status));
+        if realtime {
+            crate::audio_rtc::start(
+                self.clone(),
+                peer.to_owned(),
+                id.clone(),
+                event.clone(),
+                rtc_input,
+            );
+        }
         let backend = self.clone();
         let peer = peer.to_owned();
         std::thread::spawn(move || {
@@ -143,7 +166,9 @@ impl NativeBackend {
             let Some(audio) = inner.audio.get_mut(peer) else {
                 return;
             };
-            if audio.id != id || audio.phase != AudioStreamPhase::Starting || audio.socket.is_none()
+            if audio.id != id
+                || audio.phase != AudioStreamPhase::Starting
+                || (audio.socket.is_none() && audio.rtc.is_none())
             {
                 return;
             }
@@ -171,11 +196,12 @@ impl NativeBackend {
             }
             audio.cancel();
             audio.socket = None;
+            audio.rtc = None;
             audio.id.clear();
             audio.phase = phase;
             // Also stops a phone waiting for data or an offer still in flight.
             if let Some(queue) = inner.outbox.get_mut(peer) {
-                queue.retain(|message| !matches!(message, Message::AudioOffer { stream_id, .. } if stream_id == id));
+                queue.retain(|message| !matches!(message, Message::AudioOffer { stream_id, .. } | Message::AudioRtcOffer { stream_id, .. } if stream_id == id));
                 if queue.len() < crate::limits::MAX_OUTBOX_PER_PEER {
                     queue.push(Message::AudioStop {
                         protocol: WIRE_VERSION,
@@ -207,26 +233,73 @@ impl NativeBackend {
                 return Err(NativeError::InvalidFrame);
             }
             let audio = inner.audio.get_mut(peer).ok_or(NativeError::InvalidFrame)?;
-            if audio.id != id || audio.phase != AudioStreamPhase::Starting || audio.socket.is_some()
+            if audio.id != id
+                || audio.phase != AudioStreamPhase::Starting
+                || audio.socket.is_some()
+                || audio.rtc.is_some()
             {
                 return Err(NativeError::InvalidFrame);
             }
             audio.socket = Some(tls.get_ref().try_clone()?);
         }
         let result = self.stream_pcm(&mut tls);
+        if let Err(error) = &result {
+            tracing::debug!(%error, "audio stream stopped");
+        }
         self.finish_audio(peer, id, AudioStreamPhase::Failed, event);
         result
+    }
+
+    pub(crate) fn audio_rtc_answer(&self, peer: &str, id: &str, sdp: String) {
+        let inner = self.inner.lock().unwrap();
+        if let Some(audio) = inner.audio.get(peer)
+            && audio.id == id
+            && audio.phase == AudioStreamPhase::Starting
+            && sdp.len() <= 32 * 1024
+            && let Some(rtc) = &audio.rtc
+        {
+            rtc.answer(sdp);
+        }
+    }
+
+    pub(crate) fn audio_rtc_offer(&self, peer: &str, id: &str, sdp: String) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if sdp.len() > 32 * 1024
+            || !inner
+                .audio
+                .get(peer)
+                .is_some_and(|a| a.id == id && a.rtc.is_some())
+        {
+            return false;
+        }
+        let queue = inner.outbox.entry(peer.to_owned()).or_default();
+        if queue.len() >= crate::limits::MAX_OUTBOX_PER_PEER {
+            return false;
+        }
+        queue.push(Message::AudioRtcOffer {
+            protocol: WIRE_VERSION,
+            stream_id: id.to_owned(),
+            sdp,
+        });
+        true
+    }
+
+    pub fn stop_all_audio(&self) {
+        for session in self.inner.lock().unwrap().audio.values() {
+            session.cancel();
+        }
+        self.audio_output.lock().unwrap().shutdown();
     }
 
     fn stream_pcm(&self, tls: &mut SslStream<TcpStream>) -> Result<(), NativeError> {
         tls.get_ref().set_nodelay(true)?;
         tls.get_ref()
-            .set_write_timeout(Some(Duration::from_millis(100)))?;
-        // PulseAudio compatibility is also provided by pipewire-pulse.
-        // Capture the default output's monitor without changing local routing.
+            .set_write_timeout(Some(Duration::from_secs(1)))?;
+        let output = crate::audio_output::OutputRouter::acquire(&self.audio_output)?;
+        // Capture the owned phone output, independently of hardware mute.
         let mut child = Command::new("parec")
             .args([
-                "--device=@DEFAULT_MONITOR@",
+                &format!("--device={}", output.monitor),
                 "--raw",
                 "--format=s16le",
                 "--rate=48000",
@@ -238,7 +311,7 @@ impl NativeBackend {
             .stderr(Stdio::null())
             .spawn()?;
         let mut capture = child.stdout.take().ok_or(NativeError::InvalidFrame)?;
-        // The producer always drains capture. Keep only the most recent 30 ms.
+        // The producer always drains capture. Keep only the most recent 60 ms.
         let blocks = Arc::new((
             Mutex::new((std::collections::VecDeque::new(), false)),
             std::sync::Condvar::new(),
@@ -253,7 +326,7 @@ impl NativeBackend {
                 }
                 let (lock, ready) = &*producer_blocks;
                 let mut queue = lock.lock().unwrap();
-                if queue.0.len() == 3 {
+                if queue.0.len() == 6 {
                     queue.0.pop_front();
                 }
                 queue
@@ -273,6 +346,9 @@ impl NativeBackend {
                 },
             )?;
             loop {
+                if !output.healthy() {
+                    return Err(NativeError::InvalidFrame);
+                }
                 let (lock, ready) = &*blocks;
                 let mut queue = lock.lock().unwrap();
                 while queue.0.is_empty() && !queue.1 {
@@ -286,11 +362,13 @@ impl NativeBackend {
                     return Err(NativeError::InvalidFrame);
                 };
                 drop(queue);
-                if started.elapsed().as_micros() as u64 - timestamp > 30_000 {
+                if started.elapsed().as_micros() as u64 - timestamp > 60_000 {
                     continue;
                 }
-                tls.write_all(&timestamp.to_be_bytes())?;
-                tls.write_all(&pcm)?;
+                let mut record = [0u8; BLOCK_BYTES + 8];
+                record[..8].copy_from_slice(&timestamp.to_be_bytes());
+                record[8..].copy_from_slice(&pcm);
+                tls.write_all(&record)?;
                 tls.flush()?;
             }
         })();

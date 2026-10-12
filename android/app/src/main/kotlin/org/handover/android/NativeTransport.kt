@@ -66,6 +66,21 @@ class NativeTransport(internal val context: Context) {
         if (serverFingerprint != null) send(frame)
     }
     internal val laptopAudio = LaptopAudioReceiver(this)
+    internal val realtimeAudio = LaptopRealtimeAudio(context,
+        sendAnswer = { id, sdp -> send(JSONObject().put("type", "audio_rtc_answer")
+            .put("protocol", 1).put("stream_id", id).put("sdp", sdp)) },
+        playing = { id ->
+            HandoverForegroundService.audioStarted(id)
+            send(JSONObject().put("type", "audio_playing").put("protocol", 1).put("stream_id", id))
+        },
+        stopped = { id ->
+            HandoverForegroundService.audioStopped(id)
+            send(JSONObject().put("type", "audio_stop").put("protocol", 1).put("stream_id", id))
+        })
+    internal fun stopLaptopAudio(id: String? = null) {
+        laptopAudio.stop(id)
+        realtimeAudio.stop(id)
+    }
     internal val identity = DeviceIdentityStore(context)
     internal val nsd = context.getSystemService(NsdManager::class.java)
     internal val multicastLock = context.getSystemService(WifiManager::class.java)
@@ -144,7 +159,7 @@ class NativeTransport(internal val context: Context) {
     fun refreshCalls() = callObserver.refresh()
 
     fun stop() {
-        laptopAudio.stop()
+        stopLaptopAudio()
         running = false
         contactsChunkedSupported = false
         releaseWakeLock()
@@ -413,7 +428,7 @@ class NativeTransport(internal val context: Context) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
-                laptopAudio.stop()
+                stopLaptopAudio()
                 contactsChunkedSupported = false
                 broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "offline"))
                 failPendingTransfers(TRANSFER_DISCONNECTED)

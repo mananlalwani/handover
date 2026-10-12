@@ -530,7 +530,7 @@ pub enum MediaSubcommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AudioCommand {
-    /// Capture all audio from the current default laptop output.
+    /// Route all laptop app audio to the phone and silence laptop outputs.
     Start { device: String },
     /// Stop capture and phone playback.
     Stop { device: String },

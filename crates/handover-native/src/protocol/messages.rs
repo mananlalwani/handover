@@ -109,6 +109,18 @@ pub(crate) enum Message {
     },
     AudioReady {
         protocol: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        realtime: bool,
+    },
+    AudioRtcOffer {
+        protocol: u32,
+        stream_id: String,
+        sdp: String,
+    },
+    AudioRtcAnswer {
+        protocol: u32,
+        stream_id: String,
+        sdp: String,
     },
     AudioOffer {
         protocol: u32,
@@ -507,7 +519,9 @@ impl Message {
     pub(crate) fn version(&self) -> u32 {
         match self {
             Self::AudioFormat { protocol }
-            | Self::AudioReady { protocol }
+            | Self::AudioReady { protocol, .. }
+            | Self::AudioRtcOffer { protocol, .. }
+            | Self::AudioRtcAnswer { protocol, .. }
             | Self::AudioOffer { protocol, .. }
             | Self::AudioReceive { protocol, .. }
             | Self::AudioStop { protocol, .. }

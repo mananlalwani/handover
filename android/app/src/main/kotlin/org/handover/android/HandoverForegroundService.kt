@@ -49,7 +49,7 @@ class HandoverForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = when (intent?.action) {
-        ACTION_STOP_AUDIO -> transport.laptopAudio.stop().let { START_STICKY }
+        ACTION_STOP_AUDIO -> transport.stopLaptopAudio().let { START_STICKY }
         ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }

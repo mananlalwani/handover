@@ -44,6 +44,7 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
     implementation("androidx.core:core:1.9.0")
+    implementation("io.github.webrtc-sdk:android:150.7871.01")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:core:1.5.0")

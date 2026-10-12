@@ -211,6 +211,9 @@ async fn main() {
     // Graceful shutdown also stops the messaging helper so it does not
     // outlive the daemon. An unclean kill can still orphan the helper; the
     // next supervisor generation replaces it on restart.
+    if let Some(native) = native_backend() {
+        native.stop_all_audio();
+    }
     messaging_hub.shutdown().await;
     if let Err(error) = outgoing::persist(&state).await {
         warn!(%error, "could not flush outgoing operations");

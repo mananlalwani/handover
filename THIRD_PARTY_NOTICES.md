@@ -17,3 +17,16 @@ code must retain the Apache license and applicable notices.
 
 Registry dependencies retain the licenses declared in their packages. Handover's
 cargo-deny policy checks the resolved dependency graph for permitted licenses.
+
+## WebRTC audio
+
+The Android app includes `io.github.webrtc-sdk:android:150.7871.01`.
+The SDK packaging is MIT licensed, copyright 2023 WebRTC SDKs. Google WebRTC
+and its bundled dependencies retain their own licenses. The
+distributor's notices are included unchanged in
+[android/app/src/main/assets/licenses](android/app/src/main/assets/licenses)
+and packaged in the APK. Upstream notices come from the
+[v150.7871.01 source tree](https://github.com/webrtc-sdk/android/tree/v150.7871.01/Licenses).
+
+The Linux sender uses the MIT/Apache-2.0 `webrtc` and `opus` crates. Libopus
+is BSD licensed; registry packages retain their license files.
