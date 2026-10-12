@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "handover-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "handover-gmessages"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "handover-core",
  "serde",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "handover-google-messages"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "handover-ipc"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "handover-core",
  "serde",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "handover-native"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "handover-core",
  "hex",
@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "handoverctl"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "handoverd"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "handover-core",
  "handover-gmessages",
