@@ -610,17 +610,20 @@ Item {
                                     elide: Text.ElideRight
                                     wrapMode: Text.Wrap
                                 }
-                                Text {
+                                TextEdit {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 12
                                     Layout.rightMargin: 12
+                                    textFormat: TextEdit.PlainText
+                                    readOnly: true
+                                    selectByMouse: true
                                     text: modelData.text
                                         || ((modelData.attachments || []).length > 0
                                             ? "📎 " + (modelData.attachments || []).map(item =>
                                                 item.name || item.mime || "attachment").join(", ")
                                             : "")
                                     color: "#ffffff"
-                                    wrapMode: Text.Wrap
+                                    wrapMode: TextEdit.Wrap
                                     font.pixelSize: 14
                                 }
                                 Repeater {
