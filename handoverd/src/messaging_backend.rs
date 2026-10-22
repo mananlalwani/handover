@@ -1646,34 +1646,7 @@ async fn ingest_event(
             // Helper text may contain credentials or message content. Keep
             // only stable metadata in the journal.
             // Match only fixed native diagnostics; never journal arbitrary helper text.
-            let category = match message.as_str() {
-                "native receive ended (receive_protocol, TooLarge)" => "receive_payload_limit",
-                "native receive ended (receive_protocol, Backpressure)" => "receive_backpressure",
-                "native receive ended (receive_protocol, MissingStatus)" => {
-                    "receive_eof_without_status"
-                }
-                "native receive ended (receive_protocol, Truncated)" => "receive_eof_truncated",
-                "native receive ended (receive_protocol, SessionTimeout)" => {
-                    "receive_session_timeout"
-                }
-                "native receive ended (receive_protocol, InactivityTimeout)" => {
-                    "receive_inactivity_timeout"
-                }
-                "native receive ended (receive_protocol, InvalidEvents)" => {
-                    "receive_event_shape_invalid"
-                }
-                "native history content unavailable" => "history_page_unavailable",
-                "native receive ended (timeout)" => "receive_timeout",
-
-                "native receive ended (session_protocol, UnknownUpdateConversation)" => {
-                    "stale_conversation_inventory"
-                }
-                "native receive ended (session_protocol, UnsupportedHistoryContent)" => {
-                    "unsupported_history_content"
-                }
-                "native receive ended (receive_protocol, SessionPreempted)" => "session_preempted",
-                _ => "unclassified",
-            };
+            let category = helper_error_category(&message);
             warn!(
                 category,
                 error_len = message.len(),
@@ -1683,6 +1656,40 @@ async fn ingest_event(
                 hub.fail_fetch(fetch_id).await;
             }
         }
+    }
+}
+
+fn helper_error_category(message: &str) -> &'static str {
+    match message {
+        "native receive ended (unexpected_response)" => "unexpected_response",
+        "native receive ended (invalid_credentials)" => "invalid_credentials",
+        "native receive ended (credential_store_failed)" => "credential_store_failed",
+        "native receive ended (credential_store, Missing)" => "credentials_missing",
+        "native receive ended (credential_store, Locked)" => "credentials_locked",
+        "native receive ended (credential_store, Unavailable)" => "credentials_unavailable",
+        "native receive ended (credential_store, Timeout)" => "credentials_timeout",
+        "native receive ended (credential_store, Invalid)" => "credentials_invalid",
+        "native receive ended (credential_store, Ambiguous)" => "credentials_ambiguous",
+        "native receive ended (receive_protocol, TooLarge)" => "receive_payload_limit",
+        "native receive ended (receive_protocol, Backpressure)" => "receive_backpressure",
+        "native receive ended (receive_protocol, MissingStatus)" => "receive_eof_without_status",
+        "native receive ended (receive_protocol, Truncated)" => "receive_eof_truncated",
+        "native receive ended (receive_protocol, SessionTimeout)" => "receive_session_timeout",
+        "native receive ended (receive_protocol, InactivityTimeout)" => {
+            "receive_inactivity_timeout"
+        }
+        "native receive ended (receive_protocol, InvalidEvents)" => "receive_event_shape_invalid",
+        "native history content unavailable" => "history_page_unavailable",
+        "native receive ended (timeout)" => "receive_timeout",
+
+        "native receive ended (session_protocol, UnknownUpdateConversation)" => {
+            "stale_conversation_inventory"
+        }
+        "native receive ended (session_protocol, UnsupportedHistoryContent)" => {
+            "unsupported_history_content"
+        }
+        "native receive ended (receive_protocol, SessionPreempted)" => "session_preempted",
+        _ => "unclassified",
     }
 }
 
@@ -2031,6 +2038,55 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(super::HelperCallError::NotSubmitted)));
+    }
+
+    #[test]
+    fn helper_diagnostics_distinguish_recovery_failures_without_echoing_payloads() {
+        for (message, expected) in [
+            (
+                "native receive ended (unexpected_response)",
+                "unexpected_response",
+            ),
+            (
+                "native receive ended (invalid_credentials)",
+                "invalid_credentials",
+            ),
+            (
+                "native receive ended (credential_store_failed)",
+                "credential_store_failed",
+            ),
+            (
+                "native receive ended (credential_store, Missing)",
+                "credentials_missing",
+            ),
+            (
+                "native receive ended (credential_store, Locked)",
+                "credentials_locked",
+            ),
+            (
+                "native receive ended (credential_store, Unavailable)",
+                "credentials_unavailable",
+            ),
+            (
+                "native receive ended (credential_store, Timeout)",
+                "credentials_timeout",
+            ),
+            (
+                "native receive ended (credential_store, Invalid)",
+                "credentials_invalid",
+            ),
+            (
+                "native receive ended (credential_store, Ambiguous)",
+                "credentials_ambiguous",
+            ),
+            ("private arbitrary helper text", "unclassified"),
+            (
+                "native receive ended (unexpected_response) private suffix",
+                "unclassified",
+            ),
+        ] {
+            assert_eq!(helper_error_category(message), expected);
+        }
     }
 
     use super::*;

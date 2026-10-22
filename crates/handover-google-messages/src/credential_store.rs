@@ -11,6 +11,7 @@ const CONTENT_TYPE: &str = "text/plain";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialError {
+    Missing,
     Invalid,
     Unavailable,
     Locked,

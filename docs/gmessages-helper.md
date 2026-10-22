@@ -103,7 +103,7 @@ Reconnect backoff ranges from 1 to 60 seconds. Native sessions keep retrying
 network failures, HTTP timeouts and rate limits, temporary Google RPC failures,
 authenticated session and inactivity timeouts, receive streams
 interrupted before their final status, bounded receive-queue overflow, and
-temporarily locked or unavailable desktop credentials,
+temporarily missing, locked, or unavailable desktop credentials,
 with a 60-second maximum delay. Secret Service unlock notifications immediately
 reschedule accounts waiting for desktop credentials. Timer retries remain the
 fallback when notifications are unavailable. A login1 resume notification
@@ -115,6 +115,12 @@ long-lived receive HTTP connection has no fixed total lifetime; connection
 attempts and ordinary requests retain their timeouts.
 Invalid credentials and
 authenticated session preemption stop automatic recovery. Recovery never replays sends.
+An absent desktop credential entry waits for credentials to become available;
+it is distinct from invalid credentials or an explicit authentication rejection.
+Unclassified unexpected responses reconnect after 60 seconds. Typed authentication
+and protocol validation failures retain their existing terminal behavior.
+The journal records fixed credential failure categories and unexpected-response
+categories without recording helper text or server payloads.
 
 After connecting, the daemon
 syncs known accounts and requests catch-up syncs for accounts the helper

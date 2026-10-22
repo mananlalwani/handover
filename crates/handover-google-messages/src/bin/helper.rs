@@ -261,6 +261,12 @@ fn reconnect_delay(
     {
         return None;
     }
+    // An unclassified response may be temporary or a persistent format change.
+    // Retry slowly; typed authentication and protocol failures stay terminal.
+    // Workers restore receive ownership only and never replay sends or mutations.
+    if matches!(error, ProbeError::UnexpectedResponse) {
+        return Some(std::time::Duration::from_secs(60));
+    }
     let transient = matches!(
         error,
         ProbeError::Network
@@ -278,7 +284,10 @@ fn reconnect_delay(
                 handover_google_messages::session::SessionError::UnknownUpdateConversation
             )
             | ProbeError::CredentialStore(
-                CredentialError::Locked | CredentialError::Unavailable | CredentialError::Timeout
+                CredentialError::Missing
+                    | CredentialError::Locked
+                    | CredentialError::Unavailable
+                    | CredentialError::Timeout
             )
     ) || matches!(
         error.rpc_status(),
@@ -1339,6 +1348,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                 retries.insert(account.clone(), tokio::time::Instant::now() + delay);
                             }
                             let category = match error {
+                                handover_google_messages::ProbeError::CredentialStore(category) => format!("credential_store, {category:?}"),
                                 handover_google_messages::ProbeError::SessionProtocol(category) => format!("session_protocol, {category:?}"),
                                 handover_google_messages::ProbeError::ReceiveProtocol(category) => format!("receive_protocol, {category:?}"),
                                 _ => error.code().to_owned(),
@@ -3114,6 +3124,7 @@ mod tests {
     fn reconnect_survives_locked_credentials_and_a_prolonged_network_outage() {
         use handover_google_messages::{ProbeError, credential_store::CredentialError};
         for error in [
+            ProbeError::CredentialStore(CredentialError::Missing),
             ProbeError::CredentialStore(CredentialError::Locked),
             ProbeError::CredentialStore(CredentialError::Unavailable),
             ProbeError::CredentialStore(CredentialError::Timeout),
@@ -3132,6 +3143,18 @@ mod tests {
                     .expect("saved accounts must recover after unlock or network restoration");
                 assert!(delay.as_secs() > 0 && delay.as_secs() <= 60);
             }
+        }
+    }
+
+    #[test]
+    fn unexpected_server_responses_do_not_permanently_stop_recovery() {
+        use handover_google_messages::ProbeError;
+        for attempt in [0, 1, 6, u8::MAX] {
+            assert_eq!(
+                reconnect_delay(&ProbeError::UnexpectedResponse, attempt),
+                Some(std::time::Duration::from_secs(60)),
+                "an unexpected server response must not permanently strand a saved session"
+            );
         }
     }
 

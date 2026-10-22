@@ -130,7 +130,9 @@ impl RecoveredSession {
         let proof = DesktopCredentialStore::load(pairing.account_id())
             .await
             .map_err(ProbeError::CredentialStore)?
-            .ok_or(ProbeError::InvalidCredentials)?;
+            .ok_or(ProbeError::CredentialStore(
+                crate::credential_store::CredentialError::Missing,
+            ))?;
         Self::restore_with_proof(pairing, proof, false).await
     }
 
@@ -140,7 +142,9 @@ impl RecoveredSession {
         let proof = DesktopCredentialStore::load(pairing.account_id())
             .await
             .map_err(ProbeError::CredentialStore)?
-            .ok_or(ProbeError::InvalidCredentials)?;
+            .ok_or(ProbeError::CredentialStore(
+                crate::credential_store::CredentialError::Missing,
+            ))?;
         Self::restore_with_proof(pairing, proof, true).await?;
         Ok(())
     }
@@ -150,7 +154,9 @@ impl RecoveredSession {
         let proof = DesktopCredentialStore::load(pairing.account_id())
             .await
             .map_err(ProbeError::CredentialStore)?
-            .ok_or(ProbeError::InvalidCredentials)?;
+            .ok_or(ProbeError::CredentialStore(
+                crate::credential_store::CredentialError::Missing,
+            ))?;
         proof.validate_pairing()?;
         pairing
             .registration
