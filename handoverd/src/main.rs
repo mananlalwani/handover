@@ -159,6 +159,7 @@ async fn main() {
             let _ = NATIVE.set(native.clone());
             let native_state = Arc::clone(&state);
             let native_events = events.clone();
+            let runtime = tokio::runtime::Handle::current();
             #[cfg(debug_assertions)]
             let smoke_port = std::env::var("HANDOVER_NATIVE_SMOKE_PORT")
                 .ok()
@@ -166,6 +167,9 @@ async fn main() {
                 .filter(|port| *port != 0);
             std::thread::spawn(move || {
                 let callback = Arc::new(move |event| {
+                    // Native callbacks run on OS threads. Cache and outgoing
+                    // persistence must schedule work on the daemon's runtime.
+                    let _entered = runtime.enter();
                     apply_backend_event(&native_state, &native_events, event)
                 });
                 #[cfg(debug_assertions)]
