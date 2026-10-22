@@ -64,20 +64,19 @@ pub(crate) fn submit(effect: Effect) {
         .queue
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Effect::RemoteInput(command) = &effect {
-        if command.action == RemoteInputAction::Move
-            && let Some(Effect::RemoteInput(previous)) = queue.back_mut()
-            && previous.action == RemoteInputAction::Move
-        {
-            // Coalesce only with the adjacent trailing move, and
-            // sum the deltas: moves are relative, so replacing
-            // would drop motion. Saturation keeps hostile input
-            // inside xdotool's integer range.
-            previous.delta_x = previous.delta_x.saturating_add(command.delta_x);
-            previous.delta_y = previous.delta_y.saturating_add(command.delta_y);
-            effects.ready.notify_one();
-            return;
-        }
+    if let Effect::RemoteInput(command) = &effect
+        && command.action == RemoteInputAction::Move
+        && let Some(Effect::RemoteInput(previous)) = queue.back_mut()
+        && previous.action == RemoteInputAction::Move
+    {
+        // Coalesce only with the adjacent trailing move, and
+        // sum the deltas: moves are relative, so replacing
+        // would drop motion. Saturation keeps hostile input
+        // inside xdotool's integer range.
+        previous.delta_x = previous.delta_x.saturating_add(command.delta_x);
+        previous.delta_y = previous.delta_y.saturating_add(command.delta_y);
+        effects.ready.notify_one();
+        return;
     }
     if queue.len() >= MAX_EFFECTS {
         tracing::warn!("desktop effect queue full; dropping newest");

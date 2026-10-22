@@ -592,23 +592,22 @@ where
         .history(&conversation_id, 1, None)
         .ok()
         .and_then(|(messages, _)| messages.into_iter().last());
-    if let Some(archive) = &archive {
-        if let Ok(Some((messages, cursor_next))) = archive
+    if let Some(archive) = &archive
+        && let Ok(Some((messages, cursor_next))) = archive
             .history(conversation_id.clone(), limit, cursor.clone(), latest)
             .await
-        {
-            let (messages, cursor_next) = fit_history_page(&conversation_id, messages, cursor_next);
-            write_json_line(
-                writer,
-                &ServerMessage::new(ServerPayload::History {
-                    conversation_id,
-                    messages,
-                    cursor_next,
-                }),
-            )
-            .await?;
-            return Ok(true);
-        }
+    {
+        let (messages, cursor_next) = fit_history_page(&conversation_id, messages, cursor_next);
+        write_json_line(
+            writer,
+            &ServerMessage::new(ServerPayload::History {
+                conversation_id,
+                messages,
+                cursor_next,
+            }),
+        )
+        .await?;
+        return Ok(true);
     }
     // A sparse live window cannot prove that older pages are contiguous.
     // Full-history and older-page requests fill archive gaps from the helper
@@ -683,24 +682,23 @@ where
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .messaging()
                 .needs_history_fetch(&conversation_id, limit);
-            if cursor.is_none() && messages.len() < limit && needs_history_fetch {
-                if let Some(hub) = messaging {
-                    if hub
-                        .fetch_through_helper(
-                            conversation_id.account_id.as_str(),
-                            &conversation_id.local_id,
-                            limit as u32,
-                            None,
-                        )
-                        .await
-                        .is_ok()
-                    {
-                        if let Ok((fetched_messages, fetched_cursor)) = read() {
-                            messages = fetched_messages;
-                            cursor_next = fetched_cursor;
-                        }
-                    }
-                }
+            if cursor.is_none()
+                && messages.len() < limit
+                && needs_history_fetch
+                && let Some(hub) = messaging
+                && hub
+                    .fetch_through_helper(
+                        conversation_id.account_id.as_str(),
+                        &conversation_id.local_id,
+                        limit as u32,
+                        None,
+                    )
+                    .await
+                    .is_ok()
+                && let Ok((fetched_messages, fetched_cursor)) = read()
+            {
+                messages = fetched_messages;
+                cursor_next = fetched_cursor;
             }
             let (messages, cursor_next) = fit_history_page(&conversation_id, messages, cursor_next);
             write_json_line(
@@ -2484,10 +2482,9 @@ mod messaging_live_tests {
             if let ServerPayload::MessageRemoved {
                 message_id: removed,
             } = message.payload
+                && removed == *message_id
             {
-                if removed == *message_id {
-                    return;
-                }
+                return;
             }
         }
     }
@@ -2505,10 +2502,11 @@ mod messaging_live_tests {
                 .await
                 .expect("event in time")
                 .expect("event decodes");
-            if let ServerPayload::Typing { state } = message.payload {
-                if &state.conversation_id == conversation && !state.participant_ids.is_empty() {
-                    return;
-                }
+            if let ServerPayload::Typing { state } = message.payload
+                && &state.conversation_id == conversation
+                && !state.participant_ids.is_empty()
+            {
+                return;
             }
         }
     }

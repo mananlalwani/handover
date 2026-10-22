@@ -364,20 +364,18 @@ impl RecoveredSession {
             self.proof.validate_messaging()?,
             &request,
             |event| {
-                if action != 0 {
-                    if let crate::receive::ReceiveEvent::Record(record) = event {
-                        let pending = list_id
-                            .lock()
+                if action != 0
+                    && let crate::receive::ReceiveEvent::Record(record) = event
+                {
+                    let pending = list_id
+                        .lock()
+                        .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
+                    if let Some(reply) =
+                        record.session_reply(&pending.0, pending.1, self.pairing.pairing.peer())?
+                    {
+                        reply_tx
+                            .try_send(reply)
                             .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
-                        if let Some(reply) = record.session_reply(
-                            &pending.0,
-                            pending.1,
-                            self.pairing.pairing.peer(),
-                        )? {
-                            reply_tx
-                                .try_send(reply)
-                                .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
-                        }
                     }
                 }
                 Ok(())
@@ -574,16 +572,15 @@ impl RecoveredSession {
                     SessionError::OversizedConversation,
                 ));
             }
-            if let Some(cursor) = &page.cursor {
-                if cursor.id.is_empty()
+            if let Some(cursor) = &page.cursor
+                && (cursor.id.is_empty()
                     || cursor.id.len() > 1024
                     || cursor.id.chars().any(char::is_control)
-                    || cursor.timestamp < 0
-                {
-                    return Err(ProbeError::SessionProtocol(
-                        SessionError::ConversationCursor,
-                    ));
-                }
+                    || cursor.timestamp < 0)
+            {
+                return Err(ProbeError::SessionProtocol(
+                    SessionError::ConversationCursor,
+                ));
             }
             let decoded = page
                 .conversations
@@ -693,14 +690,13 @@ impl RecoveredSession {
             self.proof.validate_messaging()?,
             &request,
             |event| {
-                if let crate::receive::ReceiveEvent::Record(record) = event {
-                    if let Some(push) =
+                if let crate::receive::ReceiveEvent::Record(record) = event
+                    && let Some(push) =
                         record.session_reply(&session_id, 16, self.pairing.pairing.peer())?
-                    {
-                        push_tx
-                            .try_send(push)
-                            .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
-                    }
+                {
+                    push_tx
+                        .try_send(push)
+                        .map_err(|_| crate::receive::ReceiveError::TooLarge)?;
                 }
                 Ok(())
             },

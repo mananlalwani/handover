@@ -30,14 +30,13 @@ impl Download {
         messages: &mut [handover_core::messaging::Message],
         path: String,
     ) {
-        if let Some(message) = messages.iter_mut().find(|message| self.matches(message)) {
-            if let Some(part) = message
+        if let Some(message) = messages.iter_mut().find(|message| self.matches(message))
+            && let Some(part) = message
                 .attachments
                 .iter_mut()
                 .find(|part| part.local_id == *self.part)
-            {
-                part.staged_path = Some(path);
-            }
+        {
+            part.staged_path = Some(path);
         }
     }
     pub(crate) async fn fetch(
@@ -376,7 +375,9 @@ pub fn decrypt(bytes: &[u8], key: &[u8; 32]) -> Result<Zeroizing<Vec<u8>>, Media
         return Err(MediaError::UnsupportedFraming);
     }
     let body = &bytes[2..];
-    if body.is_empty() || body.len() % CHUNK_BYTES <= OVERHEAD && body.len() % CHUNK_BYTES != 0 {
+    if body.is_empty()
+        || body.len() % CHUNK_BYTES <= OVERHEAD && !body.len().is_multiple_of(CHUNK_BYTES)
+    {
         return Err(MediaError::InvalidFraming);
     }
     let cipher = Aes256Gcm::new(key.into());

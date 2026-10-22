@@ -1671,11 +1671,12 @@ mod tests {
             let Ok(event) = receiver.recv_timeout(remaining) else {
                 break;
             };
-            if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
-                if info.get_port() == 41321 && info.get_fullname().starts_with("Handover-") {
-                    resolved = true;
-                    break;
-                }
+            if let mdns_sd::ServiceEvent::ServiceResolved(info) = event
+                && info.get_port() == 41321
+                && info.get_fullname().starts_with("Handover-")
+            {
+                resolved = true;
+                break;
             }
         }
         browser.stop_browse("_handover._tcp.local.").ok();

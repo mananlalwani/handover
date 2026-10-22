@@ -497,11 +497,11 @@ async fn receive(
         transport.headers.clone(),
         &body,
         |event| {
-            if let crate::receive::ReceiveEvent::Record(record) = event {
-                if let Some(typing) = typing(&record)? {
-                    tx.try_send(typing)
-                        .map_err(|_| ReceiveError::Backpressure)?;
-                }
+            if let crate::receive::ReceiveEvent::Record(record) = event
+                && let Some(typing) = typing(&record)?
+            {
+                tx.try_send(typing)
+                    .map_err(|_| ReceiveError::Backpressure)?;
             }
             Ok(())
         },

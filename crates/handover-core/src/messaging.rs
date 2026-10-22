@@ -534,10 +534,10 @@ pub fn validate_conversation(conversation: &Conversation) -> Result<(), Validati
             ));
         }
     }
-    if let ConversationKind::Direct = conversation.kind {
-        if conversation.participants.len() > 2 {
-            return Err(ValidationError::DirectWithManyParticipants);
-        }
+    if let ConversationKind::Direct = conversation.kind
+        && conversation.participants.len() > 2
+    {
+        return Err(ValidationError::DirectWithManyParticipants);
     }
     if let Some(cursor) = &conversation.cursor {
         check_id(cursor, "cursor")?;
@@ -639,10 +639,10 @@ pub fn validate_command(
             let conversation = conversation.ok_or(ValidationError::UnknownConversation)?;
             require_conversation_match(&conversation.id, conversation_id)?;
             require_capability(conversation, MessagingCapability::Media)?;
-            if let Some(caption) = caption {
-                if caption.chars().count() > MAX_TEXT_CHARS {
-                    return Err(ValidationError::TextTooLong(caption.chars().count()));
-                }
+            if let Some(caption) = caption
+                && caption.chars().count() > MAX_TEXT_CHARS
+            {
+                return Err(ValidationError::TextTooLong(caption.chars().count()));
             }
             Ok(())
         }

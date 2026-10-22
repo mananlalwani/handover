@@ -568,10 +568,8 @@ impl MessagingHub {
         let matched = fetches
             .get(&key)
             .is_some_and(|(expected, _, _, _)| fetch_id == Some(*expected));
-        if matched {
-            if let Some((_, _, _, waiter)) = fetches.remove(&key) {
-                let _ = waiter.send(Ok(()));
-            }
+        if matched && let Some((_, _, _, waiter)) = fetches.remove(&key) {
+            let _ = waiter.send(Ok(()));
         }
     }
 
@@ -597,10 +595,9 @@ impl MessagingHub {
         if fetches
             .get(&key)
             .is_some_and(|(id, _, _, _)| *id == fetch_id)
+            && let Some((_, _, _, waiter)) = fetches.remove(&key)
         {
-            if let Some((_, _, _, waiter)) = fetches.remove(&key) {
-                let _ = waiter.send(Err(()));
-            }
+            let _ = waiter.send(Err(()));
         }
         drop(fetches);
         self.inner.archive_pages.lock().await.remove(&(
@@ -1063,10 +1060,10 @@ async fn ingest_event(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .message_archive
                 .clone();
-            if let Some(archive) = archive {
-                if archive.remove(account.clone(), None).await.is_err() {
-                    warn!("could not remove archived messaging data");
-                }
+            if let Some(archive) = archive
+                && archive.remove(account.clone(), None).await.is_err()
+            {
+                warn!("could not remove archived messaging data");
             }
 
             apply_backend_event(
@@ -1187,14 +1184,13 @@ async fn ingest_event(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .message_archive
                 .clone();
-            if let Some(archive) = archive {
-                if archive
+            if let Some(archive) = archive
+                && archive
                     .remove(account.clone(), Some(conversation.clone()))
                     .await
                     .is_err()
-                {
-                    warn!("could not remove archived messaging data");
-                }
+            {
+                warn!("could not remove archived messaging data");
             }
 
             hub.note_removed_conversation(&account, &conversation).await;
@@ -1251,10 +1247,10 @@ async fn ingest_event(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .message_archive
                 .clone();
-            if let Some(archive) = &archive {
-                if archive.merge(normalized.clone()).await.is_err() {
-                    warn!("could not archive message updates");
-                }
+            if let Some(archive) = &archive
+                && archive.merge(normalized.clone()).await.is_err()
+            {
+                warn!("could not archive message updates");
             }
             // The public cursor comes from the complete accumulated page:
             // only the closing chunk carries `cursor_next`, but older
@@ -1475,8 +1471,8 @@ async fn ingest_event(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .message_archive
                 .clone();
-            if let Some(archive) = archive {
-                if archive
+            if let Some(archive) = archive
+                && archive
                     .remove_message(MessageId::new(
                         ConversationId::new(
                             MessagingAccountId::new(account.clone()),
@@ -1486,9 +1482,8 @@ async fn ingest_event(
                     ))
                     .await
                     .is_err()
-                {
-                    warn!("could not remove archived messaging data");
-                }
+            {
+                warn!("could not remove archived messaging data");
             }
 
             apply_backend_event(
@@ -1515,38 +1510,37 @@ async fn ingest_event(
                 .messaging()
                 .outgoing(&request_id)
                 .cloned();
-            if let Some(operation) = operation {
-                if operation.conversation_id.account_id.as_str() == account
-                    && operation.conversation_id.local_id == conversation
-                    && message.as_ref().is_none_or(|id| {
-                        !id.is_empty()
-                            && id.len() <= handover_core::messaging::MAX_ID_LEN
-                            && !id.chars().any(char::is_control)
-                            && operation
-                                .message_id
-                                .as_ref()
-                                .is_none_or(|known| known.local_id == *id)
-                    })
-                {
-                    if status == "unknown" {
-                        crate::outgoing::update(
-                            state,
-                            events,
-                            &request_id,
-                            handover_core::OutgoingOutcome::Unknown,
-                            None,
-                        );
-                    } else if let Ok(status) = parse_status(&status) {
-                        let message_id =
-                            message.map(|id| MessageId::new(operation.conversation_id, id));
-                        crate::outgoing::update(
-                            state,
-                            events,
-                            &request_id,
-                            handover_core::OutgoingOutcome::Provider(status),
-                            message_id,
-                        );
-                    }
+            if let Some(operation) = operation
+                && operation.conversation_id.account_id.as_str() == account
+                && operation.conversation_id.local_id == conversation
+                && message.as_ref().is_none_or(|id| {
+                    !id.is_empty()
+                        && id.len() <= handover_core::messaging::MAX_ID_LEN
+                        && !id.chars().any(char::is_control)
+                        && operation
+                            .message_id
+                            .as_ref()
+                            .is_none_or(|known| known.local_id == *id)
+                })
+            {
+                if status == "unknown" {
+                    crate::outgoing::update(
+                        state,
+                        events,
+                        &request_id,
+                        handover_core::OutgoingOutcome::Unknown,
+                        None,
+                    );
+                } else if let Ok(status) = parse_status(&status) {
+                    let message_id =
+                        message.map(|id| MessageId::new(operation.conversation_id, id));
+                    crate::outgoing::update(
+                        state,
+                        events,
+                        &request_id,
+                        handover_core::OutgoingOutcome::Provider(status),
+                        message_id,
+                    );
                 }
             }
         }
@@ -1773,14 +1767,13 @@ async fn reconcile_against(
         .message_archive
         .clone();
     for id in stale {
-        if let Some(archive) = &archive {
-            if archive
+        if let Some(archive) = &archive
+            && archive
                 .remove(id.account_id.as_str().to_owned(), Some(id.local_id.clone()))
                 .await
                 .is_err()
-            {
-                warn!("could not remove archived messaging data");
-            }
+        {
+            warn!("could not remove archived messaging data");
         }
         apply_backend_event(
             state,
@@ -1824,10 +1817,10 @@ async fn publish_outcome(
                 }
             }
             MessagingChange::MessageRemoved(id) => {
-                if let Some(archive) = &archive {
-                    if archive.remove_message(id.clone()).await.is_err() {
-                        warn!("could not remove archived messaging data");
-                    }
+                if let Some(archive) = &archive
+                    && archive.remove_message(id.clone()).await.is_err()
+                {
+                    warn!("could not remove archived messaging data");
                 }
                 Some(StateEvent::Messaging(MessagingEvent::Message(
                     MessageEvent::Removed(id.clone()),

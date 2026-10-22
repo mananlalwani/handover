@@ -213,10 +213,10 @@ fn bytes(value: Option<&Value>, limit: usize) -> Result<Vec<u8>, ProbeError> {
         general_purpose::URL_SAFE,
         general_purpose::URL_SAFE_NO_PAD,
     ] {
-        if let Ok(decoded) = engine.decode(encoded) {
-            if decoded.len() <= limit {
-                return Ok(decoded);
-            }
+        if let Ok(decoded) = engine.decode(encoded)
+            && decoded.len() <= limit
+        {
+            return Ok(decoded);
         }
     }
     Err(ProbeError::UnexpectedResponse)

@@ -822,19 +822,19 @@ async fn resolve_message(client: &mut Client, selector: &str) -> Result<MessageI
     }
     let mut matches = Vec::new();
     for known_account in client.messaging_accounts().await? {
-        if let Some(expected) = &remainder_account {
-            if &known_account.id != expected {
-                continue;
-            }
+        if let Some(expected) = &remainder_account
+            && &known_account.id != expected
+        {
+            continue;
         }
         for conversation in client
             .messaging_conversations(known_account.id.clone())
             .await?
         {
-            if let Some(thread) = thread {
-                if conversation.id.local_id != thread {
-                    continue;
-                }
+            if let Some(thread) = thread
+                && conversation.id.local_id != thread
+            {
+                continue;
             }
             let (history, _) = client
                 .messaging_history(conversation.id.clone(), Some(100), None)
@@ -1557,10 +1557,10 @@ mod messaging_tests {
         let mut best: Option<&str> = None;
         for account in accounts {
             let prefix = format!("{account}:");
-            if let Some(rest) = selector.strip_prefix(&prefix) {
-                if best.is_none_or(|known: &str| known.len() > rest.len()) {
-                    best = Some(rest);
-                }
+            if let Some(rest) = selector.strip_prefix(&prefix)
+                && best.is_none_or(|known: &str| known.len() > rest.len())
+            {
+                best = Some(rest);
             }
         }
         assert_eq!(best, Some("thread-1"));

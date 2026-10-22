@@ -514,52 +514,52 @@ pub(crate) async fn read_wayland_clipboard() -> Result<WaylandClipboard, ()> {
     } else {
         None
     };
-    if let Some(uri) = &uri {
-        if let Some(path) = uri.lines().map(str::trim).find_map(|line| {
+    if let Some(uri) = &uri
+        && let Some(path) = uri.lines().map(str::trim).find_map(|line| {
             Url::parse(line)
                 .ok()
                 .and_then(|url| url.to_file_path().ok())
-        }) {
-            let metadata = fs::metadata(&path).map_err(|_| ())?;
-            if metadata.is_file() && metadata.len() <= 10 * 1024 * 1024 {
-                let name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
-                let extension = Path::new(name)
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .unwrap_or("octet-stream");
-                let mime = match extension.to_ascii_lowercase().as_str() {
-                    "png" => "image/png",
-                    "jpg" | "jpeg" => "image/jpeg",
-                    "gif" => "image/gif",
-                    "webp" => "image/webp",
-                    "pdf" => "application/pdf",
-                    _ => "application/octet-stream",
-                };
-                let copy = runtime_directory().map_err(|_| ())?.join(format!(
-                    "handover-clipboard-{}-{}-{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| ())?
-                        .as_nanos(),
-                    name
-                ));
-                // Private runtime temp, created exclusively as 0600:
-                // clipboard-selected files must never pass through
-                // the shared temp directory.
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    let mut staged = std::fs::OpenOptions::new();
-                    staged.write(true).create_new(true).mode(0o600);
-                    let mut staged = staged.open(&copy).map_err(|_| ())?;
-                    let mut source = std::fs::File::open(&path).map_err(|_| ())?;
-                    std::io::copy(&mut source, &mut staged).map_err(|_| ())?;
-                }
-                return Ok(WaylandClipboard::File {
-                    path: copy,
-                    mime: mime.to_owned(),
-                });
+        })
+    {
+        let metadata = fs::metadata(&path).map_err(|_| ())?;
+        if metadata.is_file() && metadata.len() <= 10 * 1024 * 1024 {
+            let name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
+            let extension = Path::new(name)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("octet-stream");
+            let mime = match extension.to_ascii_lowercase().as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "pdf" => "application/pdf",
+                _ => "application/octet-stream",
+            };
+            let copy = runtime_directory().map_err(|_| ())?.join(format!(
+                "handover-clipboard-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| ())?
+                    .as_nanos(),
+                name
+            ));
+            // Private runtime temp, created exclusively as 0600:
+            // clipboard-selected files must never pass through
+            // the shared temp directory.
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut staged = std::fs::OpenOptions::new();
+                staged.write(true).create_new(true).mode(0o600);
+                let mut staged = staged.open(&copy).map_err(|_| ())?;
+                let mut source = std::fs::File::open(&path).map_err(|_| ())?;
+                std::io::copy(&mut source, &mut staged).map_err(|_| ())?;
             }
+            return Ok(WaylandClipboard::File {
+                path: copy,
+                mime: mime.to_owned(),
+            });
         }
     }
     let plain_mime = offered

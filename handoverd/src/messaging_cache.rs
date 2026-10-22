@@ -157,10 +157,10 @@ pub(crate) fn persist(state: &Arc<RwLock<StateStore>>) -> Result<(), Box<dyn std
             handle.spawn(async move {
                 tokio::time::sleep(PERSIST_INTERVAL).await;
                 SCHEDULED.store(false, std::sync::atomic::Ordering::Relaxed);
-                if DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                    if let Err(error) = persist_async(&state).await {
-                        tracing::warn!(%error, "could not persist messaging cache");
-                    }
+                if DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed)
+                    && let Err(error) = persist_async(&state).await
+                {
+                    tracing::warn!(%error, "could not persist messaging cache");
                 }
             });
         }

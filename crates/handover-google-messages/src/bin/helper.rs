@@ -949,31 +949,32 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 .as_ref()
                 .map(|request| request.account.clone())
                 .or_else(|| helper.pending_sync.clone());
-            if let Some(account) = requested {
-                if !workers.contains_key(&account) && !mutating.contains(&account) {
-                    retries.remove(&account);
-                    attempts.remove(&account);
-                    if workers.len() >= 8 {
-                        let request = helper.pending_history.take();
+            if let Some(account) = requested
+                && !workers.contains_key(&account)
+                && !mutating.contains(&account)
+            {
+                retries.remove(&account);
+                attempts.remove(&account);
+                if workers.len() >= 8 {
+                    let request = helper.pending_history.take();
+                    helper.pending_sync = None;
+                    publish(
+                        writer,
+                        HelperEvent::Error {
+                            message: "native live account limit reached".into(),
+                            fetch_id: request.and_then(|request| request.fetch_id),
+                        },
+                    )
+                    .await?;
+                } else if let Some(store) = helper.store.clone() {
+                    generation = generation.wrapping_add(1);
+                    workers.insert(
+                        account.clone(),
+                        start_live_worker(account.clone(), generation, store, live_tx.clone()),
+                    );
+                    // Every worker begins with its own bounded inventory read.
+                    if helper.pending_sync.as_deref() == Some(&account) {
                         helper.pending_sync = None;
-                        publish(
-                            writer,
-                            HelperEvent::Error {
-                                message: "native live account limit reached".into(),
-                                fetch_id: request.and_then(|request| request.fetch_id),
-                            },
-                        )
-                        .await?;
-                    } else if let Some(store) = helper.store.clone() {
-                        generation = generation.wrapping_add(1);
-                        workers.insert(
-                            account.clone(),
-                            start_live_worker(account.clone(), generation, store, live_tx.clone()),
-                        );
-                        // Every worker begins with its own bounded inventory read.
-                        if helper.pending_sync.as_deref() == Some(&account) {
-                            helper.pending_sync = None;
-                        }
                     }
                 }
             }
@@ -1032,23 +1033,21 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     .await?;
                 }
             }
-            if let Some(account) = helper.pending_sync.take() {
-                if let Some(worker) = workers.get(&account) {
-                    match worker.commands.try_send(LiveCommand::Conversations) {
-                        Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            helper.pending_sync = Some(account)
-                        }
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            publish(
-                                writer,
-                                HelperEvent::Error {
-                                    message: "native receive session unavailable".into(),
-                                    fetch_id: None,
-                                },
-                            )
-                            .await?
-                        }
+            if let Some(account) = helper.pending_sync.take()
+                && let Some(worker) = workers.get(&account)
+            {
+                match worker.commands.try_send(LiveCommand::Conversations) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => helper.pending_sync = Some(account),
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        publish(
+                            writer,
+                            HelperEvent::Error {
+                                message: "native receive session unavailable".into(),
+                                fetch_id: None,
+                            },
+                        )
+                        .await?
                     }
                 }
             }
@@ -1125,10 +1124,10 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 }
                 let terminated = line.last() == Some(&b'\n');
                 if terminated { line.pop(); }
-                if line.len() <= MAX_HELPER_LINE_BYTES {
-                    if let Ok(control) = serde_json::from_slice::<Control>(&line) {
-                        if control.kind == "logout" {
-                            if let Some(account) = control.account.as_deref() {
+                if line.len() <= MAX_HELPER_LINE_BYTES
+                    && let Ok(control) = serde_json::from_slice::<Control>(&line) {
+                        if control.kind == "logout"
+                            && let Some(account) = control.account.as_deref() {
                                 abandon_send(writer, &mut sends, account).await?;
                                 retries.remove(account);
                                 attempts.remove(account);
@@ -1138,7 +1137,6 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                                     publish(writer, disconnected(account)).await?;
                                 }
                             }
-                        }
                         if control.kind == "logout" && active_account.is_some()
                             && control.account.as_deref() == active_account.as_deref() {
                             // Wait for cancellation before deleting credentials.
@@ -1167,7 +1165,6 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                         // session cleanup does not drop the browser credential
                         // while the registration remains.
                     }
-                }
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
                     if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendText { request_id, account, conversation, text, reply_to }) = serde_json::from_slice::<HelperCommand>(&line) {
                         queue_send(helper, &workers, &mut sends, writer, TextSend { request_id, account, conversation, text: Zeroizing::new(text), reply_to }).await?;
@@ -1229,12 +1226,11 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                 let due: Vec<_> = retries.iter().filter(|(_, deadline)| **deadline <= tokio::time::Instant::now()).map(|(account, _)| account.clone()).collect();
                 for account in due {
                     retries.remove(&account);
-                    if helper.confirmed.contains_key(&account) && !workers.contains_key(&account) && !mutating.contains(&account) && workers.len() < 8 {
-                        if let Some(store) = helper.store.clone() {
+                    if helper.confirmed.contains_key(&account) && !workers.contains_key(&account) && !mutating.contains(&account) && workers.len() < 8
+                        && let Some(store) = helper.store.clone() {
                             generation = generation.wrapping_add(1);
                             workers.insert(account.clone(), start_live_worker(account, generation, store, live_tx.clone()));
                         }
-                    }
                 }
             }
             Some(result) = mutations.join_next(), if !mutations.is_empty() => {
@@ -1562,13 +1558,13 @@ impl NativeHelper {
             }
         };
         // Bundle size is enforced before decode cost grows.
-        if let HelperCommand::Login { bundle_b64, .. } = &command {
-            if bundle_b64.len() > MAX_BUNDLE_BYTES {
-                return vec![encode(&HelperEvent::Error {
-                    message: "credential bundle too large".into(),
-                    fetch_id: None,
-                })];
-            }
+        if let HelperCommand::Login { bundle_b64, .. } = &command
+            && bundle_b64.len() > MAX_BUNDLE_BYTES
+        {
+            return vec![encode(&HelperEvent::Error {
+                message: "credential bundle too large".into(),
+                fetch_id: None,
+            })];
         }
         self.dispatch(command).iter().map(encode).collect()
     }

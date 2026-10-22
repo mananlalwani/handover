@@ -11,10 +11,10 @@ pub(crate) fn update(native_connected: bool) {
     let mut inhibitor = INHIBITOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(child) = inhibitor.as_mut() {
-        if child.try_wait().ok().flatten().is_some() {
-            *inhibitor = None;
-        }
+    if let Some(child) = inhibitor.as_mut()
+        && child.try_wait().ok().flatten().is_some()
+    {
+        *inhibitor = None;
     }
     if native_connected && inhibitor.is_none() {
         let child = Command::new("systemd-inhibit")
@@ -33,10 +33,8 @@ pub(crate) fn update(native_connected: bool) {
         if let Ok(child) = child {
             *inhibitor = Some(child);
         }
-    } else if !native_connected {
-        if let Some(mut child) = inhibitor.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    } else if !native_connected && let Some(mut child) = inhibitor.take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

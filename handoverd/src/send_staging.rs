@@ -127,10 +127,10 @@ fn staged_dirs() -> &'static Mutex<HashMap<String, PathBuf>> {
 
 /// Remember which staged directory belongs to an accepted transfer.
 pub(crate) fn note_accepted(transfer_id: &str, staged: &Path) {
-    if let Some(directory) = staged.parent().map(Path::to_path_buf) {
-        if let Ok(mut dirs) = staged_dirs().lock() {
-            dirs.insert(transfer_id.to_string(), directory);
-        }
+    if let Some(directory) = staged.parent().map(Path::to_path_buf)
+        && let Ok(mut dirs) = staged_dirs().lock()
+    {
+        dirs.insert(transfer_id.to_string(), directory);
     }
 }
 

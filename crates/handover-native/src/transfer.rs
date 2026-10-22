@@ -112,10 +112,10 @@ pub(crate) fn parse_custom_commands(text: &str) -> Vec<(String, Vec<String>)> {
             continue;
         }
         if line.starts_with('[') {
-            if let Some((name, argv)) = current.take() {
-                if !argv.is_empty() {
-                    commands.push((name, argv));
-                }
+            if let Some((name, argv)) = current.take()
+                && !argv.is_empty()
+            {
+                commands.push((name, argv));
             }
             in_command = line == "[[command]]";
             continue;
@@ -128,10 +128,10 @@ pub(crate) fn parse_custom_commands(text: &str) -> Vec<(String, Vec<String>)> {
         };
         match key.trim() {
             "name" => {
-                if let Some((name, argv)) = current.take() {
-                    if !argv.is_empty() {
-                        commands.push((name, argv));
-                    }
+                if let Some((name, argv)) = current.take()
+                    && !argv.is_empty()
+                {
+                    commands.push((name, argv));
                 }
                 let name = unquote_toml(value.trim());
                 if safe_command_name(&name) {
@@ -146,10 +146,10 @@ pub(crate) fn parse_custom_commands(text: &str) -> Vec<(String, Vec<String>)> {
             _ => {}
         }
     }
-    if let Some((name, argv)) = current.take() {
-        if !argv.is_empty() {
-            commands.push((name, argv));
-        }
+    if let Some((name, argv)) = current.take()
+        && !argv.is_empty()
+    {
+        commands.push((name, argv));
     }
     commands
 }

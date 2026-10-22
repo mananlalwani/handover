@@ -206,7 +206,7 @@ fn encode(
     let mut sequence = 0;
     while !packets.is_closed() {
         capture.read_exact(&mut raw)?;
-        for (value, bytes) in pcm.iter_mut().zip(raw.chunks_exact(2)) {
+        for (value, bytes) in pcm.iter_mut().zip(raw.as_chunks::<2>().0) {
             *value = i16::from_le_bytes([bytes[0], bytes[1]]);
         }
         let data = encoder.encode_vec(&pcm, 1200)?;

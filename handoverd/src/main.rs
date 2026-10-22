@@ -70,10 +70,10 @@ async fn main() {
     if let Err(error) = outgoing::restore(&mut initial_state) {
         warn!(%error, "could not restore outgoing operations");
     }
-    if !messaging_cache::disabled() {
-        if let Err(error) = messaging_cache::restore(&mut initial_state) {
-            warn!(%error, "could not restore messaging cache");
-        }
+    if !messaging_cache::disabled()
+        && let Err(error) = messaging_cache::restore(&mut initial_state)
+    {
+        warn!(%error, "could not restore messaging cache");
     }
     if !messaging_cache::disabled() {
         match messaging_archive::MessageArchive::open_default() {

@@ -97,10 +97,10 @@ fn parse(text: &str) -> BTreeMap<String, Vec<String>> {
             continue;
         }
         if line.starts_with('[') {
-            if let Some((name, argv)) = current.take() {
-                if !argv.is_empty() {
-                    commands.insert(name, argv);
-                }
+            if let Some((name, argv)) = current.take()
+                && !argv.is_empty()
+            {
+                commands.insert(name, argv);
             }
             in_command = line == "[[command]]";
             continue;
@@ -113,10 +113,10 @@ fn parse(text: &str) -> BTreeMap<String, Vec<String>> {
         };
         match key.trim() {
             "name" => {
-                if let Some((name, argv)) = current.take() {
-                    if !argv.is_empty() {
-                        commands.insert(name, argv);
-                    }
+                if let Some((name, argv)) = current.take()
+                    && !argv.is_empty()
+                {
+                    commands.insert(name, argv);
                 }
                 let name = unquote(value.trim());
                 if valid_name(&name) {
@@ -131,10 +131,10 @@ fn parse(text: &str) -> BTreeMap<String, Vec<String>> {
             _ => {}
         }
     }
-    if let Some((name, argv)) = current.take() {
-        if !argv.is_empty() {
-            commands.insert(name, argv);
-        }
+    if let Some((name, argv)) = current.take()
+        && !argv.is_empty()
+    {
+        commands.insert(name, argv);
     }
     commands
 }
