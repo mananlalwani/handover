@@ -29,6 +29,7 @@ Ordinary bugs go to GitHub Issues. Security reports go through
 Install:
 
 - Rust and Cargo.
+- `cargo-deny` for dependency advisory, license, and source checks.
 - A JDK and Android SDK for Android work.
 - Qt Quickshell and `qmllint` for QML work.
 
@@ -42,6 +43,7 @@ Run the Rust checks from the repository root:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo deny check
 ```
 
 Run the Android checks from `android/`:

@@ -4,7 +4,14 @@
 
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = []
+# These standalone crates moved into zbus 6. secret-service 5.2 still requires
+# zbus 5; remove these maintenance exceptions when it supports zbus 6.
+# Security vulnerability advisories remain enforced.
+ignore = [
+  { id = "RUSTSEC-2026-0370", reason = "zvariant remains required by secret-service 5.2 through zbus 5; migrate when secret-service supports zbus 6" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names remains required by secret-service 5.2 through zbus 5; migrate when secret-service supports zbus 6" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive remains required by secret-service 5.2 through zbus 5; migrate when secret-service supports zbus 6" },
+]
 
 [licenses]
 # Anything not listed here is denied, which keeps copyleft, unlicensed,
