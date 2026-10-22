@@ -2273,7 +2273,7 @@ mod tests {
     }
 
     #[test]
-    fn native_result_is_additive_and_kde_acceptance_has_no_transfer_id() {
+    fn share_result_round_trips_and_acceptance_omits_an_absent_transfer_id() {
         let result = ServerMessage::new(ServerPayload::ShareResult {
             result: handover_core::ShareResult {
                 device_id: DeviceId::new("phone-a"),
@@ -2288,11 +2288,15 @@ mod tests {
             serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
             result
         );
-        let kde = ServerMessage::new(ServerPayload::ShareAccepted {
+        let accepted = ServerMessage::new(ServerPayload::ShareAccepted {
             device_id: DeviceId::new("phone-a"),
             transfer_id: None,
         });
-        assert!(!serde_json::to_string(&kde).unwrap().contains("transfer_id"));
+        assert!(
+            !serde_json::to_string(&accepted)
+                .unwrap()
+                .contains("transfer_id")
+        );
     }
 
     #[test]

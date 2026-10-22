@@ -36,7 +36,7 @@ class MediaMappingTest {
             MediaObserver.controlsOf(full),
         )
         assertTrue(MediaObserver.controlsOf(0L).isEmpty())
-        // Toggle derives from the discrete bits, matching the KDE adapter.
+        // Toggle derives from the discrete play and pause bits.
         assertEquals(
             listOf("play", "pause", "play_pause"),
             MediaObserver.controlsOf(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE),

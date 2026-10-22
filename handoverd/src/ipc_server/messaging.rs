@@ -1348,7 +1348,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_notification_commands_route_away_from_kde() {
+    async fn native_notification_commands_fail_when_the_backend_is_absent() {
         use handover_core::{Notification, NotificationId};
         let (_directory, path, state, _events, task) = server_with_device().await;
         let native = Notification {
@@ -1385,7 +1385,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_media_commands_route_away_from_kde() {
+    async fn native_media_commands_fail_when_the_backend_is_absent() {
         use handover_core::{MediaSession, MediaSessionId, PlaybackState};
         let (_directory, path, state, _events, task) = server_with_device().await;
         // The fixture device lacks the media capability, so add a capable

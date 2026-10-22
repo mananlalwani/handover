@@ -177,8 +177,8 @@ class MediaObserver(private val context: Context) {
         /** Advertise exactly the controls behind the platform actions bitmask.
          * Absolute `seekTo` maps to `set_position`; relative seeks have no
          * genuine platform API and are never advertised. A combined toggle is
-         * derived when both discrete bits exist, mirroring the KDE adapter so
-         * clients see one policy from either backend. */
+         * derived when both discrete play and pause bits exist, so clients
+         * see one control for that pair. */
         fun controlsOf(actions: Long): List<String> = buildList {
             if (actions and PlaybackState.ACTION_PLAY != 0L) add("play")
             if (actions and PlaybackState.ACTION_PAUSE != 0L) add("pause")

@@ -55,7 +55,7 @@ transfer remain unverified.
 
 ## Follow-up fixes
 
-The open findings from the second pass are fixed in the working tree.
+The open findings from the second pass are fixed.
 
 - A completed native inventory is one generation. The last chunk is `full: true`,
   including an empty inventory. Live conversation updates stay incremental.
