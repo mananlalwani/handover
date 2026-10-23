@@ -176,6 +176,7 @@ pub enum ProbeError {
     InvalidEndpoint,
     InvalidCredentials,
     RegistrationFailed,
+    RegistrationNotSubmitted,
     NoPendingRegistration,
     RegistrationAccountMismatch,
     SessionStoreFailed,
@@ -222,6 +223,7 @@ impl ProbeError {
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidCredentials => "invalid_credentials",
             Self::RegistrationFailed => "registration_failed",
+            Self::RegistrationNotSubmitted => "registration_not_submitted",
             Self::NoPendingRegistration => "no_pending_registration",
             Self::RegistrationAccountMismatch => "registration_account_mismatch",
             Self::SessionStoreFailed => "session_store_failed",
@@ -664,11 +666,7 @@ pub(crate) async fn renew_registration(
 ) -> Result<registration::UnpairedRegistration, ProbeError> {
     let headers = proof.validate_pairing()?;
     let endpoint = format!("{}{}", proof.endpoint, SIGN_IN_PATH);
-    renew_registration_at(&endpoint, headers, &client(true)?, registration)
-        .await
-        // Registration changes remote state. A lost reply has an unknown
-        // outcome, so it must not enter the daemon's transient retry path.
-        .map_err(|_| ProbeError::RegistrationFailed)
+    renew_registration_at(&endpoint, headers, &client(true)?, registration).await
 }
 
 async fn renew_registration_at(
@@ -687,6 +685,12 @@ async fn renew_registration_at(
         Duration::from_secs(30 * 24 * 60 * 60),
     )
     .await
+    // Only a failed connection proves the mutation was not submitted. Lost
+    // replies and server failures remain terminal to avoid replaying renewal.
+    .map_err(|error| match error {
+        ProbeError::RegistrationNotSubmitted => error,
+        _ => ProbeError::RegistrationFailed,
+    })
 }
 
 /// HTTP accepted the pairing envelope. This does not mean the phone received
@@ -847,7 +851,13 @@ async fn post_registration(
         .body(request_body.to_vec())
         .send()
         .await
-        .map_err(transport_error)?;
+        .map_err(|error| {
+            if error.is_connect() {
+                ProbeError::RegistrationNotSubmitted
+            } else {
+                transport_error(error)
+            }
+        })?;
     if !response.status().is_success() {
         return Err(http_error_details(response, false).await);
     }
@@ -1807,6 +1817,58 @@ mod tests {
             format!("{registered:?}"),
             "UnpairedRegistration { redacted }"
         );
+    }
+
+    #[tokio::test]
+    async fn renewal_connect_failure_is_distinct_from_a_submitted_attempt() {
+        let original = registration::RegistrationAttempt::prepare()
+            .unwrap()
+            .accept_response(
+                &serde_json::to_vec(&json!([
+                    [],
+                    general_purpose::STANDARD.encode("synthetic-registration-id"),
+                    null,
+                    [general_purpose::STANDARD.encode("old-token"), "3600000000"]
+                ]))
+                .unwrap(),
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let error = renew_registration_at(
+            &endpoint,
+            HeaderMap::new(),
+            &client(false).unwrap(),
+            &original,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, ProbeError::RegistrationNotSubmitted);
+
+        // A server that received the request but lost its reply has an unknown
+        // outcome. The reconnect policy must never replay that registration.
+        for response in [
+            Vec::new(),
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        ] {
+            let (endpoint, server) = mock_server(response).await;
+            assert_eq!(
+                renew_registration_at(
+                    &endpoint,
+                    HeaderMap::new(),
+                    &client(false).unwrap(),
+                    &original
+                )
+                .await
+                .unwrap_err(),
+                ProbeError::RegistrationFailed,
+            );
+            assert!(!server.await.unwrap().is_empty());
+        }
     }
 
     #[tokio::test]

@@ -1655,6 +1655,8 @@ async fn ingest_event(
 
 fn helper_error_category(message: &str) -> &'static str {
     match message {
+        "native receive ended (registration_failed)" => "registration_failed",
+        "native receive ended (registration_not_submitted)" => "registration_not_submitted",
         "native receive ended (unexpected_response)" => "unexpected_response",
         "native receive ended (invalid_credentials)" => "invalid_credentials",
         "native receive ended (credential_store_failed)" => "credential_store_failed",
@@ -2036,6 +2038,14 @@ mod tests {
     #[test]
     fn helper_diagnostics_distinguish_recovery_failures_without_echoing_payloads() {
         for (message, expected) in [
+            (
+                "native receive ended (registration_failed)",
+                "registration_failed",
+            ),
+            (
+                "native receive ended (registration_not_submitted)",
+                "registration_not_submitted",
+            ),
             (
                 "native receive ended (unexpected_response)",
                 "unexpected_response",

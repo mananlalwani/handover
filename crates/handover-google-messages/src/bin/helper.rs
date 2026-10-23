@@ -271,6 +271,7 @@ fn reconnect_delay(
         error,
         ProbeError::Network
             | ProbeError::Timeout
+            | ProbeError::RegistrationNotSubmitted
             | ProbeError::ReceiveFailed
             | ProbeError::SessionExpired
             | ProbeError::ReceiveProtocol(
@@ -3121,6 +3122,7 @@ mod tests {
         use handover_google_messages::{ProbeError, credential_store::CredentialError};
         for error in [
             ProbeError::CredentialStore(CredentialError::Missing),
+            ProbeError::RegistrationNotSubmitted,
             ProbeError::CredentialStore(CredentialError::Locked),
             ProbeError::CredentialStore(CredentialError::Unavailable),
             ProbeError::CredentialStore(CredentialError::Timeout),

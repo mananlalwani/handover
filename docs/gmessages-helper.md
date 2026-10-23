@@ -119,8 +119,11 @@ An absent desktop credential entry waits for credentials to become available;
 it is distinct from invalid credentials or an explicit authentication rejection.
 Unclassified unexpected responses reconnect after 60 seconds. Typed authentication
 and protocol validation failures retain their existing terminal behavior.
+Registration renewal retries connection failures only when the request was not
+submitted. A lost renewal reply or a server rejection remains terminal, so
+recovery cannot replay a registration with an uncertain outcome.
 The journal records fixed credential failure categories and unexpected-response
-categories without recording helper text or server payloads.
+and registration categories without recording helper text or server payloads.
 
 After connecting, the daemon
 syncs known accounts and requests catch-up syncs for accounts the helper
