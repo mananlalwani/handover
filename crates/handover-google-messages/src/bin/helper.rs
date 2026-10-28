@@ -261,10 +261,19 @@ fn reconnect_delay(
     {
         return None;
     }
-    // An unclassified response may be temporary or a persistent format change.
-    // Retry slowly; typed authentication and protocol failures stay terminal.
+    // Keep slow recovery for unclassified responses. A bad conversation update
+    // can also be repaired by a fresh inventory without invalidating pairing.
+    // Authentication and receive-frame validation failures remain terminal.
     // Workers restore receive ownership only and never replay sends or mutations.
-    if matches!(error, ProbeError::UnexpectedResponse) {
+    if matches!(
+        error,
+        ProbeError::UnexpectedResponse
+            | ProbeError::SessionProtocol(
+                handover_google_messages::session::SessionError::ConversationCursor
+                    | handover_google_messages::session::SessionError::InvalidUnreadCount
+                    | handover_google_messages::session::SessionError::DirectParticipants
+            )
+    ) {
         return Some(std::time::Duration::from_secs(60));
     }
     let transient = matches!(
@@ -897,6 +906,20 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
 ) -> std::io::Result<()> {
+    serve_with_worker(helper, reader, writer, start_live_worker).await
+}
+
+async fn serve_with_worker<R, W, F>(
+    helper: &mut NativeHelper,
+    reader: &mut R,
+    writer: &mut W,
+    mut start_worker: F,
+) -> std::io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+    F: FnMut(String, u64, SessionStore, mpsc::Sender<(u64, String, LiveSignal)>) -> LiveWorker,
+{
     let (progress_tx, mut progress_rx) = mpsc::channel(8);
     let mut jobs = JoinSet::new();
     let mut generation = 0_u64;
@@ -971,7 +994,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     generation = generation.wrapping_add(1);
                     workers.insert(
                         account.clone(),
-                        start_live_worker(account.clone(), generation, store, live_tx.clone()),
+                        start_worker(account.clone(), generation, store, live_tx.clone()),
                     );
                     // Every worker begins with its own bounded inventory read.
                     if helper.pending_sync.as_deref() == Some(&account) {
@@ -1230,7 +1253,7 @@ async fn serve_async<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
                     if helper.confirmed.contains_key(&account) && !workers.contains_key(&account) && !mutating.contains(&account) && workers.len() < 8
                         && let Some(store) = helper.store.clone() {
                             generation = generation.wrapping_add(1);
-                            workers.insert(account.clone(), start_live_worker(account, generation, store, live_tx.clone()));
+                            workers.insert(account.clone(), start_worker(account, generation, store, live_tx.clone()));
                         }
                 }
             }
@@ -2526,11 +2549,11 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn confirmed_records_restore_once_as_offline_and_logout_forgets_them() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut helper = helper_with_store(directory.path());
-        let (account, _) = saved_login(&helper);
+    fn saved_confirmed_login(
+        helper: &mut NativeHelper,
+        directory: &std::path::Path,
+    ) -> (String, SessionStore, SessionStore) {
+        let (account, _) = saved_login(helper);
         let store = helper.store.as_ref().unwrap().clone();
         let pending = store.load_all().unwrap();
         let (key, registration) = &pending[0];
@@ -2549,13 +2572,22 @@ mod tests {
         let mut record = vec![8, 1];
         bytes(2, registration.as_bytes(), &mut record);
         bytes(3, &pairing, &mut record);
-        let confirmed_store = SessionStore::new(directory.path().join("sessions/confirmed"));
+        let confirmed_store = SessionStore::new(directory.join("sessions/confirmed"));
         confirmed_store
             .store(
                 key,
                 &handover_google_messages::session_store::SessionRecord::new(record).unwrap(),
             )
             .unwrap();
+        (account, store, confirmed_store)
+    }
+
+    #[test]
+    fn confirmed_records_restore_once_as_offline_and_logout_forgets_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        let (account, store, confirmed_store) =
+            saved_confirmed_login(&mut helper, directory.path());
         let events = hello_events(&mut helper);
         assert_eq!(account_ids(&events), [account.as_str()]);
         assert!(
@@ -3106,6 +3138,121 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn conversation_validation_failure_recovers_online_without_login() {
+        use handover_google_messages::{ProbeError, session::SessionError};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for cause in [
+            SessionError::ConversationCursor,
+            SessionError::InvalidUnreadCount,
+            SessionError::DirectParticipants,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut helper = helper_with_store(directory.path());
+            let (account, _, _) = saved_confirmed_login(&mut helper, directory.path());
+            hello_events(&mut helper);
+            helper.desktop_credentials = true;
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let observed_attempts = attempts.clone();
+            let factory =
+                move |account: String,
+                      generation,
+                      _store,
+                      signals: mpsc::Sender<(u64, String, LiveSignal)>| {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    let (commands, mut incoming) = mpsc::channel(1);
+                    let task = tokio::spawn(async move {
+                        if attempt == 0 {
+                            let _ = signals
+                                .send((
+                                    generation,
+                                    account,
+                                    LiveSignal::Ended(Err(ProbeError::SessionProtocol(cause))),
+                                ))
+                                .await;
+                            return;
+                        }
+                        for event in [LiveEvent::Online, LiveEvent::Conversations(Vec::new())] {
+                            let (accepted, processed) = tokio::sync::oneshot::channel();
+                            if signals
+                                .send((
+                                    generation,
+                                    account.clone(),
+                                    LiveSignal::Output(LiveOutput { event, accepted }),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            if processed.await.is_err() {
+                                return;
+                            }
+                        }
+                        while let Some(command) = incoming.recv().await {
+                            assert!(
+                                matches!(command, LiveCommand::Conversations),
+                                "recovery must not submit a mutation"
+                            );
+                        }
+                    });
+                    LiveWorker {
+                        generation,
+                        ready: false,
+                        commands,
+                        task: Some(task),
+                    }
+                };
+            let (client, server) = tokio::io::duplex(16384);
+            let (read, mut write) = tokio::io::split(server);
+            let task = tokio::spawn(async move {
+                let mut read = tokio::io::BufReader::new(read);
+                serve_with_worker(&mut helper, &mut read, &mut write, factory)
+                    .await
+                    .unwrap();
+            });
+            let (read, mut write) = tokio::io::split(client);
+            let mut read = tokio::io::BufReader::new(read);
+            write
+                .write_all(
+                    format!(
+                        "{}\n",
+                        serde_json::to_string(&HelperCommand::Sync { account }).unwrap()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+                let mut online = false;
+                loop {
+                    let mut line = String::new();
+                    assert!(read.read_line(&mut line).await.unwrap() > 0);
+                    match serde_json::from_str::<HelperEvent>(&line).unwrap() {
+                        HelperEvent::Account {
+                            connected: true,
+                            authenticated: true,
+                            ..
+                        } => online = true,
+                        HelperEvent::Conversations { full: true, .. } if online => break,
+                        _ => {}
+                    }
+                }
+            })
+            .await;
+            task.abort();
+            let _ = task.await;
+            assert!(
+                result.is_ok(),
+                "{cause:?} stranded a saved account offline instead of reconnecting"
+            );
+            assert_eq!(observed_attempts.load(Ordering::SeqCst), 2);
+        }
+    }
+
     #[test]
     fn stale_conversation_inventory_reconnects_instead_of_staying_offline() {
         let error = handover_google_messages::ProbeError::SessionProtocol(
@@ -3249,7 +3396,10 @@ mod tests {
             ProbeError::RegistrationRenewalDue,
             ProbeError::RegistrationFailed,
             ProbeError::ReceiveProtocol(ReceiveError::SessionPreempted),
+            ProbeError::ReceiveProtocol(ReceiveError::MissingPairingBody),
+            ProbeError::ReceiveProtocol(ReceiveError::InvalidIdentifiers),
             ProbeError::SessionProtocol(SessionError::UpdateAuthentication),
+            ProbeError::SessionProtocol(SessionError::SendReplyIdentity),
         ] {
             assert!(reconnect_delay(&error, 0).is_none());
         }

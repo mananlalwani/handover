@@ -1655,6 +1655,27 @@ async fn ingest_event(
 
 fn helper_error_category(message: &str) -> &'static str {
     match message {
+        "native receive ended (session_protocol)" => "session_protocol",
+        "native receive ended (session_expired)" => "session_expired",
+        "native receive ended (invalid_origin)" => "invalid_origin",
+        "native receive ended (invalid_frame)" => "invalid_frame",
+        "native receive ended (invalid_bootstrap)" => "invalid_bootstrap",
+        "native receive ended (invalid_endpoint)" => "invalid_endpoint",
+        "native receive ended (no_pending_registration)" => "no_pending_registration",
+        "native receive ended (registration_account_mismatch)" => "registration_account_mismatch",
+        "native receive ended (session_store_failed)" => "session_store_failed",
+        "native receive ended (ambiguous_registration)" => "ambiguous_registration",
+        "native receive ended (daemon_unavailable)" => "daemon_unavailable",
+        "native receive ended (registration_renewal_due)" => "registration_renewal_due",
+        "native receive ended (receive_failed)" => "receive_failed",
+        "native receive ended (no_eligible_phone)" => "no_eligible_phone",
+        "native receive ended (ambiguous_phone)" => "ambiguous_phone",
+        "native receive ended (pairing_failed)" => "pairing_failed",
+        "native receive ended (network)" => "network",
+        "native receive ended (http_error)" => "http_error",
+        "native receive ended (response_too_large)" => "response_too_large",
+        "native receive ended (rpc_error)" => "rpc_error",
+        "native receive ended (native_error)" => "native_error",
         "native receive ended (registration_failed)" => "registration_failed",
         "native receive ended (registration_not_submitted)" => "registration_not_submitted",
         "native receive ended (unexpected_response)" => "unexpected_response",
@@ -1666,6 +1687,7 @@ fn helper_error_category(message: &str) -> &'static str {
         "native receive ended (credential_store, Timeout)" => "credentials_timeout",
         "native receive ended (credential_store, Invalid)" => "credentials_invalid",
         "native receive ended (credential_store, Ambiguous)" => "credentials_ambiguous",
+        "native receive ended (receive_protocol, Malformed)" => "receive_malformed",
         "native receive ended (receive_protocol, TooLarge)" => "receive_payload_limit",
         "native receive ended (receive_protocol, Backpressure)" => "receive_backpressure",
         "native receive ended (receive_protocol, MissingStatus)" => "receive_eof_without_status",
@@ -1675,14 +1697,119 @@ fn helper_error_category(message: &str) -> &'static str {
             "receive_inactivity_timeout"
         }
         "native receive ended (receive_protocol, InvalidEvents)" => "receive_event_shape_invalid",
+        "native receive ended (receive_protocol, InvalidEnvelope)" => "receive_invalid_envelope",
+        "native receive ended (receive_protocol, InvalidPairingPayload)" => {
+            "receive_invalid_pairing_payload"
+        }
+        "native receive ended (receive_protocol, MissingPairingBody)" => {
+            "receive_missing_pairing_body"
+        }
+        "native receive ended (receive_protocol, EncryptedPairingBody)" => {
+            "receive_encrypted_pairing_body"
+        }
+        "native receive ended (receive_protocol, AuxiliaryPairingBody)" => {
+            "receive_auxiliary_pairing_body"
+        }
+        "native receive ended (receive_protocol, PairingBodyTooLarge)" => {
+            "receive_pairing_body_too_large"
+        }
+        "native receive ended (receive_protocol, InvalidIdentifiers)" => {
+            "receive_invalid_identifiers"
+        }
+        "native receive ended (receive_protocol, TooDeep)" => "receive_too_deep",
+        "native receive ended (receive_protocol, Failed)" => "receive_failed",
         "native history content unavailable" => "history_page_unavailable",
         "native receive ended (timeout)" => "receive_timeout",
 
+        "native receive ended (session_protocol, SendModel)" => "session_protocol_send_model",
+        "native receive ended (session_protocol, SendReplyEncoding)" => {
+            "session_protocol_send_reply_encoding"
+        }
+        "native receive ended (session_protocol, SendReplyIdentity)" => {
+            "session_protocol_send_reply_identity"
+        }
+        "native receive ended (session_protocol, MissingSendResult)" => {
+            "session_protocol_missing_send_result"
+        }
+        "native receive ended (session_protocol, UnknownSendResult)" => {
+            "session_protocol_unknown_send_result"
+        }
+        "native receive ended (session_protocol, ActivationTransport)" => {
+            "session_protocol_activation_transport"
+        }
+        "native receive ended (session_protocol, UpdateModel)" => "session_protocol_update_model",
+        "native receive ended (session_protocol, UpdateAuthentication)" => {
+            "session_protocol_update_authentication"
+        }
+        "native receive ended (session_protocol, UpdateStreamEnded)" => {
+            "session_protocol_update_stream_ended"
+        }
         "native receive ended (session_protocol, UnknownUpdateConversation)" => {
             "stale_conversation_inventory"
         }
+        "native receive ended (session_protocol, ConversationTransport)" => {
+            "session_protocol_conversation_transport"
+        }
+        "native receive ended (session_protocol, ConversationEncoding)" => {
+            "session_protocol_conversation_encoding"
+        }
+        "native receive ended (session_protocol, ConversationCount)" => {
+            "session_protocol_conversation_count"
+        }
+        "native receive ended (session_protocol, EmptyConversation)" => {
+            "session_protocol_empty_conversation"
+        }
+        "native receive ended (session_protocol, OversizedConversation)" => {
+            "session_protocol_oversized_conversation"
+        }
+        "native receive ended (session_protocol, ConversationCursor)" => {
+            "session_protocol_conversation_cursor"
+        }
+        "native receive ended (session_protocol, PaginationLimit)" => {
+            "session_protocol_pagination_limit"
+        }
+        "native receive ended (session_protocol, HistoryModel)" => "session_protocol_history_model",
         "native receive ended (session_protocol, UnsupportedHistoryContent)" => {
             "unsupported_history_content"
+        }
+        "native receive ended (session_protocol, ConversationModel)" => {
+            "session_protocol_conversation_model"
+        }
+        "native receive ended (session_protocol, ParticipantIdentity)" => {
+            "session_protocol_participant_identity"
+        }
+        "native receive ended (session_protocol, ParticipantAddressConflict)" => {
+            "session_protocol_participant_address_conflict"
+        }
+        "native receive ended (session_protocol, InvalidUnreadCount)" => {
+            "session_protocol_invalid_unread_count"
+        }
+        "native receive ended (session_protocol, ConversationText)" => {
+            "session_protocol_conversation_text"
+        }
+        "native receive ended (session_protocol, ConversationIdentifier)" => {
+            "session_protocol_conversation_identifier"
+        }
+        "native receive ended (session_protocol, TooManyParticipants)" => {
+            "session_protocol_too_many_participants"
+        }
+        "native receive ended (session_protocol, MissingParticipants)" => {
+            "session_protocol_missing_participants"
+        }
+        "native receive ended (session_protocol, DuplicateParticipants)" => {
+            "session_protocol_duplicate_participants"
+        }
+        "native receive ended (session_protocol, DuplicateConversations)" => {
+            "session_protocol_duplicate_conversations"
+        }
+        "native receive ended (session_protocol, ParticipantRoleConflict)" => {
+            "session_protocol_participant_role_conflict"
+        }
+        "native receive ended (session_protocol, ParticipantNameConflict)" => {
+            "session_protocol_participant_name_conflict"
+        }
+        "native receive ended (session_protocol, DirectParticipants)" => {
+            "session_protocol_direct_participants"
         }
         "native receive ended (receive_protocol, SessionPreempted)" => "session_preempted",
         _ => "unclassified",
@@ -2089,6 +2216,120 @@ mod tests {
             ),
         ] {
             assert_eq!(helper_error_category(message), expected);
+        }
+    }
+
+    #[test]
+    fn native_error_fixtures_are_complete_and_payloads_stay_unclassified() {
+        let families: &[(&str, &[&str])] = &[
+            (
+                "session_protocol",
+                &[
+                    "SendModel",
+                    "SendReplyEncoding",
+                    "SendReplyIdentity",
+                    "MissingSendResult",
+                    "UnknownSendResult",
+                    "ActivationTransport",
+                    "UpdateModel",
+                    "UpdateAuthentication",
+                    "UpdateStreamEnded",
+                    "UnknownUpdateConversation",
+                    "ConversationTransport",
+                    "ConversationEncoding",
+                    "ConversationCount",
+                    "EmptyConversation",
+                    "OversizedConversation",
+                    "ConversationCursor",
+                    "PaginationLimit",
+                    "HistoryModel",
+                    "UnsupportedHistoryContent",
+                    "ConversationModel",
+                    "ParticipantIdentity",
+                    "ParticipantAddressConflict",
+                    "InvalidUnreadCount",
+                    "ConversationText",
+                    "ConversationIdentifier",
+                    "TooManyParticipants",
+                    "MissingParticipants",
+                    "DuplicateParticipants",
+                    "DuplicateConversations",
+                    "ParticipantRoleConflict",
+                    "ParticipantNameConflict",
+                    "DirectParticipants",
+                ],
+            ),
+            (
+                "receive_protocol",
+                &[
+                    "Malformed",
+                    "InvalidEvents",
+                    "InvalidEnvelope",
+                    "InvalidPairingPayload",
+                    "MissingPairingBody",
+                    "EncryptedPairingBody",
+                    "AuxiliaryPairingBody",
+                    "PairingBodyTooLarge",
+                    "InvalidIdentifiers",
+                    "TooLarge",
+                    "TooDeep",
+                    "Truncated",
+                    "MissingStatus",
+                    "Failed",
+                    "SessionPreempted",
+                    "SessionTimeout",
+                    "InactivityTimeout",
+                    "Backpressure",
+                ],
+            ),
+        ];
+        for (family, variants) in families {
+            for variant in *variants {
+                let message = format!("native receive ended ({family}, {variant})");
+                assert_ne!(helper_error_category(&message), "unclassified", "{message}");
+            }
+        }
+        for code in [
+            "invalid_origin",
+            "invalid_frame",
+            "invalid_bootstrap",
+            "invalid_endpoint",
+            "invalid_credentials",
+            "registration_failed",
+            "registration_not_submitted",
+            "no_pending_registration",
+            "registration_account_mismatch",
+            "session_store_failed",
+            "credential_store_failed",
+            "session_protocol",
+            "ambiguous_registration",
+            "daemon_unavailable",
+            "session_expired",
+            "registration_renewal_due",
+            "receive_failed",
+            "no_eligible_phone",
+            "ambiguous_phone",
+            "pairing_failed",
+            "network",
+            "http_error",
+            "unexpected_response",
+            "response_too_large",
+            "timeout",
+            "rpc_error",
+            "native_error",
+        ] {
+            let message = format!("native receive ended ({code})");
+            assert_ne!(helper_error_category(&message), "unclassified", "{message}");
+        }
+        for message in [
+            "native receive ended (session_protocol, SECRET_TOKEN)",
+            "native receive ended (session_protocol, ConversationCursor) secret payload",
+            "native receive ended (receive_protocol, InvalidIdentifiers) person@example.test",
+            "native receive ended (session_protocol, ConversationCursor\nSECRET_TOKEN)",
+            "native receive ended (credential_store, UNKNOWN_SECRET)",
+            "native receive ended (SECRET_TOKEN)",
+        ] {
+            assert_eq!(helper_error_category(message), "unclassified");
         }
     }
 
