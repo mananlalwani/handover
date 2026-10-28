@@ -31,6 +31,11 @@ modified-file notice.
 
 ## Runtime changes
 
+The RustCrypto provider uses P-256 0.14 and SEC1 0.8. A private adapter delegates
+the new RNG traits to the existing provider RNG. The provider interface, SEC1
+point encoding, and UKEY2 transcript format are unchanged. Both lockfiles use
+`crypto-bigint` 0.7.10, which includes the timing fixes for RUSTSEC-2026-0387.
+
 `ukey2_handshake.rs` has three documented changes:
 
 - `from_p256` offers only P-256 and retains that exact offer in the authenticated

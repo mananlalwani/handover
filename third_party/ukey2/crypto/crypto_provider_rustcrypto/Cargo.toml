@@ -1,4 +1,4 @@
-# Modified by Handover: minimal in-repository dependency packaging. See third_party/ukey2/README.md.
+# Modified by Handover: minimal packaging and P-256 RNG trait compatibility. See third_party/ukey2/README.md.
 [package]
 name = "crypto_provider_rustcrypto"
 version.workspace = true
@@ -30,6 +30,7 @@ ed25519-dalek = { workspace = true, default-features = false, features = [
 ] }
 rand = { workspace = true, default-features = false }
 rand_core.workspace = true
+rand_core_10 = { package = "rand_core", version = "0.10", default-features = false }
 subtle.workspace = true
 aes.workspace = true
 ctr.workspace = true

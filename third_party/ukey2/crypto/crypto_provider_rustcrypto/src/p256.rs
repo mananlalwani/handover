@@ -1,4 +1,4 @@
-// Modified by Handover: rustfmt formatting only.
+// Modified by Handover: P-256 0.14 API compatibility and rustfmt formatting.
 // Copyright 2023 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::RcRng;
+use crate::{RcRng, RngCompat};
 use core::marker::PhantomData;
 use crypto_provider::{
     elliptic_curve::{EcdhProvider, EphemeralSecret},
@@ -23,8 +23,8 @@ use crypto_provider::{
 use p256::{
     elliptic_curve,
     elliptic_curve::{
-        generic_array::GenericArray,
-        sec1::{FromEncodedPoint, ToEncodedPoint},
+        sec1::{FromSec1Point, ToSec1Point},
+        Generate,
     },
 };
 use rand::{RngCore, SeedableRng};
@@ -55,7 +55,7 @@ impl crypto_provider::p256::P256PublicKey for P256PublicKey {
         let mut bytes = ArrayVec::<[u8; 65]>::new();
         bytes.extend_from_slice(
             self.0
-                .to_encoded_point(point_compression == PointCompression::Compressed)
+                .to_sec1_point(point_compression == PointCompression::Compressed)
                 .as_bytes(),
         );
         bytes
@@ -63,7 +63,7 @@ impl crypto_provider::p256::P256PublicKey for P256PublicKey {
 
     #[allow(clippy::expect_used)]
     fn to_affine_coordinates(&self) -> Result<([u8; 32], [u8; 32]), Self::Error> {
-        let p256_key = self.0.to_encoded_point(false);
+        let p256_key = self.0.to_sec1_point(false);
         let x: &[u8; 32] = p256_key
             .x()
             .expect("Generated key should not be on identity point")
@@ -76,9 +76,9 @@ impl crypto_provider::p256::P256PublicKey for P256PublicKey {
     }
     fn from_affine_coordinates(x: &[u8; 32], y: &[u8; 32]) -> Result<Self, Self::Error> {
         let key_option: Option<p256::PublicKey> =
-            p256::PublicKey::from_encoded_point(&p256::EncodedPoint::from_affine_coordinates(
-                &GenericArray::clone_from_slice(x),
-                &GenericArray::clone_from_slice(y),
+            p256::PublicKey::from_sec1_point(&p256::Sec1Point::from_affine_coordinates(
+                &p256::FieldBytes::from(*x),
+                &p256::FieldBytes::from(*y),
                 false,
             ))
             .into();
@@ -100,14 +100,14 @@ impl<R: CryptoRng + SeedableRng + RngCore + Send> EphemeralSecret<P256> for P256
 
     fn generate_random(rng: &mut Self::Rng) -> Self {
         Self {
-            secret: p256::ecdh::EphemeralSecret::random(&mut rng.0),
+            secret: p256::ecdh::EphemeralSecret::generate_from_rng(&mut RngCompat(&mut rng.0)),
             _marker: Default::default(),
         }
     }
 
     fn public_key_bytes(&self) -> Self::EncodedPublicKey {
         let mut bytes = Self::EncodedPublicKey::new();
-        bytes.extend_from_slice(self.secret.public_key().to_encoded_point(false).as_bytes());
+        bytes.extend_from_slice(self.secret.public_key().to_sec1_point(false).as_bytes());
         bytes
     }
 
@@ -132,9 +132,11 @@ impl<R: CryptoRng + SeedableRng + RngCore + Send>
         _public_key: &P256PublicKey,
     ) -> Result<Self, Self::Error> {
         Ok(Self {
-            secret: p256::ecdh::EphemeralSecret::random(&mut crate::testing::MockCryptoRng {
-                values: private_bytes.iter(),
-            }),
+            secret: p256::ecdh::EphemeralSecret::generate_from_rng(&mut RngCompat(
+                &mut crate::testing::MockCryptoRng {
+                    values: private_bytes.iter(),
+                },
+            )),
             _marker: Default::default(),
         })
     }

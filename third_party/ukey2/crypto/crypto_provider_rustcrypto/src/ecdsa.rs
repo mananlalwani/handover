@@ -1,4 +1,4 @@
-// Modified by Handover: rustfmt formatting only.
+// Modified by Handover: P-256 0.14 API compatibility and rustfmt formatting.
 // Copyright 2025 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +25,8 @@ use crypto_provider::ecdsa::{
     InvalidSignatureBytes, P256EcdsaProvider, VerifyError, PUBLIC_KEY_LENGTH,
 };
 use p256::ecdsa::signature::{Signer, Verifier};
+#[cfg(feature = "std")]
+use p256::elliptic_curve::Generate;
 
 pub struct P256Ecdsa;
 
@@ -71,7 +73,9 @@ impl crypto_provider::ecdsa::KeyPair for P256SigningKey {
     #[cfg(feature = "std")]
     fn generate() -> Self {
         let mut csprng = rand::rngs::ThreadRng::default();
-        Self(p256::ecdsa::SigningKey::random(&mut csprng))
+        Self(p256::ecdsa::SigningKey::generate_from_rng(
+            &mut crate::RngCompat(&mut csprng),
+        ))
     }
 
     #[allow(clippy::clone_on_copy)]
@@ -92,17 +96,17 @@ impl crypto_provider::ecdsa::PublicKey for P256VerifyingKey {
     where
         Self: Sized,
     {
-        let encoded_point = p256::EncodedPoint::from_bytes(bytes)
+        let encoded_point = p256::Sec1Point::from_bytes(bytes)
             .map_err(|_| crypto_provider::ecdsa::InvalidPublicKeyBytes)?;
         // Unwrap is safe here, as we've verified during construction that the public key is
         // of the correct size and that it is a point on the curve, so this cannot fail.
-        let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point).unwrap();
+        let verifying_key = p256::ecdsa::VerifyingKey::from_sec1_point(&encoded_point).unwrap();
         Ok(Self(verifying_key))
     }
 
     fn to_bytes(&self) -> crypto_provider::ecdsa::RawP256PublicKey {
         let mut public_key = [0u8; PUBLIC_KEY_LENGTH];
-        let point = self.0.to_encoded_point(false);
+        let point = self.0.to_sec1_point(false);
         public_key.copy_from_slice(point.as_bytes());
         public_key
     }

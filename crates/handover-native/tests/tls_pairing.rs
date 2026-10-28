@@ -543,18 +543,52 @@ fn audio_stream_captures_pcm_over_a_separate_authenticated_socket() {
 #[ignore = "requires a live PulseAudio or PipeWire output and parec"]
 fn realtime_audio_negotiates_and_decodes_opus_over_the_paired_control_channel() {
     use handover_core::AudioStreamPhase;
-    use webrtc::api::{
-        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
+    use rtc::{
+        interceptor::Registry, peer_connection::configuration::media_engine::MediaEngine,
+        rtp_transceiver::rtp_sender::RtpCodecKind,
     };
-    use webrtc::interceptor::registry::Registry;
+    use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
+    use webrtc::peer_connection::register_default_interceptors;
     use webrtc::peer_connection::{
-        RTCPeerConnection, configuration::RTCConfiguration,
-        sdp::session_description::RTCSessionDescription,
+        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
+        RTCIceGatheringState, RTCSessionDescription,
     };
-    use webrtc::rtp_transceiver::{
-        RTCRtpTransceiverInit, rtp_codec::RTPCodecType,
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
-    };
+    use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
+
+    struct AudioReceiver {
+        track_tx: tokio::sync::mpsc::Sender<()>,
+        gather_complete_tx: tokio::sync::mpsc::Sender<()>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for AudioReceiver {
+        async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+            let track_tx = self.track_tx.clone();
+            drop(tokio::spawn(async move {
+                let Ok(mut decoder) = opus::Decoder::new(48_000, opus::Channels::Stereo) else {
+                    return;
+                };
+                let mut pcm = vec![0_i16; 5760 * 2];
+                while let Some(event) = track.poll().await {
+                    if let TrackRemoteEvent::OnRtpPacket(packet) = event
+                        && matches!(
+                            decoder.decode(&packet.payload, &mut pcm, false),
+                            Ok(samples) if samples > 0
+                        )
+                    {
+                        let _ = track_tx.try_send(());
+                        break;
+                    }
+                }
+            }));
+        }
+
+        async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+            if state == RTCIceGatheringState::Complete {
+                let _ = self.gather_complete_tx.try_send(());
+            }
+        }
+    }
 
     struct StopAudioOnDrop {
         backend: NativeBackend,
@@ -570,7 +604,7 @@ fn realtime_audio_negotiates_and_decodes_opus_over_the_paired_control_channel() 
 
     struct ClosePeerOnDrop {
         handle: tokio::runtime::Handle,
-        peer: Arc<RTCPeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         closed: bool,
     }
     impl ClosePeerOnDrop {
@@ -680,6 +714,7 @@ fn realtime_audio_negotiates_and_decodes_opus_over_the_paired_control_channel() 
         .build()
         .unwrap();
     let (track_tx, mut track_rx) = tokio::sync::mpsc::channel(1);
+    let (gather_complete_tx, mut gather_complete_rx) = tokio::sync::mpsc::channel(1);
     let (peer, answer_result) = runtime.block_on(async {
         let mut media = MediaEngine::default();
         if let Err(error) = media.register_default_codecs() {
@@ -689,49 +724,37 @@ fn realtime_audio_negotiates_and_decodes_opus_over_the_paired_control_channel() 
             Ok(registry) => registry,
             Err(error) => return (None, Err(error.to_string())),
         };
-        let api = APIBuilder::new()
+        let handler = Arc::new(AudioReceiver {
+            track_tx,
+            gather_complete_tx,
+        });
+        let peer = match PeerConnectionBuilder::new()
+            .with_configuration(RTCConfigurationBuilder::new().build())
             .with_media_engine(media)
             .with_interceptor_registry(registry)
-            .build();
-        let peer = match api
-            .new_peer_connection(RTCConfiguration::default())
+            .with_handler(handler)
+            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .build()
             .await
         {
             Ok(peer) => Arc::new(peer),
             Err(error) => return (None, Err(error.to_string())),
         };
-        let tx = track_tx;
-        peer.on_track(Box::new(move |track, _, _| {
-            let tx = tx.clone();
-            Box::pin(async move {
-                let Ok(mut decoder) = opus::Decoder::new(48_000, opus::Channels::Stereo) else {
-                    return;
-                };
-                let mut pcm = vec![0_i16; 5760 * 2];
-                while let Ok((packet, _)) = track.read_rtp().await {
-                    if matches!(decoder.decode(&packet.payload, &mut pcm, false), Ok(samples) if samples > 0) {
-                        let _ = tx.send(()).await;
-                        break;
-                    }
-                }
-            })
-        }));
         let answer_result = async {
             peer.add_transceiver_from_kind(
-                RTPCodecType::Audio,
+                RtpCodecKind::Audio,
                 Some(RTCRtpTransceiverInit {
                     direction: RTCRtpTransceiverDirection::Recvonly,
-                    send_encodings: vec![],
+                    ..Default::default()
                 }),
             )
             .await
             .map_err(|error| error.to_string())?;
-            let offer = RTCSessionDescription::offer(offer_sdp)
-                .map_err(|error| error.to_string())?;
+            let offer =
+                RTCSessionDescription::offer(offer_sdp).map_err(|error| error.to_string())?;
             peer.set_remote_description(offer)
                 .await
                 .map_err(|error| error.to_string())?;
-            let mut gathering = peer.gathering_complete_promise().await;
             let answer = peer
                 .create_answer(None)
                 .await
@@ -739,16 +762,19 @@ fn realtime_audio_negotiates_and_decodes_opus_over_the_paired_control_channel() 
             peer.set_local_description(answer)
                 .await
                 .map_err(|error| error.to_string())?;
-            tokio::time::timeout(Duration::from_secs(10), gathering.recv())
+            let gathered = tokio::time::timeout(Duration::from_secs(10), gather_complete_rx.recv())
                 .await
                 .map_err(|_| "ICE gathering timed out".to_owned())?;
+            if gathered.is_none() {
+                return Err("ICE gathering event channel closed".to_owned());
+            }
             peer.local_description()
                 .await
                 .map(|description| description.sdp)
                 .ok_or_else(|| "missing local answer".to_owned())
         }
         .await;
-        (Some(peer), answer_result)
+        (Some(peer as Arc<dyn PeerConnection>), answer_result)
     });
 
     let mut close_peer = peer.map(|peer| ClosePeerOnDrop {

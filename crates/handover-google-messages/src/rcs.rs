@@ -8,7 +8,7 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use handover_core::messaging::{Conversation, ConversationKind, TransportKind};
-use p256::pkcs8::EncodePublicKey;
+use p256::{elliptic_curve::Generate, pkcs8::EncodePublicKey};
 use prost::Message;
 use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
@@ -88,7 +88,9 @@ impl Context {
         // The first-party client reuses its persisted web device across applications.
         // Reconnects must not accumulate new server registrations.
 
-        let key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let Ok(key) = p256::SecretKey::try_generate() else {
+            return;
+        };
         let mut delay = 1;
         let mut active = BTreeMap::new();
         loop {

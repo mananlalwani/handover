@@ -7,7 +7,7 @@
       "path": "connections/ukey2/ukey2/Cargo.toml",
       "upstream_path": "nearby/connections/ukey2/ukey2/Cargo.toml",
       "upstream_sha256": "d0ae3d811c6602084a98d5c4faacb3215a1145a540d545cfe1d97d73ecacd929",
-      "included_sha256": "c95ff74e47e752097a51a75cda604d2fb067ed1ecdd35c8aedcb5cd3d114f68f",
+      "included_sha256": "738770922b903f58195253526980668e829dd6e6a2ea0068cf3a0f059598b2ac",
       "modified": true
     },
     {
@@ -266,7 +266,7 @@
       "path": "crypto/crypto_provider_rustcrypto/Cargo.toml",
       "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/Cargo.toml",
       "upstream_sha256": "22e4815800c3eae25ed314c08e3aa9d63437142120853faff5d073bb0f1c6c97",
-      "included_sha256": "2bfa08aaf72254dc329c92518ce88b44408f4e6c9d68d5826bc65a1877516724",
+      "included_sha256": "3fb9c591bc0bf92d1b018eb78cfdf4c74d46c17d38494b71fe3187b8dea42228",
       "modified": true
     },
     {
@@ -315,7 +315,7 @@
       "path": "crypto/crypto_provider_rustcrypto/src/ecdsa.rs",
       "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/ecdsa.rs",
       "upstream_sha256": "8dbce205cde616cdc39b27616fba0067b0a331c2d5d77880eab89d1f93c14b27",
-      "included_sha256": "3b43e24ff29166381a068e91e35126b7b1da0953d5e3bc407f54faebfe4cb3d3",
+      "included_sha256": "66ef53ed5138d83b239a17bced0ec244dde259c92e064a3b2af4b7927613f319",
       "modified": true
     },
     {
@@ -343,14 +343,14 @@
       "path": "crypto/crypto_provider_rustcrypto/src/lib.rs",
       "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/lib.rs",
       "upstream_sha256": "9a7096ceb069f6acad4e3f0d3fbb893eba5ab5520ba16616993ea4366c7be83f",
-      "included_sha256": "e192dea3486011e3254fdf471deaca1d139ad53f0d29b96d5e474b2ecd056ea6",
+      "included_sha256": "af88d696de4fd99d787c459af7faf30e22d8f64d87fadb7de9231a63ab6ec188",
       "modified": true
     },
     {
       "path": "crypto/crypto_provider_rustcrypto/src/p256.rs",
       "upstream_path": "nearby/crypto/crypto_provider_rustcrypto/src/p256.rs",
       "upstream_sha256": "47887bd50f832115512e44579a88a9d688f0757aa98976378b1bd966c7533f69",
-      "included_sha256": "b8783805c72aeb5a9a73d5bcd3abd8f01b6fdccaf15ae4b1723d4cd2a2d515b5",
+      "included_sha256": "1fe349f37ae351462c4f6ce688340b3ea949223bfa1a41514eb371e0eb573c3b",
       "modified": true
     },
     {
@@ -378,7 +378,7 @@
       "path": "Cargo.toml",
       "upstream_path": "nearby/Cargo.toml",
       "upstream_sha256": "831d1f2c5a08e5849ec64b86fe17b5df1578ae76d0386894617f19c0655f15f0",
-      "included_sha256": "e452876af47a4a2859ca4f732aea41cb5fed6cbed1254c3237a3299a3e2fe243",
+      "included_sha256": "b33dd49e9fb768147bd1c51fc70d328a7327034ced16be774d5dec7fb3089b33",
       "modified": true
     },
     {

@@ -1,4 +1,4 @@
-// Modified by Handover: rustfmt formatting only.
+// Modified by Handover: P-256 RNG trait compatibility and rustfmt formatting.
 // Copyright 2023 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -102,6 +102,28 @@ impl<R: CryptoRng + SeedableRng + RngCore + Eq + PartialEq + Debug + Clone + Sen
         a.ct_eq(b).into()
     }
 }
+
+// Preserve the upstream RNG and its entropy while adapting RustCrypto's new traits.
+struct RngCompat<'a, R>(&'a mut R);
+
+impl<R: RngCore> rand_core_10::TryRng for RngCompat<'_, R> {
+    type Error = core::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.next_u32())
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.next_u64())
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl<R: RngCore + CryptoRng> rand_core_10::TryCryptoRng for RngCompat<'_, R> {}
 
 /// A RustCrypto wrapper for RNG
 pub struct RcRng<R>(R);

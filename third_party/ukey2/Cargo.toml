@@ -40,8 +40,8 @@ aes-gcm = "0.10.3"
 subtle = { version = "2.5.0", default-features = false }
 x25519-dalek = { version = "2.0.0", default-features = false }
 rand_chacha = { version = "0.3.1", default-features = false }
-p256 = { version = "0.13.2", default-features = false }
-sec1 = "0.7.3"
+p256 = { version = "0.14.0", default-features = false }
+sec1 = "0.8"
 protobuf = "=3.7.2"
 log = "0.4.20"
 cfg-if = "1.0.0"

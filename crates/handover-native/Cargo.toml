@@ -17,7 +17,9 @@ hex = "0.4"
 tracing.workspace = true
 url.workspace = true
 tokio.workspace = true
-webrtc = "0.17.0"
+webrtc = "0.21.1"
+rtc = { version = "0.21.1", default-features = false, features = ["crypto-ring"] }
+async-trait = "0.1"
 opus = "0.4"
 
 [dev-dependencies]
