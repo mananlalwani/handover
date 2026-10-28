@@ -30,6 +30,15 @@ Handover is pre-1.0. Public interfaces may change.
   See the [incoming typing investigation](gmessages-typing.md).
 - Message history is a bounded cache, not a complete persistent archive.
 
+## Dependency security
+
+The dependency audit currently fails on
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
+The P-256 and WebRTC DTLS dependencies require `crypto-bigint` 0.5, while the
+timing fixes are available in 0.7.6 and later. Removing the affected dependency
+requires coordinated upgrades of the elliptic-curve and WebRTC stacks and
+interoperability testing. The advisory remains enforced in `cargo-deny`.
+
 ## Packaging
 
 Release tarballs, source installation, and [Arch PKGBUILDs](../packaging/arch/README.md)
