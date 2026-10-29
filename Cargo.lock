@@ -1249,6 +1249,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "handover-desktop"
+version = "0.4.1"
+dependencies = [
+ "futures-util",
+ "handover-core",
+ "handover-ipc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
 name = "handover-gmessages"
 version = "0.4.1"
 dependencies = [

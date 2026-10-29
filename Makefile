@@ -3,6 +3,7 @@ DESTDIR :=
 USER_DATA_HOME := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
 USER_UNIT_DIR := $(DESTDIR)$(USER_DATA_HOME)/systemd/user
 UNIT_SRC := packaging/systemd/handoverd.local.service
+DESKTOP_UNIT_SRC ?= packaging/systemd/handover-desktop.local.service
 QUICKSHELL_INSTALL_DIR := $(DESTDIR)$(USER_DATA_HOME)/handover/quickshell
 GOOGLE_MESSAGES_TOOLS_DIR := $(DESTDIR)$(USER_DATA_HOME)/handover/google-messages/tools
 GOOGLE_MESSAGES_SETUP ?= 0
@@ -35,6 +36,7 @@ dist:
 
 install-files:
 	install -Dm755 target/release/handoverd $(BIN_DIR)/handoverd
+	install -Dm755 target/release/handover-desktop $(BIN_DIR)/handover-desktop
 	install -Dm755 target/release/handoverctl $(BIN_DIR)/handoverctl
 	install -Dm755 target/release/handover-google-messages-helper $(BIN_DIR)/handover-google-messages-helper
 	install -Dm755 target/release/handover-google-messages-auth-probe $(BIN_DIR)/handover-google-messages-auth-probe
@@ -48,6 +50,7 @@ install-files:
 	install -Dm644 completions/_handoverctl $(ZSH_COMPLETION_DIR)/_handoverctl
 	install -Dm644 completions/handoverctl.fish $(FISH_COMPLETION_DIR)/handoverctl.fish
 	install -Dm644 $(UNIT_SRC) $(USER_UNIT_DIR)/handoverd.service
+	install -Dm644 $(DESKTOP_UNIT_SRC) $(USER_UNIT_DIR)/handover-desktop.service
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	install -Dm644 quickshell/MessageList.qml $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
 	install -Dm644 quickshell/*.js $(QUICKSHELL_INSTALL_DIR)/
@@ -67,7 +70,7 @@ install-files:
 	@if test "$(GOOGLE_MESSAGES_SETUP)" = 1; then $(MAKE) install-google-messages-setup; fi
 
 install-user:
-	cargo build --release --locked -p handoverd -p handoverctl -p handover-google-messages
+	cargo build --release --locked -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
 	$(MAKE) install-files
 	systemctl --user daemon-reload
 	systemctl --user reenable handoverd.service
@@ -81,8 +84,11 @@ install-user:
 
 uninstall-user:
 	-systemctl --user disable --now handoverd.service
+	-systemctl --user disable --now handover-desktop.service
 	rm -f $(USER_UNIT_DIR)/handoverd.service
+	rm -f $(USER_UNIT_DIR)/handover-desktop.service
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
+	rm -f $(BIN_DIR)/handover-desktop
 	rm -f $(PREFIX)/bin/handover-google-messages-helper
 	rm -f $(PREFIX)/bin/handover-google-messages-auth-probe
 	rm -f $(BIN_DIR)/handover-google-messages-setup

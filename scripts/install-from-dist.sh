@@ -27,6 +27,7 @@ if test "$SETUP_INSTALL" = auto; then
 fi
 
 install -Dm755 "$ROOT/bin/handoverd" "$PREFIX/bin/handoverd"
+install -Dm755 "$ROOT/bin/handover-desktop" "$PREFIX/bin/handover-desktop"
 install -Dm755 "$ROOT/bin/handoverctl" "$PREFIX/bin/handoverctl"
 install -Dm755 "$ROOT/bin/handover-google-messages-helper" \
 	"$PREFIX/bin/handover-google-messages-helper"
@@ -57,6 +58,8 @@ install -Dm644 "$ROOT/share/fish/vendor_completions.d/handoverctl.fish" \
 	"$USER_DATA_HOME/fish/vendor_completions.d/handoverctl.fish"
 install -Dm644 "$ROOT/share/systemd/user/handoverd.service" \
 	"$USER_DATA_HOME/systemd/user/handoverd.service"
+install -Dm644 "$ROOT/share/systemd/user/handover-desktop.service" \
+	"$USER_DATA_HOME/systemd/user/handover-desktop.service"
 install -d "$USER_DATA_HOME/handover/quickshell/pages"
 install -Dm644 "$ROOT/share/handover/quickshell/HandoverService.qml" \
 	"$USER_DATA_HOME/handover/quickshell/HandoverService.qml"

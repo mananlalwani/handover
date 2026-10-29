@@ -25,6 +25,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// already writes unbounded lines; this aligns readers. Per-connection
 /// buffer cost is bounded by this cap.
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Aggregate bound for a chunked subscription or recovery snapshot. Exceeding
+/// either limit fails the read; an incomplete snapshot is never published.
+pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_SNAPSHOT_CHUNKS: usize = 256;
+
 const SOCKET_DIRECTORY: &str = "handover";
 const SOCKET_NAME: &str = "handoverd.sock";
 
@@ -740,6 +745,8 @@ pub enum IpcError {
     Json(#[from] serde_json::Error),
     #[error("IPC message exceeded {MAX_LINE_BYTES} bytes")]
     LineTooLong,
+    #[error("IPC snapshot exceeded its byte or chunk limit")]
+    SnapshotTooLarge,
     #[error("IPC write timed out")]
     WriteTimeout,
     #[error("daemon closed the connection")]
@@ -1356,14 +1363,31 @@ impl Client {
         Ok(subscription)
     }
 
-    pub async fn subscribe(mut self) -> Result<Subscription, IpcError> {
+    pub async fn subscribe(self) -> Result<Subscription, IpcError> {
+        self.subscribe_to(true, true, true).await
+    }
+
+    /// Subscribe to device and notification state without media or message history.
+    pub async fn subscribe_notifications(self) -> Result<Subscription, IpcError> {
+        self.subscribe_to(false, false, false).await
+    }
+
+    async fn subscribe_to(
+        mut self,
+        shares: bool,
+        media: bool,
+        messages: bool,
+    ) -> Result<Subscription, IpcError> {
         self.send(Method::Subscribe {
-            shares: true,
-            media: true,
-            messages: true,
+            shares,
+            media,
+            messages,
         })
         .await?;
-        match self.receive().await?.payload {
+        let mut budget = SnapshotBudget::default();
+        let message = self.receive().await?;
+        budget.record(&message)?;
+        match message.payload {
             ServerPayload::Subscribed {
                 devices,
                 notifications,
@@ -1388,7 +1412,9 @@ impl Client {
                 ..
             } => {
                 while !done {
-                    match self.receive().await?.payload {
+                    let message = self.receive().await?;
+                    budget.record(&message)?;
+                    match message.payload {
                         ServerPayload::SubscribedChunk {
                             devices: more_devices,
                             notifications: more_notifications,
@@ -1714,11 +1740,15 @@ pub struct Subscription {
 impl Subscription {
     pub async fn next_message(&mut self) -> Result<ServerMessage, IpcError> {
         loop {
+            let mut budget = SnapshotBudget::default();
             let message = if let Some(message) = self.pending.take() {
                 message
             } else {
                 receive_message(&mut self.reader).await?
             };
+            if matches!(&message.payload, ServerPayload::SnapshotChunk { .. }) {
+                budget.record(&message)?;
+            }
             match message.payload {
                 ServerPayload::ConversationsChunk { .. } => continue,
                 ServerPayload::SnapshotChunk {
@@ -1742,7 +1772,9 @@ impl Subscription {
                     let mut all_read_states = read_states;
                     let mut done = done;
                     while !done {
-                        match receive_message(&mut self.reader).await?.payload {
+                        let message = receive_message(&mut self.reader).await?;
+                        budget.record(&message)?;
+                        match message.payload {
                             ServerPayload::SnapshotChunk {
                                 devices,
                                 notifications,
@@ -1781,6 +1813,26 @@ impl Subscription {
                 payload => return Ok(ServerMessage::new(payload)),
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct SnapshotBudget {
+    chunks: usize,
+    bytes: usize,
+}
+
+impl SnapshotBudget {
+    fn record(&mut self, message: &ServerMessage) -> Result<(), IpcError> {
+        self.chunks += 1;
+        if self.chunks > MAX_SNAPSHOT_CHUNKS {
+            return Err(IpcError::SnapshotTooLarge);
+        }
+        self.bytes += serde_json::to_vec(message)?.len();
+        if self.bytes > MAX_SNAPSHOT_BYTES {
+            return Err(IpcError::SnapshotTooLarge);
+        }
+        Ok(())
     }
 }
 
@@ -2439,3 +2491,6 @@ mod tests {
         assert!(matches!(error, IpcError::LineTooLong));
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;

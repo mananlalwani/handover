@@ -130,6 +130,23 @@ action, or reply. Acceptance means the command entered the live session queue;
 it does not confirm that Android or the source app acted. Subsequent notification
 events remain the source of truth.
 
+The optional `handover-desktop` client uses the
+[Desktop Notifications protocol](https://specifications.freedesktop.org/notification/latest/protocol.html)
+and subscribes to device and notification
+state over the same public IPC. It uses the session bus notification service,
+keeps at most 512 notification mappings, and subscribes again after losing the
+daemon. Snapshot entries establish a silent baseline. New events create alerts;
+updates replace existing alerts. Desktop popup dismissal is local. An explicit
+"Dismiss on phone" action sends the normalized dismiss command, and phone action
+buttons send their current opaque action IDs. Daemon acceptance does not prove
+that Android acted.
+
+The client pins the notification service's unique bus owner so IDs cannot cross
+service restarts. Its bounded reader task keeps partial IPC frames alive across
+D-Bus events. A missing service or daemon triggers a reconnect, and commands are
+never replayed. Bodies are escaped when the notification service supports markup;
+remote icon paths are not opened. Inline replies remain in other IPC clients.
+
 ## Media sessions
 
 Android's `MediaSessionManager` publishes active sessions and supported
@@ -232,6 +249,11 @@ history with a current snapshot for the subscribed collections. Large snapshots
 are split into chunks to respect the line limit. Current state
 matters more than replaying every intermediate battery reading or notification
 update.
+
+The Rust IPC client limits aggregate subscription and recovery snapshots to
+16 MiB of serialized content and 256 chunks. Exceeding either limit returns
+`SnapshotTooLarge`; clients must reconnect and must not apply an incomplete
+snapshot. Each individual line remains limited to 1 MiB.
 
 The daemon shares its maps through one `RwLock`. Backend callbacks take a short
 write lock, and IPC snapshots take a short read lock and clone the state.

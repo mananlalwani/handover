@@ -82,6 +82,21 @@ permissions for the capabilities you want to use.
 
 ### Optional desktop interface
 
+`handover-desktop` mirrors phone notifications through the Linux desktop
+notification service. It runs without Quickshell. Installations do not enable
+it automatically. Start it when you want desktop alerts:
+
+```sh
+systemctl --user enable --now handover-desktop.service
+```
+
+The desktop actions shown by a notification come from the phone. Dismiss is
+available only when the phone marks that notification clearable. Closing or
+letting a desktop popup expire does not dismiss the notification on the phone.
+Existing snapshot entries establish a silent baseline; live notification events
+create alerts. The client tracks up to 512 notifications. Inline replies are
+not supported by this client.
+
 With Quickshell installed, launch the reference client:
 
 ```sh

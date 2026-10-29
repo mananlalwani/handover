@@ -47,6 +47,14 @@ The service requests a snapshot and subscribes after every connection. If the
 daemon is absent or restarts, it clears its local view and retries after two
 seconds.
 
+The optional `handover-desktop` service mirrors phone notifications through
+the Linux desktop notification service, without Quickshell. Enable it with
+`systemctl --user enable --now handover-desktop.service`. Desktop actions route
+to the phone, and a Dismiss action appears only when the phone marks a
+notification clearable. Closing or expiring a desktop popup does not dismiss
+the phone notification. The generic notification specification does not
+provide inline replies for this client.
+
 ## Notifications and sharing
 
 `dismiss(notification)`, `invokeAction(notification, action)`, and

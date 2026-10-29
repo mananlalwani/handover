@@ -7,6 +7,8 @@ reference client. The native Google Messages client and helper live here.
 
 - `handoverd/` contains the daemon and its authoritative runtime state.
 - `handoverctl/` contains the CLI.
+- `handover-desktop/` contains the optional Linux desktop notification client.
+  Its integration tests start a private session bus and need `dbus-daemon`.
 - `crates/handover-core/` contains backend-independent domain types.
 - `crates/handover-ipc/` contains the Unix-socket protocol.
 - `crates/handover-native/` contains the Linux native transport.

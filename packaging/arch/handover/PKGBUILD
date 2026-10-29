@@ -26,7 +26,7 @@ prepare() {
 
 build() {
   cd "$pkgname-$pkgver"
-  cargo build --release --frozen --offline -p handoverd -p handoverctl -p handover-google-messages
+  cargo build --release --frozen --offline -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
 }
 
 package() {
@@ -36,6 +36,7 @@ package() {
     USER_DATA_HOME=/usr/share \
     USER_UNIT_DIR="$pkgdir/usr/lib/systemd/user" \
     UNIT_SRC=packaging/systemd/handoverd.service \
+    DESKTOP_UNIT_SRC=packaging/systemd/handover-desktop.service \
     install-files
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

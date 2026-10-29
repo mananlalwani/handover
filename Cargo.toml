@@ -9,6 +9,7 @@ members = [
     "crates/handover-ipc",
     "handoverd",
     "handoverctl",
+    "handover-desktop",
 ]
 
 [workspace.package]
