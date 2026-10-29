@@ -19,9 +19,16 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         let _ = shutdown.send(true);
     });
+    let path = handover_ipc::socket_path()?;
+    let address = zbus::Address::session()?.to_string();
     let mut bus_messages = zbus::MessageStream::from(&connection);
     tokio::select! {
-        _ = handover_desktop::run(handover_ipc::socket_path()?, connection, receiver) => {}
+        _ = async {
+            tokio::join!(
+                handover_desktop::run(path.clone(), connection, receiver.clone()),
+                handover_desktop::run_media(path, address, receiver),
+            );
+        } => {}
         _ = async { while let Some(Ok(_)) = bus_messages.next().await {} } => {
             return Err("desktop session bus disconnected".into());
         }

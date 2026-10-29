@@ -1372,6 +1372,11 @@ impl Client {
         self.subscribe_to(false, false, false).await
     }
 
+    /// Subscribe to device, notification, and media state without message history.
+    pub async fn subscribe_media(self) -> Result<Subscription, IpcError> {
+        self.subscribe_to(false, true, false).await
+    }
+
     async fn subscribe_to(
         mut self,
         shares: bool,

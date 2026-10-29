@@ -83,8 +83,9 @@ permissions for the capabilities you want to use.
 ### Optional desktop interface
 
 `handover-desktop` mirrors phone notifications through the Linux desktop
-notification service. It runs without Quickshell. Installations do not enable
-it automatically. Start it when you want desktop alerts:
+notification service and exposes phone media with a known playback state as local MPRIS
+players. It runs without Quickshell. Installations do not enable it
+automatically. Start it when you want desktop alerts and media controls:
 
 ```sh
 systemctl --user enable --now handover-desktop.service
@@ -95,7 +96,19 @@ available only when the phone marks that notification clearable. Closing or
 letting a desktop popup expire does not dismiss the notification on the phone.
 Existing snapshot entries establish a silent baseline; live notification events
 create alerts. The client tracks up to 512 notifications. Inline replies are
-not supported by this client.
+not supported by this client. Each phone media session gets its own MPRIS
+player, with a limit of 32 sessions and 64 remembered device records. The bridge omits
+players whose playback state is unknown. It supports only controls advertised
+by the phone: Play, Pause, Play/Pause, Next, and Previous. It does not expose
+seeking or volume changes. Position shows the latest value reported by the
+phone. Commands are accepted for delivery, not proof that playback changed,
+and the bridge does not retry them.
+
+Desktop media panels discover the phone players automatically. With `playerctl`,
+list them with `playerctl --list-all`, then use a listed name such as
+`playerctl --player=handover.player1 play-pause`. Names can change after
+reconnection. Media controls also work when no desktop notification service is
+running.
 
 With Quickshell installed, launch the reference client:
 

@@ -143,9 +143,27 @@ that Android acted.
 
 The client pins the notification service's unique bus owner so IDs cannot cross
 service restarts. Its bounded reader task keeps partial IPC frames alive across
-D-Bus events. A missing service or daemon triggers a reconnect, and commands are
-never replayed. Bodies are escaped when the notification service supports markup;
+D-Bus events. Daemon loss triggers a reconnect. The client waits for a missing
+notification service through bus owner changes. Commands are never replayed. Bodies are escaped when the notification service supports markup;
 remote icon paths are not opened. Inline replies remain in other IPC clients.
+
+The same optional process exports phone sessions with a known playback state as
+local MPRIS players, one per normalized `(device_id, player_id)` session, with
+limits of 32 sessions and 64 remembered device records. Media subscriptions run
+separately from notification mirroring, so a missing desktop notification service
+does not block media control. Unknown playback states have no MPRIS equivalent
+and are omitted. The bridge maps the phone's advertised Play, Pause, PlayPause,
+Next, and Previous controls. The normalized model has no track ID, and the
+Android backend does not expose relative Seek. MPRIS seeking, Stop, rate changes,
+shuffle, repeat, OpenUri, and volume changes are unavailable.
+
+Position and duration convert from milliseconds to MPRIS microseconds. Position
+is the latest phone report. MPRIS track references identify local metadata
+revisions. They are not backend track IDs. Control requests use the existing
+media IPC and acknowledge daemon acceptance; later phone events remain
+authoritative. Commands are not retried. The daemon's call-triggered
+`playerctl --all-players pause` excludes Handover players so a local pause does
+not loop back to a remote phone.
 
 ## Media sessions
 

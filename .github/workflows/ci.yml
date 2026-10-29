@@ -49,6 +49,10 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build -p handover-gmessages --features loopback-test --bin handover-gmessages-helper
+      - name: Install desktop integration test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y dbus-daemon playerctl
       - run: cargo test --workspace
       - run: cargo test --locked --manifest-path third_party/ukey2/Cargo.toml -p ukey2_rs --features test_rustcrypto
 

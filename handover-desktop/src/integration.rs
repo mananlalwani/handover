@@ -81,14 +81,14 @@ impl Notifications {
     ) -> zbus::Result<()>;
 }
 
-struct Bus(Child);
+pub(super) struct Bus(Child);
 impl Drop for Bus {
     fn drop(&mut self) {
         let _ = self.0.start_kill();
     }
 }
 
-async fn private_bus() -> (Bus, String) {
+pub(super) async fn private_bus() -> (Bus, String) {
     let mut child = Command::new("dbus-daemon")
         .args(["--session", "--nofork", "--nopidfile", "--print-address"])
         .stdout(std::process::Stdio::piped())

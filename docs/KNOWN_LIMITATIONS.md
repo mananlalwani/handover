@@ -9,6 +9,12 @@ Handover is pre-1.0. Public interfaces may change.
   complete list. Older Android builds can send an unmarked truncated list.
 - Native media controls do not include phone volume. The phone can control
   Linux volume.
+- The optional desktop MPRIS bridge exports sessions with a known playback state and the
+  phone's advertised Play, Pause, Play/Pause, Next, and Previous controls.
+  Unknown playback sessions are omitted. Position is the latest phone report,
+  not a continuously updated estimate. MPRIS seeking is unavailable because
+  the normalized model has no track ID and the Android backend does not expose
+  relative Seek.
 - Android restricts background clipboard access. Use the companion's in-app
   send action when automatic phone-to-Linux clipboard access is unavailable.
 - Network discovery requires multicast reachability. Use manual `address:port`

@@ -1,5 +1,8 @@
-//! Disposable Linux notification client. The daemon remains the source of truth.
+//! Disposable Linux desktop integration client. The daemon remains the source of truth.
+mod media;
+mod media_player;
 mod model;
+pub use media::run as run_media;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,7 +63,22 @@ async fn session(
     let mut owner_changes = bus
         .receive_name_owner_changed_with_args(&[(0, SERVICE)])
         .await?;
-    let owner = bus.get_name_owner(SERVICE.try_into()?).await?;
+    let owner = loop {
+        match timeout(CALL_TIMEOUT, bus.get_name_owner(SERVICE.try_into()?)).await? {
+            Ok(owner) => break owner,
+            Err(zbus::fdo::Error::NameHasNoOwner(_)) => {
+                // Media integration also runs on desktops without a notification
+                // service. Wait for an owner instead of repeatedly reconnecting.
+                tokio::select! {
+                    change = owner_changes.next() => { change.ok_or("session bus disconnected")?; }
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                    }
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     // Pin the unique owner. IDs from a previous notification service must never
     // be sent to its replacement, where those IDs could identify unrelated apps.
     let proxy = Proxy::new(connection, owner, PATH, SERVICE).await?;
@@ -244,3 +262,6 @@ mod tests;
 
 #[cfg(test)]
 mod integration;
+
+#[cfg(test)]
+mod media_integration;

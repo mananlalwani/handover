@@ -1,5 +1,5 @@
 [Unit]
-Description=Handover desktop notification bridge
+Description=Handover desktop notification and media bridge
 After=graphical-session-pre.target handoverd.service
 Wants=handoverd.service
 PartOf=graphical-session.target

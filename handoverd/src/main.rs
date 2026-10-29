@@ -403,11 +403,11 @@ pub(crate) fn refresh_screensaver(state: &Arc<RwLock<StateStore>>) {
 fn pause_desktop_media() {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(async {
-            // playerctl talks to the local MPRIS session, unlike the Handover
-            // media map, which describes remote phone players.
+            // Pause local MPRIS players without sending a pause back through
+            // Handover's MPRIS proxy to a phone.
             let _ = tokio::task::spawn_blocking(|| {
                 let mut command = std::process::Command::new("playerctl");
-                command.args(["--all-players", "pause"]);
+                command.args(["--all-players", "--ignore-player=handover", "pause"]);
                 local_cmd::status_timeout(&mut command)
             })
             .await;
