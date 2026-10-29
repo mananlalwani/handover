@@ -19,14 +19,18 @@ const thread = { account_id: 'fixture', local_id: 'thread' };
 function service() {
     const requests = [];
     const context = vm.createContext({
-        protocolVersion: 1, historyRequests: {}, exhaustiveHistoryLoads: {}, historyFocus: null,
+        protocolVersion: 1, maxLineBytes: 2 * 1024 * 1024,
+        maxSnapshotBytes: 16 * 1024 * 1024, maxSnapshotChunks: 256,
+        snapshotBuffer: null, snapshotKind: '', snapshotBytes: 0, snapshotChunks: 0,
+        listAssembly: null,
+        historyRequests: {}, exhaustiveHistoryLoads: {}, historyFocus: null,
         messagingAccounts: [], conversations: [], outgoingOperations: [],
         automaticHistoryNext: null, conversationMessages: {}, conversationCursors: {},
         sendRequest: (type, fields) => { requests.push({type, fields}); return true; },
         historyProgress: () => {}, automaticHistoryPageTimer: { restart() {} },
         console, lastError: '', finishPending() {}, nativePending: false, pendingMessaging: null,
     });
-    vm.runInContext(['sameConversationId','conversationKey','dropAccountEntries','stopHistoryLoad','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
+    vm.runInContext(['utf8ByteLength','sameConversationId','conversationKey','dropAccountEntries','stopHistoryLoad','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
     return { context, requests };
 }
 test('automatic loading waits for the current page, then stops when focus moves', () => {

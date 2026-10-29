@@ -120,7 +120,7 @@ where
             done: false,
         });
         if serde_json::to_vec(&candidate)
-            .is_ok_and(|encoded| encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES)
+            .is_ok_and(|encoded| !fits_collection_line(encoded.len(), chunk.len()))
         {
             let last = chunk.pop().expect("chunk contains the candidate");
             if chunk.is_empty() {
@@ -178,7 +178,7 @@ where
         read_states: read_states.clone(),
     });
     if serde_json::to_vec(&full).map_or(true, |encoded| {
-        encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
+        encoded.len() + 1 > handover_ipc::PREFERRED_LINE_BYTES
     }) {
         write_snapshot_chunks(
             writer,
@@ -378,8 +378,19 @@ impl SnapshotChunkData {
         ServerMessage::new(payload)
     }
     fn fits(&self) -> bool {
-        serde_json::to_vec(&self.message(false))
-            .is_ok_and(|v| v.len() < handover_ipc::MAX_LINE_BYTES)
+        serde_json::to_vec(&self.message(false)).is_ok_and(|v| {
+            fits_collection_line(
+                v.len(),
+                self.devices.len()
+                    + self.notifications.len()
+                    + self.media_sessions.len()
+                    + self.calls.len()
+                    + self.messaging_accounts.len()
+                    + self.conversations.len()
+                    + self.typing_states.len()
+                    + self.read_states.len(),
+            )
+        })
     }
 }
 

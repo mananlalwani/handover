@@ -239,7 +239,7 @@ package puts binaries in `/usr/bin` and the user unit in
 `0700` and the socket with mode `0600`. The daemon removes a stale socket only
 when the existing path is a socket and no process accepts connections there.
 
-Protocol 1 uses newline-delimited JSON with a 1 MiB line limit. Every request
+Protocol 1 uses newline-delimited JSON with a 2 MiB hard line limit. Every request
 includes `protocol: 1` and a method. Basic methods include:
 
 - `hello`
@@ -271,7 +271,9 @@ update.
 The Rust IPC client limits aggregate subscription and recovery snapshots to
 16 MiB of serialized content and 256 chunks. Exceeding either limit returns
 `SnapshotTooLarge`; clients must reconnect and must not apply an incomplete
-snapshot. Each individual line remains limited to 1 MiB.
+snapshot. Ordinary batches still target 1 MiB. Individual records have a 2 MiB hard
+line bound to allow normalization to add scoped IDs and sender details. See the
+[desktop IPC contract](docs/ipc.md) for framing, recovery, and acceptance semantics.
 
 The daemon shares its maps through one `RwLock`. Backend callbacks take a short
 write lock, and IPC snapshots take a short read lock and clone the state.

@@ -9,8 +9,8 @@ Handover is pre-1.0. Public interfaces may change.
   complete list. Older Android builds can send an unmarked truncated list.
 - Native media controls do not include phone volume. The phone can control
   Linux volume.
-- The optional desktop MPRIS bridge exports sessions with a known playback state and the
-  phone's advertised Play, Pause, Play/Pause, Next, and Previous controls.
+- The optional desktop MPRIS bridge exports sessions with a known playback
+  state and the phone's advertised Play, Pause, Play/Pause, Next, and Previous controls.
   Unknown playback sessions are omitted. Position is the latest phone report,
   not a continuously updated estimate. MPRIS seeking is unavailable because
   the normalized model has no track ID and the Android backend does not expose
@@ -21,8 +21,9 @@ Handover is pre-1.0. Public interfaces may change.
   entry when discovery is blocked, including across Tailscale networks.
 - The Quickshell example is a reference client, not a stable desktop application.
 - Unix-socket IPC uses protocol 1 and is experimental for outside clients.
-- Large snapshots use bounded chunks. A single oversized record can still exceed
-  the IPC line limit.
+- IPC snapshots are bounded to 16 MiB and 256 chunks. Ordinary batches target
+  1 MiB; individual normalized records can use a 2 MiB line. Larger records or
+  assemblies fail instead of being truncated. See the [IPC contract](ipc.md).
 
 ## Google Messages
 

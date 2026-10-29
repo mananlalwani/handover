@@ -74,10 +74,24 @@ test('service preserves transfer IDs while keeping existing acceptance notificat
     const start = source.indexOf('    function handleLine(');
     const end = source.indexOf('\n    Timer {', start);
     const calls = [];
-    const service = vm.createContext({ protocolVersion: 1,
+    const service = vm.createContext({ protocolVersion: 1, maxLineBytes: 2 * 1024 * 1024,
+        maxSnapshotBytes: 16 * 1024 * 1024, maxSnapshotChunks: 256,
+        snapshotBuffer: null, snapshotKind: '', snapshotBytes: 0, snapshotChunks: 0,
+        listAssembly: null,
         pendingCommand: { deviceId: 'phone', method: 'share.file' },
         shareAccepted: (...args) => calls.push(args), finishPending: (...args) => calls.push(args) });
-    vm.runInContext(source.slice(start, end), service);
+    const helpers = ['utf8ByteLength'].map(name => {
+        const helperStart = source.indexOf(`    function ${name}(`);
+        const body = source.indexOf('{', helperStart);
+        let depth = 1, helperEnd = body + 1;
+        while (depth > 0) {
+            if (source[helperEnd] === '{') depth++;
+            if (source[helperEnd] === '}') depth--;
+            helperEnd++;
+        }
+        return source.slice(helperStart, helperEnd);
+    }).join('\n');
+    vm.runInContext(helpers + '\n' + source.slice(start, end), service);
     service.handleLine(JSON.stringify({ protocol: 1, type: 'share_accepted', device_id: 'other', transfer_id: 'wrong' }));
     assert.equal(calls.length, 0);
     service.handleLine(JSON.stringify({ protocol: 1, type: 'share_accepted', device_id: 'phone', transfer_id: 'transfer' }));

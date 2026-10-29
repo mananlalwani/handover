@@ -44,13 +44,17 @@ use transfers::*;
 pub(crate) const EVENT_CAPACITY: usize = 64;
 pub(crate) const MAX_CLIENTS: usize = 64;
 pub(crate) const PRE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(15);
-/// Upper bound for one history response line. Readers reject lines
-/// over 1 MiB, so a legal page (100 messages of up to 8,000
-/// four-byte characters) must be cut to fit before writing. The
-/// cursor always advances to the oldest kept message, so paging
-/// overlaps instead of gapping.
+/// Preferred history-page budget. Large pages are cut newest first, with a
+/// cursor to the oldest retained message. A single admitted message may use
+/// the IPC hard line bound when normalization grew it past the helper limit.
 pub(crate) const MAX_HISTORY_LINE_BYTES: usize = 768 * 1024;
 pub(crate) const MAX_OUTGOING_CHUNK_ITEMS: usize = 256;
+
+/// Batch at the existing line target, with bounded headroom for one record.
+fn fits_collection_line(encoded_len: usize, records: usize) -> bool {
+    encoded_len < handover_ipc::PREFERRED_LINE_BYTES
+        || (records == 1 && encoded_len < handover_ipc::MAX_LINE_BYTES)
+}
 
 /// Cut a history page to the line budget, newest messages first. The
 /// returned cursor addresses the oldest kept message, so the next
@@ -444,9 +448,10 @@ where
             action,
             address,
         } => route_call(state, device_id, action, address),
-        Method::NotificationsList => ServerPayload::Notifications {
-            notifications: snapshot(state).notifications,
-        },
+        Method::NotificationsList => {
+            write_notifications_response(writer, snapshot(state).notifications).await?;
+            return Ok(true);
+        }
         Method::NotificationSend {
             device_id,
             app,
@@ -663,9 +668,10 @@ where
         Method::CallsList => ServerPayload::Calls {
             calls: snapshot(state).calls,
         },
-        Method::MediaList => ServerPayload::Media {
-            media_sessions: snapshot(state).media_sessions,
-        },
+        Method::MediaList => {
+            write_media_response(writer, snapshot(state).media_sessions).await?;
+            return Ok(true);
+        }
         Method::Subscribe {
             shares,
             media,
@@ -917,7 +923,7 @@ where
             read_states: read_states.clone(),
         });
         if serde_json::to_vec(&full).map_or(true, |encoded| {
-            encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
+            encoded.len() + 1 > handover_ipc::PREFERRED_LINE_BYTES
         }) {
             write_state_chunks(
                 writer,
@@ -963,3 +969,9 @@ where
 
 #[cfg(test)]
 mod framing_tests;
+
+#[cfg(test)]
+mod size_tests;
+
+#[cfg(test)]
+mod collection_size_tests;

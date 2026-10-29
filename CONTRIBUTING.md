@@ -58,11 +58,19 @@ Run the Android checks from `android/`:
 Run the QML check from the repository root:
 
 ```sh
-qmllint -I /usr/lib/qt6/qml quickshell/HandoverService.qml quickshell/example.qml quickshell/pages/*.qml
+qmllint -I /usr/lib/qt6/qml quickshell/HandoverService.qml quickshell/example.qml quickshell/send.qml quickshell/pages/*.qml
 ```
 
-Run all checks affected by a change. Report checks that are unavailable on the
-current machine.
+The JavaScript checks and offscreen send-window fixture also run without a phone:
+
+```sh
+node --test quickshell/tests/*.test.mjs
+python3 scripts/test-handover-send.py
+```
+
+The [phone validation handoff](docs/phone-validation.md) covers the remaining
+physical-device and audible-playback checks. Run all checks affected by a change.
+Report checks that are unavailable on the current machine.
 
 ## Running from the source tree
 

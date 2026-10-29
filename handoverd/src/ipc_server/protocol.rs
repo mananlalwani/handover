@@ -30,7 +30,7 @@ where
                 operations: chunk.clone(),
                 done: false,
             });
-            if serde_json::to_vec(&probe)?.len() < handover_ipc::MAX_LINE_BYTES {
+            if fits_collection_line(serde_json::to_vec(&probe)?.len(), chunk.len()) {
                 break;
             }
             let Some(last) = chunk.pop() else {
@@ -67,7 +67,7 @@ pub(crate) async fn write_contacts_response<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    if contacts_line_len(&contacts, None)? < handover_ipc::MAX_LINE_BYTES {
+    if fits_collection_line(contacts_line_len(&contacts, None)?, contacts.len()) {
         return write_json_line(
             writer,
             &ServerMessage::new(ServerPayload::Contacts { contacts }),
@@ -78,7 +78,7 @@ where
     let mut chunk = Vec::new();
     for contact in contacts {
         chunk.push(contact);
-        if contacts_line_len(&chunk, Some(false))? >= handover_ipc::MAX_LINE_BYTES {
+        if !fits_collection_line(contacts_line_len(&chunk, Some(false))?, chunk.len()) {
             let last = chunk.pop().ok_or(IpcError::LineTooLong)?;
             if chunk.is_empty() {
                 return Err(IpcError::LineTooLong);
@@ -92,7 +92,7 @@ where
             )
             .await?;
             chunk = vec![last];
-            if contacts_line_len(&chunk, Some(false))? >= handover_ipc::MAX_LINE_BYTES {
+            if !fits_collection_line(contacts_line_len(&chunk, Some(false))?, chunk.len()) {
                 return Err(IpcError::LineTooLong);
             }
         }
@@ -139,6 +139,88 @@ fn contacts_line_len(
         payload,
     })?
     .len())
+}
+
+pub(crate) async fn write_notifications_response<W>(
+    writer: &mut W,
+    notifications: Vec<handover_core::Notification>,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_list_response(
+        writer,
+        notifications,
+        |items| ServerPayload::Notifications {
+            notifications: items.to_vec(),
+        },
+        |items, done| ServerPayload::NotificationsChunk {
+            notifications: items.to_vec(),
+            done,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn write_media_response<W>(
+    writer: &mut W,
+    media_sessions: Vec<handover_core::MediaSession>,
+) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_list_response(
+        writer,
+        media_sessions,
+        |items| ServerPayload::Media {
+            media_sessions: items.to_vec(),
+        },
+        |items, done| ServerPayload::MediaChunk {
+            media_sessions: items.to_vec(),
+            done,
+        },
+    )
+    .await
+}
+
+async fn write_list_response<T, W, Full, Chunk>(
+    writer: &mut W,
+    items: Vec<T>,
+    full_payload: Full,
+    chunk_payload: Chunk,
+) -> Result<(), IpcError>
+where
+    T: Clone,
+    W: AsyncWrite + Unpin,
+    Full: Fn(&[T]) -> ServerPayload,
+    Chunk: Fn(&[T], bool) -> ServerPayload,
+{
+    let full = ServerMessage::new(full_payload(&items));
+    if fits_collection_line(serde_json::to_vec(&full)?.len(), items.len()) {
+        return write_json_line(writer, &full).await;
+    }
+
+    let mut chunk = Vec::new();
+    for item in items {
+        chunk.push(item);
+        let candidate = ServerMessage::new(chunk_payload(&chunk, false));
+        if fits_collection_line(serde_json::to_vec(&candidate)?.len(), chunk.len()) {
+            continue;
+        }
+
+        let last = chunk.pop().ok_or(IpcError::LineTooLong)?;
+        if chunk.is_empty() {
+            return Err(IpcError::LineTooLong);
+        }
+        write_json_line(writer, &ServerMessage::new(chunk_payload(&chunk, false))).await?;
+        chunk = vec![last];
+        let singleton = ServerMessage::new(chunk_payload(&chunk, false));
+        if !fits_collection_line(serde_json::to_vec(&singleton)?.len(), 1) {
+            return Err(IpcError::LineTooLong);
+        }
+    }
+
+    write_json_line(writer, &ServerMessage::new(chunk_payload(&chunk, true))).await
 }
 
 pub(crate) fn snapshot(state: &Arc<RwLock<StateStore>>) -> StateSnapshot {
@@ -435,7 +517,7 @@ mod contacts_tests {
         assert!(lines.len() > 1);
         let mut all = Vec::new();
         for (index, line) in lines.iter().enumerate() {
-            assert!(line.len() < handover_ipc::MAX_LINE_BYTES);
+            assert!(line.len() < handover_ipc::PREFERRED_LINE_BYTES);
             let message: ServerMessage = serde_json::from_slice(line).expect("valid server line");
             let ServerPayload::ContactsChunk { contacts, done } = message.payload else {
                 panic!("large response uses contacts chunks");

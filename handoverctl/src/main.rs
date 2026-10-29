@@ -1235,9 +1235,11 @@ fn print_message(payload: ServerPayload) {
         ServerPayload::Hello { .. }
         | ServerPayload::Devices { .. }
         | ServerPayload::Notifications { .. }
+        | ServerPayload::NotificationsChunk { .. }
         | ServerPayload::Contacts { .. }
         | ServerPayload::ContactsChunk { .. }
         | ServerPayload::Media { .. }
+        | ServerPayload::MediaChunk { .. }
         | ServerPayload::Accounts { .. }
         | ServerPayload::Conversations { .. }
         | ServerPayload::ConversationsChunk { .. }

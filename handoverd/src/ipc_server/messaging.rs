@@ -559,7 +559,7 @@ where
         conversations: conversations.clone(),
     });
     if serde_json::to_vec(&response).map_or(true, |encoded| {
-        encoded.len() + 1 > handover_ipc::MAX_LINE_BYTES
+        encoded.len() + 1 > handover_ipc::PREFERRED_LINE_BYTES
     }) {
         write_conversation_chunks(writer, conversations).await?;
     } else {
@@ -1111,7 +1111,7 @@ mod tests {
             .filter(|line| !line.is_empty());
         let mut total_notifications = 0;
         for line in lines {
-            assert!(line.len() < handover_ipc::MAX_LINE_BYTES);
+            assert!(line.len() < handover_ipc::PREFERRED_LINE_BYTES);
             let message: ServerMessage = serde_json::from_slice(line).expect("valid chunk");
             if let ServerPayload::SnapshotChunk { notifications, .. } = message.payload {
                 total_notifications += notifications.len();

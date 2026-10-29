@@ -167,7 +167,8 @@ download. Tarball installs offer this component interactively, or accept
 ## Development and support
 
 See [Contributing](CONTRIBUTING.md) for build and test instructions,
-[Design](DESIGN.md) for the architecture, and the [Roadmap](ROADMAP.md) and
+[Design](DESIGN.md) for the architecture, the [desktop IPC contract](docs/ipc.md)
+for client integration, and the [Roadmap](ROADMAP.md) and
 [Vision](VISION.md) for planned work.
 
 Report bugs through [GitHub Issues](https://github.com/mananlalwani/handover/issues).

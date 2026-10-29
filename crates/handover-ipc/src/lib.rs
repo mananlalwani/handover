@@ -18,13 +18,13 @@ use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Maximum decoded IPC line: 1 MiB. Proven floor: a real 86-thread
-/// conversation list serializes to ~71 KiB, and full message windows
-/// with bodies exceed the old 64 KiB bound deterministically, which made
-/// subscribe/snapshot/history undecodable for real libraries. The daemon
-/// already writes unbounded lines; this aligns readers. Per-connection
-/// buffer cost is bounded by this cap.
-pub const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Preferred size for ordinary collection responses and snapshot chunks.
+/// Keeping batches at 1 MiB preserves their existing size for older clients.
+pub const PREFERRED_LINE_BYTES: usize = 1024 * 1024;
+/// Hard line bound. A 1 MiB helper event can grow during normalization when
+/// message scopes and sender metadata are added. Individual records may use
+/// this headroom without changing payloads or inventing truncated content.
+pub const MAX_LINE_BYTES: usize = 2 * 1024 * 1024;
 /// Aggregate bound for a chunked subscription or recovery snapshot. Exceeding
 /// either limit fails the read; an incomplete snapshot is never published.
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
@@ -440,6 +440,10 @@ pub enum ServerPayload {
     Notifications {
         notifications: Vec<Notification>,
     },
+    NotificationsChunk {
+        notifications: Vec<Notification>,
+        done: bool,
+    },
     Contacts {
         contacts: Vec<handover_core::Contact>,
     },
@@ -466,6 +470,10 @@ pub enum ServerPayload {
     },
     Media {
         media_sessions: Vec<MediaSession>,
+    },
+    MediaChunk {
+        media_sessions: Vec<MediaSession>,
+        done: bool,
     },
     Subscribed {
         devices: Vec<Device>,
@@ -742,10 +750,10 @@ pub enum IpcError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(JsonPositionError),
     #[error("IPC message exceeded {MAX_LINE_BYTES} bytes")]
     LineTooLong,
-    #[error("IPC snapshot exceeded its byte or chunk limit")]
+    #[error("IPC collection snapshot exceeded its byte or chunk limit")]
     SnapshotTooLarge,
     #[error("IPC write timed out")]
     WriteTimeout,
@@ -759,6 +767,23 @@ pub enum IpcError {
         message: String,
         conversation_id: Option<ConversationId>,
     },
+}
+
+/// Parser location without the rejected value, which may be private content.
+#[derive(Debug, Error)]
+#[error("invalid JSON at line {line}, column {column}")]
+pub struct JsonPositionError {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl From<serde_json::Error> for IpcError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(JsonPositionError {
+            line: error.line(),
+            column: error.column(),
+        })
+    }
 }
 
 pub fn runtime_directory() -> Result<PathBuf, IpcError> {
@@ -1099,35 +1124,25 @@ impl Client {
 
     pub async fn notifications(&mut self) -> Result<Vec<Notification>, IpcError> {
         self.send(Method::NotificationsList).await?;
-        match self.receive().await?.payload {
-            ServerPayload::Notifications { notifications } => Ok(notifications),
-            payload => Err(unexpected(payload)),
-        }
+        self.collect_list(|payload| match payload {
+            ServerPayload::Notifications { notifications } => Some((notifications, true)),
+            ServerPayload::NotificationsChunk {
+                notifications,
+                done,
+            } => Some((notifications, done)),
+            _ => None,
+        })
+        .await
     }
 
     pub async fn contacts(&mut self) -> Result<Vec<handover_core::Contact>, IpcError> {
         self.send(Method::ContactsList).await?;
-        match self.receive().await?.payload {
-            ServerPayload::Contacts { contacts } => Ok(contacts),
-            ServerPayload::ContactsChunk { contacts, done } => {
-                let mut all = contacts;
-                let mut done = done;
-                while !done {
-                    match self.receive().await?.payload {
-                        ServerPayload::ContactsChunk {
-                            contacts,
-                            done: next,
-                        } => {
-                            all.extend(contacts);
-                            done = next;
-                        }
-                        payload => return Err(unexpected(payload)),
-                    }
-                }
-                Ok(all)
-            }
-            payload => Err(unexpected(payload)),
-        }
+        self.collect_list(|payload| match payload {
+            ServerPayload::Contacts { contacts } => Some((contacts, true)),
+            ServerPayload::ContactsChunk { contacts, done } => Some((contacts, done)),
+            _ => None,
+        })
+        .await
     }
 
     pub async fn sync_contacts(&mut self, device_id: DeviceId) -> Result<(), IpcError> {
@@ -1197,10 +1212,15 @@ impl Client {
 
     pub async fn media_sessions(&mut self) -> Result<Vec<MediaSession>, IpcError> {
         self.send(Method::MediaList).await?;
-        match self.receive().await?.payload {
-            ServerPayload::Media { media_sessions } => Ok(media_sessions),
-            payload => Err(unexpected(payload)),
-        }
+        self.collect_list(|payload| match payload {
+            ServerPayload::Media { media_sessions } => Some((media_sessions, true)),
+            ServerPayload::MediaChunk {
+                media_sessions,
+                done,
+            } => Some((media_sessions, done)),
+            _ => None,
+        })
+        .await
     }
 
     pub async fn media_command(&mut self, command: MediaCommand) -> Result<(), IpcError> {
@@ -1465,30 +1485,15 @@ impl Client {
     ) -> Result<Vec<Conversation>, IpcError> {
         self.send(Method::MessagesConversations { account_id })
             .await?;
-        match self.receive().await?.payload {
-            ServerPayload::Conversations { conversations } => Ok(conversations),
+        self.collect_list(|payload| match payload {
+            ServerPayload::Conversations { conversations } => Some((conversations, true)),
             ServerPayload::ConversationsChunk {
                 conversations,
                 done,
-            } => {
-                let mut all = conversations;
-                let mut done = done;
-                while !done {
-                    match self.receive().await?.payload {
-                        ServerPayload::ConversationsChunk {
-                            conversations,
-                            done: chunk_done,
-                        } => {
-                            all.extend(conversations);
-                            done = chunk_done;
-                        }
-                        payload => return Err(unexpected(payload)),
-                    }
-                }
-                Ok(all)
-            }
-            payload => Err(unexpected(payload)),
-        }
+            } => Some((conversations, done)),
+            _ => None,
+        })
+        .await
     }
 
     pub async fn messaging_history(
@@ -1517,28 +1522,36 @@ impl Client {
     /// arrive as bounded chunks and are collected here.
     pub async fn messaging_outgoing(&mut self) -> Result<Vec<OutgoingOperation>, IpcError> {
         self.send(Method::MessagesOutgoing).await?;
-        let first = self.receive().await?.payload;
-        let ServerPayload::OutgoingOperations {
-            operations,
-            mut done,
-        } = first
-        else {
-            return Err(unexpected(first));
-        };
-        let mut all = operations;
-        while !done {
-            match self.receive().await?.payload {
-                ServerPayload::OutgoingOperations {
-                    operations,
-                    done: next,
-                } => {
-                    all.extend(operations);
-                    done = next;
-                }
-                payload => return Err(unexpected(payload)),
+        self.collect_list(|payload| match payload {
+            ServerPayload::OutgoingOperations { operations, done } => Some((operations, done)),
+            _ => None,
+        })
+        .await
+    }
+
+    async fn collect_list<T>(
+        &mut self,
+        decode: impl Fn(ServerPayload) -> Option<(Vec<T>, bool)>,
+    ) -> Result<Vec<T>, IpcError> {
+        let mut budget = SnapshotBudget::default();
+        let mut kind = None;
+        let mut all = Vec::new();
+        loop {
+            let message = self.receive().await?;
+            budget.record(&message)?;
+            let current_kind = std::mem::discriminant(&message.payload);
+            if kind.is_some_and(|kind| kind != current_kind) {
+                return Err(unexpected(message.payload));
+            }
+            kind = Some(current_kind);
+            let (items, done) = decode(message.payload).ok_or_else(|| {
+                IpcError::UnexpectedResponse("message type does not match the request".into())
+            })?;
+            all.extend(items);
+            if done {
+                return Ok(all);
             }
         }
-        Ok(all)
     }
 
     async fn expect_message_accepted(&mut self) -> Result<String, IpcError> {
@@ -1866,8 +1879,8 @@ async fn receive_message(reader: &mut BufReader<OwnedReadHalf>) -> Result<Server
     Ok(message)
 }
 
-fn unexpected(payload: ServerPayload) -> IpcError {
-    IpcError::UnexpectedResponse(format!("{payload:?}"))
+fn unexpected(_payload: ServerPayload) -> IpcError {
+    IpcError::UnexpectedResponse("message type does not match the request".into())
 }
 
 #[cfg(test)]
@@ -2499,3 +2512,6 @@ mod tests {
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod hardening_tests;

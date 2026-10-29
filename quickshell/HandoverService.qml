@@ -8,6 +8,9 @@ Singleton {
     id: root
 
     readonly property int protocolVersion: 1
+    readonly property int maxLineBytes: 2 * 1024 * 1024
+    readonly property int maxSnapshotBytes: 16 * 1024 * 1024
+    readonly property int maxSnapshotChunks: 256
     readonly property string socketPath: String(Quickshell.env("XDG_RUNTIME_DIR") || "")
         + "/handover/handoverd.sock"
     readonly property bool connected: socketLoader.item
@@ -92,6 +95,10 @@ Singleton {
     property var pendingPeers: []
     property var audioStreams: []
     property var snapshotBuffer: null
+    property var listAssembly: null
+    property string snapshotKind: ""
+    property int snapshotBytes: 0
+    property int snapshotChunks: 0
     property string lastError: ""
     property string nativeNotice: ""
     property bool nativePending: false
@@ -686,7 +693,8 @@ Singleton {
         customCommands = [];
         customResult = null;
         pendingPeers = [];
-        snapshotBuffer = null;
+        clearSnapshotAssembly();
+        listAssembly = null;
         messagingAccounts = [];
         conversations = [];
         conversationMessages = {};
@@ -709,6 +717,40 @@ Singleton {
             pendingMessaging = null;
         }
         retryTimer.restart();
+    }
+
+    function clearSnapshotAssembly() {
+        snapshotBuffer = null;
+        snapshotKind = "";
+        snapshotBytes = 0;
+        snapshotChunks = 0;
+    }
+
+    // Count UTF-8 bytes without allocating an encoded byte array.
+    function utf8ByteLength(value) {
+        let bytes = 0;
+        for (let index = 0; index < value.length; index++) {
+            const unit = value.charCodeAt(index);
+            if (unit < 0x80) {
+                bytes++;
+            } else if (unit < 0x800) {
+                bytes += 2;
+            } else if (unit >= 0xd800 && unit <= 0xdbff
+                    && index + 1 < value.length) {
+                const next = value.charCodeAt(index + 1);
+                if (next >= 0xdc00 && next <= 0xdfff) {
+                    bytes += 4;
+                    index++;
+                } else {
+                    bytes += 3;
+                }
+            } else {
+                bytes += 3;
+            }
+            if (bytes > maxLineBytes)
+                return bytes;
+        }
+        return bytes;
     }
 
     function replaceDevice(device) {
@@ -770,7 +812,8 @@ Singleton {
             snapshotBuffer = next;
             return;
         }
-        snapshotBuffer = null;
+        clearSnapshotAssembly();
+        outgoingOperations = [];
         devices = next.devices;
         notifications = next.notifications;
         mediaSessions = next.media_sessions;
@@ -796,23 +839,93 @@ Singleton {
     }
 
     function handleLine(line) {
+        // SplitParser calls this after a newline; this caps parsed lines and
+        // retained snapshots, not its own pre-newline buffer.
+        const lineBytes = utf8ByteLength(line);
+        if (lineBytes > maxLineBytes) {
+            scheduleReconnect("daemon message exceeds protocol limit");
+            return;
+        }
         let message;
         try {
             message = JSON.parse(line);
         } catch (error) {
-            console.warn("Handover: invalid JSON from daemon:", error);
+            scheduleReconnect("daemon sent invalid JSON");
+            return;
+        }
+
+        if (!message || typeof message !== "object" || Array.isArray(message)
+                || typeof message.type !== "string") {
+            scheduleReconnect("daemon sent invalid message");
             return;
         }
 
         if (message.protocol !== protocolVersion) {
-            scheduleReconnect("unsupported daemon protocol " + message.protocol);
+            scheduleReconnect("unsupported daemon protocol");
             return;
+        }
+
+        const isSnapshotChunk = message.type === "subscribed_chunk"
+            || message.type === "snapshot_chunk";
+        const isListChunk = message.type === "notifications_chunk"
+            || message.type === "media_chunk";
+        if (snapshotBuffer && (!isSnapshotChunk || message.type !== snapshotKind)) {
+            scheduleReconnect("daemon interrupted snapshot sequence");
+            return;
+        }
+        if (listAssembly && (!isListChunk || message.type !== listAssembly.kind)) {
+            scheduleReconnect("daemon interrupted list sequence");
+            return;
+        }
+        if (isSnapshotChunk && listAssembly) {
+            scheduleReconnect("daemon interrupted list sequence");
+            return;
+        }
+        if (isListChunk && snapshotBuffer) {
+            scheduleReconnect("daemon interrupted snapshot sequence");
+            return;
+        }
+        if (isListChunk) {
+            const field = message.type === "notifications_chunk" ? "notifications" : "media_sessions";
+            if (!Array.isArray(message[field]) || typeof message.done !== "boolean") {
+                scheduleReconnect("daemon sent invalid list chunk");
+                return;
+            }
+            const nextBytes = (listAssembly ? listAssembly.bytes : 0) + lineBytes;
+            const nextChunks = (listAssembly ? listAssembly.chunks : 0) + 1;
+            if (nextBytes > maxSnapshotBytes || nextChunks > maxSnapshotChunks) {
+                scheduleReconnect("daemon list exceeds protocol limit");
+                return;
+            }
+            const items = (listAssembly ? listAssembly.items : []).concat(message[field]);
+            if (message.done) {
+                if (message.type === "notifications_chunk")
+                    notifications = items;
+                else
+                    mediaSessions = items;
+                listAssembly = null;
+            } else {
+                listAssembly = { kind: message.type, items, bytes: nextBytes, chunks: nextChunks };
+            }
+            return;
+        }
+        if (isSnapshotChunk) {
+            const kind = message.type;
+            if (!snapshotBuffer)
+                snapshotKind = kind;
+            const nextBytes = snapshotBytes + lineBytes;
+            if (nextBytes > maxSnapshotBytes || snapshotChunks >= maxSnapshotChunks) {
+                scheduleReconnect("daemon snapshot exceeds protocol limit");
+                return;
+            }
+            snapshotBytes = nextBytes;
+            snapshotChunks++;
         }
 
         switch (message.type) {
         case "hello":
             if (!message.supported_protocols.includes(protocolVersion))
-                scheduleReconnect("daemon does not support protocol " + protocolVersion);
+                scheduleReconnect("daemon does not support this protocol");
             break;
         case "devices":
             devices = message.devices || [];
@@ -873,15 +986,12 @@ Singleton {
             break;
         case "subscribed":
         case "snapshot":
-            outgoingOperations = [];
             applySnapshot(message, false);
             if (message.type === "snapshot")
                 refreshContacts();
             break;
         case "subscribed_chunk":
         case "snapshot_chunk":
-            if (!snapshotBuffer)
-                outgoingOperations = [];
             applySnapshot(message, true);
             if (message.type === "snapshot_chunk" && message.done === true)
                 refreshContacts();
@@ -1140,7 +1250,7 @@ Singleton {
                 finishMessaging(false, lastError);
             break;
         default:
-            console.warn("Handover: unknown daemon message type", message.type);
+            console.warn("Handover: unknown daemon message type");
         }
     }
 
