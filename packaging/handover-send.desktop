@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Send to phone
+Comment=Send a file or link to a paired Handover device
+Icon=network-wireless
+Categories=Utility;
+Exec=handover-gui --send %u
+Terminal=false
+Type=Application
+MimeType=application/octet-stream;

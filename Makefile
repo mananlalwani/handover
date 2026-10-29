@@ -41,6 +41,7 @@ install-files:
 	install -Dm755 scripts/handover-gui $(BIN_DIR)/handover-gui
 	printf '%s\n' '$(USER_DATA_HOME)' > $(BIN_DIR)/handover-gui.data-home
 	install -Dm644 packaging/handover.desktop $(APPLICATIONS_DIR)/handover.desktop
+	install -Dm644 packaging/handover-send.desktop $(APPLICATIONS_DIR)/handover-send.desktop
 	install -Dm644 docs/man/handoverctl.1 $(MAN_DIR)/handoverctl.1
 	install -Dm644 docs/man/handoverd.8 $(MAN8_DIR)/handoverd.8
 	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
@@ -51,6 +52,7 @@ install-files:
 	install -Dm644 quickshell/MessageList.qml $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
 	install -Dm644 quickshell/*.js $(QUICKSHELL_INSTALL_DIR)/
 	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
+	install -Dm644 quickshell/send.qml $(QUICKSHELL_INSTALL_DIR)/send.qml
 	install -Dm644 quickshell/README.md $(QUICKSHELL_INSTALL_DIR)/README.md
 	install -d $(QUICKSHELL_INSTALL_DIR)/pages
 	install -Dm644 quickshell/pages/*.qml $(QUICKSHELL_INSTALL_DIR)/pages/
@@ -88,6 +90,7 @@ uninstall-user:
 	rm -f $(BIN_DIR)/handover-gui
 	rm -f $(BIN_DIR)/handover-gui.data-home
 	rm -f $(APPLICATIONS_DIR)/handover.desktop
+	rm -f $(APPLICATIONS_DIR)/handover-send.desktop
 	rm -f $(MAN_DIR)/handoverctl.1
 	rm -f $(MAN8_DIR)/handoverd.8
 	rm -f $(LICENSE_DIR)/LICENSE $(LICENSE_DIR)/ukey2/LICENSE $(LICENSE_DIR)/ukey2/README.md
@@ -100,6 +103,7 @@ uninstall-user:
 	rm -f $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/*.js
 	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/send.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/README.md
 	rm -f $(QUICKSHELL_INSTALL_DIR)/pages/*.qml
 	rm -f $(GOOGLE_MESSAGES_TOOLS_DIR)/install_native_probe.py

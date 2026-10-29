@@ -98,6 +98,8 @@ Singleton {
     property var pendingCommand: null
     signal commandFinished(string method, var notificationId, bool success, string error)
     signal shareFinished(string method, string deviceId, bool success, string error)
+    signal shareAccepted(string method, string deviceId, string transferId)
+    signal sharesInterrupted()
     signal mediaFinished(string action, var mediaId, bool success, string error)
     // Messaging state. Conversations belong to messaging accounts, never to
     // physical devices. Message windows are keyed by "account:thread".
@@ -665,6 +667,7 @@ Singleton {
     }
 
     function scheduleReconnect(message) {
+        sharesInterrupted();
         lastError = message;
         audioStreams = [];
         devices = [];
@@ -971,8 +974,10 @@ Singleton {
             lastShareResult = message.result;
             break;
         case "share_accepted":
-            if (pendingCommand && pendingCommand.deviceId === message.device_id)
+            if (pendingCommand && pendingCommand.deviceId === message.device_id) {
+                shareAccepted(pendingCommand.method, message.device_id, message.transfer_id || "");
                 finishPending(true, "");
+            }
             break;
         case "accounts":
             break;

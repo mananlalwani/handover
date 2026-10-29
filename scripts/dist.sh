@@ -59,6 +59,8 @@ install -Dm644 packaging/systemd/handoverd.local.service \
 	"$STAGE_DIR/share/systemd/user/handoverd.service"
 install -Dm644 packaging/handover.desktop \
 	"$STAGE_DIR/share/applications/handover.desktop"
+install -Dm644 packaging/handover-send.desktop \
+	"$STAGE_DIR/share/applications/handover-send.desktop"
 install -Dm644 quickshell/HandoverService.qml \
 	"$STAGE_DIR/share/handover/quickshell/HandoverService.qml"
 install -Dm644 quickshell/MessageList.qml \
@@ -66,6 +68,8 @@ install -Dm644 quickshell/MessageList.qml \
 install -Dm644 quickshell/*.js "$STAGE_DIR/share/handover/quickshell/"
 install -Dm644 quickshell/example.qml \
 	"$STAGE_DIR/share/handover/quickshell/example.qml"
+install -Dm644 quickshell/send.qml \
+	"$STAGE_DIR/share/handover/quickshell/send.qml"
 install -Dm644 quickshell/README.md \
 	"$STAGE_DIR/share/handover/quickshell/README.md"
 install -Dm644 quickshell/pages/*.qml \

@@ -8,9 +8,32 @@ if test -f "$script_dir/handover-gui.data-home"; then
 fi
 
 qml_path=
+send_mode=0
+share_resource=
+if test "${1-}" = --send; then
+	send_mode=1
+	shift
+	if test "$#" -gt 1; then
+		echo "handover-gui --send accepts at most one file or URL" >&2
+		exit 2
+	fi
+	if test "$#" -eq 1; then
+		share_resource=$1
+		case "$share_resource" in
+			*://*|/*) ;;
+			*) share_resource=$PWD/$share_resource ;;
+		esac
+	fi
+fi
+
+if test "$send_mode" -eq 1; then
+	qml_name=send.qml
+else
+	qml_name=example.qml
+fi
 for data_home in "${XDG_DATA_HOME:-${HOME}/.local/share}" "$configured_data_home" /usr/share; do
-	if test -n "$data_home" && test -f "$data_home/handover/quickshell/example.qml"; then
-		qml_path=$data_home/handover/quickshell/example.qml
+	if test -n "$data_home" && test -f "$data_home/handover/quickshell/$qml_name"; then
+		qml_path=$data_home/handover/quickshell/$qml_name
 		break
 	fi
 done
@@ -18,6 +41,11 @@ done
 if test -z "$qml_path"; then
 	echo "Handover's Quickshell interface is not installed." >&2
 	exit 1
+fi
+
+if test "$send_mode" -eq 1; then
+	export HANDOVER_SHARE_RESOURCE=$share_resource
+	exec quickshell --path "$qml_path"
 fi
 
 exec quickshell --path "$qml_path" "$@"

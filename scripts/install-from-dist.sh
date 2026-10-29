@@ -45,6 +45,8 @@ fi
 printf '%s\n' "$USER_DATA_HOME" > "$PREFIX/bin/handover-gui.data-home"
 install -Dm644 "$ROOT/share/applications/handover.desktop" \
 	"$USER_DATA_HOME/applications/handover.desktop"
+install -Dm644 "$ROOT/share/applications/handover-send.desktop" \
+	"$USER_DATA_HOME/applications/handover-send.desktop"
 install -Dm644 "$ROOT/share/man/man1/handoverctl.1" "$PREFIX/share/man/man1/handoverctl.1"
 install -Dm644 "$ROOT/share/man/man8/handoverd.8" "$PREFIX/share/man/man8/handoverd.8"
 install -Dm644 "$ROOT/share/bash-completion/completions/handoverctl" \
@@ -64,6 +66,8 @@ install -Dm644 "$ROOT/share/handover/quickshell/"*.js \
 	"$USER_DATA_HOME/handover/quickshell/"
 install -Dm644 "$ROOT/share/handover/quickshell/example.qml" \
 	"$USER_DATA_HOME/handover/quickshell/example.qml"
+install -Dm644 "$ROOT/share/handover/quickshell/send.qml" \
+	"$USER_DATA_HOME/handover/quickshell/send.qml"
 install -Dm644 "$ROOT/share/handover/quickshell/README.md" \
 	"$USER_DATA_HOME/handover/quickshell/README.md"
 install -Dm644 "$ROOT/share/handover/quickshell/pages/"*.qml \
