@@ -200,6 +200,34 @@ fn reactions_require_consistent_counts() {
 }
 
 #[test]
+fn reaction_participant_ids_use_normalized_id_bounds() {
+    for invalid_id in [
+        String::new(),
+        "peer\nname".into(),
+        "x".repeat(MAX_ID_LEN + 1),
+    ] {
+        let mut message = sample_message();
+        message.reactions = vec![Reaction {
+            emoji: "❤".into(),
+            participant_ids: vec![invalid_id],
+            count: 1,
+        }];
+        assert!(matches!(
+            validate_message(&message),
+            Err(ValidationError::InvalidId(_))
+        ));
+    }
+
+    let mut message = sample_message();
+    message.reactions = vec![Reaction {
+        emoji: "❤".into(),
+        participant_ids: vec!["x".repeat(MAX_ID_LEN)],
+        count: 1,
+    }];
+    assert!(validate_message(&message).is_ok());
+}
+
+#[test]
 fn commands_require_attested_capabilities() {
     let mut conversation = sample_conversation();
     conversation.capabilities.remove(&MessagingCapability::Text);

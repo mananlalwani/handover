@@ -588,6 +588,9 @@ pub fn validate_message(message: &Message) -> Result<(), ValidationError> {
                 reaction.participant_ids.len(),
             ));
         }
+        for participant_id in &reaction.participant_ids {
+            check_id(participant_id, "reaction participant id")?;
+        }
         if reaction.count == 0 || reaction.count < reaction.participant_ids.len() as u64 {
             return Err(ValidationError::InvalidReaction);
         }
