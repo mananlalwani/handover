@@ -960,3 +960,6 @@ where
     }
     Ok(true)
 }
+
+#[cfg(test)]
+mod framing_tests;

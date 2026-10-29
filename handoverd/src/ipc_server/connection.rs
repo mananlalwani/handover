@@ -28,41 +28,44 @@ pub(crate) async fn handle_client(
     let mut flags = SubscriptionFlags::default();
 
     loop {
-        if let Some(receiver) = subscription.as_mut() {
-            tokio::select! {
-                request = read_json_line::<_, Request>(&mut reader) => {
-                    if !handle_request_result(request, &mut writer, &state, &events, &messaging, &mut subscription, &mut flags).await? {
-                        return Ok(());
-                    }
-                }
-                event = receiver.recv() => {
-                    match event {
-                        Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_)) && !flags.shares => {}
-                        Ok(event) if matches!(event, StateEvent::AudioStream(_)) && !flags.audio => {}
-                        Ok(event) if matches!(event, StateEvent::Media(_)) && !flags.media => {}
-                        Ok(event) if matches!(event, StateEvent::Messaging(_)) && !flags.messages => {}
-                        Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            debug!(skipped, "IPC client lagged; sending current snapshot");
-                            write_snapshot_response(
-                                &mut writer,
-                                snapshot_payload(&state, flags.media, flags.messages),
-                            )
-                            .await?;
-                            if flags.audio {
-                            write_json_line(&mut writer, &ServerMessage::new(ServerPayload::AudioStreams {
-                                streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
-                            })).await?;
-                            }
-                            if flags.messages {
-                                let operations = state.read().unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .messaging().snapshot_outgoing();
-                                if !operations.is_empty() {
-                                    write_outgoing_operations(&mut writer, operations).await?;
+        let request = if let Some(receiver) = subscription.as_mut() {
+            // A read can consume a partial frame before awaiting more bytes.
+            // Keep that future alive across outbound events instead of dropping
+            // its accumulated prefix whenever another select branch wins.
+            let request = read_json_line::<_, Request>(&mut reader);
+            tokio::pin!(request);
+            loop {
+                tokio::select! {
+                    result = &mut request => break result,
+                    event = receiver.recv() => {
+                        match event {
+                            Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_)) && !flags.shares => {}
+                            Ok(event) if matches!(event, StateEvent::AudioStream(_)) && !flags.audio => {}
+                            Ok(event) if matches!(event, StateEvent::Media(_)) && !flags.media => {}
+                            Ok(event) if matches!(event, StateEvent::Messaging(_)) && !flags.messages => {}
+                            Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                debug!(skipped, "IPC client lagged; sending current snapshot");
+                                write_snapshot_response(
+                                    &mut writer,
+                                    snapshot_payload(&state, flags.media, flags.messages),
+                                )
+                                .await?;
+                                if flags.audio {
+                                    write_json_line(&mut writer, &ServerMessage::new(ServerPayload::AudioStreams {
+                                        streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
+                                    })).await?;
+                                }
+                                if flags.messages {
+                                    let operations = state.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .messaging().snapshot_outgoing();
+                                    if !operations.is_empty() {
+                                        write_outgoing_operations(&mut writer, operations).await?;
+                                    }
                                 }
                             }
+                            Err(broadcast::error::RecvError::Closed) => return Ok(()),
                         }
-                        Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     }
                 }
             }
@@ -72,19 +75,20 @@ pub(crate) async fn handle_client(
             else {
                 return Ok(());
             };
-            if !handle_request_result(
-                request,
-                &mut writer,
-                &state,
-                &events,
-                &messaging,
-                &mut subscription,
-                &mut flags,
-            )
-            .await?
-            {
-                return Ok(());
-            }
+            request
+        };
+        if !handle_request_result(
+            request,
+            &mut writer,
+            &state,
+            &events,
+            &messaging,
+            &mut subscription,
+            &mut flags,
+        )
+        .await?
+        {
+            return Ok(());
         }
     }
 }
