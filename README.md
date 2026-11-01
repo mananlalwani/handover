@@ -84,7 +84,10 @@ permissions for the capabilities you want to use.
 
 In another app, choose Share, then Send to PC, and confirm the paired computer.
 The phone must be connected. You can share an HTTP(S) link or up to 32 files,
-with a 100 MiB limit per file. Check Handover's transfer history for results.
+with a 100 MiB limit per file. Files arrive in your desktop Downloads directory
+under `Handover/YYYY-MM-DD_HH-MM-SS/`, using the PC's local date and time. Original
+filenames are preserved; simultaneous transfers get a numbered folder suffix.
+Check Handover's transfer history for results.
 Plain text without a web link is not supported by this action.
 
 ### Optional desktop interface

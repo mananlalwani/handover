@@ -176,8 +176,14 @@ claim that the presentation or volume changed.
 
 - Native pairing stores the peer certificate fingerprint and requires TLS.
 - The Android identity private key stays in Android Keystore.
-- Native received files are size-limited and written through controlled storage
-  paths.
+- Native received files are size-limited and written atomically. The daemon saves
+  them in the desktop's configured Downloads directory under
+  `Handover/YYYY-MM-DD_HH-MM-SS/`, using local time and preserving the original
+  filename. A numbered folder suffix prevents collisions. It resolves desktop
+  settings through `xdg-user-dir`, falling back to `~/Downloads` when that
+  utility or the setting is unavailable. Completed downloads are not
+  automatically deleted; the aggregate receive quota bounds transfers still in
+  progress. Older builds' private receive cache remains in Handover state.
 - Google Messages authentication stays inside the native helper and desktop
   credential store. It does not enter
   Handover's normalized state. Never put login bundles in command arguments,
@@ -215,7 +221,8 @@ make uninstall-user
 
 Uninstalling leaves local state on disk. The following command deletes all
 Handover state at this location, including pairing records, clipboard history,
-cached messages, messaging sessions, and received files. Back up anything you
+cached messages, messaging sessions, and the older private receive cache. Files
+saved in Downloads/Handover remain there. Back up anything you
 want to keep first:
 
 ```sh

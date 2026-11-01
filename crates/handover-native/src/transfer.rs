@@ -310,3 +310,48 @@ pub(crate) fn read_exact_until<R: Read>(
     }
     Ok(())
 }
+
+/// Atomically reserve a dated directory, including concurrent transfers and
+/// repeated local times during a clock change. Existing entries are untouched.
+pub(crate) fn create_received_directory(
+    root: &std::path::Path,
+    timestamp: &str,
+) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    for index in 0..1024 {
+        let name = if index == 0 {
+            timestamp.to_owned()
+        } else {
+            format!("{timestamp}-{}", index + 1)
+        };
+        let path = root.join(name);
+        match fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "too many transfers at the same timestamp",
+    ))
+}
+
+/// xdg-user-dir prints an absolute path followed by one newline. Missing or
+/// disabled desktop configuration falls back to the conventional Downloads.
+pub(crate) fn desktop_downloads_directory(
+    home: &std::path::Path,
+    output: Option<&[u8]>,
+) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(output) = output {
+        let path = std::path::Path::new(OsStr::from_bytes(
+            output.strip_suffix(b"\n").unwrap_or(output),
+        ));
+        if path.is_absolute() && path != home {
+            return path.to_owned();
+        }
+    }
+    home.join("Downloads")
+}

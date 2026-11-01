@@ -147,7 +147,10 @@ async fn main() {
         Arc::clone(&mirror),
         Arc::clone(&state),
     ));
-    match NativeBackend::default_directory().and_then(NativeBackend::open) {
+    match NativeBackend::default_directory()
+        .and_then(NativeBackend::open)
+        .and_then(NativeBackend::use_desktop_downloads)
+    {
         Ok(native) => {
             for device in native.remembered_devices() {
                 apply_backend_event(

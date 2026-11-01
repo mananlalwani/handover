@@ -148,6 +148,7 @@ pub struct NativeBackend {
     pub(crate) audio_output: Arc<Mutex<audio_output::OutputRouter>>,
     pub(crate) inner: Arc<Mutex<Runtime>>,
     pub(crate) directory: PathBuf,
+    downloads_directory: Option<PathBuf>,
     pub(crate) certificate: X509,
     pub(crate) key: PKey<Private>,
     pub(crate) id: String,
@@ -350,10 +351,34 @@ impl NativeBackend {
                 quota_reserved: (0, 0),
             })),
             directory,
+            downloads_directory: None,
             certificate,
             key,
             id,
         })
+    }
+
+    /// Save incoming files in the desktop's Downloads/Handover directory.
+    /// Unlike private receive storage, these user files are never expired or
+    /// evicted. Size limits and in-flight reservations still apply.
+    pub fn use_desktop_downloads(mut self) -> Result<Self, NativeError> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no desktop home directory")
+            })?;
+        let output = std::process::Command::new("xdg-user-dir")
+            .arg("DOWNLOAD")
+            .output()
+            .ok()
+            .filter(|output| output.status.success());
+        let downloads = desktop_downloads_directory(
+            &home,
+            output.as_ref().map(|output| output.stdout.as_slice()),
+        );
+        self.downloads_directory = Some(downloads.join("Handover"));
+        Ok(self)
     }
 
     pub fn default_directory() -> Result<PathBuf, NativeError> {
@@ -1041,7 +1066,13 @@ impl NativeBackend {
         let mut inner = self.inner.lock().unwrap();
         let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
         let mut subdirs: Vec<PathBuf> = Vec::new();
-        let mut walk: Vec<PathBuf> = vec![directory.to_path_buf()];
+        // Downloads belong to the user. Only private state storage is a
+        // managed cache; never scan or evict files from Downloads/Handover.
+        let mut walk: Vec<PathBuf> = if self.downloads_directory.is_some() {
+            Vec::new()
+        } else {
+            vec![directory.to_path_buf()]
+        };
         while let Some(directory) = walk.pop() {
             let Ok(children) = fs::read_dir(&directory) else {
                 continue;
@@ -1136,18 +1167,15 @@ impl NativeBackend {
         if !safe_share_name(name) || name.len() > 255 || size > MAX_SHARE_SIZE {
             return Err(NativeError::InvalidFrame);
         }
-        let directory = self.directory.join("received");
+        let directory = self
+            .downloads_directory
+            .clone()
+            .unwrap_or_else(|| self.directory.join("received"));
         fs::create_dir_all(&directory)?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         let reservation = self.reserve_received_quota(&directory, size)?;
-        let mut random = [0u8; 8];
-        openssl::rand::rand_bytes(&mut random)?;
-        let suffix = random
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let transfer_directory = directory.join(suffix);
-        fs::create_dir(&transfer_directory)?;
+        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        let transfer_directory = create_received_directory(&directory, &timestamp)?;
         let destination = transfer_directory.join(name);
         let partial = transfer_directory.join(".partial");
         let mut guard = PartialShare(partial.clone(), transfer_directory);
@@ -1602,6 +1630,123 @@ mod tests {
             path: user.clone(),
         });
         assert!(user.exists());
+    }
+
+    #[test]
+    fn desktop_downloads_keep_original_names_and_never_expire_user_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let downloads = dir.path().join("Downloads/Handover");
+        backend.downloads_directory = Some(downloads.clone());
+        fs::create_dir_all(downloads.join("keep")).unwrap();
+        let existing = downloads.join("keep/old.txt");
+        fs::write(&existing, b"keep me").unwrap();
+        File::options()
+            .write(true)
+            .open(&existing)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        let first = backend
+            .receive_share_file(&mut b"first".as_slice(), "photo ✓.jpg", 5)
+            .unwrap();
+        let second = backend
+            .receive_share_file(&mut b"second".as_slice(), "photo ✓.jpg", 6)
+            .unwrap();
+        assert_ne!(first, second);
+        for path in [&first, &second] {
+            assert_eq!(path.file_name().unwrap(), "photo ✓.jpg");
+            assert_eq!(path.parent().unwrap().parent().unwrap(), downloads);
+            let folder = path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            chrono::NaiveDateTime::parse_from_str(&folder[..19], "%Y-%m-%d_%H-%M-%S").unwrap();
+        }
+        assert_eq!(fs::read(first).unwrap(), b"first");
+        assert_eq!(fs::read(second).unwrap(), b"second");
+        assert_eq!(fs::read(&existing).unwrap(), b"keep me");
+        assert!(!backend.directory.join("received").exists());
+        assert!(
+            backend
+                .receive_share_file(&mut b"x".as_slice(), "interrupted.txt", 2)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(downloads).unwrap().count(), 3);
+        assert_eq!(backend.inner.lock().unwrap().quota_reserved, (0, 0));
+    }
+
+    #[test]
+    fn desktop_downloads_still_bound_in_flight_transfers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let downloads = dir.path().join("Downloads/Handover");
+        backend.downloads_directory = Some(downloads.clone());
+        let reservation = backend
+            .reserve_received_quota(&downloads, MAX_RECEIVED_BYTES)
+            .unwrap();
+        assert!(matches!(
+            backend.reserve_received_quota(&downloads, 1),
+            Err(NativeError::QuotaExceeded)
+        ));
+        drop(reservation);
+        assert_eq!(backend.inner.lock().unwrap().quota_reserved, (0, 0));
+    }
+
+    #[test]
+    fn desktop_downloads_respect_xdg_paths_and_fall_back_when_unconfigured() {
+        let home = Path::new("/home/example");
+        assert_eq!(
+            desktop_downloads_directory(home, Some(b"/data/My Downloads \n")),
+            Path::new("/data/My Downloads ")
+        );
+        for output in [
+            None,
+            Some(b"".as_slice()),
+            Some(b"relative\n".as_slice()),
+            Some(b"/home/example\n".as_slice()),
+        ] {
+            assert_eq!(
+                desktop_downloads_directory(home, output),
+                home.join("Downloads")
+            );
+        }
+        assert_eq!(
+            desktop_downloads_directory(home, Some(b"/data/non-utf8-\xff\n")),
+            PathBuf::from(
+                <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(
+                    b"/data/non-utf8-\xff".to_vec()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn dated_receive_folders_do_not_overwrite_existing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let stamp = "2026-10-31_14-32-08";
+        let first = create_received_directory(dir.path(), stamp).unwrap();
+        fs::write(first.join("keep"), b"original").unwrap();
+        // A file or symlink with the next candidate name also blocks reuse.
+        fs::write(dir.path().join(format!("{stamp}-2")), b"existing").unwrap();
+        let third = create_received_directory(dir.path(), stamp).unwrap();
+        assert_eq!(third.file_name().unwrap(), "2026-10-31_14-32-08-3");
+        assert_eq!(fs::read(first.join("keep")).unwrap(), b"original");
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let root = dir.path().to_owned();
+                std::thread::spawn(move || create_received_directory(&root, stamp).unwrap())
+            })
+            .collect();
+        let paths: BTreeSet<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 8);
     }
 
     #[test]

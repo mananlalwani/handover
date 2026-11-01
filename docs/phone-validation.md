@@ -21,7 +21,8 @@ or send again automatically.
 
 In another Android app, select Share, then Send to PC. Send one photo, several
 files, and an HTTPS link. Confirm the paired desktop in the dialog. Check the
-received files' names and contents on Linux and compare transfer history with
+received files' names and contents in `Downloads/Handover/YYYY-MM-DD_HH-MM-SS/`
+on Linux and compare transfer history with
 the actual results. Cancel a share and verify nothing arrives. Try sharing while
 offline and confirm the app asks you to connect rather than claiming success.
 
