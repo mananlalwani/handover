@@ -1,3 +1,4 @@
 <resources>
+    <string name="send_to_pc">Send to PC</string>
     <string name="device_admin_description">Allow Handover to lock this phone when you request it from a trusted desktop.</string>
 </resources>

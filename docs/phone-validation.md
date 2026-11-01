@@ -17,6 +17,19 @@ opens. Compare the desktop's accepted, progress, and completed states with the
 actual result. Disconnect during a transfer and confirm it does not claim success
 or send again automatically.
 
+## Android sharing
+
+In another Android app, select Share, then Send to PC. Send one photo, several
+files, and an HTTPS link. Confirm the paired desktop in the dialog. Check the
+received files' names and contents on Linux and compare transfer history with
+the actual results. Cancel a share and verify nothing arrives. Try sharing while
+offline and confirm the app asks you to connect rather than claiming success.
+
+The action accepts up to 32 content-provider files per share, with the existing
+100 MiB limit per file, or one HTTP(S) link. Plain text without a web URL is not
+supported. URI permissions and provider behavior still need checking with the
+phone's gallery and file manager.
+
 ## Notifications and media
 
 Enable the optional client with

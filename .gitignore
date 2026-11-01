@@ -6,6 +6,7 @@ packaging/arch/*/*.pkg.tar.zst
 packaging/arch/*/handover
 packaging/arch/*/handover-gmessages
 /android/.gradle/
+/android/.kotlin/
 /android/build/
 /android/.cxx/
 /android/app/build/

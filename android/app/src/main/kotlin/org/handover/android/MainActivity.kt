@@ -253,7 +253,7 @@ class MainActivity : android.app.Activity() {
             }
             if (intent.action == HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED) {
                 android.widget.Toast.makeText(this@MainActivity,
-                    "File could not be queued. Check the connection, file name, and 100 MiB limit.",
+                    "Share could not be queued. Check the connection, link, file name, and 100 MiB limit.",
                     android.widget.Toast.LENGTH_LONG).show()
                 return
             }
@@ -418,7 +418,7 @@ class MainActivity : android.app.Activity() {
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
             ) { handleBackNavigation() }
         }
-        handleShareIntent(intent)
+        if (savedInstanceState == null) handleShareIntent(intent)
         HandoverForegroundService.startIfPaired(this)
         if (android.os.Build.VERSION.SDK_INT >= 37 &&
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -869,46 +869,46 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun sendFileWithConfirmation(uri: Uri) {
+        confirmShare(DesktopShare.Files(listOf(uri)))
+    }
+
+    private fun confirmShare(share: DesktopShare) {
         if (!canSendToDesktop()) return
         val target = NativeTransport.trustedPeerFingerprint(this) ?: return
-        val service = Intent(this, HandoverForegroundService::class.java)
-            .setAction(HandoverForegroundService.ACTION_SHARE_FILE)
-            .putExtra(HandoverForegroundService.EXTRA_URI, uri)
-        service.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        service.clipData = android.content.ClipData.newUri(contentResolver, "Shared file", uri)
+        val description = when (share) {
+            is DesktopShare.Files -> if (share.uris.size == 1) "Send this file" else "Send ${share.uris.size} files"
+            is DesktopShare.Url -> "Send this link"
+        }
         AlertDialog.Builder(this)
-            .setTitle("Send with Handover")
-            .setMessage("Send to paired desktop $target?")
+            .setTitle(R.string.send_to_pc)
+            .setMessage("$description to paired desktop $target?")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Send") { _, _ ->
-                if (canSendToDesktop()) startForegroundService(service)
+                if (!canSendToDesktop()) return@setPositiveButton
+                if (NativeTransport.trustedPeerFingerprint(this) != target) {
+                    android.widget.Toast.makeText(this,
+                        "Paired desktop changed. Share again to confirm the destination.",
+                        android.widget.Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                // Each file keeps its own transfer ID and eventual result.
+                // Pass the URI grant to the service for asynchronous streaming.
+                share.serviceIntents(this).forEach { service ->
+                    startForegroundService(service)
+                }
             }.show()
     }
 
     private fun handleShareIntent(intent: Intent) {
-        if (intent.action != Intent.ACTION_SEND) return
-        intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { uri ->
-            sendFileWithConfirmation(uri)
+        if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return
+        val share = DesktopShare.fromIntent(intent)
+        if (share == null) {
+            android.widget.Toast.makeText(this,
+                "Share a web link or up to 32 files. Each file must be no larger than 100 MiB.",
+                android.widget.Toast.LENGTH_LONG).show()
             return
         }
-        val service = Intent(this, HandoverForegroundService::class.java)
-        when {
-            intent.type == "text/plain" -> {
-                val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
-                service.action = HandoverForegroundService.ACTION_SHARE_URL
-                service.putExtra(HandoverForegroundService.EXTRA_URL, text)
-            }
-            else -> return
-        }
-        if (!canSendToDesktop()) return
-        val target = NativeTransport.trustedPeerFingerprint(this) ?: return
-        AlertDialog.Builder(this)
-            .setTitle("Send with Handover")
-            .setMessage("Send to paired desktop $target?")
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Send") { _, _ ->
-                if (canSendToDesktop()) startForegroundService(service)
-            }.show()
+        confirmShare(share)
     }
 
     companion object {

@@ -53,7 +53,12 @@ class HandoverForegroundService : Service() {
         ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
-        ACTION_SHARE_URL -> transport.shareUrl(intent.getStringExtra(EXTRA_URL).orEmpty()).let { START_STICKY }
+        ACTION_SHARE_URL -> {
+            if (!transport.shareUrl(intent.getStringExtra(EXTRA_URL).orEmpty())) {
+                sendBroadcast(Intent(ACTION_SHARE_QUEUE_FAILED).setPackage(packageName))
+            }
+            START_STICKY
+        }
         ACTION_SHARE_FILE -> {
             if (intent.getParcelableExtra<Uri>(EXTRA_URI)?.let { transport.shareFile(it) } != true) {
                 sendBroadcast(Intent(ACTION_SHARE_QUEUE_FAILED).setPackage(packageName))

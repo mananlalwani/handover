@@ -80,6 +80,13 @@ If discovery does not find the computer, enter its address and port `24837` in
 the Android app. A reachable Tailscale address works too. Grant the Android
 permissions for the capabilities you want to use.
 
+### Send from Android to PC
+
+In another app, choose Share, then Send to PC, and confirm the paired computer.
+The phone must be connected. You can share an HTTP(S) link or up to 32 files,
+with a 100 MiB limit per file. Check Handover's transfer history for results.
+Plain text without a web link is not supported by this action.
+
 ### Optional desktop interface
 
 `handover-desktop` mirrors phone notifications through the Linux desktop
