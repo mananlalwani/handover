@@ -268,6 +268,8 @@ fn reconnect_delay(
     if matches!(
         error,
         ProbeError::UnexpectedResponse
+            | ProbeError::RpcError
+            | ProbeError::RpcErrorWithStatus(RpcStatus::Unknown)
             | ProbeError::SessionProtocol(
                 handover_google_messages::session::SessionError::ConversationCursor
                     | handover_google_messages::session::SessionError::InvalidUnreadCount
@@ -302,7 +304,9 @@ fn reconnect_delay(
     ) || matches!(
         error.rpc_status(),
         Some(
-            RpcStatus::DeadlineExceeded
+            RpcStatus::Cancelled
+                | RpcStatus::Aborted
+                | RpcStatus::DeadlineExceeded
                 | RpcStatus::ResourceExhausted
                 | RpcStatus::Internal
                 | RpcStatus::Unavailable
@@ -1371,6 +1375,8 @@ where
                                 handover_google_messages::ProbeError::CredentialStore(category) => format!("credential_store, {category:?}"),
                                 handover_google_messages::ProbeError::SessionProtocol(category) => format!("session_protocol, {category:?}"),
                                 handover_google_messages::ProbeError::ReceiveProtocol(category) => format!("receive_protocol, {category:?}"),
+                                handover_google_messages::ProbeError::RpcErrorWithStatus(status) => format!("rpc_status, {status:?}"),
+                                handover_google_messages::ProbeError::RpcErrorWithReason(_, reason) => format!("rpc_reason, {reason:?}"),
                                 _ => error.code().to_owned(),
                             };
                             publish(writer, HelperEvent::Error { message: format!("native receive ended ({category})"), fetch_id: None}).await?;
@@ -3139,16 +3145,38 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn conversation_validation_failure_recovers_online_without_login() {
-        use handover_google_messages::{ProbeError, session::SessionError};
+    async fn recoverable_receive_failures_restore_online_without_login() {
+        use handover_google_messages::{ProbeError, RpcStatus, session::SessionError};
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         };
-        for cause in [
-            SessionError::ConversationCursor,
-            SessionError::InvalidUnreadCount,
-            SessionError::DirectParticipants,
+        for (cause, diagnostic) in [
+            (ProbeError::RpcError, "native receive ended (rpc_error)"),
+            (
+                ProbeError::RpcErrorWithStatus(RpcStatus::Unknown),
+                "native receive ended (rpc_status, Unknown)",
+            ),
+            (
+                ProbeError::RpcErrorWithStatus(RpcStatus::Cancelled),
+                "native receive ended (rpc_status, Cancelled)",
+            ),
+            (
+                ProbeError::RpcErrorWithStatus(RpcStatus::Aborted),
+                "native receive ended (rpc_status, Aborted)",
+            ),
+            (
+                ProbeError::SessionProtocol(SessionError::ConversationCursor),
+                "native receive ended (session_protocol, ConversationCursor)",
+            ),
+            (
+                ProbeError::SessionProtocol(SessionError::InvalidUnreadCount),
+                "native receive ended (session_protocol, InvalidUnreadCount)",
+            ),
+            (
+                ProbeError::SessionProtocol(SessionError::DirectParticipants),
+                "native receive ended (session_protocol, DirectParticipants)",
+            ),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let mut helper = helper_with_store(directory.path());
@@ -3157,21 +3185,19 @@ mod tests {
             helper.desktop_credentials = true;
             let attempts = Arc::new(AtomicUsize::new(0));
             let observed_attempts = attempts.clone();
+            let failure = cause.clone();
             let factory =
                 move |account: String,
                       generation,
                       _store,
                       signals: mpsc::Sender<(u64, String, LiveSignal)>| {
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    let failure = failure.clone();
                     let (commands, mut incoming) = mpsc::channel(1);
                     let task = tokio::spawn(async move {
                         if attempt == 0 {
                             let _ = signals
-                                .send((
-                                    generation,
-                                    account,
-                                    LiveSignal::Ended(Err(ProbeError::SessionProtocol(cause))),
-                                ))
+                                .send((generation, account, LiveSignal::Ended(Err(failure))))
                                 .await;
                             return;
                         }
@@ -3226,6 +3252,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let mut observed_failure = false;
             let result = tokio::time::timeout(std::time::Duration::from_secs(120), async {
                 let mut online = false;
                 loop {
@@ -3238,6 +3265,10 @@ mod tests {
                             ..
                         } => online = true,
                         HelperEvent::Conversations { full: true, .. } if online => break,
+                        HelperEvent::Error { message, .. } => {
+                            assert_eq!(message, diagnostic);
+                            observed_failure = true;
+                        }
                         _ => {}
                     }
                 }
@@ -3248,6 +3279,10 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "{cause:?} stranded a saved account offline instead of reconnecting"
+            );
+            assert!(
+                observed_failure,
+                "the failed worker must publish its safe diagnostic"
             );
             assert_eq!(observed_attempts.load(Ordering::SeqCst), 2);
         }
@@ -3323,7 +3358,14 @@ mod tests {
         for error in [
             ProbeError::HttpErrorWithStatus(503, RpcStatus::Unauthenticated),
             ProbeError::HttpErrorWithStatus(429, RpcStatus::PermissionDenied),
+            ProbeError::RpcErrorWithStatus(RpcStatus::Unauthenticated),
+            ProbeError::RpcErrorWithStatus(RpcStatus::PermissionDenied),
             ProbeError::RpcErrorWithStatus(RpcStatus::InvalidArgument),
+            ProbeError::RpcErrorWithStatus(RpcStatus::FailedPrecondition),
+            ProbeError::RpcErrorWithReason(
+                RpcStatus::Unknown,
+                handover_google_messages::RpcReason::ApiKeyInvalid,
+            ),
         ] {
             assert!(
                 reconnect_delay(&error, 0).is_none(),

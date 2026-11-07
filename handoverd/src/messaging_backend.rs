@@ -1675,6 +1675,36 @@ fn helper_error_category(message: &str) -> &'static str {
         "native receive ended (http_error)" => "http_error",
         "native receive ended (response_too_large)" => "response_too_large",
         "native receive ended (rpc_error)" => "rpc_error",
+        "native receive ended (rpc_reason, ApiKeyInvalid)" => "rpc_api_key_invalid",
+        "native receive ended (rpc_reason, ApiKeyServiceBlocked)" => "rpc_api_key_service_blocked",
+        "native receive ended (rpc_reason, ApiKeyHttpReferrerBlocked)" => {
+            "rpc_api_key_http_referrer_blocked"
+        }
+        "native receive ended (rpc_reason, ApiKeyIpAddressBlocked)" => {
+            "rpc_api_key_ip_address_blocked"
+        }
+        "native receive ended (rpc_reason, ApiKeyAndroidAppBlocked)" => {
+            "rpc_api_key_android_app_blocked"
+        }
+        "native receive ended (rpc_reason, ApiKeyIosAppBlocked)" => "rpc_api_key_ios_app_blocked",
+        "native receive ended (rpc_reason, ConsumerInvalid)" => "rpc_consumer_invalid",
+        "native receive ended (rpc_reason, ServiceDisabled)" => "rpc_service_disabled",
+        "native receive ended (rpc_status, Cancelled)" => "rpc_cancelled",
+        "native receive ended (rpc_status, Unknown)" => "rpc_unknown",
+        "native receive ended (rpc_status, InvalidArgument)" => "rpc_invalid_argument",
+        "native receive ended (rpc_status, DeadlineExceeded)" => "rpc_deadline_exceeded",
+        "native receive ended (rpc_status, NotFound)" => "rpc_not_found",
+        "native receive ended (rpc_status, AlreadyExists)" => "rpc_already_exists",
+        "native receive ended (rpc_status, PermissionDenied)" => "rpc_permission_denied",
+        "native receive ended (rpc_status, Unauthenticated)" => "rpc_unauthenticated",
+        "native receive ended (rpc_status, ResourceExhausted)" => "rpc_resource_exhausted",
+        "native receive ended (rpc_status, FailedPrecondition)" => "rpc_failed_precondition",
+        "native receive ended (rpc_status, Aborted)" => "rpc_aborted",
+        "native receive ended (rpc_status, OutOfRange)" => "rpc_out_of_range",
+        "native receive ended (rpc_status, Unimplemented)" => "rpc_unimplemented",
+        "native receive ended (rpc_status, Internal)" => "rpc_internal",
+        "native receive ended (rpc_status, Unavailable)" => "rpc_unavailable",
+        "native receive ended (rpc_status, DataLoss)" => "rpc_data_loss",
         "native receive ended (native_error)" => "native_error",
         "native receive ended (registration_failed)" => "registration_failed",
         "native receive ended (registration_not_submitted)" => "registration_not_submitted",
@@ -2223,6 +2253,40 @@ mod tests {
     fn native_error_fixtures_are_complete_and_payloads_stay_unclassified() {
         let families: &[(&str, &[&str])] = &[
             (
+                "rpc_reason",
+                &[
+                    "ApiKeyInvalid",
+                    "ApiKeyServiceBlocked",
+                    "ApiKeyHttpReferrerBlocked",
+                    "ApiKeyIpAddressBlocked",
+                    "ApiKeyAndroidAppBlocked",
+                    "ApiKeyIosAppBlocked",
+                    "ConsumerInvalid",
+                    "ServiceDisabled",
+                ],
+            ),
+            (
+                "rpc_status",
+                &[
+                    "Cancelled",
+                    "Unknown",
+                    "InvalidArgument",
+                    "DeadlineExceeded",
+                    "NotFound",
+                    "AlreadyExists",
+                    "PermissionDenied",
+                    "Unauthenticated",
+                    "ResourceExhausted",
+                    "FailedPrecondition",
+                    "Aborted",
+                    "OutOfRange",
+                    "Unimplemented",
+                    "Internal",
+                    "Unavailable",
+                    "DataLoss",
+                ],
+            ),
+            (
                 "session_protocol",
                 &[
                     "SendModel",
@@ -2327,6 +2391,8 @@ mod tests {
             "native receive ended (receive_protocol, InvalidIdentifiers) person@example.test",
             "native receive ended (session_protocol, ConversationCursor\nSECRET_TOKEN)",
             "native receive ended (credential_store, UNKNOWN_SECRET)",
+            "native receive ended (rpc_status, Unknown) private payload",
+            "native receive ended (rpc_status, PRIVATE_TOKEN)",
             "native receive ended (SECRET_TOKEN)",
         ] {
             assert_eq!(helper_error_category(message), "unclassified");

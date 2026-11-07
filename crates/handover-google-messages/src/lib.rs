@@ -201,6 +201,7 @@ pub enum ProbeError {
     Timeout,
     RpcError,
     RpcErrorWithStatus(RpcStatus),
+    RpcErrorWithReason(RpcStatus, RpcReason),
     NativeError,
 }
 
@@ -245,7 +246,9 @@ impl ProbeError {
             Self::UnexpectedResponse => "unexpected_response",
             Self::ResponseTooLarge => "response_too_large",
             Self::Timeout => "timeout",
-            Self::RpcError | Self::RpcErrorWithStatus(_) => "rpc_error",
+            Self::RpcError | Self::RpcErrorWithStatus(_) | Self::RpcErrorWithReason(_, _) => {
+                "rpc_error"
+            }
             Self::NativeError => "native_error",
         }
     }
@@ -268,6 +271,7 @@ impl ProbeError {
         match self {
             Self::HttpErrorWithStatus(_, status)
             | Self::HttpErrorWithReason(_, status, _)
+            | Self::RpcErrorWithReason(status, _)
             | Self::RpcErrorWithStatus(status) => Some(*status),
             Self::HttpErrorForLocalInspection(_, status, _, _) => *status,
             _ => None,
@@ -276,7 +280,9 @@ impl ProbeError {
 
     pub fn rpc_reason(&self) -> Option<RpcReason> {
         match self {
-            Self::HttpErrorWithReason(_, _, reason) => Some(*reason),
+            Self::HttpErrorWithReason(_, _, reason) | Self::RpcErrorWithReason(_, reason) => {
+                Some(*reason)
+            }
             Self::HttpErrorForLocalInspection(_, _, reason, _) => *reason,
             _ => None,
         }
@@ -1313,7 +1319,13 @@ fn lookup_records(body: &[u8]) -> Result<Vec<Value>, ProbeError> {
     let mut value: Value =
         serde_json::from_slice(body).map_err(|_| ProbeError::UnexpectedResponse)?;
     if value.is_object() {
-        return Err(ProbeError::RpcError);
+        // Preserve explicit authentication and request failures so recovery
+        // does not mistake a known rejection for an unclassified RPC failure.
+        return Err(match error_category(body) {
+            Some((status, Some(reason))) => ProbeError::RpcErrorWithReason(status, reason),
+            Some((status, None)) => ProbeError::RpcErrorWithStatus(status),
+            None => ProbeError::RpcError,
+        });
     }
     let fields = value.as_array_mut().ok_or(ProbeError::UnexpectedResponse)?;
     if fields.is_empty() || fields.len() > 3 || !fields[0].is_array() {
@@ -1706,6 +1718,25 @@ mod tests {
             parse_response(br#"{"error":{"message":"private-server-error"}}"#).unwrap_err(),
             ProbeError::RpcError
         );
+        for (status, expected) in [
+            ("UNAUTHENTICATED", RpcStatus::Unauthenticated),
+            ("PERMISSION_DENIED", RpcStatus::PermissionDenied),
+            ("INVALID_ARGUMENT", RpcStatus::InvalidArgument),
+            ("UNKNOWN", RpcStatus::Unknown),
+        ] {
+            let error = json!({"error": {"status": status, "message": "private-server-error"}});
+            assert_eq!(
+                parse_response(&serde_json::to_vec(&error).unwrap()).unwrap_err(),
+                ProbeError::RpcErrorWithStatus(expected)
+            );
+        }
+        let rejected = parse_response(br#"{"error":{"status":"UNKNOWN","message":"private-server-error","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}"#).unwrap_err();
+        assert_eq!(
+            rejected,
+            ProbeError::RpcErrorWithReason(RpcStatus::Unknown, RpcReason::ApiKeyInvalid)
+        );
+        assert_eq!(rejected.rpc_reason(), Some(RpcReason::ApiKeyInvalid));
+        assert_eq!(rejected.rpc_status(), Some(RpcStatus::Unknown));
         let many = json!([[], null, [null, null, vec![json!([]); SOURCE_LIMIT + 1]]]);
         assert_eq!(
             parse_response(&serde_json::to_vec(&many).unwrap()).unwrap_err(),
