@@ -10,6 +10,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub struct HistoryPage {
     pub messages: Vec<CoreMessage>,
+    /// False when unsupported records remain in the authenticated reply.
+    /// Such a reply cannot complete history or be acknowledged.
+    pub complete: bool,
     pub cursor_next: Option<String>,
     /// Private protocol references, never serialized into helper IPC.
     pub downloads: Vec<crate::media::Download>,
@@ -167,11 +170,33 @@ pub(crate) fn decode(conversation: &Conversation, bytes: &[u8]) -> Result<Histor
             }
         }
     }
-    let messages = decode_records(conversation, std::mem::take(&mut page.messages))?;
+    let raw = Zeroizing::new(std::mem::take(&mut page.messages));
+    let mut complete = true;
+    let mut messages: Vec<CoreMessage> = Vec::new();
+    for record in raw.iter() {
+        match decode_records(conversation, vec![record.clone()]) {
+            Ok(records) => {
+                for record in records {
+                    if let Some(previous) = messages.iter().find(|item| item.id == record.id) {
+                        if previous != &record {
+                            return Err(invalid());
+                        }
+                    } else {
+                        messages.push(record);
+                    }
+                }
+            }
+            Err(ProbeError::SessionProtocol(SessionError::UnsupportedHistoryContent)) => {
+                complete = false;
+            }
+            Err(error) => return Err(error),
+        }
+    }
     // Only retain references that survived normalized history validation.
     downloads.retain(|download| messages.iter().any(|message| download.matches(message)));
     Ok(HistoryPage {
         messages,
+        complete,
         cursor_next,
         downloads,
         original_fetch_error: None,
@@ -693,12 +718,9 @@ mod tests {
         assert!(decode(&conversation(), &page(wrong)).is_err());
         let mut unsupported = record();
         unsupported.parts[0].content = None;
-        assert!(matches!(
-            decode(&conversation(), &page(unsupported)),
-            Err(ProbeError::SessionProtocol(
-                SessionError::UnsupportedHistoryContent
-            ))
-        ));
+        let unsupported = decode(&conversation(), &page(unsupported)).unwrap();
+        assert!(!unsupported.complete);
+        assert!(unsupported.messages.is_empty());
     }
     #[test]
     fn preserves_media_metadata_without_download_or_staged_path() {

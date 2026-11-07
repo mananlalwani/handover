@@ -585,13 +585,59 @@ where
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .message_archive
         .clone();
-    let latest = state
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .messaging()
-        .history(&conversation_id, 1, None)
-        .ok()
-        .and_then(|(messages, _)| messages.into_iter().last());
+    let newest = || {
+        state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .messaging()
+            .history(&conversation_id, 1, None)
+            .ok()
+            .and_then(|(messages, _)| messages.into_iter().last())
+    };
+    let mut latest = newest();
+    let newer_activity = {
+        let state = state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let store = state.messaging();
+        cursor.is_none()
+            && store
+                .account(&conversation_id.account_id)
+                .is_some_and(|account| account.connected && account.authenticated)
+            && store
+                .conversation(&conversation_id)
+                .and_then(|conversation| conversation.last_activity_at)
+                .is_some_and(|activity| {
+                    latest
+                        .as_ref()
+                        .and_then(|message| message.sent_at)
+                        .is_none_or(|cached| activity > cached)
+                })
+    };
+    if newer_activity && let Some(hub) = messaging {
+        if hub
+            .fetch_through_helper(
+                conversation_id.account_id.as_str(),
+                &conversation_id.local_id,
+                limit as u32,
+                None,
+            )
+            .await
+            .is_err()
+        {
+            write_json_line(
+                writer,
+                &ServerMessage::conversation_error(
+                    ErrorCode::HistoryUnavailable,
+                    "latest history is unavailable",
+                    conversation_id,
+                ),
+            )
+            .await?;
+            return Ok(true);
+        }
+        latest = newest();
+    }
     if let Some(archive) = &archive
         && let Ok(Some((messages, cursor_next))) = archive
             .history(conversation_id.clone(), limit, cursor.clone(), latest)
@@ -2811,6 +2857,78 @@ mod messaging_failure_tests {
         assert_eq!(restored, messages);
         assert!(cursor_next.is_none());
         assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_newest_archive_requires_refresh_and_reports_scoped_failure() {
+        for (empty, cached_timestamp) in [
+            (false, Some(4 * 60 + 5)),
+            (false, None),
+            (true, Some(4 * 60 + 5)),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let archive = crate::messaging_archive::MessageArchive::open(
+                &directory.path().join("history.sqlite"),
+            )
+            .unwrap();
+            let state = seeded_state();
+            let mut template = state.read().unwrap().messaging().snapshot_messages()[0].clone();
+            let id = template.id.conversation_id.clone();
+            template.sent_at = cached_timestamp;
+            state
+                .write()
+                .unwrap()
+                .apply(StateEvent::Messaging(CoreEvent::Message(
+                    handover_core::MessageEvent::Updated(template.clone()),
+                )));
+            state.write().unwrap().messaging_mut().prune_window(
+                &id,
+                &std::collections::BTreeSet::from([template.id.local_id.clone()]),
+            );
+            archive
+                .store_page(id.clone(), None, vec![template.clone()], None)
+                .await
+                .unwrap();
+            let mut conversation = state
+                .read()
+                .unwrap()
+                .messaging()
+                .conversation(&id)
+                .unwrap()
+                .clone();
+            // The thread says it changed at 06:10, while its newest cached message
+            // and archived page stop at 04:05.
+            conversation.last_activity_at = Some(6 * 60 + 10);
+            state
+                .write()
+                .unwrap()
+                .apply(StateEvent::Messaging(CoreEvent::Conversation(
+                    ConversationEvent::Updated(conversation),
+                )));
+            state.write().unwrap().message_archive = Some(archive);
+            if empty {
+                state
+                    .write()
+                    .unwrap()
+                    .messaging_mut()
+                    .prune_window(&id, &std::collections::BTreeSet::new());
+            }
+
+            let hub = MessagingHub::new();
+            let mut output = Vec::new();
+            handle_history(id.clone(), None, None, &mut output, &state, &Some(hub))
+                .await
+                .unwrap();
+            let response: ServerMessage = serde_json::from_slice(&output).unwrap();
+            assert!(matches!(
+                response.payload,
+                ServerPayload::Error {
+                    code: ErrorCode::HistoryUnavailable,
+                    conversation_id: Some(response_id),
+                    ..
+                } if response_id == id
+            ));
+        }
     }
 
     #[tokio::test]

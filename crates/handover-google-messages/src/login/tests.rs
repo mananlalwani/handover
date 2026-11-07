@@ -1129,8 +1129,15 @@ fn synthetic_history_page_with_content(include_content: bool) -> Vec<u8> {
     }
     Page {
         records: vec![Record {
-            status: Some(Status { code: 100 }),
-            id: "message".into(),
+            status: Some(Status {
+                code: if include_content { 100 } else { 117 },
+            }),
+            id: if include_content {
+                "message"
+            } else {
+                "unavailable"
+            }
+            .into(),
             conversation: "thread-0".into(),
             sender: "fixture-peer".into(),
             parts: if include_content {
@@ -1313,8 +1320,12 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             vec![0x12, 1, b's', 0x18, send_code.max(0) as u8]
         };
         let sent = pairing.encrypt(&send_reply).unwrap().as_bytes().to_vec();
+        let mut history_payload = synthetic_history_page_with_content(!unsupported_history);
+        if unsupported_history {
+            history_payload.extend(synthetic_history_page_with_content(true));
+        }
         let history = pairing
-            .encrypt(&synthetic_history_page_with_content(!unsupported_history))
+            .encrypt(&history_payload)
             .unwrap()
             .as_bytes()
             .to_vec();
@@ -1663,6 +1674,16 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 })
                 .await
                 .unwrap();
+            if unsupported_history {
+                let available = outgoing
+                    .recv()
+                    .await
+                    .expect("supported records must survive a mixed history page");
+                assert!(
+                    matches!(available.event, LiveEvent::Messages { ref records, .. } if records.len() == 1)
+                );
+                available.accepted.send(()).unwrap();
+            }
             let page = outgoing
                 .recv()
                 .await

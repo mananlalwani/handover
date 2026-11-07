@@ -281,6 +281,11 @@ impl RecoveredSession {
             .await?;
         match result {
             ReadResult::History(page, reply_id) => {
+                if !page.complete {
+                    return Err(ProbeError::SessionProtocol(
+                        SessionError::UnsupportedHistoryContent,
+                    ));
+                }
                 self.acknowledge(&crate::client(true)?, &self.proof.endpoint, reply_id)
                     .await?;
                 Ok(page)
@@ -309,6 +314,11 @@ impl RecoveredSession {
             .await?
         {
             ReadResult::History(page, reply_id) => {
+                if !page.complete {
+                    return Err(ProbeError::SessionProtocol(
+                        SessionError::UnsupportedHistoryContent,
+                    ));
+                }
                 self.acknowledge(&ack_client, endpoint, reply_id).await?;
                 Ok(page)
             }
@@ -443,6 +453,9 @@ impl RecoveredSession {
                 .map_err(|_| ProbeError::ReceiveFailed)?;
             let mut page = crate::history::decode(conversation, plaintext.as_bytes())?;
             let reply_id = reply.message_id;
+            if !page.complete {
+                return Ok(ReadResult::History(page, reply_id));
+            }
             // The original can be absent from history even when a display
             // preview exists. Request it from the phone without substituting
             // the preview. Optional enrichment is bounded per history page.

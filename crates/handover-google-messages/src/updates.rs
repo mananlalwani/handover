@@ -8,6 +8,8 @@ use zeroize::{Zeroize, Zeroizing};
 pub enum Update {
     Conversations(Vec<Conversation>),
     Messages {
+        /// Unsupported records remain in the inbox until a client can read them.
+        complete: bool,
         records: Vec<CoreMessage>,
         statuses: Vec<(MessageId, &'static str)>,
         correlations: Vec<(String, MessageId)>,
@@ -72,6 +74,7 @@ pub(crate) fn decode(
             if batch.records.len() > 500 {
                 return Err(invalid());
             }
+            let mut complete = true;
             let mut messages = Vec::<CoreMessage>::new();
             let mut statuses = Vec::<(MessageId, &'static str)>::new();
             let mut correlations = Vec::<(String, MessageId)>::new();
@@ -92,13 +95,13 @@ pub(crate) fn decode(
                 let records =
                     match crate::history::decode_records(conversation, vec![bytes.to_vec()]) {
                         Ok(records) => records,
-                        // This authenticated batch cannot be projected completely.
-                        // Leave the whole update in the inbox, like other unsupported
-                        // families, without discarding it or terminating receive.
+                        // Publish supported neighbours, but retain the entire
+                        // authenticated batch in the inbox without an ACK.
                         Err(ProbeError::SessionProtocol(
                             SessionError::UnsupportedHistoryContent,
                         )) => {
-                            return Ok(Update::Unsupported(3));
+                            complete = false;
+                            continue;
                         }
                         Err(error) => return Err(error),
                     };
@@ -141,7 +144,11 @@ pub(crate) fn decode(
                     }
                 }
             }
+            if !complete && messages.is_empty() {
+                return Ok(Update::Unsupported(3));
+            }
             Ok(Update::Messages {
+                complete,
                 records: messages,
                 statuses,
                 correlations,
@@ -348,6 +355,28 @@ mod tests {
         assert!(decode("fixture", &[conversation], &push(vec![first, second]), true).is_err());
     }
     #[test]
+    fn mixed_push_keeps_supported_messages_without_claiming_complete_processing() {
+        let (conversation, supported) = fixture(100);
+        let (_, mut unsupported) = fixture(117);
+        unsupported.truncate(unsupported.len() - 7);
+        unsupported[2] = b'u';
+        let Update::Messages {
+            records, complete, ..
+        } = decode(
+            "fixture",
+            &[conversation],
+            &push(vec![unsupported, supported]),
+            true,
+        )
+        .unwrap()
+        else {
+            panic!("a supported message must not be blocked by its batch neighbour");
+        };
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].text.as_deref(), Some("x"));
+        assert!(!complete, "partial batches must remain unacknowledged");
+    }
+    #[test]
     fn temporary_identity_links_only_attested_outgoing_states() {
         let operation = "send-0123456789abcdef0123456789abcdef";
         let temporary = crate::send::temporary(operation).to_string();
@@ -399,7 +428,7 @@ mod tests {
         );
     }
     #[test]
-    fn unsupported_content_leaves_the_whole_batch_unprojected() {
+    fn wholly_unsupported_batches_stay_unprojected_and_malformed_records_fail() {
         let (conversation, supported) = fixture(100);
         let mut unsupported = supported.clone();
         // Remove the final text part, retaining valid identity and thread fields.
@@ -411,7 +440,6 @@ mod tests {
             vec![unsupported.clone()],
             vec![unknown_part],
             vec![unknown_status],
-            vec![supported.clone(), unsupported],
         ] {
             assert!(matches!(
                 decode(

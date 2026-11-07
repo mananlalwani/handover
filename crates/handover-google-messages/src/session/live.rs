@@ -706,7 +706,8 @@ impl RecoveredSession {
                         };
                         let mut acknowledgements = vec![reply_id];
                         let mut hops = 0;
-                        while page.messages.is_empty()
+                        while page.complete
+                            && page.messages.is_empty()
                             && page
                                 .cursor_next
                                 .as_ref()
@@ -746,7 +747,21 @@ impl RecoveredSession {
                                 _ => return Err(ProbeError::UnexpectedResponse),
                             }
                         }
-                        if page.messages.is_empty()
+                        let complete = page.complete;
+                        if !complete {
+                            if !page.messages.is_empty() {
+                                publish(
+                                    &events,
+                                    LiveEvent::Messages {
+                                        records: page.messages,
+                                        statuses: Vec::new(),
+                                        correlations: Vec::new(),
+                                    },
+                                )
+                                .await?;
+                            }
+                            publish(&events, LiveEvent::HistoryUnavailable { fetch_id }).await?;
+                        } else if page.messages.is_empty()
                             && page
                                 .cursor_next
                                 .as_ref()
@@ -764,8 +779,10 @@ impl RecoveredSession {
                             )
                             .await?;
                         }
-                        for reply_id in acknowledgements {
-                            self.acknowledge(&short, endpoint, reply_id).await?;
+                        if complete {
+                            for reply_id in acknowledgements {
+                                self.acknowledge(&short, endpoint, reply_id).await?;
+                            }
                         }
                     }
                     ReadResult::Startup if matches!(command, LiveCommand::SendingCapability) => {
@@ -834,6 +851,7 @@ impl RecoveredSession {
                 publish(events, LiveEvent::ConversationUpdates(records)).await?;
             }
             crate::updates::Update::Messages {
+                complete,
                 records,
                 statuses,
                 correlations,
@@ -846,7 +864,10 @@ impl RecoveredSession {
                         correlations,
                     },
                 )
-                .await?
+                .await?;
+                if !complete {
+                    return Ok(());
+                }
             }
             crate::updates::Update::PresenceCheck => {
                 let request = self.build_request(

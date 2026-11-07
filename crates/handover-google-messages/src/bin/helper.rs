@@ -643,6 +643,7 @@ async fn publish_push_messages<W: AsyncWrite + Unpin>(
                 cursor_next: None,
                 downloads: Vec::new(),
                 original_fetch_error: None,
+                complete: true,
             },
             false,
         )
@@ -3606,6 +3607,7 @@ mod tests {
                 cursor_next: Some("opaque-cursor".into()),
                 downloads: Vec::new(),
                 original_fetch_error: None,
+                complete: true,
             },
         )
         .await
@@ -3656,6 +3658,7 @@ mod tests {
                 cursor_next: None,
                 downloads: Vec::new(),
                 original_fetch_error: None,
+                complete: true,
             },
         )
         .await
@@ -3704,6 +3707,7 @@ mod tests {
                     cursor_next: Some(format!("cursor-{index}")),
                     downloads: Vec::new(),
                     original_fetch_error: None,
+                    complete: true,
                 },
             );
         }

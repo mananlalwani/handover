@@ -220,8 +220,10 @@ and read state in `handover/messaging-cache.json`. Set `HANDOVER_MESSAGING_CACHE
 to disable cache loading and writes. Cached accounts start disconnected until
 the helper reports their current state. Completed history page sizes are also
 cached, including empty conversations. Switching conversations serves local
-history without fetching the same short page again. A larger page request or
-an older-history gap can still fetch additional records.
+history without fetching the same short page again. If an online conversation
+reports activity newer than its cached messages, a newest-page read refreshes
+from the helper before serving the archive. A failed refresh reports unavailable
+history. A larger page request or an older-history gap can also fetch records.
 
 When an account returns online and its conversation inventory is available,
 the daemon refreshes cached conversations in the background. Catch-up merges
@@ -242,8 +244,11 @@ deleting stored history. This limit covers the SQLite database; temporary journa
 files and separately cached media are outside it. The same cache opt-out disables
 it. Explicit message removal, conversation removal, and
 account logout remove the corresponding archived records. A history page with
-unsupported content fails that read without closing the authenticated live
-connection or acknowledging the unprojectable page.
+unsupported content publishes its validated messages as incremental updates,
+then reports that read as unavailable. It never completes the partial page or
+acknowledges it. Mixed push batches also publish validated messages without
+acknowledging unsupported records. Malformed records still reject the batch.
+The authenticated live connection stays open.
 
 Quickshell starts loading all available history after a conversation remains
 selected for five seconds. It requests one page at a time, with a one-second
