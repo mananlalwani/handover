@@ -34,7 +34,7 @@ jobs:
             android:
               - 'android/**'
               - 'crates/handover-native/**'
-              - 'handoverd/src/ipc_server.rs'
+              - 'handoverd/src/ipc_server/**'
               - '.github/workflows/ci.yml'
 
   rust:
