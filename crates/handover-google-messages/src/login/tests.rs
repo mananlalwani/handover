@@ -1130,7 +1130,7 @@ fn synthetic_history_page_with_content(include_content: bool) -> Vec<u8> {
     Page {
         records: vec![Record {
             status: Some(Status {
-                code: if include_content { 100 } else { 117 },
+                code: if include_content { 100 } else { 118 },
             }),
             id: if include_content {
                 "message"

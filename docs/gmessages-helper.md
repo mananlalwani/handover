@@ -250,6 +250,11 @@ acknowledges it. Mixed push batches also publish validated messages without
 acknowledging unsupported records. Malformed records still reject the batch.
 The authenticated live connection stays open.
 
+Phone-confirmed deletion records use the existing normalized `deleted` flag,
+retain their message identity, sender, and timestamp, and discard text,
+attachments, reply previews, and reactions. Clients display a deletion label.
+Empty content alone does not attest deletion.
+
 Quickshell starts loading all available history after a conversation remains
 selected for five seconds. It requests one page at a time, with a one-second
 pause between automatic requests, and stops when focus changes. Already archived

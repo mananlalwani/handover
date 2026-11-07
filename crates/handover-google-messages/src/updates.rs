@@ -328,6 +328,7 @@ mod tests {
             (11, Some("displayed")),
             (3, None),
             (100, None),
+            (117, None),
         ] {
             let (conversation, record) = fixture(code);
             let Update::Messages {
@@ -343,6 +344,7 @@ mod tests {
                 panic!("messages")
             };
             assert_eq!(records.len(), 1);
+            assert_eq!(records[0].deleted, code == 117);
             assert_eq!(statuses.len(), usize::from(expected.is_some()));
             if let Some(expected) = expected {
                 assert_eq!(statuses[0], (records[0].id.clone(), expected));
@@ -357,7 +359,7 @@ mod tests {
     #[test]
     fn mixed_push_keeps_supported_messages_without_claiming_complete_processing() {
         let (conversation, supported) = fixture(100);
-        let (_, mut unsupported) = fixture(117);
+        let (_, mut unsupported) = fixture(118);
         unsupported.truncate(unsupported.len() - 7);
         unsupported[2] = b'u';
         let Update::Messages {

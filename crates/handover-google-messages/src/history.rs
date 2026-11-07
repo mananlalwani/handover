@@ -231,7 +231,13 @@ pub(crate) fn decode_records(
         {
             continue;
         }
-        if wire.parts.is_empty()
+        // Observed on the paired phone as an incoming deleted-message record.
+        // An empty body or an unknown status alone never attests deletion.
+        let deleted = wire
+            .status
+            .as_ref()
+            .is_some_and(|status| status.code == 117);
+        if (wire.parts.is_empty() && !deleted)
             || wire
                 .status
                 .as_ref()
@@ -272,6 +278,11 @@ pub(crate) fn decode_records(
                 is_self: false,
             })
         };
+        if deleted {
+            wire.parts.clear();
+            wire.reply = None;
+            wire.reactions.clear();
+        }
         let mut texts = Vec::new();
         let mut attachments = Vec::new();
         for part in &mut wire.parts {
@@ -362,7 +373,7 @@ pub(crate) fn decode_records(
                     })
                 })
                 .collect::<Result<Vec<_>, ProbeError>>()?,
-            deleted: false,
+            deleted,
         };
         validate_message(&record).map_err(|_| invalid())?;
         if let Some(previous) = messages.iter().find(|previous| previous.id == record.id) {
@@ -709,6 +720,57 @@ mod tests {
             decode(&conversation(), &page(sent)).unwrap().messages[0]
                 .sender
                 .is_self
+        );
+    }
+    #[test]
+    fn confirmed_incoming_deletion_preserves_identity_without_old_content() {
+        for retained_body in [false, true] {
+            let mut deleted = record();
+            deleted.id = "deleted".into();
+            deleted.status = Some(Status { code: 117 });
+            deleted.kind = 4;
+            if !retained_body {
+                deleted.parts.clear();
+            }
+            deleted.reply = Some(ReplyReference {
+                original: "earlier".into(),
+                mapping: None,
+            });
+            deleted.reactions.push(WireReaction {
+                emoji: Some(WireEmoji {
+                    value: "👍".into()
+                }),
+                actors: vec!["person".into()],
+            });
+            let page = Page {
+                messages: vec![deleted.encode_to_vec(), record().encode_to_vec()],
+                cursor: None,
+            };
+            let decoded = decode(&conversation(), &page.encode_to_vec()).unwrap();
+            assert!(decoded.complete);
+            assert_eq!(decoded.messages.len(), 2);
+            let deleted = decoded
+                .messages
+                .iter()
+                .find(|item| item.id.local_id == "deleted")
+                .unwrap();
+            assert!(deleted.deleted);
+            assert_eq!(deleted.sender.local_id, "peer:person");
+            assert_eq!(deleted.sent_at, Some(1234000));
+            assert_eq!(deleted.transport, Some(TransportKind::Rcs));
+            assert!(deleted.text.is_none());
+            assert!(deleted.attachments.is_empty());
+            assert!(deleted.reply_to.is_none());
+            assert!(deleted.reactions.is_empty());
+        }
+        let mut unknown = record();
+        unknown.parts.clear();
+        unknown.status = Some(Status { code: 118 });
+        let unknown = decode(&conversation(), &page(unknown)).unwrap();
+        assert!(!unknown.complete);
+        assert!(
+            unknown.messages.is_empty(),
+            "empty content alone does not attest deletion"
         );
     }
     #[test]

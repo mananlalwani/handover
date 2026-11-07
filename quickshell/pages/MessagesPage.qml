@@ -230,6 +230,14 @@ Rectangle {
             HandoverService.contactLabel(item)).join(", ");
     }
 
+    function messageText(message) {
+        if (message.deleted)
+            return "Message deleted";
+        return message.text || ((message.attachments || []).length > 0
+            ? "📎 " + message.attachments.map(item =>
+                item.name || item.mime || "attachment").join(", ") : "");
+    }
+
     function senderLabel(sender) {
         return HandoverService.contactLabel(sender);
     }
@@ -594,15 +602,15 @@ Item {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 12
                                     Layout.rightMargin: 12
-                                    visible: !!modelData.reply_to
+                                    visible: !modelData.deleted && !!modelData.reply_to
                                     text: {
                                         const target = modelData.reply_to;
                                         if (!target)
                                             return "";
                                         const original = messagesCard.selectedMessages.find(item =>
                                             item.id.local_id === target.local_id);
-                                        return "Reply to: " + (original && original.text
-                                            ? original.text : "an earlier message");
+                                        return "Reply to: " + (original
+                                            ? messagesCard.messageText(original) : "an earlier message");
                                     }
                                     color: "#b9d7f2"
                                     textFormat: Text.PlainText
@@ -617,17 +625,14 @@ Item {
                                     textFormat: TextEdit.PlainText
                                     readOnly: true
                                     selectByMouse: true
-                                    text: modelData.text
-                                        || ((modelData.attachments || []).length > 0
-                                            ? "📎 " + (modelData.attachments || []).map(item =>
-                                                item.name || item.mime || "attachment").join(", ")
-                                            : "")
-                                    color: "#ffffff"
+                                    text: messagesCard.messageText(modelData)
+                                    font.italic: !!modelData.deleted
+                                    color: modelData.deleted ? "#aebed0" : "#ffffff"
                                     wrapMode: TextEdit.Wrap
                                     font.pixelSize: 14
                                 }
                                 Repeater {
-                                    model: modelData.attachments || []
+                                    model: modelData.deleted ? [] : (modelData.attachments || [])
                                     Button {
                                         required property var modelData
                                         Layout.leftMargin: 8
@@ -643,16 +648,16 @@ Item {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 12
                                     Layout.rightMargin: 12
-                                    visible: (modelData.reactions || []).length > 0
+                                    visible: !modelData.deleted && (modelData.reactions || []).length > 0
                                     Repeater {
-                                        model: messageData.reactions || []
+                                        model: messageData.deleted ? [] : (messageData.reactions || [])
                                         Button {
                                             required property var modelData
                                             text: modelData.emoji + " ×" + modelData.count
                                             flat: true
                                             ToolTip.visible: hovered
                                             ToolTip.text: "Remove your reaction"
-                                            enabled: messagesCard.accountConversations.some(item =>
+                                            enabled: !messageData.deleted && messagesCard.accountConversations.some(item =>
                                                 HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
                                                 && item.capabilities.includes("reactions"))
                                             onClicked: HandoverService.unreact(
@@ -675,7 +680,7 @@ Item {
                                     Button {
                                         text: "Reply"
                                         flat: true
-                                        enabled: !!messagesCard.selectedAccount
+                                        enabled: !messageData.deleted && !!messagesCard.selectedAccount
                                             && messagesCard.accountConversations.some(item =>
                                                 HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
                                                 && item.capabilities.includes("replies"))
@@ -687,7 +692,7 @@ Item {
                                             required property var modelData
                                             text: modelData
                                             flat: true
-                                            enabled: messagesCard.accountConversations.some(item =>
+                                            enabled: !messageData.deleted && messagesCard.accountConversations.some(item =>
                                                 HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
                                                 && item.capabilities.includes("reactions"))
                                             onClicked: HandoverService.react(

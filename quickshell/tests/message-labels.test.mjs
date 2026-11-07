@@ -59,3 +59,12 @@ test('matching national numbers do not collapse different country codes', () => 
     const contact = { display_name: 'Phone contact', phones: ['5555550100'], emails: [] };
     assert.equal(labels([contact]).contactForParticipant({ ...peer, address: '+445555550100' }), null);
 });
+
+test('deleted messages hide any stale text or attachment names', () => {
+    const context = vm.createContext({});
+    vm.runInContext(extract('../pages/MessagesPage.qml', 'messageText'), context);
+    assert.equal(context.messageText({ deleted: true, text: 'old private text', attachments: [{name: 'old-file.png'}] }), 'Message deleted');
+    assert.equal(context.messageText({ deleted: true }), 'Message deleted');
+    assert.equal(context.messageText({ text: 'Hello' }), 'Hello');
+    assert.equal(context.messageText({ attachments: [{ name: 'photo.png' }] }), '📎 photo.png');
+});
