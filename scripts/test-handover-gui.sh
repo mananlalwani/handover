@@ -77,7 +77,7 @@ if run_gui --send one two >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"; then
 	echo "--send accepted multiple resources" >&2
 	exit 1
 fi
-if ! rg -q 'at most one file or URL' "$TMP_DIR/stderr"; then
+if ! grep -Fq 'at most one file or URL' "$TMP_DIR/stderr"; then
 	echo "--send did not explain its multiple-resource error" >&2
 	exit 1
 fi
