@@ -47,9 +47,24 @@ properties are:
 - `lastReceivedShare`: most recent transient incoming file or URL event in
   this shell instance
 
-The service requests a snapshot and subscribes after every connection. If the
-daemon is absent or restarts, it clears its local view and retries after two
-seconds.
+The subscription socket carries the handshake, snapshots, and live events.
+Ordinary queries and commands each use a separate, unsubscribed connection with
+one request. Replies, errors, and chunk assembly belong to that request. A
+background history or settings failure cannot finish a pending send or media
+command. The archive-size dialog also waits for its own settings result.
+
+At most 16 requests run concurrently. Additional requests are rejected locally,
+with no queue of mutations. A newer collection refresh can supersede an older
+read of the same collection; paged history and mutations are not superseded.
+`sendRequest` returning true means the client admitted the request, not that the
+daemon accepted or completed it. Connecting has a 15-second deadline; after
+submission, a reply has up to 255 seconds to allow the helper's four-minute limit.
+
+Losing a command's reply reports an unknown outcome and never resends it. Losing
+the subscription aborts outstanding requests, clears disposable views, and
+reconnects after two seconds. New snapshots rebuild state. Conversation and
+outgoing-operation state come from the ordered subscription rather than extra
+startup queries. Physical-device effects still require backend evidence.
 
 The optional `handover-desktop` service mirrors phone notifications through
 the Linux desktop notification service, without Quickshell. Enable it with
@@ -62,12 +77,16 @@ provide inline replies for this client.
 ## Notifications and sharing
 
 `dismiss(notification)`, `invokeAction(notification, action)`, and
-`reply(notification, text)` send commands over the socket. `commandFinished`
-reports whether the daemon accepted each command. `lastError` shows failures.
+`reply(notification, text)` send commands on isolated connections.
+`commandFinished` reports whether acceptance was observed. A connection error
+after submission leaves an unknown outcome, described in its error string.
+`lastError` shows the most recent error, not the status of every pending command.
 
 `sendFile(device, fileUrl)` and `sendUrl(device, url)` address one device from
-`devices`. `shareFinished` reports whether the daemon accepted the request, not
-delivery. The example includes a one-file chooser and a URL field. Incoming
+`devices`. `shareFinished` reports whether daemon acceptance was observed, not
+delivery. Its final `unknown` flag distinguishes a lost reply from a reported
+rejection. `shareCancelFinished` has the same flag for an uncertain cancellation;
+the original transfer can still report a result. The example includes a one-file chooser and a URL field. Incoming
 share events carry the source device.
 
 ## Media

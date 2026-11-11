@@ -27,40 +27,52 @@ Rectangle {
         title: "Private archive size"
         property bool saving: false
         property bool refreshing: false
+        property string error: ""
         standardButtons: Dialog.Cancel
         footer: DialogButtonBox {
             standardButtons: DialogButtonBox.Cancel
             onRejected: archiveDialog.reject()
             Button {
                 text: "Save"
-                enabled: !archiveDialog.saving && !archiveDialog.refreshing && HandoverService.connected
+                enabled: !archiveDialog.saving && !archiveDialog.refreshing
+                    && !HandoverService.archiveSaving && HandoverService.connected
                 onClicked: {
-                    HandoverService.lastError = "";
+                    archiveDialog.error = "";
                     archiveDialog.saving = HandoverService.sendRequest("messages.archive_settings", { limit_mib: archiveLimit.value });
+                    if (!archiveDialog.saving)
+                        archiveDialog.error = HandoverService.lastError;
                 }
             }
         }
         Connections {
             target: HandoverService
             function onArchiveSettingsChanged() {
-                archiveDialog.refreshing = false;
-                if (archiveDialog.saving) {
-                    archiveDialog.saving = false;
-                    archiveDialog.accept();
-                } else if (archiveDialog.visible && HandoverService.archiveSettings)
+                if (archiveDialog.visible && !archiveDialog.saving && !archiveDialog.refreshing
+                        && HandoverService.archiveSettings)
                     archiveLimit.value = HandoverService.archiveSettings.limitMiB;
             }
-            function onLastErrorChanged() {
-                if (HandoverService.lastError) {
+            function onArchiveSettingsFinished(saving, success, error) {
+                if (saving && archiveDialog.saving) {
                     archiveDialog.saving = false;
+                    if (success)
+                        archiveDialog.accept();
+                    else
+                        archiveDialog.error = error;
+                } else if (!saving && archiveDialog.refreshing) {
                     archiveDialog.refreshing = false;
+                    if (!success)
+                        archiveDialog.error = error;
+                    else if (!archiveDialog.saving && HandoverService.archiveSettings)
+                        archiveLimit.value = HandoverService.archiveSettings.limitMiB;
                 }
             }
         }
         onOpened: {
             saving = false;
-            HandoverService.lastError = "";
+            error = "";
             refreshing = HandoverService.sendRequest("messages.archive_settings", {});
+            if (!refreshing)
+                error = HandoverService.lastError;
             archiveLimit.value = HandoverService.archiveSettings ? HandoverService.archiveSettings.limitMiB : 1024;
         }
         contentItem: ColumnLayout {
@@ -72,7 +84,7 @@ Rectangle {
                     : "Archive unavailable"
             }
             Label { text: "Default: 1024 MiB (1 GiB). Stored history is preserved." }
-            Label { text: HandoverService.lastError; color: "#fca5a5"; visible: text.length > 0 }
+            Label { text: archiveDialog.error; color: "#fca5a5"; visible: text.length > 0 }
         }
     }
     Dialog {

@@ -63,6 +63,8 @@ install -Dm644 "$ROOT/share/systemd/user/handover-desktop.service" \
 install -d "$USER_DATA_HOME/handover/quickshell/pages"
 install -Dm644 "$ROOT/share/handover/quickshell/HandoverService.qml" \
 	"$USER_DATA_HOME/handover/quickshell/HandoverService.qml"
+install -Dm644 "$ROOT/share/handover/quickshell/IpcRequest.qml" \
+	"$USER_DATA_HOME/handover/quickshell/IpcRequest.qml"
 install -Dm644 "$ROOT/share/handover/quickshell/MessageList.qml" \
 	"$USER_DATA_HOME/handover/quickshell/MessageList.qml"
 install -Dm644 "$ROOT/share/handover/quickshell/"*.js \

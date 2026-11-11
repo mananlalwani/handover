@@ -89,6 +89,12 @@ command in flight on a command connection. Requests have no general request ID;
 subscription events can otherwise arrive between a command and its reply.
 The Rust `Client` convenience methods expect their corresponding response.
 
+The reference Quickshell client uses an unsubscribed connection for each ordinary
+request, with a limit of 16 concurrent requests and no queued mutations. Request
+errors and partial lists stay on their owning connection. It does not retry a
+mutation when its response is lost. This is a client implementation choice;
+protocol 1 does not add request IDs or require a new socket for every command.
+
 A subscription request is:
 
 ```json

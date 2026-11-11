@@ -55,10 +55,11 @@ function accepted(state, method, deviceId, transferId) {
     return next;
 }
 
-function failed(state, error) {
+function failed(state, error, unknown) {
     if (!state || state.phase !== "pending")
         return state;
-    return Object.assign({}, state, { phase: "done", early: [], text: "Request failed: " + error });
+    return Object.assign({}, state, { phase: "done", early: [], text: unknown
+        ? "Transfer outcome is unknown. " + error : "Request failed: " + error });
 }
 
 function disconnected(state) {
@@ -78,7 +79,7 @@ function requestCancellation(state) {
     return Object.assign({}, state, { cancelPending: true, text: "Requesting cancellation…" });
 }
 
-function cancellationResult(state, deviceId, transferId, cancelled, error) {
+function cancellationResult(state, deviceId, transferId, cancelled, error, unknown) {
     if (!state || !state.cancelPending || state.deviceId !== deviceId || state.transferId !== transferId)
         return state;
     const next = Object.assign({}, state, { cancelPending: false });
@@ -88,6 +89,8 @@ function cancellationResult(state, deviceId, transferId, cancelled, error) {
         return Object.assign(next, { phase: "done", text: "Queued transfer cancelled." });
     if (state.phase === "done")
         return next;
+    if (unknown)
+        return Object.assign(next, { text: "Cancellation outcome is unknown. Waiting for the transfer result." });
     return Object.assign(next, { text: error
         ? "Cancellation request failed: " + error + ". Transfer completion is not confirmed."
         : "Transfer could not be cancelled. Waiting for its result." });

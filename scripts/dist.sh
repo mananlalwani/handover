@@ -67,6 +67,8 @@ install -Dm644 packaging/handover-send.desktop \
 	"$STAGE_DIR/share/applications/handover-send.desktop"
 install -Dm644 quickshell/HandoverService.qml \
 	"$STAGE_DIR/share/handover/quickshell/HandoverService.qml"
+install -Dm644 quickshell/IpcRequest.qml \
+	"$STAGE_DIR/share/handover/quickshell/IpcRequest.qml"
 install -Dm644 quickshell/MessageList.qml \
 	"$STAGE_DIR/share/handover/quickshell/MessageList.qml"
 install -Dm644 quickshell/*.js "$STAGE_DIR/share/handover/quickshell/"

@@ -52,6 +52,7 @@ install-files:
 	install -Dm644 $(UNIT_SRC) $(USER_UNIT_DIR)/handoverd.service
 	install -Dm644 $(DESKTOP_UNIT_SRC) $(USER_UNIT_DIR)/handover-desktop.service
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
+	install -Dm644 quickshell/IpcRequest.qml $(QUICKSHELL_INSTALL_DIR)/IpcRequest.qml
 	install -Dm644 quickshell/MessageList.qml $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
 	install -Dm644 quickshell/*.js $(QUICKSHELL_INSTALL_DIR)/
 	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
@@ -106,6 +107,7 @@ uninstall-user:
 	rm -f $(ZSH_COMPLETION_DIR)/_handoverctl
 	rm -f $(FISH_COMPLETION_DIR)/handoverctl.fish
 	rm -f $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/IpcRequest.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/*.js
 	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml

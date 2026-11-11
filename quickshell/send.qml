@@ -140,13 +140,13 @@ ShellRoot {
             function onShareAccepted(method, deviceId, transferId) {
                 window.transfer = Share.accepted(window.transfer, method, deviceId, transferId);
             }
-            function onShareFinished(method, deviceId, success, error) {
+            function onShareFinished(method, deviceId, success, error, unknown) {
                 if (!success && window.transfer && window.transfer.deviceId === deviceId
                         && window.transfer.method === method)
-                    window.transfer = Share.failed(window.transfer, error);
+                    window.transfer = Share.failed(window.transfer, error, unknown);
             }
-            function onShareCancelFinished(deviceId, transferId, cancelled, error) {
-                window.transfer = Share.cancellationResult(window.transfer, deviceId, transferId, cancelled, error);
+            function onShareCancelFinished(deviceId, transferId, cancelled, error, unknown) {
+                window.transfer = Share.cancellationResult(window.transfer, deviceId, transferId, cancelled, error, unknown);
             }
             function onLastShareProgressChanged() {
                 window.transfer = Share.event(window.transfer, HandoverService.lastShareProgress, false);

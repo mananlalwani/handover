@@ -30,17 +30,19 @@ function service() {
         maxSnapshotBytes: MAX_SNAPSHOT,
         maxSnapshotChunks: MAX_CHUNKS,
         snapshotBuffer: null, snapshotKind: '', snapshotBytes: 0, snapshotChunks: 0,
-        listAssembly: null,
+        listAssembly: null, activeRequests: [],
         outgoingOperations: [], devices: ['old-device'], notifications: ['old-notification'],
         mediaSessions: [], calls: [], messagingAccounts: [], conversations: [],
         typingStates: [], readStates: [], contacts: [],
-        audioStreams: [], pendingCommand: null, pendingMessaging: null,
+        audioStreams: [], pendingCommand: null, pendingMessaging: null, pendingNative: null,
+        Qt: { callLater(callback) { callback(); } },
         retryTimer: { restart() {} }, sharesInterrupted() {}, finishPending() {},
         finishMessaging() {}, refreshContacts() {}, refreshMessaging() {},
         lastError: '',
     });
     vm.runInContext([
-        extract('clearSnapshotAssembly'), extract('utf8ByteLength'),
+        extract('clearSnapshotAssembly'), extract('utf8ByteLength'), extract('expectedReply'),
+        extract('finishRequest'), extract('failRequest'), extract('abortRequests'),
         extract('applySnapshot'),
         extract('scheduleReconnect').replace('function scheduleReconnect(', 'function realScheduleReconnect('),
         'function scheduleReconnect(message) { reconnects.push(message); realScheduleReconnect(message); }',
@@ -291,4 +293,40 @@ test('all list kinds enforce the byte budget and reject interrupted assembly', (
         assert.deepEqual(interrupted.reconnects, ['daemon interrupted list sequence'], type);
         assert.equal(interrupted.c.listAssembly, null, type);
     }
+});
+
+test('independent query assemblies can interleave with a subscription snapshot', () => {
+    const { c, reconnects } = service();
+    const transport = () => ({ submitted: true, close() {}, destroy() {} });
+    const contacts = { method: 'contacts.list', fields: {}, transport: transport(), listAssembly: null };
+    const media = { method: 'media.list', fields: {}, transport: transport(), listAssembly: null };
+    c.activeRequests = [contacts, media];
+    c.contacts = [{ id: 'old-contact' }];
+    c.handleLine(chunk('snapshot_chunk'));
+    c.handleLine(JSON.stringify({protocol:1, type:'contacts_chunk', contacts:[{id:'first'}], done:false}), contacts);
+    c.handleLine(JSON.stringify({protocol:1, type:'media_chunk', media_sessions:[{id:'player'}], done:true}), media);
+    assert.deepEqual(Array.from(c.contacts, item => item.id), ['old-contact']);
+    assert.deepEqual(Array.from(c.mediaSessions, item => item.id), ['player']);
+    assert.equal(c.activeRequests.length, 1);
+    c.handleLine(JSON.stringify({protocol:1, type:'contacts_chunk', contacts:[{id:'last'}], done:true}), contacts);
+    assert.deepEqual(Array.from(c.contacts, item => item.id), ['first', 'last']);
+    assert.equal(c.activeRequests.length, 0);
+    assert.notEqual(c.snapshotBuffer, null);
+    c.handleLine(chunk('snapshot_chunk', true));
+    assert.deepEqual(reconnects, []);
+});
+
+test('an excessive query response closes only that request and discards its partial list', () => {
+    const { c, reconnects } = service();
+    const request = {method:'contacts.list', fields:{}, listAssembly:null,
+        transport:{submitted:true, close(){}, destroy(){}}};
+    c.activeRequests = [request];
+    c.contacts = [{id:'retained'}];
+    for (let index = 0; index <= MAX_CHUNKS; index++)
+        c.handleLine(JSON.stringify({protocol:1, type:'contacts_chunk', contacts:[], done:false}), request);
+    assert.equal(request.done, true);
+    assert.equal(request.listAssembly, null);
+    assert.equal(c.activeRequests.length, 0);
+    assert.deepEqual(Array.from(c.contacts, item => item.id), ['retained']);
+    assert.deepEqual(reconnects, []);
 });

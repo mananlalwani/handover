@@ -17,6 +17,8 @@ Singleton {
         ? socketLoader.item.connected
         : false
     property var archiveSettings: null
+    property bool archiveSaving: false
+    signal archiveSettingsFinished(bool saving, bool success, string error)
     property var devices: []
     property var notifications: []
     property var mediaSessions: []
@@ -102,10 +104,13 @@ Singleton {
     property string nativeNotice: ""
     property bool nativePending: false
     property var pendingCommand: null
+    readonly property int maxRequests: 16
+    property var activeRequests: []
+    property var pendingNative: null
     signal commandFinished(string method, var notificationId, bool success, string error)
-    signal shareFinished(string method, string deviceId, bool success, string error)
+    signal shareFinished(string method, string deviceId, bool success, string error, bool unknown)
     signal shareAccepted(string method, string deviceId, string transferId)
-    signal shareCancelFinished(string deviceId, string transferId, bool cancelled, string error)
+    signal shareCancelFinished(string deviceId, string transferId, bool cancelled, string error, bool unknown)
     signal sharesInterrupted()
     signal mediaFinished(string action, var mediaId, bool success, string error)
     // Messaging state. Conversations belong to messaging accounts, never to
@@ -243,11 +248,11 @@ Singleton {
             lastError = "another messaging command is still pending";
             return false;
         }
-        if (!sendRequest(method, fields)) {
-            lastError = "handoverd is disconnected";
+        const command = { method: method };
+        if (!sendRequest(method, fields, null, command)) {
             return false;
         }
-        pendingMessaging = { method: method };
+        pendingMessaging = command;
         lastError = "";
         return true;
     }
@@ -391,7 +396,6 @@ Singleton {
         if (address)
             fields.address = address;
         if (!sendRequest("calls.control", fields)) {
-            lastError = "handoverd is disconnected";
             return false;
         }
         lastError = "";
@@ -419,13 +423,95 @@ Singleton {
         return sendMessaging("messages.logout", { account_id: accountId });
     }
 
-    function sendRequest(method, fields, socketOverride) {
-        const socket = socketOverride || socketLoader.item;
-        if (!socket || !socket.connected)
+    function sendRequest(method, fields, socketOverride, owner) {
+        const encoded = JSON.stringify(Object.assign({ protocol: protocolVersion, method: method }, fields || {})) + "\n";
+        if (socketOverride) {
+            if (!socketOverride.connected)
+                return false;
+            socketOverride.write(encoded);
+            socketOverride.flush();
+            return true;
+        }
+        if (!connected) {
+            lastError = "handoverd is disconnected";
             return false;
-        socket.write(JSON.stringify(Object.assign({ protocol: protocolVersion, method: method }, fields || {})) + "\n");
-        socket.flush();
+        }
+        if (method === "messages.archive_settings" && fields && fields.limit_mib !== undefined && archiveSaving) {
+            lastError = "another archive update is still pending";
+            return false;
+        }
+        // A newer refresh supersedes an older read of the same collection.
+        // Mutations and paged history are never cancelled or queued here.
+        const refreshes = ["contacts.list", "calls.audio", "custom.commands", "native.pending",
+            "clipboard.history_list", "clipboard.mirror_status", "messages.conversations"];
+        const refresh = refreshes.includes(method)
+            || (method === "messages.archive_settings" && (!fields || fields.limit_mib === undefined));
+        if (refresh) {
+            for (const previous of activeRequests.slice()) {
+                if (previous.method === method && !previous.owner
+                        && previous.fields.account_id === (fields || {}).account_id
+                        && previous.fields.limit_mib === undefined)
+                    finishRequest(previous);
+            }
+        }
+        if (activeRequests.length >= maxRequests) {
+            lastError = "too many requests are still pending";
+            return false;
+        }
+        if (utf8ByteLength(encoded) > maxLineBytes) {
+            lastError = "request exceeds the IPC size limit";
+            return false;
+        }
+        const transport = requestComponent.createObject(root, { socketPath: socketPath, encodedRequest: encoded });
+        const request = { method: method, fields: fields || {}, owner: owner, transport: transport,
+            listAssembly: null, done: false };
+        activeRequests = activeRequests.concat([request]);
+        if (method === "messages.archive_settings" && fields && fields.limit_mib !== undefined)
+            archiveSaving = true;
+        transport.received.connect(line => handleLine(line, request));
+        transport.failed.connect((reason, submitted) => failRequest(request, reason, submitted));
+        // Install callbacks and pending UI ownership before a local socket can connect.
+        Qt.callLater(() => transport.start());
         return true;
+    }
+
+    function finishRequest(request) {
+        if (!request || request.done)
+            return;
+        request.done = true;
+        request.listAssembly = null;
+        activeRequests = activeRequests.filter(item => item !== request);
+        request.transport.close();
+        Qt.callLater(() => request.transport.destroy());
+    }
+
+    function failRequest(request, reason, submitted) {
+        if (request.done)
+            return;
+        const error = submitted ? reason + ". Outcome is unknown; check current state before trying again." : reason;
+        lastError = error;
+        if (request.method === "messages.history" && request.fields.conversation_id)
+            stopHistoryLoad(request.fields.conversation_id);
+        if (request.method === "messages.archive_settings") {
+            if (request.fields.limit_mib !== undefined)
+                archiveSaving = false;
+            archiveSettingsFinished(request.fields.limit_mib !== undefined, false, error);
+        }
+        if (request.owner && request.owner === pendingCommand)
+            finishPending(false, error, submitted);
+        if (request.owner && request.owner === pendingMessaging)
+            finishMessaging(false, error);
+        if (request.owner && request.owner === pendingNative) {
+            pendingNative = null;
+            nativePending = false;
+            nativeNotice = error;
+        }
+        finishRequest(request);
+    }
+
+    function abortRequests(reason) {
+        for (const request of activeRequests.slice())
+            failRequest(request, reason, request.transport.submitted);
     }
 
     function sendCommand(method, fields) {
@@ -433,11 +519,11 @@ Singleton {
             lastError = "another notification command is still pending";
             return false;
         }
-        if (!sendRequest(method, fields)) {
-            lastError = "handoverd is disconnected";
+        const command = { method: method, notificationId: fields.notification_id };
+        if (!sendRequest(method, fields, null, command)) {
             return false;
         }
-        pendingCommand = { method: method, notificationId: fields.notification_id };
+        pendingCommand = command;
         lastError = "";
         return true;
     }
@@ -465,11 +551,11 @@ Singleton {
             lastError = "another command is still pending";
             return false;
         }
-        if (!sendRequest(method, Object.assign({ device_id: device.id }, fields))) {
-            lastError = "handoverd is disconnected";
+        const command = { method: method, deviceId: device.id, transferId: fields.transfer_id || "" };
+        if (!sendRequest(method, Object.assign({ device_id: device.id }, fields), null, command)) {
             return false;
         }
-        pendingCommand = { method: method, deviceId: device.id, transferId: fields.transfer_id || "" };
+        pendingCommand = command;
         lastError = "";
         return true;
     }
@@ -590,10 +676,12 @@ Singleton {
             return false;
         }
         const id = device.id.substring("native:".length);
-        if (!sendRequest("native." + action, { id: id })) {
-            nativeNotice = "handoverd is disconnected";
+        const command = { method: "native." + action };
+        if (!sendRequest(command.method, { id: id }, null, command)) {
+            nativeNotice = lastError;
             return false;
         }
+        pendingNative = command;
         nativePending = true;
         nativeNotice = "";
         return true;
@@ -648,11 +736,11 @@ Singleton {
         else if (action === "set_position")
             fields.position_ms = Number(value || 0);
 
-        if (!sendRequest("media.control", fields)) {
-            lastError = "handoverd is disconnected";
+        const command = { method: "media.control", mediaId: session.id, action: action };
+        if (!sendRequest("media.control", fields, null, command)) {
             return false;
         }
-        pendingCommand = { method: "media.control", mediaId: session.id, action: action };
+        pendingCommand = command;
         lastError = "";
         return true;
     }
@@ -661,20 +749,26 @@ Singleton {
         retryTimer.stop();
         lastError = "";
         sendRequest("hello", null, socket);
-        sendRequest("devices.list", null, socket);
-        sendRequest("contacts.list", null, socket);
-        sendRequest("messages.archive_settings", {}, socket);
-        sendRequest("native.pending", null, socket);
-        sendRequest("custom.commands", null, socket);
-        sendRequest("clipboard.mirror_status", null, socket);
-        sendRequest("clipboard.history_list", null, socket);
         sendRequest("subscribe", { shares: true, media: true, messages: true }, socket);
         sendRequest("audio.subscribe", {}, socket);
-        loadOutgoingOperations();
+        // The root's connected binding updates after the socket's signal handler.
+        Qt.callLater(() => {
+            if (socketLoader.item !== socket || !socket.connected)
+                return;
+            sendRequest("contacts.list", null);
+            sendRequest("messages.archive_settings", {});
+            sendRequest("native.pending", null);
+            sendRequest("custom.commands", null);
+            sendRequest("clipboard.mirror_status", null);
+            sendRequest("clipboard.history_list", null);
+            // Outgoing operations follow the subscription snapshot on that socket.
+        });
     }
 
     function scheduleReconnect(message) {
         sharesInterrupted();
+        const hadNativeRequest = !!pendingNative;
+        abortRequests(message);
         lastError = message;
         audioStreams = [];
         devices = [];
@@ -706,9 +800,11 @@ Singleton {
         outgoingOperations = [];
         pairingPrompt = null;
         nativePending = false;
-        nativeNotice = "";
+        pendingNative = null;
+        if (!hadNativeRequest)
+            nativeNotice = "";
         if (pendingCommand) {
-            finishPending(false, message);
+            finishPending(false, message, true);
             pendingCommand = null;
         }
         if (pendingMessaging) {
@@ -825,13 +921,13 @@ Singleton {
             refreshMessaging();
     }
 
-    function finishPending(success, error) {
+    function finishPending(success, error, unknown) {
         if (!pendingCommand)
             return;
         if (pendingCommand.method === "share.cancel")
-            shareCancelFinished(pendingCommand.deviceId, pendingCommand.transferId, false, error);
+            shareCancelFinished(pendingCommand.deviceId, pendingCommand.transferId, false, error, !!unknown);
         else if (pendingCommand.deviceId)
-            shareFinished(pendingCommand.method, pendingCommand.deviceId, success, error);
+            shareFinished(pendingCommand.method, pendingCommand.deviceId, success, error, !!unknown);
         else if (pendingCommand.mediaId)
             mediaFinished(pendingCommand.action, pendingCommand.mediaId, success, error);
         else
@@ -839,31 +935,103 @@ Singleton {
         pendingCommand = null;
     }
 
-    function handleLine(line) {
+    function expectedReply(method) {
+        const replies = {
+            "hello": "hello", "devices.list": "devices", "notifications.list": "notifications",
+            "contacts.list": "contacts", "media.list": "media", "calls.list": "calls",
+            "calls.audio": "call_audio", "calls.control": "call_queued", "native.call": "call_queued",
+            "native.pending": "native_pending", "native.peers": "native_peers",
+            "clipboard.mirror_status": "clipboard_mirror", "clipboard.history_list": "clipboard_history",
+            "custom.commands": "custom_commands", "custom.run": "custom_result",
+            "audio.list": "audio_streams", "notification.dismiss": "command_completed",
+            "notification.action": "command_completed", "notification.reply": "command_completed",
+            "media.control": "media_accepted", "share.file": "share_accepted", "share.url": "share_accepted",
+            "share.cancel": "share_cancelled", "messages.accounts": "accounts",
+            "messages.conversations": "conversations", "messages.history": "history",
+            "messages.archive_settings": "archive_settings", "messages.outgoing": "outgoing_operations",
+            "messages.typing_states": "typing_states", "messages.read_states": "read_states",
+            "messages.send": "message_accepted", "messages.send_file": "message_accepted",
+            "messages.react": "message_accepted", "messages.unreact": "message_accepted",
+            "messages.delete": "message_accepted", "messages.open": "message_accepted",
+            "messages.read": "conversation_accepted", "messages.typing": "conversation_accepted",
+            "messages.login": "account_accepted", "messages.logout": "account_accepted",
+            "messages.sync": "account_accepted"
+        };
+        return Object.prototype.hasOwnProperty.call(replies, method) ? replies[method] : "native_accepted";
+    }
+
+    function handleLine(line, request) {
+        if (request && request.done)
+            return;
+        const reject = reason => {
+            if (request)
+                failRequest(request, reason, request.transport.submitted);
+            else
+                scheduleReconnect(reason);
+        };
         // SplitParser calls this after a newline; this caps parsed lines and
         // retained snapshots, not its own pre-newline buffer.
         const lineBytes = utf8ByteLength(line);
         if (lineBytes > maxLineBytes) {
-            scheduleReconnect("daemon message exceeds protocol limit");
+            reject("daemon message exceeds protocol limit");
             return;
         }
         let message;
         try {
             message = JSON.parse(line);
         } catch (error) {
-            scheduleReconnect("daemon sent invalid JSON");
+            reject("daemon sent invalid JSON");
             return;
         }
 
         if (!message || typeof message !== "object" || Array.isArray(message)
                 || typeof message.type !== "string") {
-            scheduleReconnect("daemon sent invalid message");
+            reject("daemon sent invalid message");
             return;
         }
 
         if (message.protocol !== protocolVersion) {
-            scheduleReconnect("unsupported daemon protocol");
+            reject("unsupported daemon protocol");
             return;
+        }
+
+        const ownsCommand = !!request && !!request.owner && request.owner === pendingCommand;
+        const ownsMessaging = !!request && !!request.owner && request.owner === pendingMessaging;
+        const ownsNative = !!request && !!request.owner && request.owner === pendingNative;
+        if (request && message.type !== "error") {
+            const expected = expectedReply(request.method);
+            if (message.type !== expected && message.type !== expected + "_chunk") {
+                reject("daemon response does not match the request");
+                return;
+            }
+            if ((message.type === "history" || message.type === "conversation_accepted")
+                    && (!request.fields.conversation_id || !message.conversation_id
+                        || !sameConversationId(message.conversation_id, request.fields.conversation_id))) {
+                reject("daemon response names another conversation");
+                return;
+            }
+            if (message.type === "share_accepted" && message.device_id !== request.fields.device_id) {
+                reject("daemon response names another device");
+                return;
+            }
+            if (message.type === "media_accepted" && (!request.fields.id || !message.id
+                    || !sameMediaId(message.id, request.fields.id))) {
+                reject("daemon response names another media session");
+                return;
+            }
+            if (message.type === "command_completed" && (!request.fields.notification_id || !message.notification_id
+                    || !sameNotificationId(message.notification_id, request.fields.notification_id))) {
+                reject("daemon response names another notification");
+                return;
+            }
+            if (message.type === "account_accepted" && message.account_id !== request.fields.account_id) {
+                reject("daemon response names another account");
+                return;
+            }
+            if (message.type === "message_accepted" && (typeof message.request_id !== "string" || !message.request_id)) {
+                reject("daemon acceptance has no operation identifier");
+                return;
+            }
         }
 
         const isSnapshotChunk = message.type === "subscribed_chunk"
@@ -874,35 +1042,36 @@ Singleton {
             outgoing_operations: "operations"
         };
         const isListChunk = Object.prototype.hasOwnProperty.call(listFields, message.type);
-        if (snapshotBuffer && (!isSnapshotChunk || message.type !== snapshotKind)) {
-            scheduleReconnect("daemon interrupted snapshot sequence");
+        const currentList = request ? request.listAssembly : listAssembly;
+        if (!request && snapshotBuffer && (!isSnapshotChunk || message.type !== snapshotKind)) {
+            reject("daemon interrupted snapshot sequence");
             return;
         }
-        if (listAssembly && (!isListChunk || message.type !== listAssembly.kind)) {
-            scheduleReconnect("daemon interrupted list sequence");
+        if (currentList && (!isListChunk || message.type !== currentList.kind)) {
+            reject("daemon interrupted list sequence");
             return;
         }
-        if (isSnapshotChunk && listAssembly) {
-            scheduleReconnect("daemon interrupted list sequence");
+        if (isSnapshotChunk && currentList) {
+            reject("daemon interrupted list sequence");
             return;
         }
-        if (isListChunk && snapshotBuffer) {
-            scheduleReconnect("daemon interrupted snapshot sequence");
+        if (!request && isListChunk && snapshotBuffer) {
+            reject("daemon interrupted snapshot sequence");
             return;
         }
         if (isListChunk) {
             const field = listFields[message.type];
             if (!Array.isArray(message[field]) || typeof message.done !== "boolean") {
-                scheduleReconnect("daemon sent invalid list chunk");
+                reject("daemon sent invalid list chunk");
                 return;
             }
-            const nextBytes = (listAssembly ? listAssembly.bytes : 0) + lineBytes;
-            const nextChunks = (listAssembly ? listAssembly.chunks : 0) + 1;
+            const nextBytes = (currentList ? currentList.bytes : 0) + lineBytes;
+            const nextChunks = (currentList ? currentList.chunks : 0) + 1;
             if (nextBytes > maxSnapshotBytes || nextChunks > maxSnapshotChunks) {
-                scheduleReconnect("daemon list exceeds protocol limit");
+                reject("daemon list exceeds protocol limit");
                 return;
             }
-            const items = (listAssembly ? listAssembly.items : []).concat(message[field]);
+            const items = (currentList ? currentList.items : []).concat(message[field]);
             if (message.done) {
                 if (message.type === "notifications_chunk")
                     notifications = items;
@@ -915,9 +1084,16 @@ Singleton {
                         replaceConversation(conversation);
                 } else
                     outgoingOperations = items;
-                listAssembly = null;
+                if (request)
+                    finishRequest(request);
+                else
+                    listAssembly = null;
             } else {
-                listAssembly = { kind: message.type, items, bytes: nextBytes, chunks: nextChunks };
+                const next = { kind: message.type, items, bytes: nextBytes, chunks: nextChunks };
+                if (request)
+                    request.listAssembly = next;
+                else
+                    listAssembly = next;
             }
             return;
         }
@@ -927,7 +1103,7 @@ Singleton {
                 snapshotKind = kind;
             const nextBytes = snapshotBytes + lineBytes;
             if (nextBytes > maxSnapshotBytes || snapshotChunks >= maxSnapshotChunks) {
-                scheduleReconnect("daemon snapshot exceeds protocol limit");
+                reject("daemon snapshot exceeds protocol limit");
                 return;
             }
             snapshotBytes = nextBytes;
@@ -936,8 +1112,8 @@ Singleton {
 
         switch (message.type) {
         case "hello":
-            if (!message.supported_protocols.includes(protocolVersion))
-                scheduleReconnect("daemon does not support this protocol");
+            if (!Array.isArray(message.supported_protocols) || !message.supported_protocols.includes(protocolVersion))
+                reject("daemon does not support this protocol");
             break;
         case "devices":
             devices = message.devices || [];
@@ -1014,7 +1190,6 @@ Singleton {
             break;
         case "device_command_result":
             if (message.result) {
-                nativePending = false;
                 nativeNotice = message.result.accepted
                     ? "Phone accepted " + String(message.result.action || "command")
                     : "Phone rejected " + String(message.result.action || "command")
@@ -1025,11 +1200,12 @@ Singleton {
             callAudio = message.status;
             break;
         case "native_accepted":
-            if (pendingCommand && (pendingCommand.method === "audio.start" || pendingCommand.method === "audio.stop"))
+            if (ownsCommand && (pendingCommand.method === "audio.start" || pendingCommand.method === "audio.stop"))
                 finishPending(true, "");
-            if (nativePending) {
+            if (ownsNative) {
+                pendingNative = null;
                 nativePending = false;
-                nativeNotice = "Phone action accepted";
+                nativeNotice = "Command queued; phone effect not confirmed";
             }
             break;
         case "call_queued":
@@ -1078,7 +1254,7 @@ Singleton {
             lastShareResult = message.result;
             break;
         case "share_accepted":
-            if (pendingCommand && pendingCommand.deviceId === message.device_id
+            if (ownsCommand && pendingCommand.deviceId === message.device_id
                     && (pendingCommand.method === "share.file" || pendingCommand.method === "share.url")) {
                 shareAccepted(pendingCommand.method, message.device_id, message.transfer_id || "");
                 finishPending(true, "");
@@ -1086,13 +1262,13 @@ Singleton {
             break;
         case "share_cancelled":
             if (typeof message.cancelled !== "boolean") {
-                scheduleReconnect("daemon sent invalid cancellation result");
+                reject("daemon sent invalid cancellation result");
                 return;
             }
-            if (pendingCommand && pendingCommand.method === "share.cancel") {
+            if (ownsCommand && pendingCommand.method === "share.cancel") {
                 const command = pendingCommand;
                 pendingCommand = null;
-                shareCancelFinished(command.deviceId, command.transferId, message.cancelled, "");
+                shareCancelFinished(command.deviceId, command.transferId, message.cancelled, "", false);
             }
             break;
         case "accounts":
@@ -1103,6 +1279,11 @@ Singleton {
             break;
         case "archive_settings":
             archiveSettings = { limitMiB: message.limit_mib, usedBytes: message.used_bytes };
+            if (request) {
+                if (request.fields.limit_mib !== undefined)
+                    archiveSaving = false;
+                archiveSettingsFinished(request.fields.limit_mib !== undefined, true, "");
+            }
             break;
         case "history":
             {
@@ -1153,8 +1334,7 @@ Singleton {
                 const next = messagingAccounts.filter(existing => existing.id !== message.account.id);
                 next.push(message.account);
                 messagingAccounts = next;
-                if (message.account.authenticated)
-                    loadConversations(message.account.id);
+                // Conversations are authoritative subscription state, not a second snapshot.
             }
             break;
         case "account_removed":
@@ -1201,50 +1381,66 @@ Singleton {
             pairingPrompt = { accountId: message.account_id, prompt: message.prompt };
             break;
         case "message_accepted":
-            if (pendingMessaging)
+            if (ownsMessaging)
                 finishMessaging(true, "", message.request_id);
             break;
         case "conversation_accepted":
-            if (pendingMessaging)
+            if (ownsMessaging)
                 finishMessaging(true, "", undefined,
                     message.conversation_id.account_id + ":" + message.conversation_id.local_id);
             break;
         case "account_accepted":
-            if (pendingMessaging)
+            if (ownsMessaging)
                 finishMessaging(true, "", undefined, message.account_id);
             else
                 refreshMessaging();
             break;
         case "media_accepted":
-            if (pendingCommand && pendingCommand.mediaId
+            if (ownsCommand && pendingCommand.mediaId
                     && sameMediaId(pendingCommand.mediaId, message.id))
                 finishPending(true, "");
             break;
         case "command_completed":
-            if (pendingCommand && pendingCommand.notificationId)
+            if (ownsCommand && pendingCommand.notificationId)
                 finishPending(true, "");
             break;
         case "error":
             // Stop the history load this error names. An error for another
             // conversation, or one with no conversation, leaves other loads running.
-            if ((message.code === "history_unavailable"
-                    || message.code === "unknown_conversation"
-                    || message.code === "messaging_unavailable")
-                    && message.conversation_id)
-                stopHistoryLoad(message.conversation_id);
+            if (request && request.method === "messages.history")
+                stopHistoryLoad(request.fields.conversation_id);
             lastError = message.code + ": " + message.message;
             console.warn("Handover:", lastError);
-            finishPending(false, lastError);
-            if (nativePending) {
+            if (request && request.method === "messages.archive_settings") {
+                if (request.fields.limit_mib !== undefined)
+                    archiveSaving = false;
+                archiveSettingsFinished(request.fields.limit_mib !== undefined, false, lastError);
+            }
+            if (ownsCommand)
+                finishPending(false, lastError);
+            if (ownsNative) {
+                pendingNative = null;
                 nativePending = false;
                 nativeNotice = lastError;
             }
-            if (pendingMessaging)
+            if (ownsMessaging)
                 finishMessaging(false, lastError);
             break;
         default:
             console.warn("Handover: unknown daemon message type");
         }
+        if (request) {
+            if ((ownsCommand && pendingCommand === request.owner)
+                    || (ownsMessaging && pendingMessaging === request.owner))
+                failRequest(request, "daemon response did not resolve the command", request.transport.submitted);
+            else
+                finishRequest(request);
+        }
+    }
+
+    Component {
+        id: requestComponent
+        IpcRequest { }
     }
 
     Timer {

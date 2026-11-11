@@ -58,7 +58,7 @@ Run the Android checks from `android/`:
 Run the QML check from the repository root:
 
 ```sh
-qmllint -I /usr/lib/qt6/qml quickshell/HandoverService.qml quickshell/example.qml quickshell/send.qml quickshell/pages/*.qml
+qmllint -I /usr/lib/qt6/qml quickshell/IpcRequest.qml quickshell/HandoverService.qml quickshell/example.qml quickshell/send.qml quickshell/pages/*.qml
 ```
 
 The JavaScript checks and offscreen send-window fixture also run without a phone:

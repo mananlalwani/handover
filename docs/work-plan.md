@@ -95,6 +95,22 @@ were reproduced with failing regressions before their fixes. The
 [compatibility policy](ipc.md#compatibility-policy) documents protocol evolution
 without declaring protocol 1 stable.
 
+Command ownership is also isolated in Quickshell. Ordinary requests now use
+separate connections, with at most 16 in flight and no mutation queue or replay.
+A fixture reproduced a background error being mistaken for a send failure before
+the fix. The expanded [coverage inventory](audits/ipc-2026-11-10.md) records
+concurrent command errors, independent list assemblies, lost replies, bounded
+admission, and subscription reconnect without resending actions. Settings saves
+use their own completion signal rather than the global error field. Packaging
+includes the new request component.
+
+Validation passed: Rust formatting, strict workspace Clippy, workspace tests,
+Android debug build/lint/JVM unit-test tasks, QML lint, all 49 JavaScript tests,
+20 offscreen desktop sharing/socket scenarios, and launcher tests. These are
+local and fixture checks; no physical-phone or live desktop interaction was
+performed for this change. The ordinary workspace suite retains ignored tests
+that require additional runtime services.
+
 ## 3. Finish everyday Linux integration
 
 Extend the existing send picker, notification bridge, and MPRIS adapter before

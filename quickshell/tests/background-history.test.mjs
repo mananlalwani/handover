@@ -29,8 +29,9 @@ function service() {
         sendRequest: (type, fields) => { requests.push({type, fields}); return true; },
         historyProgress: () => {}, automaticHistoryPageTimer: { restart() {} },
         console, lastError: '', finishPending() {}, nativePending: false, pendingMessaging: null,
+        finishRequest(request) { request.done = true; },
     });
-    vm.runInContext(['utf8ByteLength','sameConversationId','conversationKey','dropAccountEntries','stopHistoryLoad','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
+    vm.runInContext(['utf8ByteLength','expectedReply','sameConversationId','conversationKey','dropAccountEntries','stopHistoryLoad','loadHistory','loadAllHistory','setHistoryFocus','isLoadingAllHistory','replaceMessages','handleLine'].map(extract).join('\n'), context);
     return { context, requests };
 }
 test('automatic loading waits for the current page, then stops when focus moves', () => {
@@ -81,7 +82,8 @@ test('an unrelated command error does not interrupt a history load', () => {
     const other = {...thread, local_id: 'other'};
     c.handleLine(JSON.stringify({protocol:1,type:'error',code:'messaging_unavailable',message:'helper down',conversation_id:other}));
     assert.equal(c.isLoadingAllHistory(thread), true);
-    c.handleLine(JSON.stringify({protocol:1,type:'error',code:'history_unavailable',message:'history unavailable',conversation_id:thread}));
+    c.handleLine(JSON.stringify({protocol:1,type:'error',code:'history_unavailable',message:'history unavailable',conversation_id:thread}),
+        { method: 'messages.history', fields: { conversation_id: thread } });
     assert.equal(c.isLoadingAllHistory(thread), false);
     assert.equal(Object.keys(c.historyRequests).length, 0);
 });
