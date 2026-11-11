@@ -227,3 +227,126 @@ async fn valid_subscription_chunks_reconstruct_the_exact_inventory() {
         .expect("fake server finishes")
         .expect("fake server task succeeds");
 }
+
+#[tokio::test]
+async fn fragmented_replies_preserve_utf8_and_complete_snapshot_boundaries() {
+    let (mut client, mut reader, mut writer) = client_pair().await;
+    // Force reads to split even within the multibyte text in each record.
+    client.reader = BufReader::with_capacity(1, client.reader.into_inner());
+    let first = notification("first", "phone 📱".into());
+    let second = notification("second", "reply ✓".into());
+    let expected = vec![first.clone(), second.clone()];
+    let server = tokio::spawn(async move {
+        assert_notification_subscription(&mut reader).await;
+        let mut bytes = Vec::new();
+        for message in [
+            subscribed_chunk(vec![first.clone()], false),
+            subscribed_chunk(vec![second.clone()], true),
+            snapshot_chunk(vec![second], false),
+            snapshot_chunk(vec![first], true),
+        ] {
+            bytes.extend(serde_json::to_vec(&message).unwrap());
+            bytes.push(b'\n');
+        }
+        writer.write_all(&bytes).await.unwrap();
+    });
+    let mut subscription = timeout(Duration::from_secs(3), client.subscribe_notifications())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(subscription.notifications, expected);
+    let message = timeout(Duration::from_secs(3), subscription.next_message())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(message.payload, ServerPayload::Snapshot { notifications, .. }
+        if notifications == expected.into_iter().rev().collect::<Vec<_>>())
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_subscription_and_recovery_never_publish_partial_state() {
+    for recovery in [false, true] {
+        for truncated_record in [false, true] {
+            let (client, mut reader, mut writer) = client_pair().await;
+            let server = tokio::spawn(async move {
+                assert_notification_subscription(&mut reader).await;
+                if recovery {
+                    write_json_line(&mut writer, &subscribed_chunk(vec![], true))
+                        .await
+                        .unwrap();
+                }
+                let chunk = if recovery {
+                    snapshot_chunk
+                } else {
+                    subscribed_chunk
+                };
+                write_json_line(
+                    &mut writer,
+                    &chunk(
+                        vec![notification("partial", "private-prefix".into())],
+                        false,
+                    ),
+                )
+                .await
+                .unwrap();
+                if truncated_record {
+                    writer
+                        .write_all(b"{\"protocol\":1,\"type\":")
+                        .await
+                        .unwrap();
+                }
+            });
+            let error = timeout(Duration::from_secs(3), async {
+                let result = client.subscribe_notifications().await;
+                if recovery {
+                    result.unwrap().next_message().await.err().unwrap()
+                } else {
+                    result.err().unwrap()
+                }
+            })
+            .await
+            .expect("interrupted snapshot must terminate");
+            if truncated_record {
+                assert!(matches!(error, IpcError::Json(_)));
+            } else {
+                assert!(matches!(error, IpcError::ConnectionClosed));
+            }
+            assert!(!format!("{error:?}").contains("private-prefix"));
+            server.await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_rejects_interleaved_events_and_mixed_chunk_kinds() {
+    for intervening in [
+        subscribed_chunk(vec![], true),
+        ServerMessage::new(ServerPayload::Devices { devices: vec![] }),
+    ] {
+        let (client, mut reader, mut writer) = client_pair().await;
+        let server = tokio::spawn(async move {
+            assert_notification_subscription(&mut reader).await;
+            for message in [
+                subscribed_chunk(vec![], true),
+                snapshot_chunk(
+                    vec![notification("partial", "private-prefix".into())],
+                    false,
+                ),
+                intervening,
+            ] {
+                write_json_line(&mut writer, &message).await.unwrap();
+            }
+        });
+        let mut subscription = client.subscribe_notifications().await.unwrap();
+        let error = timeout(Duration::from_secs(3), subscription.next_message())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, IpcError::UnexpectedResponse(_)));
+        assert!(!format!("{error:?}").contains("private-prefix"));
+        server.await.unwrap();
+    }
+}

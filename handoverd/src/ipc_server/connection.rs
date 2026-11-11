@@ -46,6 +46,11 @@ pub(crate) async fn handle_client(
                             Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 debug!(skipped, "IPC client lagged; sending current snapshot");
+                                // Subscribe at the current tail before taking state. Retained
+                                // events precede the replacement snapshot and must not replay
+                                // older values over it. Events arriving during the snapshot
+                                // remain queued on the new receiver.
+                                *receiver = receiver.resubscribe();
                                 write_snapshot_response(
                                     &mut writer,
                                     snapshot_payload(&state, flags.media, flags.messages),

@@ -257,3 +257,54 @@ async fn a_full_list_cannot_complete_an_unfinished_chunk_sequence() {
     assert!(!format!("{error:?}").contains("private"));
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn client_rejects_unsupported_response_protocol_before_publishing_state() {
+    let (mut client, mut reader, mut writer) = client_pair().await;
+    let server = tokio::spawn(async move {
+        assert_eq!(read_request(&mut reader).await.method, Method::DevicesList);
+        let mut message = ServerMessage::new(ServerPayload::Devices { devices: vec![] });
+        message.protocol = PROTOCOL_VERSION + 1;
+        write_json_line(&mut writer, &message).await.unwrap();
+    });
+    let error = timeout(Duration::from_secs(3), client.devices())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, IpcError::UnexpectedResponse(_)));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnect_after_a_mutation_returns_uncertainty_without_resending() {
+    let (mut client, mut reader, mut writer) = client_pair().await;
+    let id = NotificationId::new(DeviceId::new("phone"), "notice");
+    let expected = id.clone();
+    let server = tokio::spawn(async move {
+        assert_eq!(
+            read_request(&mut reader).await.method,
+            Method::NotificationDismiss {
+                notification_id: expected
+            }
+        );
+        // The daemon may already have queued the action. Lose only its reply
+        // direction, keeping the request direction open to detect a resend.
+        writer.shutdown().await.unwrap();
+        assert!(
+            read_json_line::<_, Request>(&mut reader)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+    let error = timeout(Duration::from_secs(3), client.dismiss_notification(id))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, IpcError::ConnectionClosed));
+    drop(client);
+    timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
