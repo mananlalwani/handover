@@ -637,6 +637,8 @@ pub enum ServerPayload {
         conversation_id: ConversationId,
         messages: Vec<Message>,
         done: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor_next: Option<String>,
     },
     MessagingWorkspace {
         workspace: handover_core::MessagingWorkspace,
@@ -1579,17 +1581,35 @@ impl Client {
         &mut self,
         message_id: MessageId,
     ) -> Result<Vec<Message>, IpcError> {
+        self.message_context_page(message_id)
+            .await
+            .map(|(messages, _)| messages)
+    }
+
+    pub async fn message_context_page(
+        &mut self,
+        message_id: MessageId,
+    ) -> Result<(Vec<Message>, Option<String>), IpcError> {
         let id = message_id.conversation_id.clone();
         self.send(Method::MessagesContext { message_id }).await?;
-        self.collect_list(|payload| match payload {
-            ServerPayload::MessageContext {
-                conversation_id,
-                messages,
-                done,
-            } if conversation_id == id => Some((messages, done)),
-            _ => None,
-        })
-        .await
+        let mut cursor = None;
+        let messages = self
+            .collect_list(|payload| match payload {
+                ServerPayload::MessageContext {
+                    conversation_id,
+                    messages,
+                    done,
+                    cursor_next,
+                } if conversation_id == id => {
+                    if done {
+                        cursor = cursor_next;
+                    }
+                    Some((messages, done))
+                }
+                _ => None,
+            })
+            .await?;
+        Ok((messages, cursor))
     }
 
     pub async fn messaging_workspace(
@@ -1687,7 +1707,7 @@ impl Client {
 
     async fn collect_list<T>(
         &mut self,
-        decode: impl Fn(ServerPayload) -> Option<(Vec<T>, bool)>,
+        mut decode: impl FnMut(ServerPayload) -> Option<(Vec<T>, bool)>,
     ) -> Result<Vec<T>, IpcError> {
         let mut budget = SnapshotBudget::default();
         let mut kind = None;

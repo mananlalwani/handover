@@ -186,7 +186,7 @@ accounts cannot access search results, context, or drafts.
 | --- | --- | --- |
 | `messages.search` | `query`, optional `account_id`, `offset` default 0 | `message_search` with `hits`, `has_more` |
 | `messages.previews` | `conversation_ids`, at most 50 | `message_previews` with `messages`, `done` |
-| `messages.context` | `message_id` | `message_context` with `conversation_id`, `messages`, `done` |
+| `messages.context` | `message_id` | `message_context` with `conversation_id`, `messages`, `done`, optional `cursor_next` |
 | `messages.workspace` | none | `messaging_workspace` with `workspace` |
 | `messages.select` | `location`, or null to clear | `messaging_workspace` with `workspace` |
 | `messages.draft` | `conversation_id` | `message_draft` with `draft` |
@@ -196,7 +196,10 @@ Search reads saved history. Queries have at most 256 characters and 16 literal
 prefix terms. Each page contains at most 25 hits; offset is limited to 10,000.
 Context returns up to 22 saved messages around the anchor. Context responses
 can span several frames; collect them until `done: true` under the normal
-aggregate and line limits.
+aggregate and line limits. Read `cursor_next` from the terminal context frame
+and pass it unchanged to `messages.history` to continue toward older messages.
+The daemon returns a continuation only when saved page metadata establishes one.
+An omitted cursor does not establish that the provider has no older history.
 
 A workspace contains `location`, `draft_conversations`, and `persistent`. A
 location contains `conversation_id` and optional `message_id` in that same

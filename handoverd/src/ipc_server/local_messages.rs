@@ -125,8 +125,8 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
             } else if !known(&message_id.conversation_id) {
                 error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
             } else if let Some(archive) = archive {
-                match archive.context(message_id.clone()).await {
-                    Ok(Some(messages)) => {
+                match archive.context_page(message_id.clone()).await {
+                    Ok(Some((messages, cursor))) => {
                         let id = message_id.conversation_id;
                         protocol::write_list_response(
                             writer,
@@ -135,11 +135,13 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                                 conversation_id: id.clone(),
                                 messages: messages.to_vec(),
                                 done: true,
+                                cursor_next: cursor.clone(),
                             },
                             |messages, done| ServerPayload::MessageContext {
                                 conversation_id: id.clone(),
                                 messages: messages.to_vec(),
                                 done,
+                                cursor_next: cursor.clone(),
                             },
                         )
                         .await?;

@@ -184,3 +184,44 @@ process and mapped window were verified. The daemon process and systemd start
 timestamp stayed unchanged during this app-only update. Physical-phone behavior
 and live media delivery were not exercised; rendering and viewer behavior were
 validated with the isolated generated fixtures.
+
+
+## Automatic older history
+
+Scrolling within one viewport of the top now requests the next older page.
+The app preserves the visible bubble's pixel position as messages arrive and
+reuses unchanged rows, including their decoded images. The loading indicator
+overlays the conversation; a retry action appears only after failure. Latest
+messages scrolls to the retained tail or reloads it if deep browsing discarded
+newer records from the bounded 300-message view.
+
+History requests carry a view generation so an older reply cannot overwrite a
+newer visit to the same conversation. One older request runs per view at a time.
+Repeated cursors and three pages without new message IDs stop automatic loading
+and offer retry. The app passes daemon cursors unchanged.
+
+Saved and searched context now includes an optional older-history continuation.
+The archive derives it from existing saved page metadata. Missing metadata does
+not invent a provider cursor or establish that the provider has no older history.
+The SDK keeps its existing context method and adds a page-returning method.
+
+The isolated GTK fixture verifies automatic loading, request deduplication,
+pixel-position preservation, unchanged row reuse, stopping at the returned end,
+returning to the retained latest messages without a fetch, context continuation,
+and reopening the same chat during an older request. Archive and daemon IPC
+tests cover saved-context cursors; the model test covers the bounded view and
+its discarded newer tail. Provider pagination on the live account and physical
+phone behavior were not exercised.
+
+Formatting, strict workspace Clippy, and all 593 workspace tests passed, with
+seven environment-dependent tests ignored by default. The GTK scenario passed
+when invoked explicitly. Android build, lint, and unit checks passed. QML lint
+and all 49 JavaScript tests passed.
+
+The matching host-built daemon, app, CLI, and desktop bridge were installed
+after backing up the previous binaries. The app closed through its normal
+window-close flow before the daemon restarted. Installed binary hashes match
+the release artifacts. The reopened app has a mapped window, both services are
+active, and the daemon returns accounts and the persistent workspace over IPC.
+The existing account reconnected. This confirms startup and IPC health; the
+scroll behavior was exercised with the isolated synthetic conversation.

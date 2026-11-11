@@ -80,6 +80,15 @@ fn conversations() -> Vec<Conversation> {
     let mut items = vec![first];
     for (local_id, title, kind, transport, address, unread, activity) in [
         (
+            "scroll-history",
+            Some("Scroll history"),
+            ConversationKind::Direct,
+            TransportKind::Rcs,
+            None,
+            0,
+            1794407200000000i64,
+        ),
+        (
             "maya-chen",
             Some("Maya Chen"),
             ConversationKind::Direct,
@@ -394,19 +403,37 @@ fn fake_server(
                             response("message_draft", json!({"draft":draft})),
                         );
                     }
-                    "messages.history" => send_json(
-                        &mut stream,
-                        response(
-                            "history",
-                            json!({"conversation_id":request["conversation_id"],"messages":[
+                    "messages.history" => send_json(&mut stream, {
+                        if request["conversation_id"]["local_id"] == "scroll-history" {
+                            let older = request["cursor"].as_str() == Some("older-50");
+                            if older {
+                                thread::sleep(Duration::from_millis(120));
+                            }
+                            let start = if older { 0 } else { 50 };
+                            let messages: Vec<_> = (start..start + 50).map(|index| json!({
+                                    "id":{"conversation_id":request["conversation_id"],"local_id":format!("history-{index:03}")},
+                                    "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+                                    "transport":"rcs","sent_at":1794400000000000i64 + index as i64,
+                                    "text":format!("History message {index:03}\nA second line with enough text to make each row occupy visible space.\nA third line keeps the conversation taller than the viewport."),
+                                    "attachments":[],"reply_to":null,"reactions":[],"deleted":false
+                                })).collect();
+                            response(
+                                "history",
+                                json!({"conversation_id":request["conversation_id"],"messages":messages,"cursor_next":if older { Value::Null } else { json!("older-50") }}),
+                            )
+                        } else {
+                            response(
+                                "history",
+                                json!({"conversation_id":request["conversation_id"],"messages":[
                                 {"id":{"conversation_id":conversation.id,"local_id":"m1"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406200000000i64,"text":"Hey! Are we still on for Saturday?","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m2"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794406500000000i64,"text":"Absolutely. I found a little place near the river that looks great. We could meet there around noon, grab lunch, and walk along the trail if the weather holds.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m4"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407100000000i64,"text":"Will do. It's called Riverside Market. I'll send you the address shortly.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
                                 ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[{"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path}],"reply_to":null,"reactions":[],"deleted":false}
                             ],"cursor_next":null}),
-                        ),
-                    ),
+                            )
+                        }
+                    }),
                     "messages.search" => {
                         let message_id =
                             json!({"conversation_id":conversation.id,"local_id":"message-1"});
@@ -414,6 +441,26 @@ fn fake_server(
                         send_json(
                             &mut stream,
                             response("message_search", json!({"hits":[hit],"has_more":false})),
+                        );
+                    }
+                    "messages.context"
+                        if request["message_id"]["conversation_id"]["local_id"]
+                            == "scroll-history" =>
+                    {
+                        let id = request["message_id"]["conversation_id"].clone();
+                        let messages: Vec<_> = (50..60).map(|index| json!({
+                            "id":{"conversation_id":id,"local_id":format!("history-{index:03}")},
+                            "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+                            "transport":"rcs","sent_at":1794400000000000i64 + index as i64,
+                            "text":format!("History message {index:03}\nA second line with enough text to make each row occupy visible space.\nA third line keeps the conversation taller than the viewport."),
+                            "attachments":[],"reply_to":null,"reactions":[],"deleted":false
+                        })).collect();
+                        send_json(
+                            &mut stream,
+                            response(
+                                "message_context",
+                                json!({"conversation_id":id,"messages":messages,"done":true,"cursor_next":"older-50"}),
+                            ),
                         );
                     }
                     "messages.context" => {
@@ -915,6 +962,172 @@ fn native_window_round_trips_real_frontend_actions() {
         "original GUI process remains alive after routed invocation"
     );
     assert!(saw_target(&requests, "messages.draft", second_thread));
+
+    let history_id = ConversationId::new(MessagingAccountId::new(ACCOUNT), "scroll-history");
+    ui.open(history_id.clone(), None);
+    pump_until(
+        || {
+            ui.model.borrow().selected.as_ref() == Some(&history_id)
+                && ui.model.borrow().messages.len() == 50
+                && !ui.restoring.get()
+                && !ui.loading_latest.get()
+                && ui.scroll.vadjustment().upper() > ui.scroll.vadjustment().page_size()
+        },
+        "overflowing newest page in synthetic history",
+    );
+    let initial_requests = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request["method"] == "messages.history"
+                && request["conversation_id"]["local_id"] == "scroll-history"
+        })
+        .count();
+    assert_eq!(initial_requests, 1);
+    let retained_row = ui.thread.first_child().unwrap().next_sibling().unwrap();
+    let retained_id = ui.rendered.borrow()[1].clone();
+    let anchor = ui.rendered.borrow()[0].clone();
+    let anchor_offset = message_bounds(&ui.thread.first_child().unwrap(), &ui.thread).0;
+    ui.scroll.vadjustment().set_value(0.0);
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.history"
+                    && request["conversation_id"]["local_id"] == "scroll-history"
+                    && request["cursor"] == "older-50"
+            })
+        },
+        "automatic older-page request at scroll top",
+    );
+    for _ in 0..5 {
+        ui.scroll.vadjustment().set_value(1.0);
+        ui.scroll.vadjustment().set_value(0.0);
+    }
+    pump_until(
+        || ui.model.borrow().messages.len() == 100 && ui.model.borrow().cursor.is_none(),
+        "older page prepended and history exhausted",
+    );
+    pump_until(|| !ui.restoring.get(), "viewport restored after prepend");
+    let index = ui
+        .rendered
+        .borrow()
+        .iter()
+        .position(|id| id == &anchor)
+        .unwrap();
+    let mut widget = ui.thread.first_child().unwrap();
+    for _ in 0..index {
+        widget = widget.next_sibling().unwrap();
+    }
+    let restored_offset = message_bounds(&widget, &ui.thread).0 - ui.scroll.vadjustment().value();
+    let index = ui
+        .rendered
+        .borrow()
+        .iter()
+        .position(|id| id == &retained_id)
+        .unwrap();
+    let mut row = ui.thread.first_child().unwrap();
+    for _ in 0..index {
+        row = row.next_sibling().unwrap();
+    }
+    assert_eq!(
+        row, retained_row,
+        "unchanged message rows should survive prepending history"
+    );
+    assert!(
+        (restored_offset - anchor_offset).abs() <= 2.0,
+        "prepending moved the visible message: {anchor_offset} -> {restored_offset}"
+    );
+    let history_requests = || {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request["method"] == "messages.history"
+                    && request["conversation_id"]["local_id"] == "scroll-history"
+            })
+            .count()
+    };
+    assert_eq!(
+        history_requests(),
+        2,
+        "only the initial and one older-page request are expected"
+    );
+    ui.scroll.vadjustment().set_value(0.0);
+    pump_until(
+        || ui.scroll.vadjustment().value() == 0.0,
+        "repeated top scroll settles",
+    );
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        history_requests(),
+        2,
+        "exhausted history must not issue more requests"
+    );
+
+    // Returning to a retained tail is a scroll, not another history fetch.
+    ui.latest.emit_clicked();
+    pump_until(
+        || {
+            !ui.loading_latest.get()
+                && ui.scroll.vadjustment().value() + ui.scroll.vadjustment().page_size()
+                    >= ui.scroll.vadjustment().upper() - 2.0
+        },
+        "jump to retained latest messages",
+    );
+    assert_eq!(history_requests(), 2);
+    // A restored location carries its real continuation and pages normally.
+    let restored = MessageId::new(history_id.clone(), "history-055");
+    ui.open(history_id.clone(), Some(restored.clone()));
+    pump_until(
+        || !ui.restoring.get() && ui.model.borrow().messages.len() >= 10,
+        "restored message context",
+    );
+    ui.scroll.vadjustment().set_value(0.0);
+    pump_until(
+        || {
+            !ui.restoring.get()
+                && ui.model.borrow().messages.len() == 60
+                && ui.model.borrow().cursor.is_none()
+        },
+        "automatic pagination from restored context",
+    );
+    assert_eq!(ui.model.borrow().anchor.as_ref(), Some(&restored));
+    // An old older-page reply must not contaminate a fresh latest view of the same chat.
+    ui.open(history_id.clone(), None);
+    pump_until(
+        || {
+            ui.model.borrow().messages.len() == 50
+                && !ui.restoring.get()
+                && !ui.loading_latest.get()
+        },
+        "latest page before reopen race",
+    );
+    ui.scroll.vadjustment().set_value(0.0);
+    pump_until(
+        || {
+            ui.pending.borrow().values().any(
+                |request| matches!(request, Request::History(id, Some(_)) if id == &history_id),
+            )
+        },
+        "older request in flight",
+    );
+    ui.open(history_id.clone(), None);
+    pump_until(
+        || {
+            !ui.restoring.get()
+                && !ui.loading_latest.get()
+                && !ui
+                    .pending
+                    .borrow()
+                    .values()
+                    .any(|request| matches!(request, Request::History(..)))
+        },
+        "fresh latest view after delayed old reply",
+    );
+    assert_eq!(ui.model.borrow().messages.len(), 50);
+    assert_eq!(ui.model.borrow().cursor.as_deref(), Some("older-50"));
 
     ui.window.destroy();
     let _ = first.0.kill();

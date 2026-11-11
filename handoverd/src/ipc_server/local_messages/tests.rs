@@ -462,3 +462,47 @@ async fn workspace_reports_persistence_for_file_backed_store() {
         matches!(&workspace[0].payload, ServerPayload::MessagingWorkspace { workspace } if workspace.persistent)
     );
 }
+
+#[tokio::test]
+async fn saved_context_exposes_an_older_history_continuation() {
+    let (_, conversation) = identity();
+    let directory = tempfile::tempdir().unwrap();
+    let archive =
+        crate::messaging_archive::MessageArchive::open(&directory.path().join("history.sqlite"))
+            .unwrap();
+    archive
+        .store_page(
+            conversation.clone(),
+            None,
+            (0..50)
+                .map(|n| message(&conversation, format!("m{n:03}"), n, "saved message"))
+                .collect(),
+            Some("provider-older".into()),
+        )
+        .await
+        .unwrap();
+    let state = state_with_account(&conversation);
+    state.write().unwrap().message_archive = Some(archive);
+    let replies = call(
+        &state,
+        Method::MessagesContext {
+            message_id: MessageId::new(conversation, "m025"),
+        },
+    )
+    .await;
+    match &replies[0].payload {
+        ServerPayload::MessageContext {
+            messages,
+            cursor_next,
+            done,
+            ..
+        } => {
+            assert!(*done);
+            assert_eq!(
+                cursor_next.as_deref(),
+                Some(messages[0].id.local_id.as_str())
+            );
+        }
+        _ => panic!("expected saved context with continuation"),
+    }
+}

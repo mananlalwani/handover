@@ -38,6 +38,7 @@ pub struct Model {
     pub anchor: Option<MessageId>,
     pub scroll_anchor: Option<MessageId>,
     pub browsing_older: bool,
+    pub newer_gap: bool,
     pub messages: Vec<Message>,
     pub previews: BTreeMap<ConversationId, Message>,
     pub cursor: Option<String>,
@@ -188,6 +189,7 @@ impl Model {
             .sort_by(|a, b| (a.sent_at, &a.id.local_id).cmp(&(b.sent_at, &b.id.local_id)));
         if self.messages.len() > 300 {
             if self.browsing_older {
+                self.newer_gap = true;
                 self.messages.truncate(300);
             } else {
                 self.messages.drain(..self.messages.len() - 300);
@@ -385,5 +387,38 @@ mod tests {
             account_id: conversation_id.account_id,
         });
         assert!(model.previews.is_empty());
+    }
+    #[test]
+    fn deep_history_stays_bounded_and_remembers_a_missing_newer_tail() {
+        let id = draft("", 0).conversation_id;
+        let mut model = Model {
+            selected: Some(id.clone()),
+            browsing_older: true,
+            ..Default::default()
+        };
+        model.merge(
+            (0..350)
+                .map(|n| Message {
+                    id: MessageId::new(id.clone(), format!("m{n:03}")),
+                    sender: Participant {
+                        local_id: "peer".into(),
+                        display_name: None,
+                        address: None,
+                        is_self: false,
+                    },
+                    transport: None,
+                    sent_at: Some(n),
+                    text: Some("history".into()),
+                    attachments: vec![],
+                    reply_to: None,
+                    reactions: vec![],
+                    deleted: false,
+                })
+                .collect(),
+        );
+        assert_eq!(model.messages.len(), 300);
+        assert_eq!(model.messages.first().unwrap().id.local_id, "m000");
+        assert_eq!(model.messages.last().unwrap().id.local_id, "m299");
+        assert!(model.newer_gap);
     }
 }

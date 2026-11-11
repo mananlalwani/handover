@@ -100,7 +100,7 @@ struct Inner {
     queue: RefCell<VecDeque<Key>>,
     active: Cell<usize>,
     clock: Cell<u64>,
-    scheduled: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
+    scheduled: RefCell<Vec<glib::WeakRef<gtk::Widget>>>,
     viewer: RefCell<Option<gtk::Window>>,
     photo_epoch: Cell<u64>,
 }
@@ -114,7 +114,7 @@ impl Media {
             queue: RefCell::new(VecDeque::new()),
             active: Cell::new(0),
             clock: Cell::new(0),
-            scheduled: RefCell::new(None),
+            scheduled: RefCell::new(Vec::new()),
             viewer: RefCell::new(None),
             photo_epoch: Cell::new(0),
         }))
@@ -131,11 +131,27 @@ impl Media {
         bindings.retain(|binding| {
             binding.target.widget().is_some() && binding.target.widget() != widget
         });
-        target.apply(None, false);
+        let cached = self
+            .0
+            .cache
+            .borrow()
+            .get(&key)
+            .filter(|entry| entry.ready)
+            .map(|entry| entry.texture.clone());
         if bindings.len() < 1024 {
-            bindings.push(Binding { target, key });
+            bindings.push(Binding {
+                target: target.clone(),
+                key,
+            });
+        }
+        drop(bindings);
+        if let Some(texture) = cached {
+            target.apply(texture.as_ref(), texture.is_none());
+        } else {
+            target.apply(None, false);
         }
     }
+
     pub fn forget_photos(&self) {
         self.0.photo_epoch.set(self.0.photo_epoch.get() + 1);
         self.0
@@ -170,17 +186,20 @@ impl Media {
         );
     }
     pub fn schedule(&self, widget: &impl IsA<gtk::Widget>) {
-        if self
-            .0
-            .scheduled
-            .borrow()
-            .as_ref()
-            .and_then(|widget| widget.upgrade())
-            .is_some_and(|widget| widget.is_mapped())
+        let owner = widget.as_ref().downgrade();
+        let mut scheduled = self.0.scheduled.borrow_mut();
+        scheduled.retain(|widget| widget.upgrade().is_some_and(|widget| widget.is_mapped()));
+        if scheduled
+            .iter()
+            .any(|current| current.upgrade() == owner.upgrade())
         {
             return;
         }
-        *self.0.scheduled.borrow_mut() = Some(widget.as_ref().downgrade());
+        if scheduled.len() >= 8 {
+            scheduled.remove(0);
+        }
+        scheduled.push(owner.clone());
+        drop(scheduled);
         let this = self.clone();
         let frames = Cell::new(0);
         widget.add_tick_callback(move |_, _| {
@@ -188,13 +207,12 @@ impl Media {
             if frames.get() < 2 {
                 return glib::ControlFlow::Continue;
             }
-            this.clear_schedule();
+            this.0.scheduled.borrow_mut().retain(|current| {
+                current.upgrade().is_some() && current.upgrade() != owner.upgrade()
+            });
             this.refresh();
             glib::ControlFlow::Break
         });
-    }
-    fn clear_schedule(&self) {
-        self.0.scheduled.borrow_mut().take();
     }
     pub fn refresh(&self) {
         self.0

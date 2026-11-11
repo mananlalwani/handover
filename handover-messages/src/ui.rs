@@ -7,11 +7,18 @@ use gtk::{gio, glib};
 use handover_core::*;
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
 };
 
 type Target = (ConversationId, Option<MessageId>);
+
+#[derive(Clone, PartialEq)]
+struct RowStamp {
+    previous: Option<(String, bool, Option<i64>)>,
+    group: bool,
+    replies: bool,
+}
 
 pub struct Window {
     pub window: adw::ApplicationWindow,
@@ -40,7 +47,16 @@ pub struct Window {
     compose: gtk::TextView,
     send: gtk::Button,
     attach: gtk::Button,
-    older: gtk::Button,
+    history_indicator: gtk::Box,
+    history_spinner: gtk::Spinner,
+    history_label: gtk::Label,
+    history_retry: gtk::Button,
+    history_error: RefCell<Option<String>>,
+    history_cursors: RefCell<VecDeque<String>>,
+    history_epoch: Cell<u64>,
+    history_epochs: RefCell<BTreeMap<u64, u64>>,
+    empty_history_pages: Cell<u8>,
+    loading_latest: Cell<bool>,
     latest: gtk::Button,
     status: gtk::Label,
     draft_status: gtk::Label,
@@ -50,6 +66,8 @@ pub struct Window {
     previous_results: gtk::Button,
     next_results: gtk::Button,
     rendered: RefCell<Vec<MessageId>>,
+    row_stamps: RefCell<BTreeMap<MessageId, RowStamp>>,
+    dirty_messages: RefCell<BTreeSet<MessageId>>,
     restoring: Cell<bool>,
     scroll_timer: RefCell<Option<glib::SourceId>>,
     last_read: RefCell<Option<MessageId>>,
@@ -242,17 +260,33 @@ impl Window {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&clamp)
             .build();
-        body.append(&scroll);
-        let history_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        history_buttons.set_halign(gtk::Align::Center);
-        history_buttons.add_css_class("history-controls");
-        let older = gtk::Button::with_label("Load older messages");
-        let latest = gtk::Button::with_label("Back to latest");
-        older.add_css_class("flat");
-        latest.add_css_class("flat");
-        history_buttons.append(&older);
-        history_buttons.append(&latest);
-        body.append(&history_buttons);
+        let viewport = gtk::Overlay::new();
+        viewport.set_vexpand(true);
+        viewport.set_child(Some(&scroll));
+        let history_indicator = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        history_indicator.add_css_class("history-indicator");
+        history_indicator.set_halign(gtk::Align::Center);
+        history_indicator.set_valign(gtk::Align::Start);
+        history_indicator.set_margin_top(10);
+        let history_spinner = gtk::Spinner::new();
+        let history_label = gtk::Label::new(None);
+        history_label.set_wrap(true);
+        history_label.set_max_width_chars(32);
+        let history_retry = gtk::Button::with_label("Retry");
+        history_retry.add_css_class("flat");
+        history_indicator.append(&history_spinner);
+        history_indicator.append(&history_label);
+        history_indicator.append(&history_retry);
+        viewport.add_overlay(&history_indicator);
+        let latest = gtk::Button::with_label("Latest messages ↓");
+        latest.add_css_class("jump-latest");
+        latest.set_tooltip_text(Some("Jump to the latest messages"));
+        latest.set_halign(gtk::Align::End);
+        latest.set_valign(gtk::Align::End);
+        latest.set_margin_end(24);
+        latest.set_margin_bottom(10);
+        viewport.add_overlay(&latest);
+        body.append(&viewport);
         let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
         composer_area.add_css_class("composer-area");
         let status = gtk::Label::new(None);
@@ -372,7 +406,16 @@ impl Window {
             compose,
             send,
             attach,
-            older,
+            history_indicator,
+            history_spinner,
+            history_label,
+            history_retry,
+            history_error: RefCell::new(None),
+            history_cursors: RefCell::new(VecDeque::new()),
+            history_epoch: Cell::new(0),
+            history_epochs: RefCell::new(BTreeMap::new()),
+            empty_history_pages: Cell::new(0),
+            loading_latest: Cell::new(false),
             latest,
             status,
             draft_status,
@@ -382,6 +425,8 @@ impl Window {
             previous_results: previous.clone(),
             next_results: next.clone(),
             rendered: RefCell::new(vec![]),
+            row_stamps: RefCell::new(BTreeMap::new()),
+            dirty_messages: RefCell::new(BTreeSet::new()),
             restoring: Cell::new(false),
             scroll_timer: RefCell::new(None),
             last_read: RefCell::new(None),
@@ -482,17 +527,19 @@ impl Window {
             }
         });
         let weak = Rc::downgrade(&this);
-        this.older.connect_clicked(move |_| {
+        this.history_retry.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
-                let request = {
-                    let model = this.model.borrow();
-                    model
-                        .selected
-                        .clone()
-                        .map(|id| Request::History(id, model.cursor.clone()))
-                };
-                if let Some(request) = request {
-                    this.request(request);
+                this.history_error.borrow_mut().take();
+                this.history_cursors.borrow_mut().clear();
+                this.empty_history_pages.set(0);
+                if this.model.borrow().messages.is_empty() {
+                    let selected = this.model.borrow().selected.clone();
+                    if let Some(selected) = selected {
+                        let anchor = this.model.borrow().anchor.clone();
+                        this.open(selected, anchor);
+                    }
+                } else {
+                    this.load_older(true);
                 }
             }
         });
@@ -501,7 +548,12 @@ impl Window {
             if let Some(this) = weak.upgrade() {
                 let id = this.model.borrow().selected.clone();
                 if let Some(id) = id {
-                    this.open(id, None);
+                    if this.model.borrow().anchor.is_none() && !this.model.borrow().newer_gap {
+                        this.model.borrow_mut().browsing_older = false;
+                        this.to_end();
+                    } else {
+                        this.open(id, None);
+                    }
                 }
             }
         });
@@ -614,6 +666,11 @@ impl Window {
             self.model.borrow_mut().notice = "Too many requests. Try again shortly.".into();
             return false;
         }
+        if matches!(request, Request::History(..) | Request::Context(_)) {
+            self.history_epochs
+                .borrow_mut()
+                .insert(id, self.history_epoch.get());
+        }
         if matches!(request, Request::Contacts) {
             self.contacts_request.set(Some(id));
         }
@@ -627,8 +684,15 @@ impl Window {
             return;
         }
         self.save_drafts();
+        self.history_epoch.set(self.history_epoch.get() + 1);
+        self.history_epochs.borrow_mut().clear();
+        self.history_cursors.borrow_mut().clear();
+        self.history_error.borrow_mut().take();
+        self.empty_history_pages.set(0);
+        self.loading_latest.set(anchor.is_none());
         {
             let mut model = self.model.borrow_mut();
+            model.newer_gap = false;
             model.selected = Some(id.clone());
             model.anchor = anchor.clone();
             model.scroll_anchor = anchor.clone();
@@ -699,6 +763,8 @@ impl Window {
                         | ServerPayload::MessageUpdated { .. }
                         | ServerPayload::MessageRemoved { .. }
                         | ServerPayload::AccountRemoved { .. }
+                        | ServerPayload::AccountUpdated { .. }
+                        | ServerPayload::ConversationUpdated { .. }
                 );
                 let contacts_changed = matches!(
                     *payload,
@@ -709,6 +775,11 @@ impl Window {
                     self.contacts_request.set(None);
                     self.photos.borrow_mut().replace(vec![]);
                     self.media.forget_photos();
+                }
+                if let ServerPayload::MessageAdded { message }
+                | ServerPayload::MessageUpdated { message } = payload.as_ref()
+                {
+                    self.note_message_changes(std::slice::from_ref(message));
                 }
                 self.model.borrow_mut().state(*payload);
                 self.render_sidebar();
@@ -727,6 +798,12 @@ impl Window {
                 let Some(request) = self.pending.borrow_mut().remove(&id) else {
                     return;
                 };
+                if matches!(request, Request::History(..) | Request::Context(_))
+                    && self.history_epochs.borrow_mut().remove(&id)
+                        != Some(self.history_epoch.get())
+                {
+                    return;
+                }
                 if matches!(request, Request::Contacts) && self.contacts_request.get() != Some(id) {
                     return;
                 }
@@ -823,13 +900,31 @@ impl Window {
                 }
             }
             Reply::History(id, messages, cursor) => {
+                let older = matches!(request, Request::History(_, Some(_)));
                 if self.model.borrow().selected.as_ref() == Some(&id)
-                    && self.model.borrow().anchor.is_none()
+                    && (older || self.model.borrow().anchor.is_none())
                 {
-                    let older = matches!(request, Request::History(_, Some(_)));
                     if older {
+                        let advances = messages.iter().any(|message| {
+                            !self
+                                .model
+                                .borrow()
+                                .messages
+                                .iter()
+                                .any(|old| old.id == message.id)
+                        });
+                        self.empty_history_pages.set(if advances {
+                            0
+                        } else {
+                            self.empty_history_pages.get().saturating_add(1)
+                        });
                         self.model.borrow_mut().browsing_older = true;
+                        if self.empty_history_pages.get() >= 3 && cursor.is_some() {
+                            *self.history_error.borrow_mut() =
+                                Some("Couldn't load earlier messages. Try again.".into());
+                        }
                     }
+                    self.note_message_changes(&messages);
                     self.model.borrow_mut().merge(messages);
                     self.model.borrow_mut().cursor = cursor;
                     self.model.borrow_mut().notice.clear();
@@ -838,17 +933,21 @@ impl Window {
                         self.to_end();
                     }
                     self.mark_read();
-                    self.render_sidebar();
+                    if !older {
+                        self.render_sidebar();
+                    }
                 }
             }
-            Reply::Context(id, messages) => {
+            Reply::Context(id, messages, cursor) => {
                 let matches = if let Request::Context(anchor) = request {
                     self.model.borrow().anchor.as_ref() == Some(&anchor)
                 } else {
                     false
                 };
                 if matches && self.model.borrow().selected.as_ref() == Some(&id) {
+                    self.note_message_changes(&messages);
                     self.model.borrow_mut().merge(messages);
+                    self.model.borrow_mut().cursor = cursor;
                     self.model.borrow_mut().notice = "Viewing saved message context".into();
                     self.render_thread();
                 }
@@ -898,6 +997,16 @@ impl Window {
 
     fn failed(&self, request: Request, error: Failure) {
         match request {
+            Request::Context(anchor) if self.model.borrow().anchor.as_ref() == Some(&anchor) => {
+                *self.history_error.borrow_mut() = Some(error.message);
+                self.model.borrow_mut().notice.clear();
+                self.loading_latest.set(false);
+            }
+            Request::History(id, _) if self.model.borrow().selected.as_ref() == Some(&id) => {
+                *self.history_error.borrow_mut() = Some(error.message);
+                self.model.borrow_mut().notice.clear();
+                self.loading_latest.set(false);
+            }
             Request::Previews(_) | Request::Contacts => {}
             Request::SaveDraft(sent) => {
                 if let Some(draft) = self
@@ -1553,11 +1662,7 @@ impl Window {
         );
         self.attach
             .set_sensitive(model.can(MessagingCapability::Media) && !pending);
-        self.older
-            .set_visible(model.anchor.is_none() && model.cursor.is_some());
-        self.older.set_sensitive(model.connected);
-        self.latest
-            .set_visible(model.anchor.is_some() || model.browsing_older);
+        self.render_history_status();
         self.reload
             .set_visible(draft.is_some_and(|draft| !draft.error.is_empty()));
         self.reload
@@ -1608,8 +1713,75 @@ impl Window {
                 .unwrap_or_default()
         };
         self.status.set_label(&status);
-        self.status
-            .set_visible(!status.is_empty() && status != "Viewing saved message context");
+        self.status.set_visible(
+            !status.is_empty()
+                && status != "Viewing saved message context"
+                && status != "Loading messages…",
+        );
+    }
+    fn render_history_status(&self) {
+        let model = self.model.borrow();
+        let fetching = self.pending.borrow().iter().any(|(id, request)| {
+            self.history_epochs.borrow().get(id) == Some(&self.history_epoch.get())
+                && match request {
+                    Request::History(id, _) => Some(id) == model.selected.as_ref(),
+                    Request::Context(anchor) => model.anchor.as_ref() == Some(anchor),
+                    _ => false,
+                }
+        });
+        let history_error = self.history_error.borrow();
+        self.history_indicator
+            .set_visible(fetching || history_error.is_some());
+        self.history_indicator
+            .set_can_target(history_error.is_some());
+        self.history_spinner.set_visible(fetching);
+        self.history_spinner.set_spinning(fetching);
+        self.history_label
+            .set_label(
+                history_error
+                    .as_deref()
+                    .unwrap_or(if model.messages.is_empty() {
+                        "Loading messages…"
+                    } else {
+                        "Loading earlier messages…"
+                    }),
+            );
+        self.history_retry.set_visible(history_error.is_some());
+        self.history_retry
+            .set_sensitive(model.connected && !fetching);
+        let adjustment = self.scroll.vadjustment();
+        self.latest.set_visible(
+            model.selected.is_some()
+                && (model.anchor.is_some()
+                    || model.newer_gap
+                    || adjustment.upper() - adjustment.page_size() - adjustment.value() > 160.0),
+        );
+    }
+    fn follow_tail(&self) {
+        if self.model.borrow().anchor.is_some() {
+            return;
+        }
+        let adjustment = self.scroll.vadjustment();
+        let at_tail = adjustment.value() + adjustment.page_size() >= adjustment.upper() - 2.0;
+        let mut model = self.model.borrow_mut();
+        if at_tail && !model.newer_gap {
+            model.browsing_older = false;
+        } else if !at_tail {
+            model.browsing_older = true;
+        }
+    }
+    fn note_message_changes(&self, messages: &[Message]) {
+        let model = self.model.borrow();
+        let mut dirty = self.dirty_messages.borrow_mut();
+        for message in messages {
+            if model
+                .messages
+                .iter()
+                .any(|old| old.id == message.id && old != message)
+            {
+                dirty.insert(message.id.clone());
+            }
+        }
     }
     fn render_thread(self: &Rc<Self>) {
         let generation = self.render_revision.get() + 1;
@@ -1620,12 +1792,13 @@ impl Window {
         let following = self.model.borrow().anchor.is_none()
             && !self.model.borrow().browsing_older
             && previous_y + adjustment.page_size() >= adjustment.upper() - 2.0;
+        let initial = self.rendered.borrow().is_empty();
         let mut previous = None;
         let mut child = self.thread.first_child();
         let mut index = 0;
         while let Some(widget) = child {
-            let y = f64::from(widget.allocation().y());
-            if y + f64::from(widget.height()) >= previous_y {
+            let (y, height) = message_bounds(&widget, &self.thread);
+            if y + height >= previous_y {
                 previous = self
                     .rendered
                     .borrow()
@@ -1637,14 +1810,61 @@ impl Window {
             child = widget.next_sibling();
             index += 1;
         }
-        while let Some(child) = self.thread.first_child() {
-            self.thread.remove(&child);
+        let mut rows = BTreeMap::new();
+        let mut widget = self.thread.first_child();
+        for id in self.rendered.borrow().iter() {
+            let Some(row) = widget else {
+                break;
+            };
+            widget = row.next_sibling();
+            rows.insert(id.clone(), row);
         }
         let model = self.model.borrow();
+        rows.retain(|id, row| {
+            if model.messages.iter().any(|message| &message.id == id) {
+                true
+            } else {
+                self.thread.remove(row);
+                false
+            }
+        });
+        let group = model.conversations.iter().any(|conversation| {
+            Some(&conversation.id) == model.selected.as_ref()
+                && conversation.kind == ConversationKind::Group
+        });
+        let replies = model.can(MessagingCapability::Replies);
+        let mut stamps = BTreeMap::new();
+        let mut preceding: Option<gtk::Widget> = None;
+
         for (index, message) in model.messages.iter().enumerate() {
             let previous = index
                 .checked_sub(1)
                 .and_then(|index| model.messages.get(index));
+            let stamp = RowStamp {
+                previous: previous.map(|previous| {
+                    (
+                        previous.sender.local_id.clone(),
+                        previous.sender.is_self,
+                        previous.sent_at,
+                    )
+                }),
+                group,
+                replies,
+            };
+            let old = rows.remove(&message.id);
+            if let Some(old) = old.as_ref().filter(|_| {
+                !self.dirty_messages.borrow().contains(&message.id)
+                    && self.row_stamps.borrow().get(&message.id) == Some(&stamp)
+            }) {
+                self.thread.reorder_child_after(old, preceding.as_ref());
+                preceding = Some(old.clone());
+                stamps.insert(message.id.clone(), stamp);
+                continue;
+            }
+            if let Some(old) = old {
+                self.thread.remove(&old);
+            }
+            stamps.insert(message.id.clone(), stamp);
             let grouped = previous.is_some_and(|previous| {
                 previous.sender.local_id == message.sender.local_id
                     && previous.sender.is_self == message.sender.is_self
@@ -1796,14 +2016,21 @@ impl Window {
                 row.append(&reply);
             }
             wrapper.append(&row);
-            self.thread.append(&wrapper);
+            self.thread.insert_child_after(&wrapper, preceding.as_ref());
+            preceding = Some(wrapper.upcast());
         }
+        *self.row_stamps.borrow_mut() = stamps;
+        self.dirty_messages.borrow_mut().clear();
         *self.rendered.borrow_mut() = model
             .messages
             .iter()
             .map(|message| message.id.clone())
             .collect();
-        let target = model.anchor.clone().map(|id| (id, 0.0)).or(previous);
+        let target = if initial {
+            model.anchor.clone().map(|id| (id, 0.0)).or(previous)
+        } else {
+            previous
+        };
         drop(model);
         let weak = Rc::downgrade(self);
         let frame = Cell::new(0);
@@ -1827,11 +2054,15 @@ impl Window {
                         child = child.and_then(|widget| widget.next_sibling());
                     }
                     if let Some(child) = child {
-                        adjustment.set_value((f64::from(child.allocation().y()) - offset).max(0.0));
+                        adjustment
+                            .set_value((message_bounds(&child, &this.thread).0 - offset).max(0.0));
                     }
                 }
                 this.restoring.set(false);
+                this.follow_tail();
                 this.media.refresh();
+                this.load_older(false);
+                this.render_history_status();
             }
             glib::ControlFlow::Break
         });
@@ -1851,16 +2082,69 @@ impl Window {
                 }
                 let adjustment = this.scroll.vadjustment();
                 adjustment.set_value((adjustment.upper() - adjustment.page_size()).max(0.0));
+                this.loading_latest.set(false);
                 this.mark_read();
+                this.load_older(false);
+                this.render_history_status();
             }
             glib::ControlFlow::Break
         });
     }
+    fn load_older(self: &Rc<Self>, force: bool) {
+        if self.closing.get()
+            || self.restoring.get()
+            || self.loading_latest.get()
+            || self.history_error.borrow().is_some()
+        {
+            return;
+        }
+        if !force
+            && self.scroll.vadjustment().value() > self.scroll.vadjustment().page_size().max(240.0)
+        {
+            return;
+        }
+        let request = {
+            let model = self.model.borrow();
+            if !model.connected {
+                return;
+            }
+            let (Some(id), Some(cursor)) = (model.selected.clone(), model.cursor.clone()) else {
+                return;
+            };
+            if self.pending.borrow().iter().any(|(request_id, request)| {
+                self.history_epochs.borrow().get(request_id) == Some(&self.history_epoch.get())
+                    && matches!(request, Request::History(pending, _) if pending == &id)
+            }) {
+                return;
+            }
+            if self.history_cursors.borrow().contains(&cursor) {
+                *self.history_error.borrow_mut() =
+                    Some("Couldn't load earlier messages. Try again.".into());
+                return;
+            }
+            (id, cursor)
+        };
+        if self.request(Request::History(request.0, Some(request.1.clone()))) {
+            let mut cursors = self.history_cursors.borrow_mut();
+            cursors.push_back(request.1);
+            if cursors.len() > 32 {
+                cursors.pop_front();
+            }
+        } else {
+            *self.history_error.borrow_mut() =
+                Some("Could not load earlier messages. Try again.".into());
+        }
+        self.render_history_status();
+    }
+
     fn scrolled(self: &Rc<Self>) {
         self.media.refresh();
         if self.restoring.get() || self.updating.get() {
             return;
         }
+        self.follow_tail();
+        self.load_older(false);
+        self.render_history_status();
         if let Some(timer) = self.scroll_timer.borrow_mut().take() {
             timer.remove();
         }
@@ -1876,9 +2160,8 @@ impl Window {
                         let mut widget = this.thread.first_child();
                         let mut index = 0;
                         while let Some(child) = widget {
-                            if f64::from(child.allocation().y() + child.height())
-                                >= adjustment.value()
-                            {
+                            let (y, height) = message_bounds(&child, &this.thread);
+                            if y + height >= adjustment.value() {
                                 anchor = this.rendered.borrow().get(index).cloned();
                                 break;
                             }
@@ -1960,6 +2243,30 @@ impl Window {
 }
 
 use handover_ipc::ServerPayload;
+
+fn message_bounds(wrapper: &gtk::Widget, thread: &gtk::Box) -> (f64, f64) {
+    fn content(widget: &gtk::Widget) -> Option<gtk::Widget> {
+        if widget.is_visible()
+            && (widget.has_css_class("message-bubble") || widget.has_css_class("image-attachment"))
+        {
+            return Some(widget.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(content) = content(&widget) {
+                return Some(content);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+    let widget = content(wrapper).unwrap_or_else(|| wrapper.clone());
+    let y = widget
+        .compute_point(thread, &gtk::graphene::Point::zero())
+        .map(|point| f64::from(point.y()))
+        .unwrap_or_else(|| f64::from(wrapper.allocation().y()));
+    (y, f64::from(widget.height()))
+}
 
 fn style_avatar(avatar: &adw::Avatar, title: &str, group: bool) {
     avatar.set_text(Some(title));

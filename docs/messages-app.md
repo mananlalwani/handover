@@ -15,7 +15,11 @@ Choose an account and conversation. Offline accounts retain their saved history
 and drafts; send controls require the account's reported connection and
 capabilities. Search matches conversation names and saved message text. It does
 not search messages that the daemon has never fetched. Selecting a message
-result opens its saved context. Load older messages to request more history.
+result opens its saved context. Scrolling upward loads older messages before
+you reach the top and keeps the message you were reading in place. A small
+indicator appears during loading; failed requests offer Retry. Latest messages
+returns to the conversation's newest messages. Restored positions and search
+results can continue into older history when the daemon has a saved continuation.
 
 The layout follows the system light or dark appearance and accent color.
 The conversation list loads previews from locally saved messages in bounded

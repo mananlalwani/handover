@@ -115,10 +115,17 @@ impl MessageArchive {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn context(
         self: &Arc<Self>,
         id: MessageId,
     ) -> Result<Option<Vec<Message>>, Error> {
+        Ok(self.context_page(id).await?.map(|(messages, _)| messages))
+    }
+    pub(crate) async fn context_page(
+        self: &Arc<Self>,
+        id: MessageId,
+    ) -> Result<Option<Page>, Error> {
         self.run(move |db| {
             let anchor: Option<String> = db.query_row("SELECT payload FROM messages
                 WHERE account=?1 AND thread=?2 AND id=?3", params![id.conversation_id.account_id.as_str(),
@@ -142,7 +149,23 @@ impl MessageArchive {
                 }
             }
             messages.sort_by(|a,b| (a.sent_at,&a.id.local_id).cmp(&(b.sent_at,&b.id.local_id)));
-            Ok(Some(messages))
+            let cursor = if let Some(first) = messages.first() {
+                let page: Option<(String, Option<String>)> = db.query_row(
+                    "SELECT ids,next_id FROM pages WHERE account=?1 AND thread=?2
+                     AND EXISTS(SELECT 1 FROM json_each(pages.ids) WHERE value=?3)
+                     ORDER BY rowid DESC LIMIT 1",
+                    params![id.conversation_id.account_id.as_str(), id.conversation_id.local_id, first.id.local_id],
+                    |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+                if let Some((ids, next)) = page {
+                    let ids: Vec<String> = serde_json::from_str(&ids)?;
+                    match ids.iter().position(|value| value == &first.id.local_id) {
+                        Some(0) => next,
+                        Some(_) => Some(first.id.local_id.clone()),
+                        None => return Err("archive page identity mismatch".into()),
+                    }
+                } else { None }
+            } else { None };
+            Ok(Some((messages, cursor)))
         }).await
     }
 }
@@ -171,6 +194,41 @@ mod tests {
             reactions: vec![],
             deleted: false,
         }
+    }
+    #[tokio::test]
+    async fn context_continues_through_stored_pages_without_inventing_provider_cursors() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = MessageArchive::open(&directory.path().join("archive.sqlite")).unwrap();
+        let id = message(45, "anchor").id;
+        archive
+            .store_page(
+                id.conversation_id.clone(),
+                None,
+                (20..70).map(|n| message(n, "saved history")).collect(),
+                Some("provider-older".into()),
+            )
+            .await
+            .unwrap();
+        let (context, cursor) = archive.context_page(id.clone()).await.unwrap().unwrap();
+        let oldest = context.first().unwrap().id.clone();
+        assert_eq!(cursor.as_deref(), Some(oldest.local_id.as_str()));
+        let (previous, next) = archive
+            .history(id.conversation_id.clone(), 50, cursor, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            previous
+                .iter()
+                .all(|message| message.sent_at < context.first().unwrap().sent_at)
+        );
+        assert_eq!(next.as_deref(), Some("provider-older"));
+        let (_, cursor) = archive
+            .context_page(message(20, "").id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.as_deref(), Some("provider-older"));
     }
     #[tokio::test]
     async fn saved_search_indexes_existing_and_live_messages_and_reconciles_deletion() {
