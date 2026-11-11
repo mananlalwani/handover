@@ -1055,6 +1055,14 @@ async fn ingest_event(
             }
         }
         HelperEvent::AccountRemoved { account } => {
+            let workspace = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_workspace
+                .clone();
+            if workspace.remove_account(account.clone()).await.is_err() {
+                warn!("could not remove local messaging workspace data");
+            }
             let archive = state
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

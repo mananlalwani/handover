@@ -19,6 +19,11 @@ Handover is pre-1.0. Public interfaces may change.
   send action when automatic phone-to-Linux clipboard access is unavailable.
 - Network discovery requires multicast reachability. Use manual `address:port`
   entry when discovery is blocked, including across Tailscale networks.
+- The native [Messages app](messages-app.md) currently covers existing
+  conversations, saved-message search, drafts, replies, and attachments. It
+  does not yet expose every messaging operation in the Quickshell reference
+  client. Live phone and provider validation remains separate from its private
+  display tests.
 - The Quickshell example is a reference client, not a stable desktop application.
 - Unix-socket IPC uses protocol 1 and is experimental for outside clients.
 - IPC snapshots are bounded to 16 MiB and 256 chunks. Ordinary batches target

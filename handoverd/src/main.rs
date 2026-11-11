@@ -9,6 +9,7 @@ mod messaging;
 mod messaging_archive;
 mod messaging_backend;
 mod messaging_cache;
+mod messaging_workspace;
 mod outgoing;
 mod presentation;
 mod remote_input;
@@ -76,6 +77,10 @@ async fn main() {
         warn!(%error, "could not restore messaging cache");
     }
     if !messaging_cache::disabled() {
+        match messaging_workspace::Workspace::open_default() {
+            Ok(workspace) => initial_state.message_workspace = workspace,
+            Err(_) => warn!("could not open messaging workspace; drafts are held in memory"),
+        }
         match messaging_archive::MessageArchive::open_default() {
             Ok(archive) => {
                 if let Err(error) = archive

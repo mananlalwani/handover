@@ -1,4 +1,5 @@
 //! Persistent provider history pages, separate from the bounded live window.
+mod search;
 use handover_core::{ConversationId, Message, MessageId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{

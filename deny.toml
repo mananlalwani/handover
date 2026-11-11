@@ -19,6 +19,8 @@ ignore = [
 allow = [
   "MIT",
   "Apache-2.0",
+  # GTK's target-lexicon build dependency uses the Apache license with extra permissions.
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",

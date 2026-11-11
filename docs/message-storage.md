@@ -13,6 +13,9 @@ Files live under `${XDG_STATE_HOME:-$HOME/.local/state}/handover/`:
   32 MiB. Before writing, the daemon prunes older cached messages to fit; if the
   other state alone exceeds the bound, it writes an empty cache. Invalid,
   oversized, or unsupported-version caches are not partially restored.
+- `messaging-workspace.sqlite` stores drafts and the last selected conversation
+  and message position. It holds up to 128 nonempty drafts within a 16 MiB
+  database limit. Drafts are limited to 8,000 characters and 64 KiB.
 - `messaging-history.sqlite` stores normalized messages and fetched history-page
   boundaries beyond the live window. Its default database limit is 1,024 MiB.
   The configurable range is 16 to 1,048,576 MiB. The limit covers the SQLite
@@ -57,11 +60,25 @@ normal limits and availability. Fix the storage problem and restart the daemon
 to try opening the archive again. Handover does not silently recreate a corrupt
 archive by deleting it.
 
+## Search and drafts
+
+Saved-message search builds a local FTS5 index on first use. Insertions, updates,
+and removals update that index. Deleted messages are excluded. The index counts
+towards the archive size limit. Search does not contact a provider or fetch
+unseen history. An index write failure leaves the prior archive intact.
+
+Draft updates compare the revision the client loaded with the stored revision.
+A stale revision returns `draft_conflict` instead of overwriting another client's
+edits. Clearing a draft removes its row. Confirmed account removal also removes
+its drafts and saved selection. Storage failures return errors rather than
+claiming a durable save. If the workspace database cannot open, the daemon uses
+session-only storage and reports `persistent: false` to clients.
+
 ## Disable persistence
 
 Set `HANDOVER_MESSAGING_CACHE=0` in the daemon's environment before starting it.
 This disables both normalized cache loading/writing and opening the history
-archive. A systemd user-service override can set it:
+archive. Drafts and selection then live only for the daemon session. A systemd user-service override can set it:
 
 ```ini
 [Service]

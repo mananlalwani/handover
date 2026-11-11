@@ -183,7 +183,7 @@ where
     .await
 }
 
-async fn write_list_response<T, W, Full, Chunk>(
+pub(super) async fn write_list_response<T, W, Full, Chunk>(
     writer: &mut W,
     items: Vec<T>,
     full_payload: Full,

@@ -26,6 +26,7 @@ use handover_core::{ConversationId, MessageId, MessagingAccountId, MessagingComm
 mod calls;
 mod connection;
 mod devices;
+mod local_messages;
 mod media;
 mod messaging;
 mod notifications;
@@ -774,6 +775,14 @@ where
         Method::MessagesAccounts => ServerPayload::Accounts {
             accounts: messaging_snapshot(state).accounts,
         },
+        method @ (Method::MessagesSearch { .. }
+        | Method::MessagesContext { .. }
+        | Method::MessagesWorkspace
+        | Method::MessagesSelect { .. }
+        | Method::MessagesDraft { .. }
+        | Method::MessagesSaveDraft { .. }) => {
+            return local_messages::handle(method, writer, state).await;
+        }
         Method::MessagesConversations { account_id } => {
             return handle_conversations(account_id, writer, state).await;
         }

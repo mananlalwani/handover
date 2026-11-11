@@ -22,7 +22,7 @@ STAGE="handover-${VERSION}-${HOST}"
 OUT_DIR="${ROOT}/dist"
 STAGE_DIR="${OUT_DIR}/${STAGE}"
 
-cargo build --release --locked -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
+cargo build --release --locked -p handoverd -p handover-desktop -p handover-messages -p handoverctl -p handover-google-messages
 
 rm -rf "$STAGE_DIR"
 mkdir -p \
@@ -40,6 +40,7 @@ mkdir -p \
 
 install -Dm755 target/release/handoverd "$STAGE_DIR/bin/handoverd"
 install -Dm755 target/release/handover-desktop "$STAGE_DIR/bin/handover-desktop"
+install -Dm755 target/release/handover-messages "$STAGE_DIR/bin/handover-messages"
 install -Dm755 target/release/handoverctl "$STAGE_DIR/bin/handoverctl"
 install -Dm755 target/release/handover-google-messages-helper \
 	"$STAGE_DIR/bin/handover-google-messages-helper"
@@ -52,7 +53,7 @@ install -Dm644 google-messages/tools/setup_google_messages.py \
 	google-messages/tools/chromium_browsers.py "$STAGE_DIR/share/handover/google-messages/tools/"
 if command -v strip >/dev/null 2>&1; then
 	strip "$STAGE_DIR/bin/handoverd" "$STAGE_DIR/bin/handover-desktop" \
-		"$STAGE_DIR/bin/handoverctl" \
+		"$STAGE_DIR/bin/handoverctl" "$STAGE_DIR/bin/handover-messages" \
 		"$STAGE_DIR/bin/handover-google-messages-helper" \
 		"$STAGE_DIR/bin/handover-google-messages-auth-probe" || true
 fi
@@ -73,6 +74,8 @@ install -Dm644 packaging/handover.desktop \
 	"$STAGE_DIR/share/applications/handover.desktop"
 install -Dm644 packaging/handover-send.desktop \
 	"$STAGE_DIR/share/applications/handover-send.desktop"
+install -Dm644 packaging/handover-messages.desktop \
+	"$STAGE_DIR/share/applications/handover-messages.desktop"
 install -Dm644 quickshell/HandoverService.qml \
 	"$STAGE_DIR/share/handover/quickshell/HandoverService.qml"
 install -Dm644 quickshell/IpcRequest.qml \
@@ -116,7 +119,9 @@ Source tree: ${SOURCE_STATE}
 Rust compiler: $(rustc --version)
 Builder libc: $(getconf GNU_LIBC_VERSION)
 Builder OpenSSL: $(pkg-config --modversion openssl)
-Built with: cargo build --release --locked -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
+Builder GTK: $(pkg-config --modversion gtk4)
+Builder libadwaita: $(pkg-config --modversion libadwaita-1)
+Built with: cargo build --release --locked -p handoverd -p handover-desktop -p handover-messages -p handoverctl -p handover-google-messages
 Runtime libraries come from the system. Inspect dependencies with: ldd bin/handoverd
 GitHub tag builds use Ubuntu 24.04.
 

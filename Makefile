@@ -37,6 +37,7 @@ dist:
 install-files:
 	install -Dm755 target/release/handoverd $(BIN_DIR)/handoverd
 	install -Dm755 target/release/handover-desktop $(BIN_DIR)/handover-desktop
+	install -Dm755 target/release/handover-messages $(BIN_DIR)/handover-messages
 	install -Dm755 target/release/handoverctl $(BIN_DIR)/handoverctl
 	install -Dm755 target/release/handover-google-messages-helper $(BIN_DIR)/handover-google-messages-helper
 	install -Dm755 target/release/handover-google-messages-auth-probe $(BIN_DIR)/handover-google-messages-auth-probe
@@ -44,6 +45,7 @@ install-files:
 	printf '%s\n' '$(USER_DATA_HOME)' > $(BIN_DIR)/handover-gui.data-home
 	install -Dm644 packaging/handover.desktop $(APPLICATIONS_DIR)/handover.desktop
 	install -Dm644 packaging/handover-send.desktop $(APPLICATIONS_DIR)/handover-send.desktop
+	install -Dm644 packaging/handover-messages.desktop $(APPLICATIONS_DIR)/handover-messages.desktop
 	install -Dm644 docs/man/handoverctl.1 $(MAN_DIR)/handoverctl.1
 	install -Dm644 docs/man/handoverd.8 $(MAN8_DIR)/handoverd.8
 	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
@@ -71,7 +73,7 @@ install-files:
 	@if test "$(GOOGLE_MESSAGES_SETUP)" = 1; then $(MAKE) install-google-messages-setup; fi
 
 install-user:
-	cargo build --release --locked -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
+	cargo build --release --locked -p handoverd -p handover-desktop -p handover-messages -p handoverctl -p handover-google-messages
 	$(MAKE) install-files
 	systemctl --user daemon-reload
 	systemctl --user reenable handoverd.service
@@ -91,6 +93,7 @@ uninstall-user:
 	rm -f $(USER_UNIT_DIR)/handover-desktop.service
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
 	rm -f $(BIN_DIR)/handover-desktop
+	rm -f $(BIN_DIR)/handover-messages
 	rm -f $(PREFIX)/bin/handover-google-messages-helper
 	rm -f $(PREFIX)/bin/handover-google-messages-auth-probe
 	rm -f $(BIN_DIR)/handover-google-messages-setup
@@ -99,6 +102,7 @@ uninstall-user:
 	rm -f $(BIN_DIR)/handover-gui.data-home
 	rm -f $(APPLICATIONS_DIR)/handover.desktop
 	rm -f $(APPLICATIONS_DIR)/handover-send.desktop
+	rm -f $(APPLICATIONS_DIR)/handover-messages.desktop
 	rm -f $(MAN_DIR)/handoverctl.1
 	rm -f $(MAN8_DIR)/handoverd.8
 	rm -f $(LICENSE_DIR)/LICENSE $(LICENSE_DIR)/ukey2/LICENSE $(LICENSE_DIR)/ukey2/README.md

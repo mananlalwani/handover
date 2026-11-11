@@ -30,6 +30,7 @@ fi
 
 install -Dm755 "$ROOT/bin/handoverd" "$PREFIX/bin/handoverd"
 install -Dm755 "$ROOT/bin/handover-desktop" "$PREFIX/bin/handover-desktop"
+install -Dm755 "$ROOT/bin/handover-messages" "$PREFIX/bin/handover-messages"
 install -Dm755 "$ROOT/bin/handoverctl" "$PREFIX/bin/handoverctl"
 install -Dm755 "$ROOT/bin/handover-google-messages-helper" \
 	"$PREFIX/bin/handover-google-messages-helper"
@@ -50,6 +51,8 @@ install -Dm644 "$ROOT/share/applications/handover.desktop" \
 	"$USER_DATA_HOME/applications/handover.desktop"
 install -Dm644 "$ROOT/share/applications/handover-send.desktop" \
 	"$USER_DATA_HOME/applications/handover-send.desktop"
+install -Dm644 "$ROOT/share/applications/handover-messages.desktop" \
+	"$USER_DATA_HOME/applications/handover-messages.desktop"
 install -Dm644 "$ROOT/share/man/man1/handoverctl.1" "$PREFIX/share/man/man1/handoverctl.1"
 install -Dm644 "$ROOT/share/man/man8/handoverd.8" "$PREFIX/share/man/man8/handoverd.8"
 install -Dm644 "$ROOT/share/bash-completion/completions/handoverctl" \

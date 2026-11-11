@@ -11,6 +11,7 @@ use crate::messaging::{MessagingChange, MessagingStore};
 
 #[derive(Default)]
 pub(crate) struct StateStore {
+    pub(crate) message_workspace: std::sync::Arc<crate::messaging_workspace::Workspace>,
     pub(crate) message_archive: Option<std::sync::Arc<crate::messaging_archive::MessageArchive>>,
     devices: BTreeMap<DeviceId, Device>,
     notifications: BTreeMap<NotificationId, Notification>,

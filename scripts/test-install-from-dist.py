@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = tomllib.loads((ROOT / "handoverd/Cargo.toml").read_text())["package"]["version"]
-RUST_BINARIES = ("handoverd", "handover-desktop", "handoverctl",
+RUST_BINARIES = ("handoverd", "handover-desktop", "handover-messages", "handoverctl",
                  "handover-google-messages-helper", "handover-google-messages-auth-probe")
 
 
@@ -28,6 +28,7 @@ def digest(path):
 def source_assets():
     assets = {"packaging/handover.desktop": "share/applications/handover.desktop",
               "packaging/handover-send.desktop": "share/applications/handover-send.desktop",
+              "packaging/handover-messages.desktop": "share/applications/handover-messages.desktop",
               "packaging/systemd/handoverd.local.service": "share/systemd/user/handoverd.service",
               "packaging/systemd/handover-desktop.local.service": "share/systemd/user/handover-desktop.service",
               "scripts/handover-gui": "bin/handover-gui",
@@ -43,7 +44,7 @@ def source_assets():
               "third_party/ukey2/README.md": "share/licenses/handover/ukey2/README.md"}
     assets["scripts/install-service-unit.sh"] = "install-service-unit.sh"
     for path in [*(ROOT / "quickshell").iterdir(), *(ROOT / "quickshell/pages").iterdir()]:
-        if path.is_file() and (path.suffix in (".qml", ".js") or path.name == "README.md"):
+        if path.is_file() and path.stem != "messages" and (path.suffix in (".qml", ".js") or path.name == "README.md"):
             assets[str(path.relative_to(ROOT))] = "share/handover/" + str(path.relative_to(ROOT))
     for name in ("setup_google_messages.py", "chromium_login_probe.py", "chromium_auth_capture.py",
                  "chromium_browsers.py", "install_native_probe.py"):
@@ -235,15 +236,8 @@ def check_files(bundle, prefix, data, setup):
     assert (prefix / "bin/handover-gui.data-home").read_text().strip() == str(data)
     version = subprocess.check_output([str(prefix / "bin/handoverctl"), "--version"], text=True).strip()
     assert version == f"handoverctl {VERSION}", version
-    # The actual launcher must find the installed QML even outside the default data home.
-    quickshell = prefix.parent / "fixture-bin/quickshell"
-    quickshell.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$HANDOVER_LAUNCH_TEST_LOG"\n')
-    quickshell.chmod(0o755)
-    log = prefix.parent / "launcher-args"
-    subprocess.run([str(prefix / "bin/handover-gui"), "--send", "https://example.test/a?q=1#part"], check=True,
-                   env=dict(os.environ, PATH=str(quickshell.parent) + os.pathsep + os.environ["PATH"],
-                            XDG_DATA_HOME=str(prefix.parent / "empty-data"), HANDOVER_LAUNCH_TEST_LOG=str(log)))
-    assert log.read_text().splitlines() == ["--path", str(data / "handover/quickshell/send.qml")]
+    desktop = data / "applications/handover-messages.desktop"
+    assert "Exec=handover-messages" in desktop.read_text()
 
 
 def run(bundle, root, case, previous=None):

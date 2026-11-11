@@ -1,8 +1,10 @@
 //! Disposable Linux desktop integration client. The daemon remains the source of truth.
 mod media;
 mod media_player;
+mod messaging_notifications;
 mod model;
 pub use media::run as run_media;
+pub use messaging_notifications::run_messages;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

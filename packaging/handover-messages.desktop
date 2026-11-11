@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Messages
+Comment=Browse Google Messages conversations in Handover
+Icon=internet-chat
+Categories=Utility;
+Exec=handover-messages
+Terminal=false
+Type=Application

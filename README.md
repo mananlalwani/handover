@@ -6,7 +6,7 @@ and exposes calls and contacts. The Android app also provides presentation,
 pointer, keyboard, and Linux volume controls.
 
 `handoverd` runs in the background. Use `handoverctl` from the terminal or the
-included Quickshell reference client. The Android app connects directly to the
+native `handover-messages` app or included Quickshell reference client. The Android app connects directly to the
 native Linux backend.
 
 Handover is pre-1.0. Some features need Android permissions or depend on the
@@ -20,7 +20,8 @@ limitations](docs/KNOWN_LIMITATIONS.md) for current gaps and test coverage.
 Download the Linux tarball from [Releases](https://github.com/mananlalwani/handover/releases),
 unpack it, and run `./install.sh` from the extracted directory. Release builds
 target x86_64 Linux with glibc and are built on Ubuntu 24.04.
-They use the system OpenSSL 3 libraries. Locally built tarballs inherit their
+They use the system OpenSSL 3 libraries. The native Messages app also needs
+GTK 4.10 or newer and libadwaita 1.4 or newer. Locally built tarballs inherit their
 builder's library requirements, which `BUILD.txt` records.
 
 The installer copies the binaries to `~/.local/bin` and starts `handoverd` as a
@@ -37,7 +38,7 @@ prefix. Assets and service units follow `XDG_DATA_HOME`, which defaults to
 `~/.local/share`. Installation succeeds after the daemon answers an IPC request.
 
 To build from source, install Rust, a C/C++ toolchain, CMake, pkg-config, and
-OpenSSL development headers, then run:
+OpenSSL, GTK4, and libadwaita development headers, then run:
 
 ```sh
 git clone https://github.com/mananlalwani/handover.git
@@ -98,12 +99,22 @@ filenames are preserved; simultaneous transfers get a numbered folder suffix.
 Check Handover's transfer history for results.
 Plain text without a web link is not supported by this action.
 
+### Native Messages app
+
+Launch `handover-messages` from the terminal or open Handover Messages in your
+application launcher. It reads conversations through the daemon, searches saved
+messages, restores drafts, and sends replies when the account is connected.
+See the [Messages app guide](docs/messages-app.md) for shortcuts, account setup,
+and the limits of saved history and send confirmation.
+
 ### Optional desktop interface
 
 `handover-desktop` mirrors phone notifications through the Linux desktop
 notification service and exposes phone media with a known playback state as local MPRIS
 players. It runs without Quickshell. Installations do not enable it
-automatically. Start it when you want desktop alerts and media controls:
+automatically. It also shows new incoming message alerts, with actions that
+open the native Messages app. Recovered message snapshots stay silent. Start it
+when you want desktop alerts and media controls:
 
 ```sh
 systemctl --user enable --now handover-desktop.service

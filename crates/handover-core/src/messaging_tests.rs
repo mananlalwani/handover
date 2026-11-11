@@ -80,6 +80,49 @@ fn message_identity_nests_conversation_identity() {
 }
 
 #[test]
+fn messaging_workspace_identifiers_must_stay_in_their_conversation() {
+    let conversation_id = sample_conversation_id();
+    let other_conversation = ConversationId::new(sample_account_id(), "other-thread");
+    assert!(
+        validate_messaging_location(&MessagingLocation {
+            conversation_id: conversation_id.clone(),
+            message_id: Some(MessageId::new(other_conversation.clone(), "message-1")),
+        })
+        .is_err()
+    );
+
+    let draft = MessageDraft {
+        conversation_id,
+        text: "reply draft".into(),
+        reply_to: Some(MessageId::new(other_conversation, "message-1")),
+        revision: 0,
+    };
+    assert!(validate_message_draft(&draft).is_err());
+}
+
+#[test]
+fn message_drafts_enforce_text_bounds_and_control_characters() {
+    let mut draft = MessageDraft {
+        conversation_id: sample_conversation_id(),
+        text: "x".repeat(MAX_TEXT_CHARS),
+        reply_to: None,
+        revision: 0,
+    };
+    assert!(validate_message_draft(&draft).is_ok());
+
+    draft.text.push('x');
+    assert!(validate_message_draft(&draft).is_err());
+
+    draft.text = "first line\nsecond line\tindented".into();
+    assert!(validate_message_draft(&draft).is_ok());
+
+    for control in ['\0', '\r', '\u{7f}'] {
+        draft.text = format!("before{control}after");
+        assert!(validate_message_draft(&draft).is_err());
+    }
+}
+
+#[test]
 fn valid_records_pass_normalization() {
     assert!(
         validate_account(&MessagingAccount {

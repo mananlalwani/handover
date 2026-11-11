@@ -210,23 +210,25 @@ A new bounded-storage test fills the archive through real history-page writes
 and confirms failed transactions preserve the previous page across restart.
 No new retention, eviction, or purge policy was introduced.
 
-## 6. Choose the desktop client scope
+## 6. Native Messages app
 
-Quickshell remains a reference client. Use the validated workflows to decide
-whether an installable shell client or a separate Messages, Calls, or Contacts
-app solves a remaining need. Avoid building all three speculatively.
+The selected direction is a separate Rust GTK4/libadwaita Messages app. The
+first task is reading, finding, and replying to existing conversations through
+public daemon IPC. The app restores daemon-owned drafts and the selected message
+position. Quickshell remains a reference client.
 
-First slice: identify the task the current desktop integrations cannot complete
-and choose one client to address it. Define installation, accessibility,
-reconnect, and error behavior. A stable client rebuilds its state from daemon
-snapshots and never owns another phone session.
+The local implementation includes saved-message search, conflict-aware drafts,
+bounded reconnect handling, native account setup presentation, and notification
+actions that route into the existing app instance. Installation includes the
+binary and desktop entry. See the [app guide](messages-app.md).
 
-Done when the selected client completes that task through public IPC and passes
-desktop-session validation. AUR publication and additional distribution formats
-follow a reproducible installation and upgrade test; they do not block core fixes.
+Automated private-display tests cover widgets and IPC with a fake daemon. Real
+phone delivery, authenticated provider recovery, and interaction with an actual
+desktop notification server remain separate live checks. New-conversation
+creation still depends on the missing first-party protocol evidence in item 4.
 
-Dependencies: items 2 and 3. A messaging client also depends on whichever actions
-from item 4 its chosen task requires.
+AUR publication and additional distribution formats follow reproducible package
+and upgrade checks; they do not block the app implementation.
 
 ## Limits to keep explicit
 

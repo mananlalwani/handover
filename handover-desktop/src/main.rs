@@ -25,8 +25,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     tokio::select! {
         _ = async {
             tokio::join!(
-                handover_desktop::run(path.clone(), connection, receiver.clone()),
-                handover_desktop::run_media(path, address, receiver),
+                handover_desktop::run(path.clone(), connection.clone(), receiver.clone()),
+                handover_desktop::run_media(path.clone(), address, receiver.clone()),
+                handover_desktop::run_messages(path, connection, receiver),
             );
         } => {}
         _ = async { while let Some(Ok(_)) = bus_messages.next().await {} } => {

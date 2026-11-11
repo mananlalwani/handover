@@ -174,3 +174,37 @@ Errors carry `type:"error"`, a stable `code`, and a human-readable `message`.
 Some messaging failures also carry `conversation_id`; only the matching history
 load should fail. Logs should contain fixed diagnostics and operation identifiers,
 not message bodies, notification text, paths, credentials, or rejected payloads.
+
+## Local messaging workspace
+
+These optional protocol 1 methods use normalized account, conversation, and
+message IDs. Install matching clients and daemon; they add response variants to
+the experimental contract. They do not require a connected helper. Unknown
+accounts cannot access search results, context, or drafts.
+
+| Method | Request fields | Response type |
+| --- | --- | --- |
+| `messages.search` | `query`, optional `account_id`, `offset` default 0 | `message_search` with `hits`, `has_more` |
+| `messages.context` | `message_id` | `message_context` with `conversation_id`, `messages`, `done` |
+| `messages.workspace` | none | `messaging_workspace` with `workspace` |
+| `messages.select` | `location`, or null to clear | `messaging_workspace` with `workspace` |
+| `messages.draft` | `conversation_id` | `message_draft` with `draft` |
+| `messages.save_draft` | `draft` | `message_draft` with saved `draft` |
+
+Search reads saved history. Queries have at most 256 characters and 16 literal
+prefix terms. Each page contains at most 25 hits; offset is limited to 10,000.
+Context returns up to 22 saved messages around the anchor. Context responses
+can span several frames; collect them until `done: true` under the normal
+aggregate and line limits.
+
+A workspace contains `location`, `draft_conversations`, and `persistent`. A
+location contains `conversation_id` and optional `message_id` in that same
+conversation. A draft contains `conversation_id`, `text`, optional `reply_to`,
+and `revision`. Save using the revision returned by the last load or save. An
+empty draft with no reply removes the row and returns revision 0. A conflicting
+revision returns `draft_conflict`; clients must reconcile rather than retrying
+the stale mutation. Nonempty drafts have monotonically assigned revisions.
+
+The Rust subscription object now retains the initial snapshot's
+`messaging_accounts`, `conversations`, `typing_states`, and `read_states` for
+clients to build their first view. This changes no existing snapshot wire fields.

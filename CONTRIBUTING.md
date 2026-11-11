@@ -1,12 +1,14 @@
 # Contributing to Handover
 
 Handover is a Rust daemon and CLI with an Android companion and a Quickshell
-reference client. The native Google Messages client and helper live here.
+reference client and a native GTK4/libadwaita Messages app. The native Google
+Messages client and helper live here.
 
 ## Repository layout
 
 - `handoverd/` contains the daemon and its authoritative runtime state.
 - `handoverctl/` contains the CLI.
+- `handover-messages/` contains the native Rust GTK4/libadwaita app.
 - `handover-desktop/` contains the optional Linux desktop notification client.
   Its integration tests start a private session bus and need `dbus-daemon`
   and `playerctl`. They do not use the real desktop session or a phone.
@@ -33,6 +35,8 @@ Install:
 
 - Rust 1.91 or newer and Cargo.
 - A C/C++ toolchain, CMake, pkg-config, and OpenSSL development headers for Linux builds.
+- GTK 4.10 and libadwaita 1.4 or newer, with development headers. On Ubuntu
+  24.04, install `libgtk-4-dev libadwaita-1-dev`.
 - `cargo-deny` for dependency advisory, license, and source checks.
 - A JDK and Android SDK for Android work.
 - Qt Quickshell and `qmllint` for QML work.
@@ -62,6 +66,18 @@ and gives GNOME Keyring temporary storage. It checks dummy credential updates,
 lock/unlock notifications, persistence across service restart, deletion, and
 invalid or duplicate records. It neither uses the desktop keyring nor contacts
 Google. Run this launcher rather than invoking the ignored test on a desktop bus.
+
+Validate the native Messages app without a phone or desktop account:
+
+```sh
+python3 scripts/test-handover-messages.py
+```
+
+This requires `Xvfb` and `dbus-daemon`. It starts a private display, session bus,
+state directories, and fake daemon. It exercises real GTK widgets and IPC,
+including draft restore, search navigation, reconnects, lost send replies, and
+single-instance application routing. The setup dialog uses a fake setup helper.
+Run this launcher rather than invoking the ignored GUI test on your desktop.
 
 Run the Android checks from `android/`:
 
@@ -103,7 +119,7 @@ Archive names follow the version and host triple printed by `dist.sh`.
 For real installed-service checks, use a disposable Ubuntu 24.04 VM or CI runner
 with `dbus-user-session`, `iproute2`, Python 3.12, and a running systemd system
 manager. Native TCP port 24837 must be free. Build there with `build-essential`, `cmake`,
-`pkg-config`, and `libssl-dev`, then run:
+`pkg-config`, `libssl-dev`, `libgtk-4-dev`, and `libadwaita-1-dev`, then run:
 
 ```sh
 sudo python3 scripts/test-package-runtime.py --disposable-environment \

@@ -96,6 +96,66 @@ impl fmt::Display for ConversationId {
     }
 }
 
+/// An unsent local draft. A revision is an optimistic concurrency token, never a send ID.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessageDraft {
+    pub conversation_id: ConversationId,
+    pub text: String,
+    pub reply_to: Option<MessageId>,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessagingLocation {
+    pub conversation_id: ConversationId,
+    pub message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessagingWorkspace {
+    pub location: Option<MessagingLocation>,
+    pub draft_conversations: Vec<ConversationId>,
+    pub persistent: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessageSearchHit {
+    pub message_id: MessageId,
+    pub snippet: String,
+    pub sender: Participant,
+    pub sent_at: Option<i64>,
+}
+
+pub fn validate_conversation_id(id: &ConversationId) -> Result<(), ValidationError> {
+    check_account_id(id.account_id.as_str())?;
+    check_id(&id.local_id, "conversation id")
+}
+
+pub fn validate_messaging_location(location: &MessagingLocation) -> Result<(), ValidationError> {
+    validate_conversation_id(&location.conversation_id)?;
+    if let Some(message) = &location.message_id {
+        check_id(&message.local_id, "message id")?;
+        if message.conversation_id != location.conversation_id {
+            return Err(ValidationError::InvalidId("message scope".into()));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_message_draft(draft: &MessageDraft) -> Result<(), ValidationError> {
+    validate_messaging_location(&MessagingLocation {
+        conversation_id: draft.conversation_id.clone(),
+        message_id: draft.reply_to.clone(),
+    })?;
+    if draft.text.chars().count() > MAX_TEXT_CHARS
+        || draft.text.len() > 64 * 1024
+        || contains_disallowed_control(&draft.text)
+    {
+        return Err(ValidationError::InvalidId("draft text length".into()));
+    }
+    Ok(())
+}
+
 /// One human or endpoint participant. `local_id` is the backend-local sender
 /// key, opaque above the adapter. Display names are hints, never identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

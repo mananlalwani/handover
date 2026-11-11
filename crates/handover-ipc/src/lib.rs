@@ -217,6 +217,25 @@ pub enum Method {
     },
     #[serde(rename = "messages.outgoing")]
     MessagesOutgoing,
+    #[serde(rename = "messages.search")]
+    MessagesSearch {
+        query: String,
+        account_id: Option<MessagingAccountId>,
+        #[serde(default)]
+        offset: u32,
+    },
+    #[serde(rename = "messages.context")]
+    MessagesContext { message_id: MessageId },
+    #[serde(rename = "messages.workspace")]
+    MessagesWorkspace,
+    #[serde(rename = "messages.select")]
+    MessagesSelect {
+        location: Option<handover_core::MessagingLocation>,
+    },
+    #[serde(rename = "messages.draft")]
+    MessagesDraft { conversation_id: ConversationId },
+    #[serde(rename = "messages.save_draft")]
+    MessagesSaveDraft { draft: handover_core::MessageDraft },
     #[serde(rename = "messages.typing_states")]
     MessagesTypingStates,
     #[serde(rename = "messages.read_states")]
@@ -602,6 +621,21 @@ pub enum ServerPayload {
         limit_mib: u32,
         used_bytes: u64,
     },
+    MessageSearch {
+        hits: Vec<handover_core::MessageSearchHit>,
+        has_more: bool,
+    },
+    MessageContext {
+        conversation_id: ConversationId,
+        messages: Vec<Message>,
+        done: bool,
+    },
+    MessagingWorkspace {
+        workspace: handover_core::MessagingWorkspace,
+    },
+    MessageDraft {
+        draft: handover_core::MessageDraft,
+    },
     History {
         conversation_id: ConversationId,
         messages: Vec<Message>,
@@ -739,6 +773,7 @@ pub enum ErrorCode {
     InvalidMessagingCommand,
     HistoryUnavailable,
     CredentialRejected,
+    DraftConflict,
 }
 
 #[derive(Debug, Error)]
@@ -1418,12 +1453,19 @@ impl Client {
                 notifications,
                 media_sessions,
                 calls,
-                ..
+                messaging_accounts,
+                conversations,
+                typing_states,
+                read_states,
             } => Ok(Subscription {
                 devices,
                 notifications,
                 media_sessions,
                 calls,
+                messaging_accounts,
+                conversations,
+                typing_states,
+                read_states,
                 reader: self.reader,
                 _writer: self.writer,
                 pending: None,
@@ -1433,8 +1475,11 @@ impl Client {
                 mut notifications,
                 mut media_sessions,
                 mut calls,
+                mut messaging_accounts,
+                mut conversations,
+                mut typing_states,
+                mut read_states,
                 mut done,
-                ..
             } => {
                 while !done {
                     let message = self.receive().await?;
@@ -1445,13 +1490,20 @@ impl Client {
                             notifications: more_notifications,
                             media_sessions: more_media_sessions,
                             calls: more_calls,
+                            messaging_accounts: more_accounts,
+                            conversations: more_conversations,
+                            typing_states: more_typing,
+                            read_states: more_read,
                             done: chunk_done,
-                            ..
                         } => {
                             devices.extend(more_devices);
                             notifications.extend(more_notifications);
                             media_sessions.extend(more_media_sessions);
                             calls.extend(more_calls);
+                            messaging_accounts.extend(more_accounts);
+                            conversations.extend(more_conversations);
+                            typing_states.extend(more_typing);
+                            read_states.extend(more_read);
                             done = chunk_done;
                         }
                         payload => return Err(unexpected(payload)),
@@ -1462,6 +1514,10 @@ impl Client {
                     notifications,
                     media_sessions,
                     calls,
+                    messaging_accounts,
+                    conversations,
+                    typing_states,
+                    read_states,
                     reader: self.reader,
                     _writer: self.writer,
                     pending: None,
@@ -1475,6 +1531,84 @@ impl Client {
         self.send(Method::MessagesAccounts).await?;
         match self.receive().await?.payload {
             ServerPayload::Accounts { accounts } => Ok(accounts),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn search_messages(
+        &mut self,
+        query: String,
+        account_id: Option<MessagingAccountId>,
+        offset: u32,
+    ) -> Result<(Vec<handover_core::MessageSearchHit>, bool), IpcError> {
+        self.send(Method::MessagesSearch {
+            query,
+            account_id,
+            offset,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageSearch { hits, has_more } => Ok((hits, has_more)),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn message_context(
+        &mut self,
+        message_id: MessageId,
+    ) -> Result<Vec<Message>, IpcError> {
+        let id = message_id.conversation_id.clone();
+        self.send(Method::MessagesContext { message_id }).await?;
+        self.collect_list(|payload| match payload {
+            ServerPayload::MessageContext {
+                conversation_id,
+                messages,
+                done,
+            } if conversation_id == id => Some((messages, done)),
+            _ => None,
+        })
+        .await
+    }
+
+    pub async fn messaging_workspace(
+        &mut self,
+    ) -> Result<handover_core::MessagingWorkspace, IpcError> {
+        self.send(Method::MessagesWorkspace).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessagingWorkspace { workspace } => Ok(workspace),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn select_message_location(
+        &mut self,
+        location: Option<handover_core::MessagingLocation>,
+    ) -> Result<handover_core::MessagingWorkspace, IpcError> {
+        self.send(Method::MessagesSelect { location }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessagingWorkspace { workspace } => Ok(workspace),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn message_draft(
+        &mut self,
+        conversation_id: ConversationId,
+    ) -> Result<handover_core::MessageDraft, IpcError> {
+        self.send(Method::MessagesDraft { conversation_id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageDraft { draft } => Ok(draft),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn save_message_draft(
+        &mut self,
+        draft: handover_core::MessageDraft,
+    ) -> Result<handover_core::MessageDraft, IpcError> {
+        self.send(Method::MessagesSaveDraft { draft }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageDraft { draft } => Ok(draft),
             payload => Err(unexpected(payload)),
         }
     }
@@ -1750,6 +1884,10 @@ pub struct Subscription {
     pub notifications: Vec<Notification>,
     pub media_sessions: Vec<MediaSession>,
     pub calls: Vec<CallState>,
+    pub messaging_accounts: Vec<MessagingAccount>,
+    pub conversations: Vec<Conversation>,
+    pub typing_states: Vec<TypingState>,
+    pub read_states: Vec<ReadState>,
     reader: BufReader<OwnedReadHalf>,
     _writer: OwnedWriteHalf,
     pending: Option<ServerMessage>,
