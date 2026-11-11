@@ -54,6 +54,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y dbus-daemon playerctl
       - run: cargo test --workspace
+      - name: Test tarball installer and upgrades without changing user services
+        run: python3 scripts/test-install-from-dist.py
       - run: cargo test --locked --manifest-path third_party/ukey2/Cargo.toml -p ukey2_rs --features test_rustcrypto
 
   rust-msrv:

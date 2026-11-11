@@ -49,8 +49,8 @@ install-files:
 	install -Dm644 completions/handoverctl.bash $(BASH_COMPLETION_DIR)/handoverctl
 	install -Dm644 completions/_handoverctl $(ZSH_COMPLETION_DIR)/_handoverctl
 	install -Dm644 completions/handoverctl.fish $(FISH_COMPLETION_DIR)/handoverctl.fish
-	install -Dm644 $(UNIT_SRC) $(USER_UNIT_DIR)/handoverd.service
-	install -Dm644 $(DESKTOP_UNIT_SRC) $(USER_UNIT_DIR)/handover-desktop.service
+	./scripts/install-service-unit.sh "$(UNIT_SRC)" "$(USER_UNIT_DIR)/handoverd.service" "$(PREFIX)/bin/handoverd"
+	./scripts/install-service-unit.sh "$(DESKTOP_UNIT_SRC)" "$(USER_UNIT_DIR)/handover-desktop.service" "$(PREFIX)/bin/handover-desktop"
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	install -Dm644 quickshell/IpcRequest.qml $(QUICKSHELL_INSTALL_DIR)/IpcRequest.qml
 	install -Dm644 quickshell/MessageList.qml $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
@@ -76,11 +76,12 @@ install-user:
 	systemctl --user daemon-reload
 	systemctl --user reenable handoverd.service
 	systemctl --user restart handoverd.service
-	@for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-		if test -S "$$XDG_RUNTIME_DIR/handover/handoverd.sock"; then exit 0; fi; \
+	@XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}"; export XDG_RUNTIME_DIR; \
+	for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+		if test -S "$$XDG_RUNTIME_DIR/handover/handoverd.sock" && timeout 1 "$(BIN_DIR)/handoverctl" devices >/dev/null 2>&1; then exit 0; fi; \
 		sleep 0.1; \
 	done; \
-	echo "handoverd did not create its socket; check: systemctl --user status handoverd" >&2; \
+	echo "handoverd did not respond over IPC; check: systemctl --user status handoverd" >&2; \
 	exit 1
 
 uninstall-user:

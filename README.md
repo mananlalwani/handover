@@ -29,6 +29,11 @@ systemctl --user status handoverd
 handoverctl devices
 ```
 
+Set `PREFIX` to choose a different binary directory, such as
+`PREFIX="$HOME/apps/handover" ./install.sh`. The generated services use that
+prefix. Assets and service units follow `XDG_DATA_HOME`, which defaults to
+`~/.local/share`. Installation succeeds after the daemon answers an IPC request.
+
 To build from source, install Rust and a C linker, then run:
 
 ```sh

@@ -5,6 +5,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 PREFIX="${PREFIX:-$HOME/.local}"
 USER_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
 SETUP_INSTALL=auto
 for argument in "$@"; do
 	case "$argument" in
@@ -56,10 +58,10 @@ install -Dm644 "$ROOT/share/zsh/site-functions/_handoverctl" \
 	"$USER_DATA_HOME/zsh/site-functions/_handoverctl"
 install -Dm644 "$ROOT/share/fish/vendor_completions.d/handoverctl.fish" \
 	"$USER_DATA_HOME/fish/vendor_completions.d/handoverctl.fish"
-install -Dm644 "$ROOT/share/systemd/user/handoverd.service" \
-	"$USER_DATA_HOME/systemd/user/handoverd.service"
-install -Dm644 "$ROOT/share/systemd/user/handover-desktop.service" \
-	"$USER_DATA_HOME/systemd/user/handover-desktop.service"
+"$ROOT/install-service-unit.sh" "$ROOT/share/systemd/user/handoverd.service" \
+	"$USER_DATA_HOME/systemd/user/handoverd.service" "$PREFIX/bin/handoverd"
+"$ROOT/install-service-unit.sh" "$ROOT/share/systemd/user/handover-desktop.service" \
+	"$USER_DATA_HOME/systemd/user/handover-desktop.service" "$PREFIX/bin/handover-desktop"
 install -d "$USER_DATA_HOME/handover/quickshell/pages"
 install -Dm644 "$ROOT/share/handover/quickshell/HandoverService.qml" \
 	"$USER_DATA_HOME/handover/quickshell/HandoverService.qml"
@@ -103,12 +105,13 @@ systemctl --user restart handoverd.service
 
 attempt=1
 while test "$attempt" -le 20; do
-	if test -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/handover/handoverd.sock"; then
+	if test -S "$XDG_RUNTIME_DIR/handover/handoverd.sock" && \
+		timeout 1 "$PREFIX/bin/handoverctl" devices >/dev/null 2>&1; then
 		exit 0
 	fi
 	sleep 0.1
 	attempt=$((attempt + 1))
 done
 
-echo "handoverd did not create its socket; check: systemctl --user status handoverd" >&2
+echo "handoverd did not respond over IPC; check: systemctl --user status handoverd" >&2
 exit 1

@@ -72,6 +72,20 @@ The [phone validation handoff](docs/phone-validation.md) covers the remaining
 physical-device and audible-playback checks. Run all checks affected by a change.
 Report checks that are unavailable on the current machine.
 
+Check Linux installer behavior without changing the installed user services:
+
+```sh
+python3 scripts/test-install-from-dist.py
+./scripts/dist.sh
+python3 scripts/test-install-from-dist.py --archive dist/handover-0.4.1-x86_64-unknown-linux-gnu.tar.gz
+```
+
+The installer tests use private directories and service/IPC fixtures. They check
+file placement, upgrades, launcher arguments, custom prefixes, and bounded IPC
+readiness. They do not start the packaged daemon or validate phone behavior.
+Pass `--previous-archive PATH` to check an upgrade from an existing tarball too.
+Archive names follow the version and host triple printed by `dist.sh`.
+
 ## Running from the source tree
 
 Stop the installed daemon before starting a source-tree instance:

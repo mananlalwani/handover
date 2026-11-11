@@ -20,6 +20,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/dist.sh
+      - name: Validate Linux package installation and upgrades
+        run: |
+          for archive in dist/*.tar.gz; do
+            python3 scripts/test-install-from-dist.py --archive "$archive"
+          done
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.tar.gz

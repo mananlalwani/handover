@@ -10,6 +10,14 @@ if test -z "$VERSION"; then
 	VERSION=$(awk -F '"' '/^version = / { print $2; exit }' handoverd/Cargo.toml)
 fi
 HOST=$(rustc -vV | awk '/^host: / { print $2; exit }')
+SOURCE_COMMIT=$(git rev-parse --verify HEAD 2>/dev/null || printf 'unavailable')
+SOURCE_STATE=unavailable
+if test "$SOURCE_COMMIT" != unavailable; then
+	SOURCE_STATE=clean
+	if test -n "$(git status --porcelain --untracked-files=normal)"; then
+		SOURCE_STATE=modified
+	fi
+fi
 STAGE="handover-${VERSION}-${HOST}"
 OUT_DIR="${ROOT}/dist"
 STAGE_DIR="${OUT_DIR}/${STAGE}"
@@ -93,6 +101,7 @@ install -Dm644 google-messages/tools/chrome-observer/privacy.mjs \
 	google-messages/tools/chrome-observer/README.md \
 	"$STAGE_DIR/share/handover/google-messages/tools/chrome-observer/"
 install -Dm755 scripts/install-from-dist.sh "$STAGE_DIR/install.sh"
+install -Dm755 scripts/install-service-unit.sh "$STAGE_DIR/install-service-unit.sh"
 install -Dm644 LICENSE "$STAGE_DIR/share/licenses/handover/LICENSE"
 install -Dm644 third_party/ukey2/LICENSE \
 	"$STAGE_DIR/share/licenses/handover/ukey2/LICENSE"
@@ -102,6 +111,10 @@ install -Dm644 third_party/ukey2/README.md \
 cat >"$STAGE_DIR/BUILD.txt" <<EOF
 Handover ${VERSION}
 Host triple: ${HOST}
+Source commit: ${SOURCE_COMMIT}
+Source tree: ${SOURCE_STATE}
+Rust compiler: $(rustc --version)
+Builder libc: $(getconf GNU_LIBC_VERSION)
 Built with: cargo build --release --locked -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
 This binary needs a glibc close to the builder's. GitHub tag builds use Ubuntu 24.04.
 

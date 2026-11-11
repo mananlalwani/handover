@@ -276,3 +276,9 @@ The dependency audit initially failed only the SQLite security advisory; the
 upgrade recorded above resolves that failure. Physical-phone behavior, audible
 audio routing, the desktop credential-store integration, and live desktop
 interaction remain unverified.
+
+Linux tarball installation and upgrade checks now cover private prefixes,
+runtime assets, service commands, launchers, and failed IPC readiness. A local
+release daemon also passed IPC and native listener startup in a private network
+namespace. See the [package validation record](audits/linux-package-2026-11-10.md)
+for the fixture boundaries and remaining distribution checks.
