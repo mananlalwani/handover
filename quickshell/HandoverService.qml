@@ -22,7 +22,6 @@ Singleton {
     property var mediaSessions: []
     property var calls: []
     property var contacts: []
-    property var contactsChunkBuffer: null
     property string contactsSyncError: ""
     property var callAudio: null
     property string callNotice: ""
@@ -682,7 +681,6 @@ Singleton {
         mediaSessions = [];
         calls = [];
         contacts = [];
-        contactsChunkBuffer = null;
         callAudio = null;
         callNotice = "";
         lastReceivedShare = null;
@@ -867,8 +865,12 @@ Singleton {
 
         const isSnapshotChunk = message.type === "subscribed_chunk"
             || message.type === "snapshot_chunk";
-        const isListChunk = message.type === "notifications_chunk"
-            || message.type === "media_chunk";
+        const listFields = {
+            notifications_chunk: "notifications", media_chunk: "media_sessions",
+            contacts_chunk: "contacts", conversations_chunk: "conversations",
+            outgoing_operations: "operations"
+        };
+        const isListChunk = Object.prototype.hasOwnProperty.call(listFields, message.type);
         if (snapshotBuffer && (!isSnapshotChunk || message.type !== snapshotKind)) {
             scheduleReconnect("daemon interrupted snapshot sequence");
             return;
@@ -886,7 +888,7 @@ Singleton {
             return;
         }
         if (isListChunk) {
-            const field = message.type === "notifications_chunk" ? "notifications" : "media_sessions";
+            const field = listFields[message.type];
             if (!Array.isArray(message[field]) || typeof message.done !== "boolean") {
                 scheduleReconnect("daemon sent invalid list chunk");
                 return;
@@ -901,8 +903,15 @@ Singleton {
             if (message.done) {
                 if (message.type === "notifications_chunk")
                     notifications = items;
-                else
+                else if (message.type === "media_chunk")
                     mediaSessions = items;
+                else if (message.type === "contacts_chunk")
+                    contacts = items;
+                else if (message.type === "conversations_chunk") {
+                    for (const conversation of items)
+                        replaceConversation(conversation);
+                } else
+                    outgoingOperations = items;
                 listAssembly = null;
             } else {
                 listAssembly = { kind: message.type, items, bytes: nextBytes, chunks: nextChunks };
@@ -944,20 +953,6 @@ Singleton {
             break;
         case "contacts":
             contacts = message.contacts || [];
-            contactsChunkBuffer = null;
-            break;
-        case "contacts_chunk":
-            {
-                const incoming = message.contacts || [];
-                const accumulated = contactsChunkBuffer === null
-                    ? incoming.slice() : contactsChunkBuffer.concat(incoming);
-                if (message.done === true) {
-                    contacts = accumulated;
-                    contactsChunkBuffer = null;
-                } else {
-                    contactsChunkBuffer = accumulated;
-                }
-            }
             break;
         case "contacts_synced":
             contactsSyncError = "";
@@ -995,10 +990,6 @@ Singleton {
             applySnapshot(message, true);
             if (message.type === "snapshot_chunk" && message.done === true)
                 refreshContacts();
-            break;
-        case "conversations_chunk":
-            for (const conversation of message.conversations || [])
-                replaceConversation(conversation);
             break;
         case "filesystem":
             filesystemResult = message.result || null;
@@ -1177,19 +1168,6 @@ Singleton {
             removeMessage(message.message_id);
             break;
         case "message_status":
-            break;
-        case "outgoing_operations":
-            {
-                const next = outgoingOperations.slice();
-                for (const operation of message.operations || []) {
-                    const index = next.findIndex(existing => existing.id === operation.id);
-                    if (index >= 0)
-                        next[index] = operation;
-                    else
-                        next.push(operation);
-                }
-                outgoingOperations = next;
-            }
             break;
         case "outgoing_operation":
             replaceOutgoingOperation(message.operation);

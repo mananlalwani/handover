@@ -33,7 +33,7 @@ function service() {
         listAssembly: null,
         outgoingOperations: [], devices: ['old-device'], notifications: ['old-notification'],
         mediaSessions: [], calls: [], messagingAccounts: [], conversations: [],
-        typingStates: [], readStates: [], contacts: [], contactsChunkBuffer: null,
+        typingStates: [], readStates: [], contacts: [],
         audioStreams: [], pendingCommand: null, pendingMessaging: null,
         retryTimer: { restart() {} }, sharesInterrupted() {}, finishPending() {},
         finishMessaging() {}, refreshContacts() {}, refreshMessaging() {},
@@ -68,9 +68,15 @@ function paddedChunk(size, done = false) {
 }
 
 function listChunk(type, done = false, padding = '') {
-    const field = type === 'notifications_chunk' ? 'notifications' : 'media_sessions';
+    const field = listFields[type];
     return JSON.stringify({ protocol: 1, type, [field]: [], done, padding });
 }
+
+const listFields = {
+    notifications_chunk: 'notifications', media_chunk: 'media_sessions',
+    contacts_chunk: 'contacts', conversations_chunk: 'conversations',
+    outgoing_operations: 'operations',
+};
 
 function paddedListChunk(size, type = 'notifications_chunk', done = false) {
     const initial = listChunk(type, done);
@@ -232,4 +238,57 @@ test('list sequences enforce aggregate byte and chunk limits and reset on discon
     disconnect.c.handleLine(listChunk('media_chunk'));
     disconnect.c.scheduleReconnect('daemon disconnected');
     assert.equal(disconnect.c.listAssembly, null);
+});
+
+test('every complete-list sequence is bounded and stays unpublished until done', () => {
+    for (const [type, field] of Object.entries(listFields)) {
+        const { c, reconnects } = service();
+        const published = {
+            notifications: 'notifications', media_sessions: 'mediaSessions',
+            contacts: 'contacts', conversations: 'conversations', operations: 'outgoingOperations',
+        }[field];
+        c[published] = ['old'];
+        c.handleLine(JSON.stringify({ protocol: 1, type, [field]: [{ id: 'new' }], done: false }));
+        assert.deepEqual(Array.from(c[published]), ['old'], type);
+        for (let index = 1; index < MAX_CHUNKS; index++)
+            c.handleLine(listChunk(type));
+        assert.deepEqual(reconnects, [], type);
+        c.handleLine(listChunk(type, true));
+        assert.deepEqual(reconnects, ['daemon list exceeds protocol limit'], type);
+        assert.equal(c.listAssembly, null, type);
+    }
+});
+
+test('contacts, conversations, and outgoing lists publish only their completed result', () => {
+    for (const type of ['contacts_chunk', 'conversations_chunk', 'outgoing_operations']) {
+        const { c, reconnects } = service();
+        const field = listFields[type];
+        const published = { contacts: 'contacts', conversations: 'conversations', operations: 'outgoingOperations' }[field];
+        const old = type === 'conversations_chunk' ? [] : [{ id: 'stale' }];
+        c[published] = old;
+        c.replaceConversation = item => { c.conversations = c.conversations.concat([item]); };
+        c.handleLine(JSON.stringify({ protocol: 1, type, [field]: [{ id: 'first' }], done: false }));
+        assert.deepEqual(Array.from(c[published]), old, type);
+        c.handleLine(JSON.stringify({ protocol: 1, type, [field]: [{ id: 'last' }], done: true }));
+        assert.deepEqual(Array.from(c[published], item => item.id), ['first', 'last'], type);
+        assert.equal(c.listAssembly, null, type);
+        assert.deepEqual(reconnects, [], type);
+    }
+});
+
+test('all list kinds enforce the byte budget and reject interrupted assembly', () => {
+    for (const type of ['contacts_chunk', 'conversations_chunk', 'outgoing_operations']) {
+        const { c, reconnects } = service();
+        for (let index = 0; index < 8; index++)
+            c.handleLine(paddedListChunk(MAX_LINE, type));
+        assert.deepEqual(reconnects, [], type);
+        c.handleLine(listChunk(type));
+        assert.deepEqual(reconnects, ['daemon list exceeds protocol limit'], type);
+
+        const interrupted = service();
+        interrupted.c.handleLine(listChunk(type));
+        interrupted.c.handleLine(JSON.stringify({ protocol: 1, type: 'devices', devices: [] }));
+        assert.deepEqual(interrupted.reconnects, ['daemon interrupted list sequence'], type);
+        assert.equal(interrupted.c.listAssembly, null, type);
+    }
 });
