@@ -289,3 +289,11 @@ the portable user units now start without changing that policy. Clean install,
 identity-preserving reinstallation, and recovery from a failed published 0.4.0
 installation passed. The CI and release jobs now exercise those boundaries.
 See the [Ubuntu validation record](audits/linux-ubuntu-24.04-2026-11-10.md).
+
+Credential-store integration now passes against private GNOME Keyring 51.1 and
+46.1 instances. Real service checks cover updates, lock errors, unlock wakeups,
+restart persistence, malformed and duplicate records, and deletion. CI runs the
+isolated launcher explicitly. See the
+[credential-store validation record](audits/credential-store-2026-11-10.md).
+Authenticated Google account recovery and physical-phone behavior still need
+their separate live checks.

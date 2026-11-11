@@ -78,6 +78,13 @@ state directory. Required Google authentication uses desktop Secret Service.
 Directories use mode 0700 and files use mode 0600. Pairing prompts are displayed
 without logging or persistence.
 
+`python3 scripts/test-secret-service.py` validates the credential-store adapter
+against a private GNOME Keyring instance with dummy authentication. It exercises
+locked and unavailable stores, real unlock notifications, restart persistence,
+record rejection, and deletion. This does not verify authenticated account
+reconnection or phone pairing. See the
+[credential-store validation record](audits/credential-store-2026-11-10.md).
+
 Helper attachment paths must sit under an approved root, be regular
 non-symlink files, and stay size-bounded. Loopback uses
 `.../handover/gmessages/staging`. The native helper stages media below its private

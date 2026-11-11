@@ -52,8 +52,10 @@ jobs:
       - name: Install desktop integration test tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y dbus-daemon playerctl
+          sudo apt-get install --no-install-recommends -y dbus-daemon playerctl gnome-keyring
       - run: cargo test --workspace
+      - name: Test credentials against a private GNOME Keyring service
+        run: python3 scripts/test-secret-service.py
       - name: Test tarball installer and upgrades without changing user services
         run: python3 scripts/test-install-from-dist.py
       - run: cargo test --locked --manifest-path third_party/ukey2/Cargo.toml -p ukey2_rs --features test_rustcrypto

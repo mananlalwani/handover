@@ -50,6 +50,19 @@ cargo test --workspace
 cargo deny check
 ```
 
+Validate Google Messages credential storage against a real GNOME Keyring service:
+
+```sh
+python3 scripts/test-secret-service.py
+```
+
+This requires `dbus-daemon` and `gnome-keyring-daemon`. The launcher builds the
+ignored integration test, creates a private bus with service activation disabled,
+and gives GNOME Keyring temporary storage. It checks dummy credential updates,
+lock/unlock notifications, persistence across service restart, deletion, and
+invalid or duplicate records. It neither uses the desktop keyring nor contacts
+Google. Run this launcher rather than invoking the ignored test on a desktop bus.
+
 Run the Android checks from `android/`:
 
 ```sh

@@ -279,32 +279,6 @@ mod tests {
         assert!(encode(ACCOUNT, &invalid).is_err());
         assert!(encode("fixture@example.test", &proof()).is_err());
     }
-    #[tokio::test]
-    #[ignore = "requires an unlocked desktop Secret Service"]
-    async fn desktop_store_roundtrip_and_delete() {
-        let account = format!("gmessages-{}", uuid::Uuid::new_v4().simple());
-        let result = async {
-            DesktopCredentialStore::save(&account, &proof()).await?;
-            DesktopCredentialStore::save(&account, &proof()).await?;
-            let loaded = DesktopCredentialStore::load(&account)
-                .await?
-                .ok_or(CredentialError::Invalid)?;
-            if loaded.service_cookie.as_deref() != Some("SID=SYNTHETIC_COOKIE") {
-                return Err(CredentialError::Invalid);
-            }
-            Ok(())
-        }
-        .await;
-        let cleanup = DesktopCredentialStore::delete(&account).await;
-        assert_eq!(cleanup, Ok(()));
-        assert_eq!(result, Ok(()));
-        assert!(
-            DesktopCredentialStore::load(&account)
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
 }
 
 /// Wake recovery on Secret Service unlock notifications. The bounded channel
