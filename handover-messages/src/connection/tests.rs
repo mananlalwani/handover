@@ -122,7 +122,7 @@ fn send_queued_while_disconnected_fails_before_reconnect_and_is_not_replayed() {
     let (commands, events) = start(path);
 
     assert!(
-        matches!(next_event(&events), Event::Connected(accounts, conversations)
+        matches!(next_event(&events), Event::Connected(accounts, conversations, _)
         if accounts.is_empty() && conversations.is_empty())
     );
     subscription
@@ -154,13 +154,13 @@ fn send_queued_while_disconnected_fails_before_reconnect_and_is_not_replayed() {
                 uncertain: false, ..
             }),
         ) => {}
-        Event::Connected(_, _) => {
+        Event::Connected(_, _, _) => {
             panic!("connection re-established before queued command received its offline error")
         }
         _ => panic!("queued command did not receive its offline error"),
     }
     assert!(
-        matches!(next_event(&events), Event::Connected(accounts, conversations)
+        matches!(next_event(&events), Event::Connected(accounts, conversations, _)
         if accounts.is_empty() && conversations.is_empty())
     );
     thread::sleep(Duration::from_millis(200));

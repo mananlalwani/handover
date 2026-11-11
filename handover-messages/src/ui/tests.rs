@@ -606,6 +606,19 @@ fn find_widget(
     None
 }
 
+fn widgets_with_class(root: &gtk::Widget, class: &str) -> Vec<gtk::Widget> {
+    let mut found = Vec::new();
+    if root.has_css_class(class) {
+        found.push(root.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        found.extend(widgets_with_class(&widget, class));
+        child = widget.next_sibling();
+    }
+    found
+}
+
 fn ancestor_with_class(widget: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
     let mut current = Some(widget.clone());
     while let Some(candidate) = current {
@@ -721,7 +734,7 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     pump_until(
         || {
-            find_widget(ui.thread.upcast_ref(), &|widget| {
+            find_widget(ui.window.upcast_ref(), &|widget| {
                 widget
                     .downcast_ref::<crate::image_canvas::ImageCanvas>()
                     .is_some_and(|canvas| canvas.texture().is_some())
@@ -796,6 +809,77 @@ fn native_window_round_trips_real_frontend_actions() {
         || ui.model.borrow().messages.len() >= 5,
         "fixture thread with loaded replies and reactions",
     );
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        serde_json::to_value(handover_ipc::ServerMessage::from_messaging_event(
+            MessagingEvent::Typing(TypingState {
+                conversation_id: id(),
+                participant_ids: vec!["alex".into()],
+            }),
+        ))
+        .unwrap(),
+    );
+    pump_until(
+        || {
+            find_widget(ui.window.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
+                    label.has_css_class("typing-indicator")
+                        && label.is_visible()
+                        && label.text().contains("Alex Example")
+                })
+            })
+            .is_some()
+        },
+        "typing indicator for selected conversation",
+    );
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        serde_json::to_value(handover_ipc::ServerMessage::from_messaging_event(
+            MessagingEvent::Typing(TypingState {
+                conversation_id: id(),
+                participant_ids: vec![],
+            }),
+        ))
+        .unwrap(),
+    );
+    pump_until(
+        || {
+            find_widget(ui.window.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
+                    label.has_css_class("typing-indicator") && label.text().is_empty()
+                })
+            })
+            .is_some()
+        },
+        "typing indicator clears after empty participant update",
+    );
+
+    let m2 = MessageId::new(id(), "m2");
+    for status in ["delivered", "displayed"] {
+        send_json(
+            subscription_writer.lock().unwrap().as_mut().unwrap(),
+            response(
+                "message_status",
+                json!({"update":{"message_id":m2,"status":status}}),
+            ),
+        );
+        let expected = if status == "delivered" {
+            "Delivered"
+        } else {
+            "Read"
+        };
+        pump_until(
+            || {
+                let statuses = widgets_with_class(ui.thread.upcast_ref(), "message-status");
+                statuses.len() == 1
+                    && statuses[0]
+                        .downcast_ref::<gtk::Label>()
+                        .is_some_and(|label| label.text() == expected)
+            },
+            "status for the single updated outgoing message",
+        );
+    }
+
     let quoted = find_widget(ui.thread.upcast_ref(), &|widget| {
         widget.has_css_class("quoted-message")
     })
@@ -1364,6 +1448,17 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     assert_eq!(sent.lock().unwrap()[0], "accepted text");
 
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response(
+            "typing",
+            json!({"state":{"conversation_id":id(),"participant_ids":["alex"]}}),
+        ),
+    );
+    pump_until(
+        || ui.typing_indicator.text().contains("Alex"),
+        "typing before interrupted send",
+    );
     ui.compose.buffer().set_text("uncertain text");
     let previous_subscriptions = subscriptions.load(Ordering::SeqCst);
     fail_send.store(true, Ordering::SeqCst);
@@ -1390,6 +1485,10 @@ fn native_window_round_trips_real_frontend_actions() {
         text(&ui.compose),
         "uncertain text",
         "reconnect preserves the unsent editor text"
+    );
+    pump_until(
+        || ui.typing_indicator.text().is_empty(),
+        "reconnect clears stale typing",
     );
     assert_eq!(
         sent.lock().unwrap().len(),
@@ -1453,6 +1552,14 @@ fn native_window_round_trips_real_frontend_actions() {
         "setup window remains alive through helper callbacks"
     );
 
+    // Keep this window's subscription separate from the routing subprocess below.
+    let mut ui_subscription = subscription_writer
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .try_clone()
+        .unwrap();
     let binary = PathBuf::from(
         std::env::var_os("HANDOVER_MESSAGES_TEST_BINARY")
             .expect("runner supplies isolated native Messages binary"),
@@ -1571,6 +1678,70 @@ fn native_window_round_trips_real_frontend_actions() {
         (restored_offset - anchor_offset).abs() <= 2.0,
         "prepending moved the visible message: {anchor_offset} -> {restored_offset}"
     );
+
+    let incoming = json!({
+        "id":{"conversation_id":history_id,"local_id":"live-arrival"},
+        "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+        "transport":"rcs","sent_at":1794408000000000i64,
+        "text":"A new message arrived while browsing history.",
+        "attachments":[],"reply_to":null,"reactions":[],"deleted":false
+    });
+    send_json(
+        &mut ui_subscription,
+        response("message_added", json!({"message":incoming})),
+    );
+    pump_until(
+        || ui.latest.label().as_deref() == Some("1 new message ↓"),
+        "one new incoming message while browsing history",
+    );
+    let anchor_index = ui
+        .rendered
+        .borrow()
+        .iter()
+        .position(|message_id| message_id == &anchor)
+        .expect("visible history anchor remains rendered");
+    let mut anchor_widget = ui.thread.first_child().unwrap();
+    for _ in 0..anchor_index {
+        anchor_widget = anchor_widget.next_sibling().unwrap();
+    }
+    let arrival_anchor_offset =
+        message_bounds(&anchor_widget, &ui.thread).0 - ui.scroll.vadjustment().value();
+    assert!(
+        (arrival_anchor_offset - anchor_offset).abs() <= 2.0,
+        "incoming message moved the visible history anchor: {anchor_offset} -> {arrival_anchor_offset}"
+    );
+    let incoming_update = json!({
+        "id":{"conversation_id":history_id,"local_id":"live-arrival"},
+        "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+        "transport":"rcs","sent_at":1794408000000000i64,
+        "text":"The same incoming message was updated.",
+        "attachments":[],"reply_to":null,"reactions":[],"deleted":false
+    });
+    send_json(
+        &mut ui_subscription,
+        response("message_updated", json!({"message":incoming_update})),
+    );
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .messages
+                .iter()
+                .any(|message| message.id.local_id == "live-arrival")
+        },
+        "duplicate message update applied",
+    );
+    assert_eq!(ui.latest.label().as_deref(), Some("1 new message ↓"));
+    ui.latest.emit_clicked();
+    pump_until(
+        || {
+            ui.model.borrow().new_messages.is_empty()
+                && ui.scroll.vadjustment().value() + ui.scroll.vadjustment().page_size()
+                    >= ui.scroll.vadjustment().upper() - 2.0
+        },
+        "latest action clears new-message count and scrolls to end",
+    );
+
     let history_requests = || {
         requests
             .lock()

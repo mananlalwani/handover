@@ -45,7 +45,7 @@ pub struct Failure {
 }
 
 pub enum Event {
-    Connected(Vec<MessagingAccount>, Vec<Conversation>),
+    Connected(Vec<MessagingAccount>, Vec<Conversation>, Vec<TypingState>),
     Disconnected,
     State(Box<ServerPayload>),
     Reply(u64, Result<Reply, Failure>),
@@ -80,12 +80,13 @@ pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<E
                 let (updates,mut update)=mpsc::channel(8);
                 let accounts=subscription.messaging_accounts.clone();
                 let conversations=subscription.conversations.clone();
+                let typing=subscription.typing_states.clone();
                 // Nothing admitted by an earlier connection may enter this session.
                 while let Ok(command)=incoming.try_recv(){
                     if events.send(Event::Reply(command.id,Err(offline()))).await.is_err(){return;}
                 }
                 // Send the baseline without moving its live connection to the GTK thread.
-                if events.send(Event::Connected(accounts,conversations)).await.is_err(){return;}
+                if events.send(Event::Connected(accounts,conversations,typing)).await.is_err(){return;}
                 let mut subscription=subscription;
                 let reader=tokio::spawn(async move {
                     loop {

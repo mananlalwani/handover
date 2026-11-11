@@ -1,6 +1,6 @@
 use handover_core::*;
 use handover_ipc::ServerPayload;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Draft {
     pub value: MessageDraft,
@@ -46,6 +46,10 @@ pub struct Model {
     pub drafted: Vec<ConversationId>,
     pub persistent: bool,
     pub outgoing: BTreeMap<String, OutgoingOperation>,
+    pub typing: BTreeMap<ConversationId, Vec<String>>,
+    pub statuses: BTreeMap<MessageId, MessageStatus>,
+    pub new_messages: BTreeSet<MessageId>,
+    pub new_messages_overflow: bool,
     pub query: String,
     pub hits: Vec<MessageSearchHit>,
     pub more: bool,
@@ -56,6 +60,138 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn reset_typing(&mut self, states: Vec<TypingState>) {
+        self.typing.clear();
+        for state in states.into_iter().take(512) {
+            self.apply_typing(state);
+        }
+    }
+    fn apply_typing(&mut self, state: TypingState) {
+        if !self
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == state.conversation_id)
+        {
+            return;
+        }
+        if !self.accounts.iter().any(|account| {
+            account.id == state.conversation_id.account_id
+                && account.connected
+                && account.authenticated
+        }) {
+            return;
+        }
+        let participants = state
+            .participant_ids
+            .into_iter()
+            .take(64)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if participants.is_empty() {
+            self.typing.remove(&state.conversation_id);
+        } else {
+            self.typing.insert(state.conversation_id, participants);
+        }
+        while self.typing.len() > 512 {
+            self.typing.pop_first();
+        }
+    }
+    pub fn typing_label(&self) -> Option<String> {
+        let id = self.selected.as_ref()?;
+        if !self.connected
+            || !self.accounts.iter().any(|account| {
+                account.id == id.account_id && account.connected && account.authenticated
+            })
+        {
+            return None;
+        }
+        let peers = self.typing.get(id)?;
+        let conversation = self
+            .conversations
+            .iter()
+            .find(|conversation| &conversation.id == id)?;
+        let peers = peers
+            .iter()
+            .filter(|id| {
+                !conversation
+                    .participants
+                    .iter()
+                    .any(|peer| peer.is_self && &peer.local_id == *id)
+            })
+            .collect::<Vec<_>>();
+        let first = peers.first()?;
+        let name = conversation
+            .participants
+            .iter()
+            .find(|peer| &peer.local_id == *first)
+            .and_then(|peer| {
+                peer.display_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .or_else(|| {
+                        peer.address
+                            .as_deref()
+                            .filter(|address| !address.trim().is_empty())
+                    })
+            })
+            .unwrap_or("Someone");
+        Some(if peers.len() == 1 {
+            format!("{name} is typing…")
+        } else if peers.len() == 2 {
+            format!("{name} and one other are typing…")
+        } else {
+            format!("{name} and {} others are typing…", peers.len() - 1)
+        })
+    }
+    pub fn message_status(&self, id: &MessageId) -> Option<&'static str> {
+        if let Some(operation) = self
+            .outgoing
+            .values()
+            .filter(|operation| operation.message_id.as_ref() == Some(id))
+            .max_by_key(|operation| operation.updated_at)
+        {
+            return Some(match &operation.outcome {
+                OutgoingOutcome::Submitting => "Sending…",
+                OutgoingOutcome::Unknown => "Outcome unknown",
+                OutgoingOutcome::Rejected => "Rejected",
+                OutgoingOutcome::Provider(status) => status_label(status),
+            });
+        }
+        self.statuses.get(id).map(status_label)
+    }
+    pub fn clear_new_messages(&mut self) {
+        self.new_messages.clear();
+        self.new_messages_overflow = false;
+    }
+    fn note_arrival(&mut self, message: &Message) {
+        if !self.connected
+            || message.sender.is_self
+            || message.deleted
+            || self.selected.as_ref() != Some(&message.id.conversation_id)
+            || (!self.browsing_older && self.anchor.is_none())
+            || self.messages.iter().any(|known| known.id == message.id)
+        {
+            return;
+        }
+        let newer = self
+            .previews
+            .get(&message.id.conversation_id)
+            .is_some_and(|last| {
+                last.id != message.id
+                    && message
+                        .sent_at
+                        .zip(last.sent_at)
+                        .is_some_and(|(new, old)| new > old)
+            });
+        if newer {
+            if self.new_messages.len() < 300 {
+                self.new_messages.insert(message.id.clone());
+            } else {
+                self.new_messages_overflow = true;
+            }
+        }
+    }
     pub fn label(&self, id: &ConversationId) -> String {
         self.conversations
             .iter()
@@ -201,18 +337,30 @@ impl Model {
             ServerPayload::Snapshot {
                 messaging_accounts,
                 conversations,
+                typing_states,
                 ..
             } => {
                 self.accounts = messaging_accounts;
                 self.conversations = conversations;
+                self.reset_typing(typing_states);
+                self.statuses.clear();
+                self.clear_new_messages();
                 self.previews.clear();
                 self.outgoing.clear();
             }
             ServerPayload::AccountAdded { account } | ServerPayload::AccountUpdated { account } => {
+                if !account.connected || !account.authenticated {
+                    self.typing.retain(|id, _| id.account_id != account.id);
+                }
                 self.accounts.retain(|old| old.id != account.id);
                 self.accounts.push(account);
             }
             ServerPayload::AccountRemoved { account_id } => {
+                self.typing.retain(|id, _| id.account_id != account_id);
+                self.statuses
+                    .retain(|id, _| id.conversation_id.account_id != account_id);
+                self.new_messages
+                    .retain(|id| id.conversation_id.account_id != account_id);
                 self.hits
                     .retain(|hit| hit.message_id.conversation_id.account_id != account_id);
                 self.drafted.retain(|id| id.account_id != account_id);
@@ -241,16 +389,37 @@ impl Model {
                 self.conversations.push(conversation);
             }
             ServerPayload::ConversationRemoved { conversation_id } => {
+                self.typing.remove(&conversation_id);
+                self.statuses
+                    .retain(|id, _| id.conversation_id != conversation_id);
+                self.new_messages
+                    .retain(|id| id.conversation_id != conversation_id);
                 self.previews.remove(&conversation_id);
                 self.conversations.retain(|c| c.id != conversation_id)
             }
-            ServerPayload::MessageAdded { message } | ServerPayload::MessageUpdated { message } => {
-                self.remember_preview(&message);
-                if self.anchor.is_none() || self.messages.iter().any(|old| old.id == message.id) {
-                    self.merge(vec![message]);
+            ServerPayload::MessageAdded { message } => {
+                self.note_arrival(&message);
+                self.apply_message(message);
+            }
+            ServerPayload::MessageUpdated { message } => {
+                self.apply_message(message);
+            }
+            ServerPayload::Typing { state } => self.apply_typing(state),
+            ServerPayload::MessageStatus { update } => {
+                if self
+                    .accounts
+                    .iter()
+                    .any(|account| account.id == update.message_id.conversation_id.account_id)
+                {
+                    self.statuses.insert(update.message_id, update.status);
+                }
+                while self.statuses.len() > 512 {
+                    self.statuses.pop_first();
                 }
             }
             ServerPayload::MessageRemoved { message_id } => {
+                self.statuses.remove(&message_id);
+                self.new_messages.remove(&message_id);
                 self.previews.retain(|_, message| message.id != message_id);
                 self.messages.retain(|message| message.id != message_id)
             }
@@ -278,12 +447,28 @@ impl Model {
             self.outgoing.remove(&oldest);
         }
     }
+    fn apply_message(&mut self, message: Message) {
+        self.remember_preview(&message);
+        if self.anchor.is_none() || self.messages.iter().any(|old| old.id == message.id) {
+            self.merge(vec![message]);
+        }
+    }
     pub fn outcome(&self) -> Option<&OutgoingOutcome> {
         self.outgoing
             .values()
             .filter(|operation| Some(&operation.conversation_id) == self.selected.as_ref())
             .max_by_key(|operation| operation.created_at)
             .map(|operation| &operation.outcome)
+    }
+}
+
+fn status_label(status: &MessageStatus) -> &'static str {
+    match status {
+        MessageStatus::Accepted => "Accepted",
+        MessageStatus::Sent => "Sent",
+        MessageStatus::Delivered => "Delivered",
+        MessageStatus::Displayed => "Read",
+        MessageStatus::Failed(_) => "Failed",
     }
 }
 
@@ -422,3 +607,6 @@ mod tests {
         assert!(model.newer_gap);
     }
 }
+
+#[cfg(test)]
+mod feedback_tests;

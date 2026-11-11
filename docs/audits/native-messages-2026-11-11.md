@@ -288,3 +288,52 @@ account reconnected. Read-only live IPC returned the persistent workspace and
 five saved media-bearing messages for the selected conversation. This verifies
 startup and archive integration; sending and interaction semantics were tested
 with synthetic conversations.
+
+
+## Live conversation feedback
+
+The app now reads incoming typing from the initial subscription, recovery
+snapshots, and live typing events. Names use exact participant IDs; unknown
+participants show Someone. Empty updates, account disconnection, conversation
+removal, and reconnects clear transient presence. Typing updates change only
+the reserved composer row and do not rebuild the message list or sidebar.
+The client stores at most 512 typing entries with 64 distinct peer IDs per entry.
+
+Outgoing bubbles use exact scoped message identities from daemon outgoing
+records and message-status events. There is no content, timestamp, or local-read
+state matching. Journal-backed outgoing outcomes take precedence when available.
+Statuses absent from recovered daemon state remain unknown and have no label.
+The direct-event status cache is bounded at 512 entries and cleared on recovered
+snapshots. Acceptance remains distinct from delivery.
+
+While browsing older messages, a live incoming message newer than the known
+preview can add to a bounded set of new arrivals. History merges, updates,
+self messages, other conversations, and older events do not increment it.
+At most 300 IDs are retained; overflow uses a generic New messages label.
+Following the current tail or opening the newest view clears the indicator.
+
+The GUI test exposed a race where a message redraw invalidated the frame callback
+for Latest messages. The app now retains the requested jump across redraws until
+the latest layout reaches the tail. The regression clicks Latest while an
+incoming update is still queued and checks both scroll position and count reset.
+
+Four model tests cover typing identity/lifecycle, status correlation, arrival
+filtering and bounds, and snapshot/removal cleanup. The GTK scenario covers live
+typing and clearing, Delivered/Read on the exact outgoing bubble, stale typing
+after reconnect, and new arrivals without moving the visible history anchor.
+Its routing subprocess uses a separate subscription, so event injection retains
+a handle to the tested window's connection. Temporary diagnostic logging was
+removed after confirming fixture routing and the scroll race.
+
+
+Formatting, strict workspace Clippy, and all 602 Rust workspace tests passed,
+with seven ignored by default. The GUI scenario passed explicitly in normal
+and narrow dark layouts. Android build, lint, and unit checks passed, along
+with QML lint and all 49 JavaScript tests.
+
+The app-only release was installed after its normal window-close flow, with a
+backup of the old binary. The installed hash matches the release artifact.
+The reopened app has a mapped window and the daemon returns the existing
+connected account. The daemon PID and start timestamp stayed unchanged.
+Presence, delivery labels, and the arrival/jump race were tested with isolated
+fixtures. No live send, reaction, phone typing, or delivery flow was exercised.

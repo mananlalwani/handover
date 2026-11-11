@@ -20,6 +20,7 @@ struct RowStamp {
     replies: bool,
     reactions: bool,
     quote: Option<String>,
+    delivery: Option<&'static str>,
 }
 
 pub struct Window {
@@ -65,8 +66,10 @@ pub struct Window {
     history_epochs: RefCell<BTreeMap<u64, u64>>,
     empty_history_pages: Cell<u8>,
     loading_latest: Cell<bool>,
+    jump_pending: Cell<bool>,
     latest: gtk::Button,
     status: gtk::Label,
+    typing_indicator: gtk::Label,
     draft_status: gtk::Label,
     reply: gtk::Label,
     reload: gtk::Button,
@@ -301,6 +304,13 @@ impl Window {
         body.append(&viewport);
         let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
         composer_area.add_css_class("composer-area");
+        let typing_indicator = gtk::Label::new(None);
+        typing_indicator.add_css_class("typing-indicator");
+        typing_indicator.set_height_request(18);
+        typing_indicator.set_xalign(0.0);
+        typing_indicator.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        typing_indicator.set_margin_start(12);
+        composer_area.append(&typing_indicator);
         let status = gtk::Label::new(None);
         status.set_xalign(0.5);
         status.set_wrap(true);
@@ -437,8 +447,10 @@ impl Window {
             history_epochs: RefCell::new(BTreeMap::new()),
             empty_history_pages: Cell::new(0),
             loading_latest: Cell::new(false),
+            jump_pending: Cell::new(false),
             latest,
             status,
+            typing_indicator,
             draft_status,
             reply,
             reload,
@@ -769,9 +781,11 @@ impl Window {
         self.history_error.borrow_mut().take();
         self.empty_history_pages.set(0);
         self.loading_latest.set(anchor.is_none());
+        self.jump_pending.set(false);
         {
             let mut model = self.model.borrow_mut();
             model.newer_gap = false;
+            model.clear_new_messages();
             model.selected = Some(id.clone());
             model.anchor = anchor.clone();
             model.scroll_anchor = anchor.clone();
@@ -799,12 +813,14 @@ impl Window {
 
     fn event(self: &Rc<Self>, event: Event) {
         match event {
-            Event::Connected(accounts, conversations) => {
+            Event::Connected(accounts, conversations, typing) => {
                 {
                     let mut model = self.model.borrow_mut();
                     model.connected = true;
                     model.accounts = accounts;
                     model.conversations = conversations;
+                    model.reset_typing(typing);
+                    model.statuses.clear();
                     model.outgoing.clear();
                     model.previews.clear();
                     self.previewed.borrow_mut().clear();
@@ -834,9 +850,15 @@ impl Window {
             Event::Disconnected => {
                 let mut model = self.model.borrow_mut();
                 model.connected = false;
+                model.typing.clear();
                 model.notice = "Handover disconnected. Submitted sends are never retried.".into();
             }
             Event::State(payload) => {
+                if matches!(payload.as_ref(), ServerPayload::Typing { .. }) {
+                    self.model.borrow_mut().state(*payload);
+                    self.render_typing();
+                    return;
+                }
                 let thread_changed = matches!(
                     *payload,
                     ServerPayload::MessageAdded { .. }
@@ -845,6 +867,11 @@ impl Window {
                         | ServerPayload::AccountRemoved { .. }
                         | ServerPayload::AccountUpdated { .. }
                         | ServerPayload::ConversationUpdated { .. }
+                        | ServerPayload::Snapshot { .. }
+                        | ServerPayload::MessageStatus { .. }
+                        | ServerPayload::OutgoingOperations { .. }
+                        | ServerPayload::OutgoingOperation { .. }
+                        | ServerPayload::OutgoingOperationRemoved { .. }
                 );
                 let contacts_changed = matches!(
                     *payload,
@@ -1852,7 +1879,17 @@ impl Window {
         );
         self.updating.set(false);
     }
+    fn render_typing(&self) {
+        let typing = self.model.borrow().typing_label();
+        self.typing_indicator
+            .set_label(typing.as_deref().unwrap_or(""));
+        self.typing_indicator
+            .update_property(&[gtk::accessible::Property::Label(
+                typing.as_deref().unwrap_or(""),
+            )]);
+    }
     fn render_status(&self) {
+        self.render_typing();
         let model = self.model.borrow();
         self.banner.set_revealed(!model.connected);
         self.stack
@@ -2097,9 +2134,20 @@ impl Window {
         self.history_retry
             .set_sensitive(model.connected && !fetching);
         let adjustment = self.scroll.vadjustment();
+        let count = model.new_messages.len();
+        self.latest.set_label(&if model.new_messages_overflow {
+            "New messages ↓".into()
+        } else if count == 1 {
+            "1 new message ↓".into()
+        } else if count > 1 {
+            format!("{count} new messages ↓")
+        } else {
+            "Latest messages ↓".into()
+        });
         self.latest.set_visible(
             model.selected.is_some()
                 && (model.anchor.is_some()
+                    || !model.new_messages.is_empty()
                     || model.newer_gap
                     || adjustment.upper() - adjustment.page_size() - adjustment.value() > 160.0),
         );
@@ -2113,6 +2161,7 @@ impl Window {
         let mut model = self.model.borrow_mut();
         if at_tail && !model.newer_gap {
             model.browsing_older = false;
+            model.clear_new_messages();
         } else if !at_tail {
             model.browsing_older = true;
         }
@@ -2136,9 +2185,10 @@ impl Window {
         self.restoring.set(true);
         let adjustment = self.scroll.vadjustment();
         let previous_y = adjustment.value();
-        let following = self.model.borrow().anchor.is_none()
-            && !self.model.borrow().browsing_older
-            && previous_y + adjustment.page_size() >= adjustment.upper() - 2.0;
+        let following = self.jump_pending.get()
+            || (self.model.borrow().anchor.is_none()
+                && !self.model.borrow().browsing_older
+                && previous_y + adjustment.page_size() >= adjustment.upper() - 2.0);
         let initial = self.rendered.borrow().is_empty();
         let mut previous = None;
         let mut child = self.thread.first_child();
@@ -2215,6 +2265,11 @@ impl Window {
                     .reply_to
                     .as_ref()
                     .map(|id| self.quote_label(&model, id)),
+                delivery: if message.sender.is_self && !message.deleted {
+                    model.message_status(&message.id)
+                } else {
+                    None
+                },
             };
             let old = rows.remove(&message.id);
             if let Some(old) = old.as_ref().filter(|_| {
@@ -2383,6 +2438,20 @@ impl Window {
             for image in images {
                 column.append(&image);
             }
+            if message.sender.is_self
+                && !message.deleted
+                && let Some(status) = model.message_status(&message.id)
+            {
+                let label = gtk::Label::new(Some(status));
+                label.set_xalign(1.0);
+                label.add_css_class("message-status");
+                label.set_tooltip_text(Some(if status == "Accepted" {
+                    "The command was accepted. Delivery has not been confirmed."
+                } else if status == "Outcome unknown" {
+                    "Check the conversation before sending again. Handover never resends automatically."
+                } else { "Reported message status" }));
+                column.append(&label);
+            }
             let reply = gtk::Button::from_icon_name("mail-reply-sender-symbolic");
             reply.set_tooltip_text(Some("Reply to this message"));
             reply.add_css_class("flat");
@@ -2486,6 +2555,9 @@ impl Window {
                 let adjustment = this.scroll.vadjustment();
                 if following {
                     adjustment.set_value((adjustment.upper() - adjustment.page_size()).max(0.0));
+                    if this.jump_pending.replace(false) {
+                        this.loading_latest.set(false);
+                    }
                 } else if let Some((id, offset)) = &target
                     && let Some(index) = this.rendered.borrow().iter().position(|known| known == id)
                 {
@@ -2500,6 +2572,9 @@ impl Window {
                 }
                 this.restoring.set(false);
                 this.follow_tail();
+                if following {
+                    this.mark_read();
+                }
                 this.media.refresh();
                 this.load_older(false);
                 this.render_history_status();
@@ -2508,6 +2583,7 @@ impl Window {
         });
     }
     fn to_end(self: &Rc<Self>) {
+        self.jump_pending.set(true);
         let generation = self.render_revision.get();
         let weak = Rc::downgrade(self);
         let frame = Cell::new(0);
@@ -2523,6 +2599,8 @@ impl Window {
                 let adjustment = this.scroll.vadjustment();
                 adjustment.set_value((adjustment.upper() - adjustment.page_size()).max(0.0));
                 this.loading_latest.set(false);
+                this.jump_pending.set(false);
+                this.model.borrow_mut().clear_new_messages();
                 this.mark_read();
                 this.load_older(false);
                 this.render_history_status();

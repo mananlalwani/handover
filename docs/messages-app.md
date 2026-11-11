@@ -57,6 +57,21 @@ draft before overwriting it. Closing with unsaved edits offers a choice to keep
 the window open or discard those edits. See [message storage](message-storage.md)
 for file locations, limits, and how to disable persistence.
 
+Incoming typing appears above the composer when the daemon reports it. The row
+keeps its height while typing starts and stops, preserving the conversation's
+position. Disconnects and authoritative snapshots clear or replace typing state.
+
+Outgoing bubbles show status only when the daemon identifies that exact message.
+Accepted means command acceptance; Sent, Delivered, and Read require reported
+evidence. Historical messages without evidence have no status label. Local read
+state never stands in for the recipient's read receipt.
+
+While you read older history, a floating indicator counts newly observed incoming
+messages newer than the saved preview. Fetching history and updating existing
+messages do not increment it. Selecting the indicator returns to the newest
+messages and clears the count, including when another update arrives during the
+jump.
+
 A send acknowledgement means the daemon accepted the command. Delivery labels
 use later provider evidence. If the connection drops before the acknowledgement,
 the app retains the draft and warns that the outcome is unknown. It does not
