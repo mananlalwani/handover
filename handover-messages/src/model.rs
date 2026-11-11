@@ -39,6 +39,7 @@ pub struct Model {
     pub scroll_anchor: Option<MessageId>,
     pub browsing_older: bool,
     pub messages: Vec<Message>,
+    pub previews: BTreeMap<ConversationId, Message>,
     pub cursor: Option<String>,
     pub drafts: BTreeMap<ConversationId, Draft>,
     pub drafted: Vec<ConversationId>,
@@ -154,8 +155,29 @@ impl Model {
                 })
             })
     }
+    fn remember_preview(&mut self, message: &Message) {
+        let id = &message.id.conversation_id;
+        if self.previews.get(id).is_none_or(|old| {
+            old.id == message.id
+                || (old.sent_at, &old.id.local_id) <= (message.sent_at, &message.id.local_id)
+        }) {
+            self.previews.insert(id.clone(), message.clone());
+        }
+        while self.previews.len() > 512 {
+            let Some(oldest) = self
+                .previews
+                .iter()
+                .min_by_key(|(_, message)| message.sent_at)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            self.previews.remove(&oldest);
+        }
+    }
     pub fn merge(&mut self, mut messages: Vec<Message>) {
         for message in messages.drain(..) {
+            self.remember_preview(&message);
             if self.selected.as_ref() != Some(&message.id.conversation_id) {
                 continue;
             }
@@ -181,6 +203,7 @@ impl Model {
             } => {
                 self.accounts = messaging_accounts;
                 self.conversations = conversations;
+                self.previews.clear();
                 self.outgoing.clear();
             }
             ServerPayload::AccountAdded { account } | ServerPayload::AccountUpdated { account } => {
@@ -196,6 +219,7 @@ impl Model {
                 self.send_notices
                     .retain(|id, _| id.account_id != account_id);
                 self.last_sent.retain(|id, _| id.account_id != account_id);
+                self.previews.retain(|id, _| id.account_id != account_id);
                 self.accounts.retain(|account| account.id != account_id);
                 self.conversations
                     .retain(|conversation| conversation.id.account_id != account_id);
@@ -215,14 +239,17 @@ impl Model {
                 self.conversations.push(conversation);
             }
             ServerPayload::ConversationRemoved { conversation_id } => {
+                self.previews.remove(&conversation_id);
                 self.conversations.retain(|c| c.id != conversation_id)
             }
             ServerPayload::MessageAdded { message } | ServerPayload::MessageUpdated { message } => {
+                self.remember_preview(&message);
                 if self.anchor.is_none() || self.messages.iter().any(|old| old.id == message.id) {
                     self.merge(vec![message]);
                 }
             }
             ServerPayload::MessageRemoved { message_id } => {
+                self.previews.retain(|_, message| message.id != message_id);
                 self.messages.retain(|message| message.id != message_id)
             }
             ServerPayload::OutgoingOperations { operations, .. } => {
@@ -310,5 +337,53 @@ mod tests {
         model.draft_loaded(draft("mine", 4), false);
         assert!(!model.drafts[&id].dirty);
         assert!(!model.drafts[&id].conflict);
+    }
+    #[test]
+    fn previews_keep_newest_observed_text_and_forget_removed_content() {
+        let conversation_id = draft("", 0).conversation_id;
+        let mut message = Message {
+            id: MessageId::new(conversation_id.clone(), "new"),
+            sender: Participant {
+                local_id: "peer".into(),
+                display_name: None,
+                address: None,
+                is_self: false,
+            },
+            transport: None,
+            sent_at: Some(200),
+            text: Some("Latest observed".into()),
+            attachments: vec![],
+            reply_to: None,
+            reactions: vec![],
+            deleted: false,
+        };
+        let mut model = Model::default();
+        model.state(ServerPayload::MessageAdded {
+            message: message.clone(),
+        });
+        let mut older = message.clone();
+        older.id.local_id = "old".into();
+        older.sent_at = Some(100);
+        older.text = Some("Older history".into());
+        model.merge(vec![older]);
+        assert_eq!(
+            model.previews[&conversation_id].text.as_deref(),
+            Some("Latest observed")
+        );
+        message.deleted = true;
+        message.text = None;
+        model.state(ServerPayload::MessageUpdated {
+            message: message.clone(),
+        });
+        assert!(model.previews[&conversation_id].deleted);
+        model.state(ServerPayload::MessageRemoved {
+            message_id: message.id.clone(),
+        });
+        assert!(model.previews.is_empty());
+        model.merge(vec![message]);
+        model.state(ServerPayload::AccountRemoved {
+            account_id: conversation_id.account_id,
+        });
+        assert!(model.previews.is_empty());
     }
 }

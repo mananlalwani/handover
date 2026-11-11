@@ -17,6 +17,11 @@ capabilities. Search matches conversation names and saved message text. It does
 not search messages that the daemon has never fetched. Selecting a message
 result opens its saved context. Load older messages to request more history.
 
+The layout follows the system light or dark appearance and accent color.
+Hover a message, or tab to its reply button, to reply. Hover a bubble for its
+timestamp. Messages from the same sender group together; date markers separate
+longer gaps. The composer grows for multiline drafts.
+
 The composer supports text, replies, and attachments where the conversation
 advertises those capabilities. New-conversation creation is unavailable until
 the backend has verified support. The Quickshell reference client remains

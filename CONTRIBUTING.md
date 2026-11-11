@@ -78,6 +78,9 @@ state directories, and fake daemon. It exercises real GTK widgets and IPC,
 including draft restore, search navigation, reconnects, lost send replies, and
 single-instance application routing. The setup dialog uses a fake setup helper.
 Run this launcher rather than invoking the ignored GUI test on your desktop.
+For visual checks, add `--screenshot /tmp/messages.png`, optionally with
+`--dark` or `--width 760`. PNG capture needs ImageMagick `import` and contains
+only the synthetic conversation on the private display.
 
 Run the Android checks from `android/`:
 

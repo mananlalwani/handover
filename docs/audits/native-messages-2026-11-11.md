@@ -77,3 +77,30 @@ no live authentication was attempted.
 
 The installed host daemon was neither replaced nor restarted. Its process ID
 and systemd start timestamp remained unchanged throughout validation.
+
+## Visual redesign follow-up
+
+The native app now uses separate sidebar and conversation headers, contact
+initials, unread dots, compact conversation rows, and observed message previews.
+Incoming and outgoing messages use rounded bubbles. Sender grouping and date
+markers reduce repeated labels. Reply buttons appear on hover or keyboard
+focus, and timestamps remain available in bubble tooltips. The composer grows
+with multiline text and shows draft warnings when needed. Colors follow the
+system appearance and accent color.
+
+The private-display test passed in light and dark appearances and at a 760-pixel
+window width. Synthetic screenshots were inspected for wrapping, contrast,
+sidebar selection, unread indicators, and composer placement. Screenshot capture
+is optional and needs ImageMagick. These images contain only fixture data.
+
+Rust formatting, strict workspace Clippy, and the full workspace suite passed,
+with 585 tests passing and seven ignored by default. The native app's focused
+suite also passed, including the new preview test for older history, deletions,
+and account removal. Android and QML sources were unchanged in this follow-up.
+
+A local release build of the redesigned app replaced the installed app binary.
+The existing window closed through its normal draft-saving path, then the new
+window opened successfully on Hyprland. The daemon process and start timestamp
+remained unchanged during this app update. The earlier Ubuntu tarball remains
+the initial app build documented above; this follow-up installed the app built
+on the host.

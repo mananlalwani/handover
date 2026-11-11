@@ -25,6 +25,9 @@ pub struct Window {
     rows: RefCell<Vec<Target>>,
     filter: RefCell<Option<MessagingAccountId>>,
     title: adw::WindowTitle,
+    avatar: adw::Avatar,
+    placeholder: gtk::Label,
+    reply_row: gtk::Box,
     thread: gtk::Box,
     scroll: gtk::ScrolledWindow,
     stack: gtk::Stack,
@@ -63,9 +66,27 @@ impl Window {
             .width_request(740)
             .height_request(480)
             .build();
+        window.add_css_class("handover-messages");
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(include_str!("style.css"));
+        gtk::style_context_add_provider_for_display(
+            &gtk::prelude::WidgetExt::display(&window),
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
         let toolbar = adw::ToolbarView::new();
-        let header = adw::HeaderBar::new();
-        header.set_title_widget(Some(&adw::WindowTitle::new("Handover Messages", "")));
+        let banner = adw::Banner::new("Handover is offline. Reconnecting…");
+        toolbar.add_top_bar(&banner);
+        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+        paned.set_position(310);
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(false);
+        let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        sidebar.set_width_request(270);
+        sidebar.add_css_class("messages-sidebar");
+        let sidebar_header = adw::HeaderBar::new();
+        sidebar_header.set_show_end_title_buttons(false);
+        sidebar_header.set_title_widget(Some(&adw::WindowTitle::new("Messages", "")));
         let menu = gio::Menu::new();
         menu.append(
             Some("Connect Google Messages…"),
@@ -75,36 +96,22 @@ impl Window {
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .menu_model(&menu)
+            .tooltip_text("Main menu")
             .build();
-        header.pack_end(&menu_button);
-        toolbar.add_top_bar(&header);
-        let banner = adw::Banner::new("Handover is offline. Reconnecting…");
-        toolbar.add_top_bar(&banner);
-        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_position(320);
-        paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(false);
-        let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        sidebar.set_width_request(280);
-        {
-            let side = &sidebar;
-            side.set_margin_top(12);
-            side.set_margin_bottom(12);
-            side.set_margin_start(12);
-            side.set_margin_end(12);
-        }
-        let accounts = gtk::DropDown::from_strings(&["All accounts"]);
-        sidebar.append(&accounts);
+        sidebar_header.pack_end(&menu_button);
+        sidebar.append(&sidebar_header);
+        let tools = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        tools.add_css_class("sidebar-tools");
         let search = gtk::SearchEntry::new();
-        search.set_placeholder_text(Some("Search saved messages"));
-        search.set_tooltip_text(Some(
-            "Search conversations and messages saved on this computer · Ctrl+K",
-        ));
-        sidebar.append(&search);
+        search.set_placeholder_text(Some("Search"));
+        search.set_tooltip_text(Some("Search conversations and saved messages · Ctrl+K"));
+        tools.append(&search);
+        sidebar.append(&tools);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.set_activate_on_single_click(true);
         list.add_css_class("navigation-sidebar");
+        list.add_css_class("conversation-list");
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -112,97 +119,146 @@ impl Window {
             .build();
         sidebar.append(&sidebar_scroll);
         let pagination = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let previous = gtk::Button::with_label("Previous results");
+        pagination.set_halign(gtk::Align::Center);
+        let previous = gtk::Button::with_label("Previous");
         let next = gtk::Button::with_label("More results");
+        previous.add_css_class("flat");
+        next.add_css_class("flat");
         pagination.append(&previous);
         pagination.append(&next);
         sidebar.append(&pagination);
+        let accounts = gtk::DropDown::from_strings(&["All accounts"]);
+        accounts.add_css_class("account-picker");
+        accounts.set_tooltip_text(Some("Filter conversations by account"));
+        sidebar.append(&accounts);
         paned.set_start_child(Some(&sidebar));
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let content = adw::ToolbarView::new();
+        content.add_css_class("conversation-pane");
         content.set_hexpand(true);
-        let title = adw::WindowTitle::new("Messages", "Choose a conversation");
-        title.set_margin_top(14);
-        title.set_margin_bottom(14);
-        content.append(&title);
+        let content_header = adw::HeaderBar::new();
+        content_header.set_show_start_title_buttons(false);
+        let title = adw::WindowTitle::new("Messages", "");
+        let avatar = adw::Avatar::new(32, None, true);
+        avatar.set_visible(false);
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        heading.append(&avatar);
+        heading.append(&title);
+        content_header.set_title_widget(Some(&heading));
+        content.add_top_bar(&content_header);
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         let empty = adw::StatusPage::builder()
-            .title("Your conversations, on Linux")
-            .description("Choose a conversation, or search messages saved on this computer.")
+            .title("Your messages, together")
+            .description("Choose a conversation to pick up where you left off.")
             .icon_name("chat-message-new-symbolic")
             .build();
         stack.add_named(&empty, Some("empty"));
-        let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        body.set_margin_start(24);
-        body.set_margin_end(24);
-        body.set_margin_bottom(18);
-        let thread = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        thread.set_margin_top(12);
-        thread.set_margin_bottom(12);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let thread = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        thread.add_css_class("message-thread");
+        thread.set_valign(gtk::Align::End);
+        let clamp = adw::Clamp::new();
+        clamp.set_maximum_size(920);
+        clamp.set_tightening_threshold(640);
+        clamp.set_child(Some(&thread));
+        clamp.set_vexpand(true);
         let scroll = gtk::ScrolledWindow::builder()
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&thread)
+            .child(&clamp)
             .build();
         body.append(&scroll);
         let history_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        history_buttons.set_halign(gtk::Align::Center);
+        history_buttons.add_css_class("history-controls");
         let older = gtk::Button::with_label("Load older messages");
         let latest = gtk::Button::with_label("Back to latest");
+        older.add_css_class("flat");
+        latest.add_css_class("flat");
         history_buttons.append(&older);
         history_buttons.append(&latest);
         body.append(&history_buttons);
+        let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        composer_area.add_css_class("composer-area");
         let status = gtk::Label::new(None);
-        status.set_xalign(0.0);
+        status.set_xalign(0.5);
         status.set_wrap(true);
-        status.add_css_class("caption");
-        body.append(&status);
+        status.add_css_class("composer-note");
+        composer_area.append(&status);
         let reply = gtk::Label::new(None);
         reply.set_xalign(0.0);
+        reply.set_hexpand(true);
         reply.set_ellipsize(gtk::pango::EllipsizeMode::End);
         let cancel_reply = gtk::Button::from_icon_name("window-close-symbolic");
         cancel_reply.set_tooltip_text(Some("Cancel reply"));
         cancel_reply.add_css_class("flat");
+        cancel_reply.add_css_class("circular");
         let reply_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        reply.set_hexpand(true);
+        reply_row.add_css_class("reply-preview");
         reply_row.append(&reply);
         reply_row.append(&cancel_reply);
-        body.append(&reply_row);
+        composer_area.append(&reply_row);
+        let composer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        composer.add_css_class("composer");
+        let attach = gtk::Button::from_icon_name("list-add-symbolic");
+        attach.set_tooltip_text(Some("Attach a file"));
+        attach.add_css_class("flat");
+        attach.add_css_class("circular");
+        attach.set_valign(gtk::Align::Center);
+        composer.append(&attach);
         let compose = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
-            .top_margin(12)
-            .bottom_margin(12)
-            .left_margin(12)
-            .right_margin(12)
+            .top_margin(6)
+            .bottom_margin(6)
+            .left_margin(8)
+            .right_margin(8)
             .build();
         compose.set_tooltip_text(Some("Write a message · Ctrl+Enter to send"));
         let compose_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(86)
-            .max_content_height(180)
+            .min_content_height(18)
+            .max_content_height(160)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
+            .hexpand(true)
             .child(&compose)
             .build();
-        compose_scroll.add_css_class("card");
-        body.append(&compose_scroll);
+        let overlay = gtk::Overlay::new();
+        overlay.set_hexpand(true);
+        overlay.set_child(Some(&compose_scroll));
+        let placeholder = gtk::Label::new(Some("Message"));
+        placeholder.add_css_class("composer-placeholder");
+        placeholder.set_halign(gtk::Align::Start);
+        placeholder.set_valign(gtk::Align::Center);
+        placeholder.set_can_target(false);
+        overlay.add_overlay(&placeholder);
+        composer.append(&overlay);
+        let send = gtk::Button::from_icon_name("go-up-symbolic");
+        send.set_tooltip_text(Some("Send message · Ctrl+Enter"));
+        send.add_css_class("suggested-action");
+        send.add_css_class("circular");
+        send.set_valign(gtk::Align::Center);
+        composer.append(&send);
+        composer_area.append(&composer);
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let attach = gtk::Button::from_icon_name("mail-attachment-symbolic");
-        attach.set_tooltip_text(Some("Attach a file"));
         let draft_status = gtk::Label::new(None);
         draft_status.set_xalign(0.0);
         draft_status.set_hexpand(true);
         draft_status.set_wrap(true);
-        draft_status.add_css_class("dim-label");
-        draft_status.add_css_class("caption");
+        draft_status.add_css_class("composer-note");
         let reload = gtk::Button::with_label("Reload saved draft");
-        let send = gtk::Button::with_label("Send");
-        send.add_css_class("suggested-action");
-        footer.append(&attach);
+        reload.add_css_class("flat");
         footer.append(&draft_status);
         footer.append(&reload);
-        footer.append(&send);
-        body.append(&footer);
+        composer_area.append(&footer);
+        let composer_clamp = adw::Clamp::new();
+        composer_clamp.set_maximum_size(920);
+        composer_clamp.set_tightening_threshold(640);
+        composer_clamp.set_child(Some(&composer_area));
+        body.append(&composer_clamp);
         stack.add_named(&body, Some("thread"));
-        content.append(&stack);
+        content.set_content(Some(&stack));
         paned.set_end_child(Some(&content));
         toolbar.set_content(Some(&paned));
         window.set_content(Some(&toolbar));
@@ -221,6 +277,9 @@ impl Window {
             rows: RefCell::new(vec![]),
             filter: RefCell::new(None),
             title,
+            avatar,
+            placeholder,
+            reply_row,
             thread,
             scroll,
             stack,
@@ -505,6 +564,7 @@ impl Window {
                     model.accounts = accounts;
                     model.conversations = conversations;
                     model.outgoing.clear();
+                    model.previews.clear();
                     for draft in model.drafts.values_mut() {
                         draft.loaded = false;
                         draft.saving = false;
@@ -661,6 +721,7 @@ impl Window {
                         self.to_end();
                     }
                     self.mark_read();
+                    self.render_sidebar();
                 }
             }
             Reply::Context(id, messages) => {
@@ -988,14 +1049,38 @@ impl Window {
                 .unwrap_or_else(|| {
                     if model.drafted.contains(&conversation.id) {
                         "Draft saved".into()
+                    } else if let Some(message) =
+                        model.previews.get(&conversation.id).filter(|message| {
+                            conversation
+                                .latest_message_id
+                                .as_ref()
+                                .is_none_or(|latest| latest == &message.id)
+                        })
+                    {
+                        if message.deleted {
+                            "Message deleted".into()
+                        } else {
+                            message
+                                .text
+                                .clone()
+                                .filter(|text| !text.is_empty())
+                                .unwrap_or_else(|| "Attachment".into())
+                        }
                     } else {
-                        String::new()
+                        conversation
+                            .participants
+                            .iter()
+                            .filter(|p| !p.is_self)
+                            .filter_map(|p| p.address.as_deref())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     }
                 });
             self.add_row(
                 &title,
                 &preview,
                 conversation.unread_count.is_some_and(|count| count > 0),
+                conversation.last_activity_at,
             );
             rows.push((conversation.id.clone(), None));
         }
@@ -1004,6 +1089,7 @@ impl Window {
                 &model.label(&hit.message_id.conversation_id),
                 &hit.snippet,
                 false,
+                hit.sent_at,
             );
             rows.push((
                 hit.message_id.conversation_id.clone(),
@@ -1025,6 +1111,7 @@ impl Window {
                     "Only history saved on this computer is searched."
                 },
                 false,
+                None,
             );
         }
         let selected =
@@ -1044,23 +1131,39 @@ impl Window {
             .set_sensitive(model.connected && model.more);
         self.updating.set(false);
     }
-    fn add_row(&self, title: &str, subtitle: &str, unread: bool) {
-        let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        row.set_margin_top(10);
-        row.set_margin_bottom(10);
-        row.set_margin_start(8);
-        row.set_margin_end(8);
+    fn add_row(&self, title: &str, subtitle: &str, unread: bool, time: Option<i64>) {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let avatar = adw::Avatar::new(42, Some(title), true);
+        row.append(&avatar);
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        text.set_hexpand(true);
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let heading = gtk::Label::new(Some(title));
         heading.set_xalign(0.0);
+        heading.set_hexpand(true);
         heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        heading.add_css_class(if unread { "heading" } else { "body" });
-        row.append(&heading);
-        let detail = gtk::Label::new(Some(subtitle));
+        heading.add_css_class("conversation-name");
+        top.append(&heading);
+        let date = gtk::Label::new(Some(&sidebar_time(time)));
+        date.add_css_class("conversation-time");
+        top.append(&date);
+        text.append(&top);
+        let detail = gtk::Label::new(Some(&subtitle.replace(['\n', '\t'], " ")));
         detail.set_xalign(0.0);
         detail.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        detail.add_css_class("dim-label");
-        detail.add_css_class("caption");
-        row.append(&detail);
+        detail.set_wrap(true);
+        detail.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        detail.set_lines(2);
+        detail.set_max_width_chars(28);
+        detail.add_css_class("conversation-preview");
+        text.append(&detail);
+        row.append(&text);
+        if unread {
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.add_css_class("unread-dot");
+            dot.set_valign(gtk::Align::Center);
+            row.append(&dot);
+        }
         self.list.append(&row);
     }
     fn render_editor(&self) {
@@ -1104,6 +1207,8 @@ impl Window {
             .map(|id| model.label(id))
             .unwrap_or_else(|| "Messages".into());
         self.title.set_title(&title);
+        self.avatar.set_text(Some(&title));
+        self.avatar.set_visible(model.selected.is_some());
         let account = model
             .selected
             .as_ref()
@@ -1117,7 +1222,7 @@ impl Window {
                         if model.connected && a.connected && a.authenticated {
                             "Connected"
                         } else {
-                            "Offline · you can still write a draft"
+                            "Offline"
                         }
                     )
                 })
@@ -1131,6 +1236,10 @@ impl Window {
         let draft = model.selected_draft();
         let editable = draft.is_some_and(|draft| draft.loaded);
         self.compose.set_sensitive(editable);
+        self.placeholder
+            .set_visible(draft.is_none_or(|draft| draft.value.text.is_empty()));
+        self.reply_row
+            .set_visible(draft.is_some_and(|draft| draft.value.reply_to.is_some()));
         self.send.set_sensitive(
             model.can(MessagingCapability::Text)
                 && !pending
@@ -1165,13 +1274,15 @@ impl Window {
                     } else if draft.dirty {
                         "Draft not saved yet".into()
                     } else if model.persistent {
-                        "Draft saved on this computer · Ctrl+Enter to send".into()
+                        String::new()
                     } else {
                         "Draft held for this daemon session · Ctrl+Enter to send".into()
                     }
                 })
                 .unwrap_or_default(),
         );
+        self.draft_status
+            .set_visible(!self.draft_status.text().is_empty());
         let send_notice = model
             .selected
             .as_ref()
@@ -1197,6 +1308,8 @@ impl Window {
                 .unwrap_or_default()
         };
         self.status.set_label(&status);
+        self.status
+            .set_visible(!status.is_empty() && status != "Viewing saved message context");
     }
     fn render_thread(self: &Rc<Self>) {
         let generation = self.render_revision.get() + 1;
@@ -1228,30 +1341,80 @@ impl Window {
             self.thread.remove(&child);
         }
         let model = self.model.borrow();
-        for message in &model.messages {
-            let bubble = gtk::Box::new(gtk::Orientation::Vertical, 6);
-            bubble.add_css_class("card");
-            bubble.set_margin_start(if message.sender.is_self { 80 } else { 0 });
-            bubble.set_margin_end(if message.sender.is_self { 0 } else { 80 });
-            let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
-            inner.set_margin_top(12);
-            inner.set_margin_bottom(12);
-            inner.set_margin_start(14);
-            inner.set_margin_end(14);
-            let sender = gtk::Label::new(Some(if message.sender.is_self {
-                "You"
+        for (index, message) in model.messages.iter().enumerate() {
+            let previous = index
+                .checked_sub(1)
+                .and_then(|index| model.messages.get(index));
+            let grouped = previous.is_some_and(|previous| {
+                previous.sender.local_id == message.sender.local_id
+                    && previous.sender.is_self == message.sender.is_self
+                    && previous
+                        .sent_at
+                        .zip(message.sent_at)
+                        .is_some_and(|(a, b)| (0..=300_000_000).contains(&b.saturating_sub(a)))
+            });
+            // Keep one wrapper per message so saved scroll anchors retain their identity.
+            let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            if let Some(time) = message.sent_at.filter(|time| {
+                previous
+                    .and_then(|message| message.sent_at)
+                    .is_none_or(|previous| time.saturating_sub(previous) > 900_000_000)
+            }) {
+                let date = gtk::Label::new(Some(&message_time(time)));
+                date.add_css_class("message-date");
+                wrapper.append(&date);
+            }
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            row.add_css_class("message-row");
+            row.set_margin_top(if grouped { 3 } else { 12 });
+            row.set_halign(if message.sender.is_self {
+                gtk::Align::End
             } else {
-                message
-                    .sender
-                    .display_name
-                    .as_deref()
-                    .or(message.sender.address.as_deref())
-                    .unwrap_or("Contact")
-            }));
-            sender.set_xalign(0.0);
-            sender.add_css_class("caption");
-            sender.add_css_class("dim-label");
-            inner.append(&sender);
+                gtk::Align::Start
+            });
+            // Leave breathing room on the opposite side without forcing short bubbles to fill it.
+            row.set_margin_start(if message.sender.is_self { 48 } else { 0 });
+            row.set_margin_end(if message.sender.is_self { 0 } else { 48 });
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            if !grouped
+                && !message.sender.is_self
+                && model.conversations.iter().any(|conversation| {
+                    Some(&conversation.id) == model.selected.as_ref()
+                        && conversation.kind == ConversationKind::Group
+                })
+            {
+                let sender = gtk::Label::new(Some(
+                    message
+                        .sender
+                        .display_name
+                        .as_deref()
+                        .or(message.sender.address.as_deref())
+                        .unwrap_or("Contact"),
+                ));
+                sender.set_xalign(0.0);
+                sender.add_css_class("message-sender");
+                column.append(&sender);
+            }
+            let bubble = gtk::Box::new(gtk::Orientation::Vertical, 6);
+            bubble.add_css_class("message-bubble");
+            bubble.add_css_class(if message.sender.is_self {
+                "outgoing"
+            } else {
+                "incoming"
+            });
+            if grouped {
+                bubble.add_css_class("grouped");
+            }
+            if model.anchor.as_ref() == Some(&message.id) {
+                bubble.add_css_class("search-anchor");
+            }
+            bubble.set_tooltip_text(message.sent_at.map(message_time).as_deref());
+            if message.reply_to.is_some() && !message.deleted {
+                let reply = gtk::Label::new(Some("Reply to a message"));
+                reply.set_xalign(0.0);
+                reply.add_css_class("caption");
+                bubble.append(&reply);
+            }
             let text = gtk::Label::new(Some(if message.deleted {
                 "Message deleted"
             } else {
@@ -1260,16 +1423,22 @@ impl Window {
             text.set_xalign(0.0);
             text.set_wrap(true);
             text.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            text.set_max_width_chars(48);
             text.set_selectable(true);
-            inner.append(&text);
+            text.add_css_class("message-text");
+            text.set_visible(
+                message.deleted || message.text.as_ref().is_some_and(|text| !text.is_empty()),
+            );
+            bubble.append(&text);
             for attachment in message.attachments.iter().filter(|_| !message.deleted) {
-                let button = gtk::Button::with_label(
-                    &attachment
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| "Attachment".into()),
-                );
+                let button =
+                    gtk::Button::with_label(attachment.name.as_deref().unwrap_or("Attachment"));
                 button.set_sensitive(attachment.staged_path.is_some());
+                button.set_tooltip_text(attachment.name.as_deref());
+                if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+                    label.set_max_width_chars(32);
+                    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                }
                 let path = attachment.staged_path.clone();
                 button.connect_clicked(move |_| {
                     if let Some(path) = &path {
@@ -1279,23 +1448,15 @@ impl Window {
                         );
                     }
                 });
-                inner.append(&button);
+                bubble.append(&button);
             }
-            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            let timestamp = message
-                .sent_at
-                .and_then(|time| glib::DateTime::from_unix_local(time / 1_000_000).ok())
-                .and_then(|time| time.format("%b %e · %H:%M").ok())
-                .map(|time| time.to_string())
-                .unwrap_or_default();
-            let time = gtk::Label::new(Some(&timestamp));
-            time.add_css_class("caption");
-            time.add_css_class("dim-label");
-            time.set_hexpand(true);
-            time.set_xalign(0.0);
-            actions.append(&time);
-            let reply = gtk::Button::with_label("Reply");
+            column.append(&bubble);
+            let reply = gtk::Button::from_icon_name("mail-reply-sender-symbolic");
+            reply.set_tooltip_text(Some("Reply to this message"));
             reply.add_css_class("flat");
+            reply.add_css_class("circular");
+            reply.add_css_class("message-actions");
+            reply.set_valign(gtk::Align::Center);
             reply.set_sensitive(!message.deleted && model.can(MessagingCapability::Replies));
             let id = message.id.clone();
             let weak = Rc::downgrade(self);
@@ -1304,13 +1465,15 @@ impl Window {
                     this.set_reply(Some(id.clone()));
                 }
             });
-            actions.append(&reply);
-            inner.append(&actions);
-            if model.anchor.as_ref() == Some(&message.id) {
-                bubble.add_css_class("accent");
+            if message.sender.is_self {
+                row.append(&reply);
             }
-            bubble.append(&inner);
-            self.thread.append(&bubble);
+            row.append(&column);
+            if !message.sender.is_self {
+                row.append(&reply);
+            }
+            wrapper.append(&row);
+            self.thread.append(&wrapper);
         }
         *self.rendered.borrow_mut() = model
             .messages
@@ -1472,6 +1635,31 @@ impl Window {
 }
 
 use handover_ipc::ServerPayload;
+
+fn sidebar_time(time: Option<i64>) -> String {
+    let Some(time) = time.and_then(|time| glib::DateTime::from_unix_local(time / 1_000_000).ok())
+    else {
+        return String::new();
+    };
+    let format = glib::DateTime::now_local().ok().map_or("%b %e", |now| {
+        if now.year() == time.year() && now.day_of_year() == time.day_of_year() {
+            "%H:%M"
+        } else {
+            "%b %e"
+        }
+    });
+    time.format(format)
+        .map(|time| time.to_string())
+        .unwrap_or_default()
+}
+
+fn message_time(time: i64) -> String {
+    glib::DateTime::from_unix_local(time / 1_000_000)
+        .ok()
+        .and_then(|time| time.format("%a, %b %e · %H:%M").ok())
+        .map(|time| time.to_string())
+        .unwrap_or_default()
+}
 
 #[cfg(test)]
 mod tests;

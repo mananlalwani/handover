@@ -2,6 +2,7 @@
 """Run the native Messages window test on a private display and D-Bus."""
 
 import json
+import argparse
 import os
 from pathlib import Path
 import selectors
@@ -38,6 +39,14 @@ def read_line(process, description):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--screenshot", type=Path,
+                        help="save the synthetic conversation window to this PNG path")
+    parser.add_argument("--dark", action="store_true", help="use the native dark appearance")
+    parser.add_argument("--width", type=int, default=1120, help="fixture window width in pixels")
+    args = parser.parse_args()
+    if args.screenshot and not shutil.which("import"):
+        raise SystemExit("ImageMagick import is required for --screenshot")
     for tool in ("cargo", "dbus-daemon", "Xvfb"):
         if not shutil.which(tool):
             raise SystemExit(f"Required tool is missing: {tool}")
@@ -67,6 +76,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="handover-messages-ui-") as temporary:
         root = Path(temporary)
         environment = dict(os.environ, HANDOVER_MESSAGES_TEST_ROOT=str(root))
+        environment["HANDOVER_MESSAGES_TEST_WIDTH"] = str(args.width)
+        if args.dark:
+            environment["HANDOVER_MESSAGES_TEST_DARK"] = "1"
+        if args.screenshot:
+            args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+            environment["HANDOVER_MESSAGES_TEST_SCREENSHOT"] = str(args.screenshot.resolve())
         environment["GDK_BACKEND"] = "x11"
         environment["GTK_A11Y"] = "none"
         environment["HANDOVER_MESSAGES_TEST_BINARY"] = applications[0]

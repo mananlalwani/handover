@@ -40,7 +40,7 @@ fn fixture() -> (MessagingAccount, Conversation) {
             is_self: false,
         }],
         latest_message_id: None,
-        last_activity_at: Some(1),
+        last_activity_at: Some(1794407100000000),
         unread_count: Some(0),
         cursor: None,
         capabilities: [MessagingCapability::Text, MessagingCapability::Replies]
@@ -180,7 +180,12 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                         &mut stream,
                         response(
                             "history",
-                            json!({"conversation_id":request["conversation_id"],"messages":[],"cursor_next":null}),
+                            json!({"conversation_id":request["conversation_id"],"messages":[
+                                {"id":{"conversation_id":conversation.id,"local_id":"m1"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406200000000i64,"text":"Hey! Are we still on for Saturday?","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
+                                {"id":{"conversation_id":conversation.id,"local_id":"m2"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794406500000000i64,"text":"Absolutely. I found a little place near the river that looks great. We could meet there around noon, grab lunch, and walk along the trail if the weather holds.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
+                                {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
+                                {"id":{"conversation_id":conversation.id,"local_id":"m4"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407100000000i64,"text":"Will do. It's called Riverside Market. I'll send you the address shortly.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
+                            ],"cursor_next":null}),
                         ),
                     ),
                     "messages.search" => {
@@ -338,12 +343,20 @@ fn native_window_round_trips_real_frontend_actions() {
         "private fake daemon must be bound before constructing the window"
     );
     gtk::init().expect("GTK display");
+    adw::init().expect("libadwaita initialization");
+    if std::env::var_os("HANDOVER_MESSAGES_TEST_DARK").is_some() {
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    }
     let app = adw::Application::builder()
         .application_id("org.handover.Messages.GuiTest")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("register test application");
     let ui = Window::new(&app);
+    if let Ok(width) = std::env::var("HANDOVER_MESSAGES_TEST_WIDTH") {
+        ui.window
+            .set_default_size(width.parse().expect("fixture width"), 780);
+    }
     ui.window.present();
     pump_until(|| ui.model.borrow().connected, "fake daemon connection");
     ui.open(id(), None);
@@ -355,6 +368,44 @@ fn native_window_round_trips_real_frontend_actions() {
         || ui.model.borrow().selected_draft().is_some_and(|d| d.loaded),
         "draft load",
     );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        pump_until(
+            || ui.model.borrow().messages.len() >= 4,
+            "synthetic history for screenshot",
+        );
+        for (name, local_id, unread) in [
+            ("Maya Chen", "maya", true),
+            ("Weekend plans", "weekend", false),
+            ("Sam Rivera", "sam", false),
+        ] {
+            let mut conversation = fixture().1;
+            conversation.id.local_id = local_id.into();
+            conversation.title = Some(name.into());
+            conversation.last_activity_at = None;
+            conversation.unread_count = Some(u64::from(unread));
+            ui.event(Event::State(Box::new(ServerPayload::ConversationAdded {
+                conversation,
+            })));
+        }
+        let frames = Rc::new(Cell::new(0));
+        let rendered = frames.clone();
+        ui.window.add_tick_callback(move |_, _| {
+            rendered.set(rendered.get() + 1);
+            if rendered.get() >= 3 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+        pump_until(|| frames.get() >= 3, "fixture layout and paint");
+        // The runner owns a private Xvfb display, so this captures only the fixture.
+        let status = Command::new("import")
+            .args(["-window", "root"])
+            .arg(PathBuf::from(path))
+            .status()
+            .expect("ImageMagick import is required for requested screenshot");
+        assert!(status.success(), "native fixture screenshot capture failed");
+    }
 
     ui.compose.buffer().set_text("persist this text");
     pump_until(
