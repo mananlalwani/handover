@@ -299,3 +299,9 @@ isolated launcher explicitly. See the
 [credential-store validation record](audits/credential-store-2026-11-10.md).
 Authenticated Google account recovery and physical-phone behavior still need
 their separate live checks.
+
+The native Rust GTK4/libadwaita Messages app now passes its private-display GUI
+checks on the host and Ubuntu 24.04. Its package passes clean installation,
+reinstallation, and recovery from the pinned 0.4.0 baseline in a disposable VM.
+See the [native app validation record](audits/native-messages-2026-11-11.md).
+Live account and phone checks remain unverified.
