@@ -6,29 +6,35 @@ Their completion does not replace device validation or make the public IPC stabl
 
 ## 0. Resolve the dependency audit failure
 
-The local baseline fails `cargo deny check` on `RUSTSEC-2026-0459` in
+The initial local baseline failed `cargo deny check` on `RUSTSEC-2026-0459` in
 `libsqlite3-sys 0.38.2`, reached through the daemon's bundled `rusqlite 0.40.2`.
-Treat this as the first implementation slice. The audit tool reports a crafted
-database/WAL-file attack; this result alone does not demonstrate exploitation
-through Handover.
+The advisory describes a crafted database/WAL-file attack; this result alone does
+not demonstrate exploitation through Handover.
 
 - Verify the advisory and patched dependency options against upstream sources.
-- Choose a supported upgrade path and check it against the workspace's Rust 1.88
-  minimum. Do not suppress the advisory or silently raise the minimum version.
+- Use a published patched dependency and declare its supported Rust minimum
+  explicitly. Do not suppress the advisory.
 - Run the archive restart, paging, removal, and size-limit tests, the workspace
   checks, and the dependency audit after the upgrade.
 
 Done when the patched dependency builds under the declared toolchain policy,
 archive behavior is preserved, and `cargo deny check` passes.
 
-Status on November 10: the advisory is verified against
-[RustSec](https://rustsec.org/advisories/RUSTSEC-2026-0459.html). The published
-`rusqlite` 0.41.0 and 0.41.1 packages declare Rust 1.89, confirmed through
-`cargo info`; Handover declares 1.88. The registry has no `rusqlite` 0.40.3 or
-`libsqlite3-sys` 0.38.3 backport. Upgrading therefore needs an explicit minimum
-toolchain policy change or a supported backport. Neither the declared minimum
-nor advisory exceptions were changed. This remains a release blocker; archive
-regressions were independently checked against the current dependency.
+Resolved: upgraded to `rusqlite 0.41.1` and `libsqlite3-sys 0.39.1`, which bundles
+SQLite 3.54.1. This is a patched version according to
+[RustSec](https://rustsec.org/advisories/RUSTSEC-2026-0459.html). The workspace
+minimum is explicitly raised from Rust 1.88 to 1.91, and CI checks all workspace
+targets with Rust 1.91.0. The SQLite wrapper requires 1.89, but testing that
+toolchain exposed the existing `rtc-mdns 0.21.1` dependency's use of
+[`Ipv4Addr::from_octets`](https://doc.rust-lang.org/std/net/struct.Ipv4Addr.html#method.from_octets),
+which stabilized in 1.91. No advisory exception was added. The lockfile update
+changes only the two SQLite packages.
+
+Validation passed: the five archive tests, Rust formatting, strict workspace
+Clippy, the full workspace suite on both Rust 1.91.0 and the installed 1.99.1,
+the exact minimum-version CI check, and an isolated systemd startup smoke test.
+`cargo deny --locked check` reports advisories, bans, licenses, and sources all
+passing. Environment-dependent tests remain ignored by the ordinary suite.
 
 ## 1. Validate existing workflows
 
@@ -223,6 +229,7 @@ CLI access, a separate native listener, and mDNS setup. The explicitly invoked
 native pre-auth connection-limit and live multicast-discovery tests also passed.
 The installed user daemon was not replaced or restarted.
 
-`cargo deny check` still fails only the SQLite security advisory; bans, licenses,
-and sources pass. Physical-phone behavior, audible audio routing, the desktop
-credential-store integration, and live desktop interaction remain unverified.
+The dependency audit initially failed only the SQLite security advisory; the
+upgrade recorded above resolves that failure. Physical-phone behavior, audible
+audio routing, the desktop credential-store integration, and live desktop
+interaction remain unverified.

@@ -31,7 +31,7 @@ Ordinary bugs go to GitHub Issues. Security reports go through
 
 Install:
 
-- Rust and Cargo.
+- Rust 1.91 or newer and Cargo.
 - `cargo-deny` for dependency advisory, license, and source checks.
 - A JDK and Android SDK for Android work.
 - Qt Quickshell and `qmllint` for QML work.

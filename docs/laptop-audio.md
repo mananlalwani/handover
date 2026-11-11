@@ -1,7 +1,7 @@
 # Laptop audio on the phone
 
 Install the updated Android app and Linux binaries, then pair the devices.
-Building the Linux sender requires Rust 1.88 or newer.
+Building the Linux sender requires Rust 1.91 or newer.
 The laptop needs `parec` and a running PulseAudio server or `pipewire-pulse`.
 On Arch, `parec` comes from `libpulse`; on Ubuntu, from `pulseaudio-utils`.
 
