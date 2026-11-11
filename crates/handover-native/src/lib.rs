@@ -981,19 +981,17 @@ impl NativeBackend {
         })
     }
 
-    /// Cancel a queued share that has not started streaming. Returns true
-    /// when a queued command or pending result entry was removed. A transfer
-    /// already being written to the session stream cannot be recalled; its
-    /// receiver result stands.
+    /// Cancel a share still in the local outbox. Once the session takes its
+    /// outbound batch, it cannot be recalled; its receiver result stands.
     pub fn cancel_share(&self, peer_id: &str, transfer_id: &str) -> bool {
         if !valid_transfer_id(transfer_id) {
             return false;
         }
         let mut inner = self.inner.lock().unwrap();
+        let mut temps = Vec::new();
         let mut removed = false;
         if let Some(queue) = inner.outbox.get_mut(peer_id) {
             let before = queue.len();
-            let mut temps = Vec::new();
             queue.retain(|message| {
                 let drop_it = match message {
                     Message::ShareUrl {
@@ -1010,16 +1008,15 @@ impl NativeBackend {
                 !drop_it
             });
             removed = queue.len() != before;
-            drop(inner);
-            for temp in temps {
-                let _ = fs::remove_file(temp);
-            }
-            let mut inner = self.inner.lock().unwrap();
-            if let Some(pending) = inner.pending_shares.get_mut(peer_id) {
-                removed |= pending.remove(transfer_id).is_some();
-            }
-        } else if let Some(pending) = inner.pending_shares.get_mut(peer_id) {
-            removed |= pending.remove(transfer_id).is_some();
+        }
+        // Pending entries also cover transfers already sent to the phone.
+        // Only remove one when its unsent command was removed under this lock.
+        if removed && let Some(pending) = inner.pending_shares.get_mut(peer_id) {
+            pending.remove(transfer_id);
+        }
+        drop(inner);
+        for temp in temps {
+            let _ = fs::remove_file(temp);
         }
         removed
     }
@@ -1606,29 +1603,49 @@ mod tests {
     #[test]
     fn cancelled_clipboard_share_deletes_its_temp() {
         let dir = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(dir.path().join("native")).unwrap();
+        let clip_id = "00112233445566778899aabbccddeeff";
+        let user_id = "ffeeddccbbaa99887766554433221100";
         let temp = dir.path().join("clip.png");
         std::fs::write(&temp, b"pixels").unwrap();
         let user = dir.path().join("keep.txt");
         std::fs::write(&user, b"mine").unwrap();
-        delete_clipboard_temp(&Message::ShareFile {
+        let clipboard = Message::ShareFile {
             protocol: WIRE_VERSION,
-            transfer_id: "t".into(),
+            transfer_id: clip_id.into(),
             name: "clip.png".into(),
             size: 6,
             clipboard: true,
             mime: Some("image/png".into()),
             path: temp.clone(),
-        });
-        assert!(!temp.exists());
-        delete_clipboard_temp(&Message::ShareFile {
+        };
+        let regular = Message::ShareFile {
             protocol: WIRE_VERSION,
-            transfer_id: "u".into(),
+            transfer_id: user_id.into(),
             name: "keep.txt".into(),
             size: 4,
             clipboard: false,
             mime: None,
             path: user.clone(),
-        });
+        };
+        {
+            let mut inner = backend.inner.lock().unwrap();
+            inner
+                .outbox
+                .insert("fixture".into(), vec![clipboard, regular]);
+            inner.pending_shares.insert(
+                "fixture".into(),
+                BTreeMap::from([
+                    (clip_id.into(), Instant::now()),
+                    (user_id.into(), Instant::now()),
+                ]),
+            );
+        }
+        assert!(backend.cancel_share("fixture", clip_id));
+        assert!(!temp.exists());
+        assert!(!backend.cancel_share("fixture", clip_id));
+        assert!(backend.cancel_share("fixture", user_id));
+        assert!(backend.inner.lock().unwrap().pending_shares["fixture"].is_empty());
         assert!(user.exists());
     }
 

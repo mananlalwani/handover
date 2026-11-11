@@ -15,11 +15,15 @@ quickshell --path quickshell/example.qml
 
 Use `handover-gui --send` to open the dedicated send picker. A file manager can
 open a selected file with `handover-gui --send <file-or-URL>`; the
-installed **Send to phone** desktop entry is registered for generic files.
+installed **Send to phone** desktop entry is registered for generic files and
+as an optional HTTP/HTTPS handler. Desktop and browser chooser support varies.
 The picker accepts one file or an HTTP/HTTPS link and asks you to choose a
 connected device. It distinguishes daemon acceptance, sender progress, and
-transfer completion. Closing the window or choosing New share does not cancel
-an accepted transfer. After a daemon disconnect, the outcome remains unknown.
+transfer completion. **Cancel queued transfer** asks the daemon to remove a share
+still in its local send queue. Once the backend takes it for delivery, it cannot
+be recalled; a rejected cancellation leaves the transfer waiting for its actual
+result. Closing the window or choosing New share does not cancel an accepted
+transfer. After a daemon disconnect, the outcome remains unknown.
 The launcher passes the optional resource through `HANDOVER_SHARE_RESOURCE`.
 
 The sidebar provides views for Overview, Messages, Calls, Notifications, Media,

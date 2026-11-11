@@ -69,6 +69,64 @@ test('failure and disconnect report evidence without replaying commands', () => 
     assert.equal(share.event(state, completed, true), state);
 });
 
+test('queued cancellation keeps the transfer live until the daemon reports a verdict', () => {
+    const state = share.requestCancellation(accept(begin()));
+    assert.equal(state.phase, 'accepted');
+    assert.equal(state.cancelPending, true);
+    assert.equal(share.canCancel(state), false);
+    assert.match(state.text, /Requesting cancellation/);
+    assert.equal(share.cancellationResult(state, 'other', 'transfer', true, ''), state);
+    assert.equal(share.cancellationResult(state, 'phone', 'other', true, ''), state);
+    const rejected = share.cancellationResult(state, 'phone', 'transfer', false, '');
+    assert.equal(rejected.phase, 'accepted');
+    assert.match(rejected.text, /could not be cancelled/);
+    const cancelled = share.cancellationResult(state, 'phone', 'transfer', true, '');
+    assert.equal(cancelled.phase, 'done');
+    assert.equal(cancelled.text, 'Queued transfer cancelled.');
+    assert.equal(share.canCancel(cancelled), false);
+});
+
+test('failed cancellation never reports a failed transfer or overwrites confirmed completion', () => {
+    const pending = share.requestCancellation(accept(begin()));
+    const failed = share.cancellationResult(pending, 'phone', 'transfer', false, 'backend unavailable');
+    assert.equal(failed.phase, 'accepted');
+    assert.match(failed.text, /Cancellation request failed/);
+    const finished = share.event(pending, completed, true);
+    assert.equal(share.cancellationResult(finished, 'phone', 'transfer', false, '').text, 'Transfer completed.');
+    assert.match(share.disconnected(pending).text, /outcome is unknown/);
+    assert.equal(share.canCancel(share.accepted(begin(), 'share.file', 'phone', '')), false);
+});
+
+test('service consumes cancellation replies and releases its command lock', () => {
+    const source = fs.readFileSync(new URL('../HandoverService.qml', import.meta.url), 'utf8');
+    const start = source.indexOf('    function handleLine(');
+    const end = source.indexOf('\n    Timer {', start);
+    const calls = [];
+    const service = vm.createContext({ protocolVersion: 1, maxLineBytes: 2 * 1024 * 1024,
+        maxSnapshotBytes: 16 * 1024 * 1024, maxSnapshotChunks: 256,
+        snapshotBuffer: null, snapshotKind: '', snapshotBytes: 0, snapshotChunks: 0,
+        listAssembly: null, nativePending: false, pendingMessaging: null,
+        pendingCommand: { method: 'share.cancel', deviceId: 'phone', transferId: 'transfer' },
+        shareCancelFinished: (...args) => calls.push(args) });
+    const helperStart = source.indexOf('    function utf8ByteLength(');
+    const helperEnd = source.indexOf('\n    function ', helperStart + 1);
+    const finishStart = source.indexOf('    function finishPending(');
+    vm.runInContext(source.slice(helperStart, helperEnd) + '\n' + source.slice(finishStart, end), service);
+    service.handleLine(JSON.stringify({ protocol: 1, type: 'share_accepted', device_id: 'phone', transfer_id: 'transfer' }));
+    assert.equal(service.pendingCommand.method, 'share.cancel');
+    service.handleLine(JSON.stringify({ protocol: 1, type: 'share_cancelled', cancelled: false }));
+    assert.equal(service.pendingCommand, null);
+    assert.deepEqual(calls, [['phone', 'transfer', false, '']]);
+    service.pendingCommand = { method: 'share.cancel', deviceId: 'phone', transferId: 'transfer' };
+    service.handleLine(JSON.stringify({ protocol: 1, type: 'share_cancelled', cancelled: true }));
+    assert.equal(service.pendingCommand, null);
+    assert.deepEqual(calls[1], ['phone', 'transfer', true, '']);
+    service.pendingCommand = { method: 'share.cancel', deviceId: 'phone', transferId: 'transfer' };
+    service.handleLine(JSON.stringify({ protocol: 1, type: 'error', code: 'backend_unavailable', message: 'unavailable' }));
+    assert.equal(service.pendingCommand, null);
+    assert.deepEqual(calls[2], ['phone', 'transfer', false, 'backend_unavailable: unavailable']);
+});
+
 test('service preserves transfer IDs while keeping existing acceptance notification', () => {
     const source = fs.readFileSync(new URL('../HandoverService.qml', import.meta.url), 'utf8');
     const start = source.indexOf('    function handleLine(');

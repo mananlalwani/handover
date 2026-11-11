@@ -6,4 +6,4 @@ Categories=Utility;
 Exec=handover-gui --send %u
 Terminal=false
 Type=Application
-MimeType=application/octet-stream;
+MimeType=application/octet-stream;x-scheme-handler/http;x-scheme-handler/https;

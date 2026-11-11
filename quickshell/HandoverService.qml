@@ -105,6 +105,7 @@ Singleton {
     signal commandFinished(string method, var notificationId, bool success, string error)
     signal shareFinished(string method, string deviceId, bool success, string error)
     signal shareAccepted(string method, string deviceId, string transferId)
+    signal shareCancelFinished(string deviceId, string transferId, bool cancelled, string error)
     signal sharesInterrupted()
     signal mediaFinished(string action, var mediaId, bool success, string error)
     // Messaging state. Conversations belong to messaging accounts, never to
@@ -468,7 +469,7 @@ Singleton {
             lastError = "handoverd is disconnected";
             return false;
         }
-        pendingCommand = { method: method, deviceId: device.id };
+        pendingCommand = { method: method, deviceId: device.id, transferId: fields.transfer_id || "" };
         lastError = "";
         return true;
     }
@@ -827,7 +828,9 @@ Singleton {
     function finishPending(success, error) {
         if (!pendingCommand)
             return;
-        if (pendingCommand.deviceId)
+        if (pendingCommand.method === "share.cancel")
+            shareCancelFinished(pendingCommand.deviceId, pendingCommand.transferId, false, error);
+        else if (pendingCommand.deviceId)
             shareFinished(pendingCommand.method, pendingCommand.deviceId, success, error);
         else if (pendingCommand.mediaId)
             mediaFinished(pendingCommand.action, pendingCommand.mediaId, success, error);
@@ -1075,9 +1078,21 @@ Singleton {
             lastShareResult = message.result;
             break;
         case "share_accepted":
-            if (pendingCommand && pendingCommand.deviceId === message.device_id) {
+            if (pendingCommand && pendingCommand.deviceId === message.device_id
+                    && (pendingCommand.method === "share.file" || pendingCommand.method === "share.url")) {
                 shareAccepted(pendingCommand.method, message.device_id, message.transfer_id || "");
                 finishPending(true, "");
+            }
+            break;
+        case "share_cancelled":
+            if (typeof message.cancelled !== "boolean") {
+                scheduleReconnect("daemon sent invalid cancellation result");
+                return;
+            }
+            if (pendingCommand && pendingCommand.method === "share.cancel") {
+                const command = pendingCommand;
+                pendingCommand = null;
+                shareCancelFinished(command.deviceId, command.transferId, message.cancelled, "");
             }
             break;
         case "accounts":

@@ -17,7 +17,7 @@ function resource(value) {
 
 function start(deviceId, method) {
     return { deviceId: deviceId, method: method, phase: "pending", transferId: "",
-        text: "Submitting request…", early: [] };
+        text: "Submitting request…", early: [], cancelPending: false };
 }
 
 function event(state, value, result) {
@@ -34,9 +34,9 @@ function event(state, value, result) {
         return state;
     if (result) {
         if (value.status === "completed")
-            return Object.assign({}, state, { phase: "done", text: "Transfer completed." });
+            return Object.assign({}, state, { phase: "done", outcome: "completed", text: "Transfer completed." });
         if (value.status === "failed")
-            return Object.assign({}, state, { phase: "done", text: "Transfer failed: " + (value.reason || "unspecified") });
+            return Object.assign({}, state, { phase: "done", outcome: "failed", text: "Transfer failed: " + (value.reason || "unspecified") });
         return state;
     }
     return Object.assign({}, state, {
@@ -64,6 +64,31 @@ function failed(state, error) {
 function disconnected(state) {
     if (!state || state.phase === "done")
         return state;
-    return Object.assign({}, state, { phase: "done", early: [],
+    return Object.assign({}, state, { phase: "done", early: [], cancelPending: false,
         text: "Daemon disconnected. Transfer outcome is unknown. Check the receiving device before sending again." });
+}
+
+function canCancel(state) {
+    return !!state && state.phase === "accepted" && !!state.transferId && !state.cancelPending;
+}
+
+function requestCancellation(state) {
+    if (!canCancel(state))
+        return state;
+    return Object.assign({}, state, { cancelPending: true, text: "Requesting cancellation…" });
+}
+
+function cancellationResult(state, deviceId, transferId, cancelled, error) {
+    if (!state || !state.cancelPending || state.deviceId !== deviceId || state.transferId !== transferId)
+        return state;
+    const next = Object.assign({}, state, { cancelPending: false });
+    if (state.outcome === "completed")
+        return next;
+    if (cancelled)
+        return Object.assign(next, { phase: "done", text: "Queued transfer cancelled." });
+    if (state.phase === "done")
+        return next;
+    return Object.assign(next, { text: error
+        ? "Cancellation request failed: " + error + ". Transfer completion is not confirmed."
+        : "Transfer could not be cancelled. Waiting for its result." });
 }

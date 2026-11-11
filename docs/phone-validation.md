@@ -17,6 +17,11 @@ opens. Compare the desktop's accepted, progress, and completed states with the
 actual result. Disconnect during a transfer and confirm it does not claim success
 or send again automatically.
 
+Try **Cancel queued transfer**. A confirmed cancellation removes a share still in
+the local send queue. If the backend has already taken it for delivery, the UI
+must report that cancellation was unavailable and wait for the transfer's result.
+Closing the send window must not cancel an accepted transfer.
+
 ## Android sharing
 
 In another Android app, select Share, then Send to PC. Send one photo, several

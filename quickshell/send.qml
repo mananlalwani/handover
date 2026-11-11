@@ -20,6 +20,8 @@ ShellRoot {
         readonly property bool locked: !!transfer && transfer.phase !== "done"
 
         function submit() {
+            if (locked || !HandoverService.connected || HandoverService.pendingCommand)
+                return;
             const device = choices[picker.currentIndex];
             const item = Share.resource(resource);
             if (!device || !item)
@@ -30,6 +32,16 @@ ShellRoot {
                 : HandoverService.sendUrl(device, item.value);
             if (!sent)
                 transfer = Share.failed(transfer, HandoverService.lastError);
+        }
+
+        function cancelTransfer() {
+            if (!Share.canCancel(transfer) || !HandoverService.connected || HandoverService.pendingCommand)
+                return;
+            const current = transfer;
+            transfer = Share.requestCancellation(current);
+            if (!HandoverService.cancelShare({ id: current.deviceId }, current.transferId))
+                transfer = Share.cancellationResult(transfer, current.deviceId, current.transferId,
+                    false, HandoverService.lastError);
         }
 
         FileDialog {
@@ -97,8 +109,15 @@ ShellRoot {
                     onClicked: window.submit()
                 }
                 Button {
+                    text: "Cancel queued transfer"
+                    visible: Share.canCancel(window.transfer) || (!!window.transfer && window.transfer.cancelPending)
+                    enabled: Share.canCancel(window.transfer) && HandoverService.connected
+                        && !HandoverService.pendingCommand
+                    onClicked: window.cancelTransfer()
+                }
+                Button {
                     text: "New share"
-                    visible: !!window.transfer && window.transfer.phase !== "pending"
+                    visible: !!window.transfer && window.transfer.phase !== "pending" && !window.transfer.cancelPending
                     onClicked: window.transfer = null
                 }
                 Item { Layout.fillWidth: true }
@@ -125,6 +144,9 @@ ShellRoot {
                 if (!success && window.transfer && window.transfer.deviceId === deviceId
                         && window.transfer.method === method)
                     window.transfer = Share.failed(window.transfer, error);
+            }
+            function onShareCancelFinished(deviceId, transferId, cancelled, error) {
+                window.transfer = Share.cancellationResult(window.transfer, deviceId, transferId, cancelled, error);
             }
             function onLastShareProgressChanged() {
                 window.transfer = Share.event(window.transfer, HandoverService.lastShareProgress, false);

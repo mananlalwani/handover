@@ -866,6 +866,12 @@ fn native_share_result_requires_matching_receiver_ack_and_disconnect_fails_pendi
     let outbound = recv(&mut peer);
     assert_eq!(outbound["type"], "share_url");
     assert_eq!(outbound["transfer_id"], transfer_id);
+    assert!(
+        !harness
+            .backend
+            .cancel_share(&client.fingerprint, &transfer_id),
+        "a share already sent to the phone cannot be recalled"
+    );
     send(
         &mut peer,
         serde_json::json!({"type":"share_result","protocol":1,
