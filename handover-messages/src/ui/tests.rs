@@ -50,6 +50,170 @@ fn fixture() -> (MessagingAccount, Conversation) {
     (account, conversation)
 }
 
+fn conversations() -> Vec<Conversation> {
+    let first = fixture().1;
+    let mut items = vec![first];
+    for (local_id, title, kind, transport, address, unread, activity) in [
+        (
+            "maya-chen",
+            Some("Maya Chen"),
+            ConversationKind::Direct,
+            TransportKind::Rcs,
+            None,
+            1,
+            1794407000000000i64,
+        ),
+        (
+            "phone-415",
+            None,
+            ConversationKind::Direct,
+            TransportKind::Sms,
+            Some("+1 (415) 555-0124"),
+            0,
+            1794406800000000i64,
+        ),
+        (
+            "weekend-crew",
+            Some("Weekend Crew"),
+            ConversationKind::Group,
+            TransportKind::Rcs,
+            None,
+            2,
+            1794406600000000i64,
+        ),
+        (
+            "priya-nair",
+            Some("Priya Nair"),
+            ConversationKind::Direct,
+            TransportKind::Rcs,
+            None,
+            0,
+            1794406400000000i64,
+        ),
+        (
+            "phone-310",
+            None,
+            ConversationKind::Direct,
+            TransportKind::Sms,
+            Some("+1 (310) 555-0186"),
+            0,
+            1794406200000000i64,
+        ),
+        (
+            "hiking-group",
+            Some("Saturday hikers"),
+            ConversationKind::Group,
+            TransportKind::Mms,
+            None,
+            0,
+            1794406000000000i64,
+        ),
+        (
+            "jordan-lee",
+            Some("Jordan Lee"),
+            ConversationKind::Direct,
+            TransportKind::Rcs,
+            None,
+            0,
+            1794405800000000i64,
+        ),
+        (
+            "family-chat",
+            Some("Family"),
+            ConversationKind::Group,
+            TransportKind::Rcs,
+            None,
+            3,
+            1794405600000000i64,
+        ),
+        (
+            "mom-phone",
+            Some("Mom"),
+            ConversationKind::Direct,
+            TransportKind::Sms,
+            Some("+1 (206) 555-0142"),
+            0,
+            1794405400000000i64,
+        ),
+    ] {
+        let person_name = title.map(str::to_owned);
+        let address = address.map(str::to_owned);
+        let participant_name = person_name.clone().or_else(|| address.clone());
+        let participants = if kind == ConversationKind::Group {
+            vec![
+                Participant {
+                    local_id: "contact-1".into(),
+                    display_name: Some("Maya Chen".into()),
+                    address: None,
+                    is_self: false,
+                },
+                Participant {
+                    local_id: "contact-2".into(),
+                    display_name: Some("Jordan Lee".into()),
+                    address: None,
+                    is_self: false,
+                },
+            ]
+        } else {
+            vec![Participant {
+                local_id: local_id.into(),
+                display_name: participant_name,
+                address,
+                is_self: false,
+            }]
+        };
+        items.push(Conversation {
+            id: ConversationId::new(MessagingAccountId::new(ACCOUNT), local_id),
+            kind,
+            transport,
+            title: person_name,
+            participants,
+            latest_message_id: None,
+            last_activity_at: Some(activity),
+            unread_count: Some(unread),
+            cursor: None,
+            capabilities: [MessagingCapability::Text, MessagingCapability::Replies]
+                .into_iter()
+                .collect(),
+        });
+    }
+    items
+}
+
+fn preview_message(conversation: &Conversation) -> Value {
+    let participant = conversation.participants.first();
+    let sender = Participant {
+        local_id: participant
+            .map_or("contact", |value| value.local_id.as_str())
+            .into(),
+        display_name: participant.and_then(|value| value.display_name.clone()),
+        address: participant.and_then(|value| value.address.clone()),
+        is_self: false,
+    };
+    let text = match conversation.id.local_id.as_str() {
+        "thread-1" => {
+            "Will do. Riverside Market looks lovely — here’s the address: https://example.test/riverside"
+        }
+        "maya-chen" => "I can bring coffee for everyone ☕",
+        "phone-415" => "Running about ten minutes late",
+        "weekend-crew" => "Maya: The north trail is open again!",
+        "priya-nair" => "That sounds perfect, thank you!",
+        "phone-310" => "Can you call me when you arrive?",
+        "hiking-group" => "Jordan: Meet by the trailhead at 9?",
+        "jordan-lee" => "Sent you the photos from yesterday",
+        "family-chat" => "Dinner is at 6:30 on Sunday",
+        _ => "I’m on my way now",
+    };
+    json!({
+        "id": {"conversation_id": conversation.id, "local_id": "preview-1"},
+        "sender": sender,
+        "transport": conversation.transport,
+        "sent_at": conversation.last_activity_at,
+        "text": text,
+        "attachments": [], "reply_to": null, "reactions": [], "deleted": false
+    })
+}
+
 fn guard() -> PathBuf {
     let root = PathBuf::from(
         std::env::var_os("HANDOVER_MESSAGES_TEST_ROOT")
@@ -118,6 +282,7 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                 let method = request["method"].as_str().unwrap_or("");
                 let mut stream = stream;
                 let (account, conversation) = fixture();
+                let all_conversations = conversations();
                 match method {
                     "subscribe" => {
                         subscriptions.fetch_add(1, Ordering::SeqCst);
@@ -126,7 +291,7 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                             &mut stream,
                             response(
                                 "subscribed",
-                                json!({"devices": [], "notifications": [], "media_sessions": [], "calls": [], "messaging_accounts": [account], "conversations": [conversation], "typing_states": [], "read_states": []}),
+                                json!({"devices": [], "notifications": [], "media_sessions": [], "calls": [], "messaging_accounts": [account], "conversations": all_conversations, "typing_states": [], "read_states": []}),
                             ),
                         );
                         *subscription_writer.lock().unwrap() = stream.try_clone().ok();
@@ -155,6 +320,26 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                             json!({"workspace": {"location": null, "draft_conversations": [], "persistent": true}}),
                         ),
                     ),
+                    "messages.previews" => {
+                        let requested = request["conversation_ids"]
+                            .as_array()
+                            .expect("preview request conversation_ids array");
+                        let messages: Vec<_> = requested
+                            .iter()
+                            .filter_map(|value| {
+                                let id: ConversationId =
+                                    serde_json::from_value(value.clone()).ok()?;
+                                all_conversations
+                                    .iter()
+                                    .find(|conversation| conversation.id == id)
+                            })
+                            .map(preview_message)
+                            .collect();
+                        send_json(
+                            &mut stream,
+                            response("message_previews", json!({"messages":messages,"done":true})),
+                        );
+                    }
                     "messages.draft" => {
                         let conversation_id = request["conversation_id"].clone();
                         let key = conversation_id.to_string();
@@ -185,6 +370,7 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                                 {"id":{"conversation_id":conversation.id,"local_id":"m2"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794406500000000i64,"text":"Absolutely. I found a little place near the river that looks great. We could meet there around noon, grab lunch, and walk along the trail if the weather holds.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m4"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407100000000i64,"text":"Will do. It's called Riverside Market. I'll send you the address shortly.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
+                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
                             ],"cursor_next":null}),
                         ),
                     ),
@@ -247,6 +433,26 @@ fn pump_until(mut condition: impl FnMut() -> bool, description: &str) {
         thread::sleep(Duration::from_millis(8));
     }
     panic!("timed out waiting for {description}");
+}
+
+fn capture_fixture(window: &impl IsA<gtk::Widget>, path: PathBuf) {
+    let frames = Rc::new(Cell::new(0));
+    let rendered = frames.clone();
+    window.add_tick_callback(move |_, _| {
+        rendered.set(rendered.get() + 1);
+        if rendered.get() >= 3 {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+    pump_until(|| frames.get() >= 3, "fixture layout and paint");
+    let status = Command::new("import")
+        .args(["-window", "root"])
+        .arg(path)
+        .status()
+        .expect("ImageMagick import is required for requested screenshot");
+    assert!(status.success(), "native fixture screenshot capture failed");
 }
 
 fn text(view: &gtk::TextView) -> String {
@@ -370,41 +576,18 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
         pump_until(
-            || ui.model.borrow().messages.len() >= 4,
-            "synthetic history for screenshot",
+            || {
+                ui.model.borrow().messages.len() >= 4
+                    && ui.model.borrow().previews.len() >= conversations().len()
+                    && requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|request| request["method"] == "messages.previews")
+            },
+            "history and daemon-requested conversation previews for screenshot",
         );
-        for (name, local_id, unread) in [
-            ("Maya Chen", "maya", true),
-            ("Weekend plans", "weekend", false),
-            ("Sam Rivera", "sam", false),
-        ] {
-            let mut conversation = fixture().1;
-            conversation.id.local_id = local_id.into();
-            conversation.title = Some(name.into());
-            conversation.last_activity_at = None;
-            conversation.unread_count = Some(u64::from(unread));
-            ui.event(Event::State(Box::new(ServerPayload::ConversationAdded {
-                conversation,
-            })));
-        }
-        let frames = Rc::new(Cell::new(0));
-        let rendered = frames.clone();
-        ui.window.add_tick_callback(move |_, _| {
-            rendered.set(rendered.get() + 1);
-            if rendered.get() >= 3 {
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
-        });
-        pump_until(|| frames.get() >= 3, "fixture layout and paint");
-        // The runner owns a private Xvfb display, so this captures only the fixture.
-        let status = Command::new("import")
-            .args(["-window", "root"])
-            .arg(PathBuf::from(path))
-            .status()
-            .expect("ImageMagick import is required for requested screenshot");
-        assert!(status.success(), "native fixture screenshot capture failed");
+        capture_fixture(&ui.window, PathBuf::from(path));
     }
 
     ui.compose.buffer().set_text("persist this text");
@@ -523,6 +706,11 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "fake browser inventory enables setup",
     );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        let name = format!("{}-setup.png", path.file_stem().unwrap().to_string_lossy());
+        capture_fixture(&setup, path.with_file_name(name));
+    }
     let continue_button = find_widget(setup.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()

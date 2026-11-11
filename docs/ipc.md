@@ -185,6 +185,7 @@ accounts cannot access search results, context, or drafts.
 | Method | Request fields | Response type |
 | --- | --- | --- |
 | `messages.search` | `query`, optional `account_id`, `offset` default 0 | `message_search` with `hits`, `has_more` |
+| `messages.previews` | `conversation_ids`, at most 50 | `message_previews` with `messages`, `done` |
 | `messages.context` | `message_id` | `message_context` with `conversation_id`, `messages`, `done` |
 | `messages.workspace` | none | `messaging_workspace` with `workspace` |
 | `messages.select` | `location`, or null to clear | `messaging_workspace` with `workspace` |
@@ -208,3 +209,10 @@ the stale mutation. Nonempty drafts have monotonically assigned revisions.
 The Rust subscription object now retains the initial snapshot's
 `messaging_accounts`, `conversations`, `typing_states`, and `read_states` for
 clients to build their first view. This changes no existing snapshot wire fields.
+
+`messages.previews` returns the last saved message in each requested conversation.
+It reads only the local archive, including for offline accounts. Conversations
+without saved messages are omitted. Duplicate conversation IDs are collapsed.
+Unknown accounts and invalid IDs reject the batch. The response can span frames;
+collect until `done: true` under the normal aggregate limits. It does not fetch
+provider history, mark conversations read, or claim that saved history is complete.

@@ -16,6 +16,7 @@ pub enum Request {
     },
     History(ConversationId, Option<String>),
     Context(MessageId),
+    Previews(Vec<ConversationId>),
     Send(MessageDraft),
     Attachment(ConversationId, String),
     Read(ConversationId, Option<MessageId>),
@@ -27,6 +28,7 @@ pub enum Reply {
     Search(Vec<MessageSearchHit>, bool),
     History(ConversationId, Vec<Message>, Option<String>),
     Context(ConversationId, Vec<Message>),
+    Previews(Vec<Message>),
     Sent(String),
     Accepted,
 }
@@ -179,6 +181,7 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                 id.conversation_id.clone(),
                 client.message_context(id).await?,
             ),
+            Request::Previews(ids) => Reply::Previews(client.message_previews(ids).await?),
             Request::Send(draft) => Reply::Sent(match draft.reply_to {
                 Some(id) => client.send_message_reply(id, draft.text).await?,
                 None => {

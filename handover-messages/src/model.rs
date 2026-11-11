@@ -155,7 +155,7 @@ impl Model {
                 })
             })
     }
-    fn remember_preview(&mut self, message: &Message) {
+    pub fn remember_preview(&mut self, message: &Message) {
         let id = &message.id.conversation_id;
         if self.previews.get(id).is_none_or(|old| {
             old.id == message.id

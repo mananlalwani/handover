@@ -224,6 +224,10 @@ pub enum Method {
         #[serde(default)]
         offset: u32,
     },
+    #[serde(rename = "messages.previews")]
+    MessagesPreviews {
+        conversation_ids: Vec<ConversationId>,
+    },
     #[serde(rename = "messages.context")]
     MessagesContext { message_id: MessageId },
     #[serde(rename = "messages.workspace")]
@@ -624,6 +628,10 @@ pub enum ServerPayload {
     MessageSearch {
         hits: Vec<handover_core::MessageSearchHit>,
         has_more: bool,
+    },
+    MessagePreviews {
+        messages: Vec<Message>,
+        done: bool,
     },
     MessageContext {
         conversation_id: ConversationId,
@@ -1551,6 +1559,20 @@ impl Client {
             ServerPayload::MessageSearch { hits, has_more } => Ok((hits, has_more)),
             payload => Err(unexpected(payload)),
         }
+    }
+
+    /// Last saved message per requested conversation. Does not contact a backend.
+    pub async fn message_previews(
+        &mut self,
+        conversation_ids: Vec<ConversationId>,
+    ) -> Result<Vec<Message>, IpcError> {
+        self.send(Method::MessagesPreviews { conversation_ids })
+            .await?;
+        self.collect_list(|payload| match payload {
+            ServerPayload::MessagePreviews { messages, done } => Some((messages, done)),
+            _ => None,
+        })
+        .await
     }
 
     pub async fn message_context(

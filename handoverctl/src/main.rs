@@ -1262,6 +1262,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::ClipboardHistory { .. }
         | ServerPayload::NativeAccepted => {}
         ServerPayload::MessageSearch { .. }
+        | ServerPayload::MessagePreviews { .. }
         | ServerPayload::MessageContext { .. }
         | ServerPayload::MessagingWorkspace { .. }
         | ServerPayload::MessageDraft { .. } => {}

@@ -64,6 +64,53 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 )
             }
         }
+        Method::MessagesPreviews { conversation_ids } => {
+            if conversation_ids.len() > 50
+                || conversation_ids
+                    .iter()
+                    .any(|id| handover_core::validate_conversation_id(id).is_err())
+            {
+                error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "Previews require at most 50 valid conversation identities",
+                )
+            } else if conversation_ids.iter().any(|id| !known(id)) {
+                error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+            } else if let Some(archive) = archive {
+                let ids = conversation_ids
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                match archive.previews(ids).await {
+                    Ok(messages) => {
+                        protocol::write_list_response(
+                            writer,
+                            messages,
+                            |messages| ServerPayload::MessagePreviews {
+                                messages: messages.to_vec(),
+                                done: true,
+                            },
+                            |messages, done| ServerPayload::MessagePreviews {
+                                messages: messages.to_vec(),
+                                done,
+                            },
+                        )
+                        .await?;
+                        return Ok(true);
+                    }
+                    Err(_) => error(
+                        ErrorCode::HistoryUnavailable,
+                        "Saved message previews are unavailable",
+                    ),
+                }
+            } else {
+                error(
+                    ErrorCode::HistoryUnavailable,
+                    "Local history storage is unavailable",
+                )
+            }
+        }
         Method::MessagesContext { message_id } => {
             if handover_core::validate_messaging_location(&handover_core::MessagingLocation {
                 conversation_id: message_id.conversation_id.clone(),

@@ -126,6 +126,163 @@ async fn archived_search_and_context_work_while_account_is_offline() {
 }
 
 #[tokio::test]
+async fn previews_return_newest_saved_message_per_requested_account_and_omit_empty_threads() {
+    let account_a = MessagingAccountId::new("fixture-a");
+    let account_b = MessagingAccountId::new("fixture-b");
+    let conversation_a = ConversationId::new(account_a.clone(), "same-thread");
+    let conversation_b = ConversationId::new(account_b.clone(), "same-thread");
+    let empty = ConversationId::new(account_a.clone(), "no-history");
+    let dir = tempfile::tempdir().unwrap();
+    let archive =
+        crate::messaging_archive::MessageArchive::open(&dir.path().join("history.sqlite")).unwrap();
+    archive
+        .merge(vec![
+            message(&conversation_a, "older", 1, "older saved"),
+            message(&conversation_a, "newest", 2, "newest saved"),
+            message(&conversation_b, "other-account", 3, "other account"),
+        ])
+        .await
+        .unwrap();
+    let state = state_with_account(&conversation_a);
+    state
+        .write()
+        .unwrap()
+        .apply(StateEvent::Messaging(MessagingEvent::Account(
+            MessagingAccountEvent::Added(MessagingAccount {
+                id: account_b,
+                label: "Second offline fixture".into(),
+                connected: false,
+                authenticated: false,
+            }),
+        )));
+    state.write().unwrap().message_archive = Some(archive);
+
+    let response = call(
+        &state,
+        Method::MessagesPreviews {
+            conversation_ids: vec![conversation_a, empty, conversation_b],
+        },
+    )
+    .await;
+    assert!(matches!(
+        &response[..],
+        [ServerMessage {
+            payload: ServerPayload::MessagePreviews { messages, done: true },
+            ..
+        }] if messages.len() == 2
+            && messages[0].id.local_id == "newest"
+            && messages[0].text.as_deref() == Some("newest saved")
+            && messages[1].id.local_id == "other-account"
+    ));
+}
+
+#[tokio::test]
+async fn previews_reject_unknown_accounts_invalid_ids_and_more_than_fifty_ids() {
+    let (_, conversation) = identity();
+    let state = state_with_account(&conversation);
+    let unknown = ConversationId::new(MessagingAccountId::new("not-configured"), "thread");
+    let invalid = ConversationId::new(conversation.account_id.clone(), "bad\nthread");
+    let too_many = (0..51)
+        .map(|index| {
+            ConversationId::new(conversation.account_id.clone(), format!("thread-{index}"))
+        })
+        .collect();
+
+    for (ids, code) in [
+        (vec![unknown], ErrorCode::UnknownMessagingAccount),
+        (vec![invalid], ErrorCode::InvalidMessagingCommand),
+        (too_many, ErrorCode::InvalidMessagingCommand),
+    ] {
+        let response = call(
+            &state,
+            Method::MessagesPreviews {
+                conversation_ids: ids,
+            },
+        )
+        .await;
+        assert!(matches!(
+            &response[..],
+            [ServerMessage {
+                payload: ServerPayload::Error { code: actual, .. },
+                ..
+            }] if *actual == code
+        ));
+    }
+}
+
+#[tokio::test]
+async fn previews_chunk_large_records_within_frame_bounds_and_preserve_all_records() {
+    let account = MessagingAccountId::new("fixture");
+    let conversations: Vec<_> = (0..40)
+        .map(|index| ConversationId::new(account.clone(), format!("thread-{index}")))
+        .collect();
+    let state = state_with_account(&conversations[0]);
+    let dir = tempfile::tempdir().unwrap();
+    let archive =
+        crate::messaging_archive::MessageArchive::open(&dir.path().join("history.sqlite")).unwrap();
+    let messages: Vec<_> = conversations
+        .iter()
+        .enumerate()
+        .map(|(index, conversation)| {
+            message(
+                conversation,
+                format!("preview-{index}"),
+                index as i64,
+                &"📱".repeat(handover_core::MAX_TEXT_CHARS),
+            )
+        })
+        .collect();
+    for item in &messages {
+        handover_core::validate_message(item).unwrap();
+    }
+    archive.merge(messages.clone()).await.unwrap();
+    state.write().unwrap().message_archive = Some(archive);
+
+    let (mut writer, reader) = tokio::io::duplex(handover_ipc::MAX_LINE_BYTES * 64);
+    assert!(
+        handle(
+            Method::MessagesPreviews {
+                conversation_ids: conversations,
+            },
+            &mut writer,
+            &state,
+        )
+        .await
+        .unwrap()
+    );
+    drop(writer);
+    let mut reader = BufReader::new(reader);
+    let mut frames = Vec::new();
+    while let Some(frame) = read_json_line::<_, ServerMessage>(&mut reader)
+        .await
+        .unwrap()
+    {
+        frames.push(frame);
+    }
+    assert!(
+        frames.len() > 1,
+        "large previews should use multiple IPC frames"
+    );
+    let mut got = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        assert!(serde_json::to_vec(frame).unwrap().len() < handover_ipc::MAX_LINE_BYTES);
+        match &frame.payload {
+            ServerPayload::MessagePreviews { messages, done } => {
+                assert_eq!(*done, index + 1 == frames.len());
+                got.extend(messages.iter().map(|message| message.id.clone()));
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+    let mut expected = messages
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(got, expected);
+}
+
+#[tokio::test]
 async fn unknown_account_filters_reject_search_context_and_draft_access() {
     let (_, conversation) = identity();
     let dir = tempfile::tempdir().unwrap();

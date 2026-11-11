@@ -82,6 +82,39 @@ impl MessageArchive {
         .await
     }
 
+    pub(crate) async fn previews(
+        self: &Arc<Self>,
+        ids: Vec<ConversationId>,
+    ) -> Result<Vec<Message>, Error> {
+        if ids.len() > 50 {
+            return Err("too many preview conversations".into());
+        }
+        self.run(move |db| {
+            let mut statement = db.prepare(
+                "SELECT payload FROM messages WHERE account=?1 AND thread=?2
+                ORDER BY coalesce(json_extract(payload,'$.sent_at'),0) DESC,id DESC LIMIT 1",
+            )?;
+            let mut messages = Vec::new();
+            for id in ids {
+                let payload: Option<String> = statement
+                    .query_row(params![id.account_id.as_str(), id.local_id], |row| {
+                        row.get(0)
+                    })
+                    .optional()?;
+                if let Some(payload) = payload {
+                    let message: Message = serde_json::from_str(&payload)?;
+                    handover_core::validate_message(&message)?;
+                    if message.id.conversation_id != id {
+                        return Err("archive identity mismatch".into());
+                    }
+                    messages.push(message);
+                }
+            }
+            Ok(messages)
+        })
+        .await
+    }
+
     pub(crate) async fn context(
         self: &Arc<Self>,
         id: MessageId,

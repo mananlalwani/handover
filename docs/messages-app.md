@@ -18,6 +18,10 @@ not search messages that the daemon has never fetched. Selecting a message
 result opens its saved context. Load older messages to request more history.
 
 The layout follows the system light or dark appearance and accent color.
+The conversation list loads previews from locally saved messages in bounded
+batches. Phone-only conversations use a person icon and groups use a group
+icon. Accounts filters the list; Details shows the selected conversation's
+participants and account.
 Hover a message, or tab to its reply button, to reply. Hover a bubble for its
 timestamp. Messages from the same sender group together; date markers separate
 longer gaps. The composer grows for multiline drafts.

@@ -7,7 +7,7 @@ use gtk::{gio, glib};
 use handover_core::*;
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
 };
 
@@ -24,8 +24,12 @@ pub struct Window {
     list: gtk::ListBox,
     rows: RefCell<Vec<Target>>,
     filter: RefCell<Option<MessagingAccountId>>,
-    title: adw::WindowTitle,
+    title: gtk::Label,
+    subtitle: gtk::Label,
     avatar: adw::Avatar,
+    details: gtk::Popover,
+    connection_status: gtk::Box,
+    previewed: RefCell<BTreeSet<ConversationId>>,
     placeholder: gtk::Label,
     reply_row: gtk::Box,
     thread: gtk::Box,
@@ -61,7 +65,7 @@ impl Window {
         let window = adw::ApplicationWindow::builder()
             .application(application)
             .title("Handover Messages")
-            .default_width(1120)
+            .default_width(1160)
             .default_height(780)
             .width_request(740)
             .height_request(480)
@@ -78,15 +82,18 @@ impl Window {
         let banner = adw::Banner::new("Handover is offline. Reconnecting…");
         toolbar.add_top_bar(&banner);
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_position(310);
+        paned.set_position(330);
         paned.set_resize_start_child(false);
         paned.set_shrink_start_child(false);
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sidebar.set_width_request(270);
+        sidebar.set_width_request(290);
         sidebar.add_css_class("messages-sidebar");
         let sidebar_header = adw::HeaderBar::new();
         sidebar_header.set_show_end_title_buttons(false);
-        sidebar_header.set_title_widget(Some(&adw::WindowTitle::new("Messages", "")));
+        sidebar_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+        let brand = gtk::Label::new(Some("Messages"));
+        brand.add_css_class("sidebar-title");
+        sidebar_header.pack_start(&brand);
         let menu = gio::Menu::new();
         menu.append(
             Some("Connect Google Messages…"),
@@ -130,20 +137,58 @@ impl Window {
         let accounts = gtk::DropDown::from_strings(&["All accounts"]);
         accounts.add_css_class("account-picker");
         accounts.set_tooltip_text(Some("Filter conversations by account"));
-        sidebar.append(&accounts);
+        let account_area = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        account_area.add_css_class("account-area");
+        account_area.append(&accounts);
+        let filters = gtk::Popover::new();
+        let filter_title = gtk::Label::new(Some("Accounts"));
+        filter_title.add_css_class("heading");
+        filter_title.set_margin_top(12);
+        account_area.prepend(&filter_title);
+        filters.set_child(Some(&account_area));
+        let filter_button = gtk::MenuButton::builder()
+            .label("Accounts")
+            .tooltip_text("Filter accounts")
+            .popover(&filters)
+            .build();
+        sidebar_header.pack_end(&filter_button);
         paned.set_start_child(Some(&sidebar));
         let content = adw::ToolbarView::new();
         content.add_css_class("conversation-pane");
         content.set_hexpand(true);
         let content_header = adw::HeaderBar::new();
         content_header.set_show_start_title_buttons(false);
-        let title = adw::WindowTitle::new("Messages", "");
-        let avatar = adw::Avatar::new(32, None, true);
+        let title = gtk::Label::new(Some("Messages"));
+        title.set_xalign(0.0);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        title.add_css_class("contact-name");
+        let subtitle = gtk::Label::new(None);
+        subtitle.set_xalign(0.0);
+        subtitle.add_css_class("contact-subtitle");
+        let identity = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        identity.set_valign(gtk::Align::Center);
+        identity.append(&title);
+        identity.append(&subtitle);
+        let avatar = adw::Avatar::new(40, None, true);
         avatar.set_visible(false);
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         heading.append(&avatar);
-        heading.append(&title);
-        content_header.set_title_widget(Some(&heading));
+        heading.append(&identity);
+        heading.add_css_class("contact-heading");
+        content_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+        content_header.pack_start(&heading);
+        let connection_status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        connection_status.set_size_request(6, 6);
+        connection_status.set_valign(gtk::Align::Center);
+        connection_status.add_css_class("connection-indicator");
+        content_header.pack_end(&connection_status);
+        let details = gtk::Popover::new();
+        let details_button = gtk::MenuButton::builder()
+            .label("Details")
+            .tooltip_text("Conversation details")
+            .popover(&details)
+            .build();
+        content_header.pack_end(&details_button);
         content.add_top_bar(&content_header);
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
@@ -158,8 +203,8 @@ impl Window {
         thread.add_css_class("message-thread");
         thread.set_valign(gtk::Align::End);
         let clamp = adw::Clamp::new();
-        clamp.set_maximum_size(920);
-        clamp.set_tightening_threshold(640);
+        clamp.set_maximum_size(840);
+        clamp.set_tightening_threshold(600);
         clamp.set_child(Some(&thread));
         clamp.set_vexpand(true);
         let scroll = gtk::ScrolledWindow::builder()
@@ -184,7 +229,7 @@ impl Window {
         status.set_xalign(0.5);
         status.set_wrap(true);
         status.add_css_class("composer-note");
-        composer_area.append(&status);
+
         let reply = gtk::Label::new(None);
         reply.set_xalign(0.0);
         reply.set_hexpand(true);
@@ -205,7 +250,9 @@ impl Window {
         attach.add_css_class("flat");
         attach.add_css_class("circular");
         attach.set_valign(gtk::Align::Center);
-        composer.append(&attach);
+        let composer_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        composer_row.add_css_class("composer-row");
+        composer_row.append(&attach);
         let compose = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
@@ -240,7 +287,9 @@ impl Window {
         send.add_css_class("circular");
         send.set_valign(gtk::Align::Center);
         composer.append(&send);
-        composer_area.append(&composer);
+        composer.set_hexpand(true);
+        composer_row.append(&composer);
+        composer_area.append(&composer_row);
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let draft_status = gtk::Label::new(None);
         draft_status.set_xalign(0.0);
@@ -250,11 +299,12 @@ impl Window {
         let reload = gtk::Button::with_label("Reload saved draft");
         reload.add_css_class("flat");
         footer.append(&draft_status);
+        footer.append(&status);
         footer.append(&reload);
         composer_area.append(&footer);
         let composer_clamp = adw::Clamp::new();
-        composer_clamp.set_maximum_size(920);
-        composer_clamp.set_tightening_threshold(640);
+        composer_clamp.set_maximum_size(840);
+        composer_clamp.set_tightening_threshold(600);
         composer_clamp.set_child(Some(&composer_area));
         body.append(&composer_clamp);
         stack.add_named(&body, Some("thread"));
@@ -277,7 +327,11 @@ impl Window {
             rows: RefCell::new(vec![]),
             filter: RefCell::new(None),
             title,
+            subtitle,
             avatar,
+            details,
+            connection_status,
+            previewed: RefCell::new(BTreeSet::new()),
             placeholder,
             reply_row,
             thread,
@@ -565,6 +619,7 @@ impl Window {
                     model.conversations = conversations;
                     model.outgoing.clear();
                     model.previews.clear();
+                    self.previewed.borrow_mut().clear();
                     for draft in model.drafts.values_mut() {
                         draft.loaded = false;
                         draft.saving = false;
@@ -607,6 +662,7 @@ impl Window {
                     self.render_thread();
                 }
                 if snapshots {
+                    self.previewed.borrow_mut().clear();
                     self.request(Request::Workspace);
                 }
             }
@@ -625,6 +681,7 @@ impl Window {
                 }
             }
         }
+        self.warm_previews();
         self.render_editor();
         self.render_status();
         if self.closing.get() {
@@ -753,12 +810,30 @@ impl Window {
                     model.notice.clear();
                 }
             }
+            Reply::Previews(messages) => {
+                if let Request::Previews(ids) = request {
+                    let mut model = self.model.borrow_mut();
+                    for message in messages {
+                        if ids.contains(&message.id.conversation_id)
+                            && model
+                                .conversations
+                                .iter()
+                                .any(|conversation| conversation.id == message.id.conversation_id)
+                        {
+                            model.remember_preview(&message);
+                        }
+                    }
+                    drop(model);
+                    self.render_sidebar();
+                }
+            }
             Reply::Accepted => {}
         }
     }
 
     fn failed(&self, request: Request, error: Failure) {
         match request {
+            Request::Previews(_) => {}
             Request::SaveDraft(sent) => {
                 if let Some(draft) = self
                     .model
@@ -989,6 +1064,42 @@ impl Window {
             }
         }
     }
+    fn warm_previews(&self) {
+        if !self.model.borrow().connected {
+            return;
+        }
+        if self
+            .pending
+            .borrow()
+            .values()
+            .any(|request| matches!(request, Request::Previews(_)))
+        {
+            return;
+        }
+        let ids = {
+            let model = self.model.borrow();
+            let mut conversations = model.conversations.iter().collect::<Vec<_>>();
+            conversations
+                .sort_by_key(|conversation| std::cmp::Reverse(conversation.last_activity_at));
+            let eligible = conversations.into_iter().take(512).collect::<Vec<_>>();
+            self.previewed
+                .borrow_mut()
+                .retain(|id| eligible.iter().any(|conversation| &conversation.id == id));
+            eligible
+                .into_iter()
+                .filter(|conversation| {
+                    !self.previewed.borrow().contains(&conversation.id)
+                        && !model.previews.contains_key(&conversation.id)
+                })
+                .take(20)
+                .map(|conversation| conversation.id.clone())
+                .collect::<Vec<_>>()
+        };
+        if !ids.is_empty() && self.request(Request::Previews(ids.clone())) {
+            self.previewed.borrow_mut().extend(ids);
+        }
+    }
+
     fn render_sidebar(&self) {
         self.updating.set(true);
         let selected = self
@@ -1060,20 +1171,31 @@ impl Window {
                         if message.deleted {
                             "Message deleted".into()
                         } else {
-                            message
+                            let text = message
                                 .text
                                 .clone()
                                 .filter(|text| !text.is_empty())
-                                .unwrap_or_else(|| "Attachment".into())
+                                .unwrap_or_else(|| {
+                                    if message.attachments.is_empty() {
+                                        "Message".into()
+                                    } else {
+                                        "Attachment".into()
+                                    }
+                                });
+                            if message.sender.is_self {
+                                format!("You: {text}")
+                            } else {
+                                text
+                            }
                         }
                     } else {
-                        conversation
-                            .participants
-                            .iter()
-                            .filter(|p| !p.is_self)
-                            .filter_map(|p| p.address.as_deref())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        match conversation.transport {
+                            TransportKind::Rcs => "RCS conversation",
+                            TransportKind::Sms => "SMS conversation",
+                            TransportKind::Mms => "MMS conversation",
+                            _ => "Conversation",
+                        }
+                        .into()
                     }
                 });
             self.add_row(
@@ -1081,6 +1203,7 @@ impl Window {
                 &preview,
                 conversation.unread_count.is_some_and(|count| count > 0),
                 conversation.last_activity_at,
+                conversation.kind == ConversationKind::Group,
             );
             rows.push((conversation.id.clone(), None));
         }
@@ -1090,6 +1213,7 @@ impl Window {
                 &hit.snippet,
                 false,
                 hit.sent_at,
+                false,
             );
             rows.push((
                 hit.message_id.conversation_id.clone(),
@@ -1097,22 +1221,39 @@ impl Window {
             ));
         }
         if rows.is_empty() {
-            self.add_row(
-                if model.accounts.is_empty() {
-                    "No messaging accounts"
-                } else if query.is_empty() {
-                    "No conversations yet"
-                } else {
-                    "No saved matches"
-                },
-                if model.accounts.is_empty() {
-                    "Connect an account from the menu to get started."
-                } else {
-                    "Only history saved on this computer is searched."
-                },
-                false,
-                None,
-            );
+            let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 10);
+            placeholder.set_margin_top(36);
+            placeholder.set_margin_start(24);
+            placeholder.set_margin_end(24);
+            let icon = gtk::Image::from_icon_name(if query.is_empty() {
+                "chat-message-new-symbolic"
+            } else {
+                "edit-find-symbolic"
+            });
+            icon.set_pixel_size(32);
+            icon.add_css_class("dim-label");
+            placeholder.append(&icon);
+            let title = gtk::Label::new(Some(if model.accounts.is_empty() {
+                "No messaging accounts"
+            } else if query.is_empty() {
+                "No conversations yet"
+            } else {
+                "No saved matches"
+            }));
+            title.add_css_class("heading");
+            title.set_wrap(true);
+            placeholder.append(&title);
+            let description = gtk::Label::new(Some(if model.accounts.is_empty() {
+                "Connect an account from the menu to get started."
+            } else {
+                "Only history saved on this computer is searched."
+            }));
+            description.set_wrap(true);
+            description.set_justify(gtk::Justification::Center);
+            description.add_css_class("dim-label");
+            description.add_css_class("caption");
+            placeholder.append(&description);
+            self.list.set_placeholder(Some(&placeholder));
         }
         let selected =
             selected.or_else(|| model.selected.clone().map(|id| (id, model.anchor.clone())));
@@ -1131,9 +1272,10 @@ impl Window {
             .set_sensitive(model.connected && model.more);
         self.updating.set(false);
     }
-    fn add_row(&self, title: &str, subtitle: &str, unread: bool, time: Option<i64>) {
+    fn add_row(&self, title: &str, subtitle: &str, unread: bool, time: Option<i64>, group: bool) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let avatar = adw::Avatar::new(42, Some(title), true);
+        let avatar = adw::Avatar::new(40, Some(title), true);
+        style_avatar(&avatar, title, group);
         row.append(&avatar);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
         text.set_hexpand(true);
@@ -1206,28 +1348,99 @@ impl Window {
             .as_ref()
             .map(|id| model.label(id))
             .unwrap_or_else(|| "Messages".into());
-        self.title.set_title(&title);
-        self.avatar.set_text(Some(&title));
-        self.avatar.set_visible(model.selected.is_some());
-        let account = model
-            .selected
-            .as_ref()
-            .and_then(|id| model.accounts.iter().find(|a| a.id == id.account_id));
-        self.title.set_subtitle(
-            &account
-                .map(|a| {
-                    format!(
-                        "{} · {}",
-                        a.label,
-                        if model.connected && a.connected && a.authenticated {
-                            "Connected"
-                        } else {
-                            "Offline"
-                        }
-                    )
-                })
-                .unwrap_or_default(),
+        self.title.set_label(&title);
+        let conversation = model.selected.as_ref().and_then(|id| {
+            model
+                .conversations
+                .iter()
+                .find(|conversation| &conversation.id == id)
+        });
+        style_avatar(
+            &self.avatar,
+            &title,
+            conversation.is_some_and(|conversation| conversation.kind == ConversationKind::Group),
         );
+        self.avatar.set_visible(model.selected.is_some());
+        let account = model.selected.as_ref().and_then(|id| {
+            model
+                .accounts
+                .iter()
+                .find(|account| account.id == id.account_id)
+        });
+        let connected = model.connected
+            && account.is_some_and(|account| account.connected && account.authenticated);
+        let transport = conversation
+            .map(|conversation| match conversation.transport {
+                TransportKind::Rcs => "RCS",
+                TransportKind::Sms => "SMS",
+                TransportKind::Mms => "MMS",
+                _ => "Messages",
+            })
+            .unwrap_or("");
+        self.subtitle.set_label(if connected {
+            transport
+        } else if model.selected.is_some() {
+            "Offline"
+        } else {
+            ""
+        });
+        self.connection_status.set_visible(model.selected.is_some());
+        self.connection_status
+            .remove_css_class(if connected { "offline" } else { "connected" });
+        self.connection_status
+            .add_css_class(if connected { "connected" } else { "offline" });
+        self.connection_status.set_tooltip_text(Some(if connected {
+            "Account connected"
+        } else {
+            "Account offline. You can still write a draft."
+        }));
+        let detail = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        detail.set_margin_top(16);
+        detail.set_margin_bottom(16);
+        detail.set_margin_start(16);
+        detail.set_margin_end(16);
+        let detail_title = gtk::Label::new(Some(&title));
+        detail_title.add_css_class("heading");
+        detail_title.set_wrap(true);
+        detail_title.set_max_width_chars(28);
+        detail.append(&detail_title);
+        if let Some(conversation) = conversation {
+            for participant in conversation
+                .participants
+                .iter()
+                .filter(|participant| !participant.is_self)
+                .take(32)
+            {
+                let name = participant
+                    .display_name
+                    .as_deref()
+                    .or(participant.address.as_deref())
+                    .unwrap_or("Contact");
+                let label = gtk::Label::new(Some(name));
+                label.set_xalign(0.0);
+                label.set_wrap(true);
+                label.set_max_width_chars(30);
+                detail.append(&label);
+                if let Some(address) = participant
+                    .address
+                    .as_deref()
+                    .filter(|address| *address != name)
+                {
+                    let label = gtk::Label::new(Some(address));
+                    label.add_css_class("dim-label");
+                    label.set_xalign(0.0);
+                    label.set_selectable(true);
+                    detail.append(&label);
+                }
+            }
+        }
+        if let Some(account) = account {
+            let label = gtk::Label::new(Some(&account.label));
+            label.add_css_class("caption");
+            label.add_css_class("dim-label");
+            detail.append(&label);
+        }
+        self.details.set_child(Some(&detail));
         let pending = self.pending.borrow().values().any(|request| match request {
             Request::Send(draft) => Some(&draft.conversation_id) == model.selected.as_ref(),
             Request::Attachment(id, _) => Some(id) == model.selected.as_ref(),
@@ -1362,11 +1575,12 @@ impl Window {
             }) {
                 let date = gtk::Label::new(Some(&message_time(time)));
                 date.add_css_class("message-date");
+                date.set_halign(gtk::Align::Center);
                 wrapper.append(&date);
             }
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             row.add_css_class("message-row");
-            row.set_margin_top(if grouped { 3 } else { 12 });
+            row.set_margin_top(if grouped { 3 } else { 8 });
             row.set_halign(if message.sender.is_self {
                 gtk::Align::End
             } else {
@@ -1635,6 +1849,17 @@ impl Window {
 }
 
 use handover_ipc::ServerPayload;
+
+fn style_avatar(avatar: &adw::Avatar, title: &str, group: bool) {
+    avatar.set_text(Some(title));
+    let human_name = title.chars().any(char::is_alphabetic);
+    avatar.set_show_initials(human_name && !group);
+    avatar.set_icon_name(Some(if group {
+        "system-users-symbolic"
+    } else {
+        "avatar-default-symbolic"
+    }));
+}
 
 fn sidebar_time(time: Option<i64>) -> String {
     let Some(time) = time.and_then(|time| glib::DateTime::from_unix_local(time / 1_000_000).ok())

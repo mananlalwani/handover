@@ -1,38 +1,52 @@
-.handover-messages .messages-sidebar { background: @window_bg_color; }
+.handover-messages .messages-sidebar { background: mix(@window_bg_color, @view_bg_color, 0.25); }
 .handover-messages .conversation-pane { background: @view_bg_color; }
-.handover-messages headerbar { box-shadow: none; border: none; background: transparent; }
-.handover-messages .sidebar-tools { padding: 4px 16px 12px; }
-.handover-messages .sidebar-tools searchentry { border-radius: 10px; min-height: 34px; }
-.handover-messages .account-picker { margin: 10px 16px 14px; }
-.handover-messages .account-picker > button { background: transparent; box-shadow: none; border: none; }
+.handover-messages headerbar { box-shadow: none; border: none; background: transparent; min-height: 64px; }
+.handover-messages .sidebar-title { font-size: 1.45em; font-weight: 700; margin-left: 8px; }
+.handover-messages .sidebar-tools { padding: 2px 18px 16px; }
+.handover-messages .sidebar-tools searchentry { border-radius: 10px; min-height: 32px; background: alpha(@window_fg_color, 0.055); box-shadow: none; border: 1px solid alpha(@window_fg_color, 0.045); }
+.handover-messages .account-area { margin: 0 14px; }
+.handover-messages .account-picker { margin: 8px 0; font-size: 0.9em; }
+.handover-messages .account-picker > button { background: transparent; box-shadow: none; border: none; font-weight: 400; }
 .handover-messages .conversation-list { background: transparent; }
-.handover-messages .conversation-list > row { border-radius: 12px; margin: 2px 10px; padding: 12px 10px; }
-.handover-messages .conversation-list > row:selected { background: alpha(@accent_bg_color, 0.14); color: @window_fg_color; }
-.handover-messages .conversation-list > row:selected:hover { background: alpha(@accent_bg_color, 0.2); }
-.handover-messages .conversation-name { font-weight: 600; }
-.handover-messages .conversation-preview { font-size: 0.9em; opacity: 0.65; }
-.handover-messages .conversation-time { font-size: 0.78em; opacity: 0.55; }
+.handover-messages .conversation-list > row { border-radius: 10px; margin: 2px 10px; padding: 12px 10px; }
+.handover-messages .conversation-list > row:selected { background: @accent_bg_color; color: @accent_fg_color; }
+.handover-messages .conversation-list > row:selected:hover { background: shade(@accent_bg_color, 0.96); }
+.handover-messages .conversation-name { font-weight: 600; font-size: 0.98em; }
+.handover-messages .conversation-preview { font-size: 0.88em; opacity: 0.65; }
+.handover-messages .conversation-time { font-size: 0.76em; opacity: 0.6; }
+.handover-messages .conversation-list > row:selected .conversation-preview,
+.handover-messages .conversation-list > row:selected .conversation-time { opacity: 0.85; }
 .handover-messages .unread-dot { background: @accent_bg_color; min-width: 7px; min-height: 7px; border-radius: 50%; }
-.handover-messages .message-thread { padding: 12px 28px 24px; }
-.handover-messages .message-bubble { padding: 10px 15px; border-radius: 18px; background: alpha(@window_fg_color, 0.07); color: @view_fg_color; }
-.handover-messages .message-bubble.outgoing { background: @accent_bg_color; color: @accent_fg_color; }
+.handover-messages .conversation-list > row:selected .unread-dot { background: @accent_fg_color; }
+.handover-messages .contact-heading { margin-left: 16px; }
+.handover-messages .contact-heading .contact-name { font-size: 1.08em; font-weight: 600; }
+.handover-messages .contact-heading .contact-subtitle { font-size: 0.82em; opacity: 0.6; }
+.handover-messages .connection-indicator { min-width: 6px; min-height: 6px; border-radius: 50%; margin: 0 12px; }
+.handover-messages .connection-indicator.connected { background: @success_color; }
+.handover-messages .connection-indicator.offline { background: @warning_color; }
+.handover-messages .message-thread { padding: 4px 30px 12px; }
+.handover-messages .message-bubble { padding: 9px 14px; border-radius: 18px; border-bottom-left-radius: 6px; background: alpha(@window_fg_color, 0.075); color: @view_fg_color; }
+.handover-messages .message-bubble.outgoing { border-bottom-left-radius: 18px; border-bottom-right-radius: 6px; background: @accent_bg_color; color: @accent_fg_color; }
 .handover-messages .message-bubble.grouped.incoming { border-top-left-radius: 6px; }
 .handover-messages .message-bubble.grouped.outgoing { border-top-right-radius: 6px; }
 .handover-messages .message-bubble.search-anchor { outline: 2px solid @accent_color; outline-offset: 3px; }
-.handover-messages .message-text { font-size: 1.04em; }
-.handover-messages .message-date { font-size: 0.8em; font-weight: 500; opacity: 0.5; margin: 16px 0 18px; }
+.handover-messages .message-text { font-size: 1em; }
+.handover-messages .message-date { font-size: 0.76em; font-weight: 500; opacity: 0.55; margin: 16px 0 12px; padding: 4px 10px; }
 .handover-messages .message-sender { font-size: 0.8em; opacity: 0.6; margin: 0 12px 4px; }
 .handover-messages .message-actions { opacity: 0; transition: opacity 120ms ease; }
 .handover-messages .message-row:hover .message-actions,
 .handover-messages .message-row:focus-within .message-actions { opacity: 1; }
-.handover-messages .composer-area { padding: 8px 24px 16px; }
-.handover-messages .composer { border-radius: 24px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); padding: 5px; }
-.handover-messages .composer:focus-within { border-color: alpha(@accent_bg_color, 0.65); }
+.handover-messages .composer-area { padding: 12px 28px 18px; }
+.handover-messages .composer { border-radius: 22px; background: @view_bg_color; border: 1px solid alpha(@window_fg_color, 0.18); padding: 5px; }
+.handover-messages .composer:focus-within { border-color: alpha(@accent_bg_color, 0.7); box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.09); }
 .handover-messages .composer textview, .handover-messages .composer textview text { background: transparent; }
-.handover-messages .composer-placeholder { opacity: 0.45; margin-left: 8px; }
-.handover-messages .composer button { min-width: 32px; min-height: 32px; padding: 0; }
-.handover-messages .composer-note { font-size: 0.8em; opacity: 0.6; margin: 2px 12px 0; }
+.handover-messages .composer-placeholder { opacity: 0.45; margin-left: 10px; }
+.handover-messages .composer button { min-width: 30px; min-height: 30px; padding: 0; }
+.handover-messages .composer-row > button { min-width: 34px; min-height: 34px; padding: 0; background: alpha(@window_fg_color, 0.065); }
+.handover-messages .composer-note { font-size: 0.78em; opacity: 0.65; margin: 2px 2px 0; }
 .handover-messages .reply-preview { border-left: 3px solid @accent_bg_color; padding-left: 10px; margin: 0 12px 4px; }
-.handover-messages .history-controls { margin: 6px 0; }
+.handover-messages .history-controls { margin: 0; }
+.handover-messages avatar { border-radius: 50%; }
+.handover-messages .conversation-list > row:selected avatar { background: alpha(@accent_fg_color, 0.2); color: @accent_fg_color; }
 
-.handover-messages avatar { background: alpha(@accent_bg_color, 0.14); color: @accent_color; }
+.handover-messages .conversation-pane headerbar { border-bottom: 1px solid alpha(@window_fg_color, 0.06); }

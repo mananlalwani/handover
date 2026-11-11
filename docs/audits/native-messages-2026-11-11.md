@@ -104,3 +104,41 @@ window opened successfully on Hyprland. The daemon process and start timestamp
 remained unchanged during this app update. The earlier Ubuntu tarball remains
 the initial app build documented above; this follow-up installed the app built
 on the host.
+
+## Dense conversation list and saved previews
+
+A second visual pass uses a denser fixture with ten conversations, including
+phone-only contacts, groups, long titles, consecutive messages, and a long URL.
+The earlier small fixture hid empty previews and punctuation appearing as
+phone-number initials.
+
+The app now reads saved previews through `messages.previews`. This normalized
+IPC method accepts at most 50 conversation identities and returns the last
+saved message for each available conversation. It reads the local archive and
+does not fetch provider history or mark conversations read. The app warms
+previews in batches of 20, one request at a time, for up to 512 recent
+conversations per connection. Its preview cache and attempt set are bounded.
+Cached history can be incomplete; rows without a saved message show their
+reported transport instead of invented message content.
+
+The layout has a left-aligned contact header, native colored avatars with
+person/group fallbacks, a stronger selected row, account filtering in the header,
+a participant details popover, and a separate attachment control beside the
+composer. The setup window uses a native browser row and a shorter instruction
+layout. Setup execution, credential handling, and phone verification semantics
+remain unchanged.
+
+Passed formatting, strict workspace Clippy, and the full Rust workspace suite,
+with 588 passed and seven ignored by default. Eight focused local-message IPC
+tests passed, including preview account scoping, invalid identities, batch
+limits, empty conversations, newest saved messages, and large chunked replies.
+The GUI fixture passed light, dark, and 760-pixel layouts, including setup,
+reconnects, uncertain sends, and single-instance routing. Android build, lint,
+and unit checks passed; QML lint and all 49 JavaScript tests passed.
+
+The matching host-built daemon, CLI, desktop bridge, and app binaries were
+installed after backing up the previous binaries. The old app closed through
+its normal window-close flow before the daemon restarted. The new app process
+and mapped window were verified, the existing account reconnected, and the
+installed daemon returned saved previews over IPC. Visual inspection used the
+private synthetic fixture. No live send or authentication flow was attempted.

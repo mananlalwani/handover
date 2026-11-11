@@ -30,25 +30,45 @@ pub fn present(parent: &adw::ApplicationWindow) {
         .transient_for(parent)
         .modal(true)
         .title("Connect Google Messages")
-        .default_width(560)
-        .default_height(380)
+        .default_width(480)
+        .default_height(460)
         .build();
     let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+    toolbar.add_top_bar(&header);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
     content.set_margin_top(20);
     content.set_margin_bottom(20);
     content.set_margin_start(24);
     content.set_margin_end(24);
+    let icon = gtk::Image::from_icon_name("chat-message-new-symbolic");
+    icon.set_pixel_size(48);
+    icon.add_css_class("accent");
+    content.append(&icon);
+    let title = gtk::Label::new(Some("Connect your messages"));
+    title.add_css_class("title-1");
+    content.append(&title);
     let instructions = gtk::Label::new(Some(
-        "Choose an installed Chromium browser. Sign in normally, then exit the browser from its menu. Confirm the verification symbol on your phone when asked.",
+        "Sign in to Google Messages in your browser. When you're done, close the browser from its menu and verify on your phone if asked.",
     ));
     instructions.set_wrap(true);
-    instructions.set_xalign(0.0);
+    instructions.set_justify(gtk::Justification::Center);
+    instructions.set_max_width_chars(48);
+    instructions.add_css_class("dim-label");
     content.append(&instructions);
     let picker = gtk::DropDown::from_strings(&["Looking for installed browsers…"]);
     let choose = gtk::Button::with_label("Choose browser executable…");
-    content.append(&picker);
+    let browsers = gtk::ListBox::new();
+    browsers.set_selection_mode(gtk::SelectionMode::None);
+    browsers.add_css_class("boxed-list");
+    let row = adw::ActionRow::builder().title("Browser").build();
+    row.add_suffix(&picker);
+    row.set_activatable_widget(Some(&picker));
+    browsers.append(&row);
+    content.append(&browsers);
+    choose.add_css_class("flat");
+    choose.set_halign(gtk::Align::Center);
     content.append(&choose);
     let status = gtk::Label::new(Some("Looking for installed browsers…"));
     status.set_wrap(true);
@@ -57,6 +77,7 @@ pub fn present(parent: &adw::ApplicationWindow) {
     let verification = gtk::Label::new(None);
     verification.set_wrap(true);
     verification.add_css_class("title-1");
+    verification.set_visible(false);
     content.append(&verification);
     let privacy = gtk::Label::new(Some(
         "Your normal browser profile stays separate. Authentication is saved in your desktop credential store. Messaging pauses during setup.",
@@ -64,10 +85,14 @@ pub fn present(parent: &adw::ApplicationWindow) {
     privacy.set_wrap(true);
     privacy.add_css_class("dim-label");
     privacy.add_css_class("caption");
+    privacy.set_max_width_chars(52);
+    privacy.set_justify(gtk::Justification::Center);
     content.append(&privacy);
     let connect = gtk::Button::with_label("Continue in browser");
     connect.add_css_class("suggested-action");
     connect.set_sensitive(false);
+    connect.set_halign(gtk::Align::Center);
+    connect.set_margin_top(4);
     content.append(&connect);
     toolbar.set_content(Some(&content));
     window.set_content(Some(&toolbar));
@@ -176,6 +201,7 @@ impl Setup {
         self.inventory.set(inventory);
         self.completed.set(false);
         self.buffer.borrow_mut().clear();
+        self.verification.set_visible(false);
         self.verification.set_label("");
         let program = std::env::current_exe()
             .ok()
@@ -207,6 +233,7 @@ impl Setup {
         process.wait_check_async(None::<&gio::Cancellable>,move|result|{
             setup.process.borrow_mut().take();setup.controls();
             setup.verification.set_label("");
+            setup.verification.set_visible(false);
             if !setup.inventory.get()&&!setup.completed.get(){setup.status.set_label("Setup ended before completion could be confirmed.");}
             else if setup.inventory.get()&&result.is_err(){setup.status.set_label("Browser discovery failed. Install the optional setup component or choose a browser executable.");}
             if setup.closing.get(){setup.window.destroy();}
@@ -331,6 +358,9 @@ impl Setup {
                 .get("verification")
                 .and_then(|value| value.as_str())
                 .filter(|symbol| symbol.chars().count() <= 32);
+            self.verification.set_visible(
+                status == "progress" && symbol.is_some_and(|symbol| !symbol.is_empty()),
+            );
             self.verification.set_label(&if status == "progress" {
                 symbol
                     .map(|symbol| format!("Confirm {symbol} on your phone"))
