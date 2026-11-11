@@ -11,11 +11,11 @@ RuntimeDirectory=handover
 RuntimeDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
-CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=full
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# Capability bounding and module protection require user-namespace capabilities
+# denied by Ubuntu's default AppArmor policy. This user service stays unprivileged.
 ProtectControlGroups=yes
 LockPersonality=yes
 RestrictRealtime=yes

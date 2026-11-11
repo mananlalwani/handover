@@ -66,3 +66,7 @@ This artifact was built on the local Linux host, not the hosted Ubuntu 24.04
 release builder. Its BUILD.txt records its actual glibc requirement. Ubuntu
 compatibility, physical-phone workflows, account authentication, and live
 desktop interactions were not validated in this packaging pass.
+
+The subsequent [Ubuntu 24.04 validation](linux-ubuntu-24.04-2026-11-10.md) built
+and tested a separate Ubuntu artifact. It also found and fixed a real user-service
+startup failure under Ubuntu's default AppArmor policy.

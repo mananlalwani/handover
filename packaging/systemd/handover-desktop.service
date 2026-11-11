@@ -10,11 +10,11 @@ ExecStart=/usr/bin/handover-desktop
 Restart=on-failure
 RestartSec=3s
 NoNewPrivileges=yes
-CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=full
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# Capability bounding and module protection require user-namespace capabilities
+# denied by Ubuntu's default AppArmor policy. This user service stays unprivileged.
 ProtectControlGroups=yes
 LockPersonality=yes
 RestrictRealtime=yes

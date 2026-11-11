@@ -282,3 +282,10 @@ runtime assets, service commands, launchers, and failed IPC readiness. A local
 release daemon also passed IPC and native listener startup in a private network
 namespace. See the [package validation record](audits/linux-package-2026-11-10.md)
 for the fixture boundaries and remaining distribution checks.
+
+Ubuntu 24.04 package validation is also complete in a disposable KVM VM. It
+reproduced a user-service capability failure under the default AppArmor policy;
+the portable user units now start without changing that policy. Clean install,
+identity-preserving reinstallation, and recovery from a failed published 0.4.0
+installation passed. The CI and release jobs now exercise those boundaries.
+See the [Ubuntu validation record](audits/linux-ubuntu-24.04-2026-11-10.md).

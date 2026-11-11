@@ -32,6 +32,7 @@ Ordinary bugs go to GitHub Issues. Security reports go through
 Install:
 
 - Rust 1.91 or newer and Cargo.
+- A C/C++ toolchain, CMake, pkg-config, and OpenSSL development headers for Linux builds.
 - `cargo-deny` for dependency advisory, license, and source checks.
 - A JDK and Android SDK for Android work.
 - Qt Quickshell and `qmllint` for QML work.
@@ -85,6 +86,26 @@ file placement, upgrades, launcher arguments, custom prefixes, and bounded IPC
 readiness. They do not start the packaged daemon or validate phone behavior.
 Pass `--previous-archive PATH` to check an upgrade from an existing tarball too.
 Archive names follow the version and host triple printed by `dist.sh`.
+
+For real installed-service checks, use a disposable Ubuntu 24.04 VM or CI runner
+with `dbus-user-session`, `iproute2`, Python 3.12, and a running systemd system
+manager. Native TCP port 24837 must be free. Build there with `build-essential`, `cmake`,
+`pkg-config`, and `libssl-dev`, then run:
+
+```sh
+sudo python3 scripts/test-package-runtime.py --disposable-environment \
+  --archive dist/handover-0.4.1-x86_64-unknown-linux-gnu.tar.gz \
+  --previous-archive /path/to/previous-release.tar.gz
+```
+
+This test creates temporary users and their systemd user managers, runs the
+real installer and daemon, then removes the users. It checks clean installation
+with a custom prefix, reinstallation, native listener ownership, IPC permissions,
+preserved native identity, and replaced client assets. An earlier package that
+fails with `218/CAPABILITIES` remains a failed baseline; the upgrade must recover
+it. Identity preservation is still checked through a running current package.
+Omitting `--previous-archive` checks reinstallation of the current build.
+CI and release jobs use the published 0.4.0 tarball with a fixed SHA256 checksum.
 
 ## Running from the source tree
 

@@ -115,8 +115,10 @@ Source commit: ${SOURCE_COMMIT}
 Source tree: ${SOURCE_STATE}
 Rust compiler: $(rustc --version)
 Builder libc: $(getconf GNU_LIBC_VERSION)
+Builder OpenSSL: $(pkg-config --modversion openssl)
 Built with: cargo build --release --locked -p handoverd -p handover-desktop -p handoverctl -p handover-google-messages
-This binary needs a glibc close to the builder's. GitHub tag builds use Ubuntu 24.04.
+Runtime libraries come from the system. Inspect dependencies with: ldd bin/handoverd
+GitHub tag builds use Ubuntu 24.04.
 
 Install:
   tar xf ${STAGE}.tar.gz

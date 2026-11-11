@@ -20,6 +20,8 @@ limitations](docs/KNOWN_LIMITATIONS.md) for current gaps and test coverage.
 Download the Linux tarball from [Releases](https://github.com/mananlalwani/handover/releases),
 unpack it, and run `./install.sh` from the extracted directory. Release builds
 target x86_64 Linux with glibc and are built on Ubuntu 24.04.
+They use the system OpenSSL 3 libraries. Locally built tarballs inherit their
+builder's library requirements, which `BUILD.txt` records.
 
 The installer copies the binaries to `~/.local/bin` and starts `handoverd` as a
 systemd user service. Add `~/.local/bin` to your shell's `PATH`, then check it:
@@ -34,7 +36,8 @@ Set `PREFIX` to choose a different binary directory, such as
 prefix. Assets and service units follow `XDG_DATA_HOME`, which defaults to
 `~/.local/share`. Installation succeeds after the daemon answers an IPC request.
 
-To build from source, install Rust and a C linker, then run:
+To build from source, install Rust, a C/C++ toolchain, CMake, pkg-config, and
+OpenSSL development headers, then run:
 
 ```sh
 git clone https://github.com/mananlalwani/handover.git

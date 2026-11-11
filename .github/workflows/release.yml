@@ -19,11 +19,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install package build and validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config libssl-dev dbus-user-session iproute2
       - run: ./scripts/dist.sh
+      - name: Fetch the fixed upgrade baseline
+        run: |
+          curl --fail --location --silent --show-error --retry 2 \
+            https://github.com/mananlalwani/handover/releases/download/v0.4.0/handover-0.4.0-x86_64-unknown-linux-gnu.tar.gz \
+            -o "$RUNNER_TEMP/handover-0.4.0.tar.gz"
+          printf '%s  %s\n' d0417e43b3d106e21595879cc399486fb0c97acfaf95f7691bbb82fcfb99aa50 \
+            "$RUNNER_TEMP/handover-0.4.0.tar.gz" | sha256sum --check -
       - name: Validate Linux package installation and upgrades
         run: |
           for archive in dist/*.tar.gz; do
-            python3 scripts/test-install-from-dist.py --archive "$archive"
+            python3 scripts/test-install-from-dist.py --archive "$archive" \
+              --previous-archive "$RUNNER_TEMP/handover-0.4.0.tar.gz"
+            sudo python3 scripts/test-package-runtime.py --disposable-environment \
+              --archive "$archive" --previous-archive "$RUNNER_TEMP/handover-0.4.0.tar.gz"
           done
       - uses: softprops/action-gh-release@v2
         with:
