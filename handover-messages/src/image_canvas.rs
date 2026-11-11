@@ -9,6 +9,7 @@ mod imp {
         pub texture: RefCell<Option<gdk::Texture>>,
         pub requested: Cell<(i32, i32)>,
         pub thumbnail: Cell<bool>,
+        pub thumbnail_size: Cell<(i32, i32)>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for Canvas {
@@ -23,11 +24,13 @@ mod imp {
     impl WidgetImpl for Canvas {
         fn measure(&self, orientation: gtk::Orientation, _: i32) -> (i32, i32, i32, i32) {
             if self.thumbnail.get() {
-                return if orientation == gtk::Orientation::Horizontal {
-                    (220, 220, -1, -1)
+                let (width, height) = self.thumbnail_size.get();
+                let size = if orientation == gtk::Orientation::Horizontal {
+                    width
                 } else {
-                    (165, 165, -1, -1)
+                    height
                 };
+                return (size, size, -1, -1);
             }
             let (width, height) = self.requested.get();
             let size = if orientation == gtk::Orientation::Horizontal {
@@ -83,8 +86,9 @@ impl ImageCanvas {
         widget.add_css_class("image-canvas");
         widget
     }
-    pub fn thumbnail() -> Self {
+    pub fn thumbnail(width: i32, height: i32) -> Self {
         let widget = Self::new();
+        widget.imp().thumbnail_size.set((width, height));
         widget.imp().thumbnail.set(true);
         widget.set_hexpand(false);
         widget.set_vexpand(false);

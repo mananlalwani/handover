@@ -64,6 +64,52 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 )
             }
         }
+        Method::MessagesMedia {
+            conversation_id,
+            offset,
+        } => {
+            if handover_core::validate_conversation_id(&conversation_id).is_err() || offset > 10_000
+            {
+                error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "Media listing requires a valid conversation and offset at most 10000",
+                )
+            } else if !known(&conversation_id) {
+                error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+            } else if let Some(archive) = archive {
+                match archive.media(conversation_id.clone(), offset).await {
+                    Ok((messages, has_more)) => {
+                        protocol::write_list_response(
+                            writer,
+                            messages,
+                            |messages| ServerPayload::MessageMedia {
+                                conversation_id: conversation_id.clone(),
+                                messages: messages.to_vec(),
+                                has_more,
+                                done: true,
+                            },
+                            |messages, done| ServerPayload::MessageMedia {
+                                conversation_id: conversation_id.clone(),
+                                messages: messages.to_vec(),
+                                has_more,
+                                done,
+                            },
+                        )
+                        .await?;
+                        return Ok(true);
+                    }
+                    Err(_) => error(
+                        ErrorCode::HistoryUnavailable,
+                        "Saved media listing is unavailable",
+                    ),
+                }
+            } else {
+                error(
+                    ErrorCode::HistoryUnavailable,
+                    "Local history storage is unavailable",
+                )
+            }
+        }
         Method::MessagesPreviews { conversation_ids } => {
             if conversation_ids.len() > 50
                 || conversation_ids

@@ -31,6 +31,46 @@ fn index(db: &mut Connection) -> Result<(), Error> {
 }
 
 impl MessageArchive {
+    pub(crate) async fn media(
+        self: &Arc<Self>,
+        conversation_id: handover_core::ConversationId,
+        offset: u32,
+    ) -> Result<(Vec<Message>, bool), Error> {
+        if offset > 10_000 {
+            return Err("invalid media offset".into());
+        }
+        self.run(move |db| {
+            let mut statement = db.prepare(
+                "SELECT payload FROM messages WHERE account=?1 AND thread=?2
+                AND coalesce(json_extract(payload,'$.deleted'),0)=0
+                AND json_array_length(json_extract(payload,'$.attachments'))>0
+                ORDER BY coalesce(json_extract(payload,'$.sent_at'),0) DESC,id DESC
+                LIMIT 17 OFFSET ?3",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    conversation_id.account_id.as_str(),
+                    conversation_id.local_id.as_str(),
+                    offset
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            let mut messages = Vec::new();
+            for row in rows {
+                let message: Message = serde_json::from_str(&row?)?;
+                handover_core::validate_message(&message)?;
+                if message.id.conversation_id != conversation_id {
+                    return Err("archive identity mismatch".into());
+                }
+                messages.push(message);
+            }
+            let has_more = messages.len() > 16;
+            messages.truncate(16);
+            Ok((messages, has_more))
+        })
+        .await
+    }
+
     pub(crate) async fn search(
         self: &Arc<Self>,
         query: String,
@@ -194,6 +234,58 @@ mod tests {
             reactions: vec![],
             deleted: false,
         }
+    }
+
+    fn with_attachment(mut message: Message) -> Message {
+        message.attachments.push(handover_core::Attachment {
+            local_id: format!("attachment-{}", message.id.local_id),
+            mime: Some("image/png".into()),
+            name: Some("image.png".into()),
+            size_bytes: Some(12),
+            staged_path: None,
+        });
+        message
+    }
+
+    #[tokio::test]
+    async fn saved_media_is_scoped_filters_deleted_and_text_only_and_paginates() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = MessageArchive::open(&directory.path().join("archive.sqlite")).unwrap();
+        let scoped = message(0, "scoped").id.conversation_id;
+        let other = handover_core::ConversationId::new(scoped.account_id.clone(), "other-thread");
+        let other_account = handover_core::ConversationId::new(
+            handover_core::MessagingAccountId::new("other-account"),
+            scoped.local_id.clone(),
+        );
+        let mut items = (0..18)
+            .map(|n| with_attachment(message(n, "image message")))
+            .collect::<Vec<_>>();
+        items.push(message(30, "text only"));
+        let mut deleted = with_attachment(message(31, "deleted image"));
+        deleted.deleted = true;
+        items.push(deleted);
+        items.push(with_attachment(Message {
+            id: MessageId::new(other, "other-thread-image"),
+            ..message(40, "other thread")
+        }));
+        items.push(with_attachment(Message {
+            id: MessageId::new(other_account, "other-account-image"),
+            ..message(41, "other account")
+        }));
+        archive.merge(items).await.unwrap();
+
+        let (first, more) = archive.media(scoped.clone(), 0).await.unwrap();
+        assert_eq!(first.len(), 16);
+        assert!(more);
+        assert!(first.iter().all(|item| item.attachments.len() == 1));
+        assert!(first.iter().all(|item| item.id.conversation_id == scoped));
+        assert_eq!(first[0].id.local_id, "0017");
+        let (last, more) = archive.media(scoped.clone(), 16).await.unwrap();
+        assert_eq!(last.len(), 2);
+        assert!(!more);
+        assert_eq!(last[0].id.local_id, "0001");
+        assert_eq!(last[1].id.local_id, "0000");
+        assert!(archive.media(scoped, 10_001).await.is_err());
     }
     #[tokio::test]
     async fn context_continues_through_stored_pages_without_inventing_provider_cursors() {

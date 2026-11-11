@@ -776,6 +776,7 @@ where
             accounts: messaging_snapshot(state).accounts,
         },
         method @ (Method::MessagesSearch { .. }
+        | Method::MessagesMedia { .. }
         | Method::MessagesPreviews { .. }
         | Method::MessagesContext { .. }
         | Method::MessagesWorkspace

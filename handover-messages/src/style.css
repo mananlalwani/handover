@@ -74,3 +74,12 @@
 .handover-messages .history-indicator { padding: 6px 10px; border-radius: 10px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.1); font-size: 0.85em; box-shadow: 0 2px 8px alpha(@window_fg_color, 0.07); }
 .handover-messages .history-indicator button { padding: 2px 6px; min-height: 20px; }
 .handover-messages .jump-latest { border-radius: 18px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); box-shadow: 0 2px 8px alpha(@window_fg_color, 0.08); padding: 6px 12px; font-size: 0.85em; }
+
+.quoted-message { background: alpha(currentColor, 0.07); border: none; border-left: 3px solid alpha(currentColor, 0.4); border-radius: 7px; padding: 7px 10px; font-size: 12px; }
+.quote-target .message-bubble { outline: 2px solid @accent_color; outline-offset: 3px; }
+.reaction-strip { margin-top: 5px; }
+.reaction-chip { border-radius: 10px; padding: 2px 7px; background: alpha(currentColor, 0.08); font-size: 12px; }
+.attachment-preview { padding: 10px; border-radius: 12px; background: alpha(currentColor, 0.04); }
+.attachment-preview .image-attachment { min-width: 112px; min-height: 84px; }
+.handover-media-browser { background: @window_bg_color; }
+.media-file-row { padding: 12px; border-radius: 9px; }

@@ -185,6 +185,7 @@ accounts cannot access search results, context, or drafts.
 | Method | Request fields | Response type |
 | --- | --- | --- |
 | `messages.search` | `query`, optional `account_id`, `offset` default 0 | `message_search` with `hits`, `has_more` |
+| `messages.media` | `conversation_id`, `offset` default 0, maximum 10000 | `message_media` with `conversation_id`, `messages`, `has_more`, `done` |
 | `messages.previews` | `conversation_ids`, at most 50 | `message_previews` with `messages`, `done` |
 | `messages.context` | `message_id` | `message_context` with `conversation_id`, `messages`, `done`, optional `cursor_next` |
 | `messages.workspace` | none | `messaging_workspace` with `workspace` |
@@ -200,6 +201,13 @@ aggregate and line limits. Read `cursor_next` from the terminal context frame
 and pass it unchanged to `messages.history` to continue toward older messages.
 The daemon returns a continuation only when saved page metadata establishes one.
 An omitted cursor does not establish that the provider has no older history.
+
+Media listing reads only the saved archive for the requested account and
+conversation. Each page has at most 16 messages with attachments, newest first
+by timestamp and message ID. Deleted and text-only messages are omitted.
+Increment offset by 16 for the next page. Collect chunked frames until `done`
+and use `has_more` from that terminal frame. The archive may change between
+requests. This operation does not contact a provider or download attachment bytes.
 
 A workspace contains `location`, `draft_conversations`, and `persistent`. A
 location contains `conversation_id` and optional `message_id` in that same

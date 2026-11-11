@@ -318,6 +318,38 @@ impl Media {
         attachment: &Attachment,
         parent: &adw::ApplicationWindow,
     ) -> gtk::Button {
+        self.attachment_gallery(attachment, parent, Rc::new(vec![attachment.clone()]), 0)
+    }
+    pub fn attachment_gallery(
+        &self,
+        attachment: &Attachment,
+        parent: &adw::ApplicationWindow,
+        gallery: Rc<Vec<Attachment>>,
+        index: usize,
+    ) -> gtk::Button {
+        self.tile(attachment, parent, gallery, index, (220, 165))
+    }
+    pub fn composer_attachment(
+        &self,
+        attachment: &Attachment,
+        parent: &adw::ApplicationWindow,
+    ) -> gtk::Button {
+        self.tile(
+            attachment,
+            parent,
+            Rc::new(vec![attachment.clone()]),
+            0,
+            (112, 84),
+        )
+    }
+    fn tile(
+        &self,
+        attachment: &Attachment,
+        parent: &adw::ApplicationWindow,
+        gallery: Rc<Vec<Attachment>>,
+        index: usize,
+        dimensions: (i32, i32),
+    ) -> gtk::Button {
         let button = gtk::Button::new();
         button.add_css_class("image-attachment");
         button.update_property(&[gtk::accessible::Property::Label(
@@ -325,7 +357,7 @@ impl Media {
         )]);
         button.set_tooltip_text(Some(attachment.name.as_deref().unwrap_or("Open image")));
         let overlay = gtk::Overlay::new();
-        let picture = crate::image_canvas::ImageCanvas::thumbnail();
+        let picture = crate::image_canvas::ImageCanvas::thumbnail(dimensions.0, dimensions.1);
         overlay.set_child(Some(&picture));
         let status = gtk::Label::new(Some(if attachment.staged_path.is_some() {
             "Loading image…"
@@ -344,10 +376,9 @@ impl Media {
             );
             let this = self.clone();
             let parent = parent.downgrade();
-            let name = attachment.name.clone().unwrap_or_else(|| "Image".into());
             button.connect_clicked(move |_| {
                 if let Some(parent) = parent.upgrade() {
-                    this.open(&parent, source.clone(), &name);
+                    this.open(&parent, gallery.clone(), index);
                 }
             });
         } else {
@@ -355,8 +386,14 @@ impl Media {
         }
         button
     }
-    fn open(&self, parent: &adw::ApplicationWindow, source: Source, name: &str) {
-        if let Some(previous) = self.0.viewer.borrow_mut().take() {
+    fn open(&self, parent: &adw::ApplicationWindow, gallery: Rc<Vec<Attachment>>, index: usize) {
+        if gallery.is_empty() {
+            return;
+        }
+        let index = Rc::new(Cell::new(index.min(gallery.len() - 1)));
+        let name = gallery[index.get()].name.as_deref().unwrap_or("Image");
+        let previous = self.0.viewer.borrow_mut().take();
+        if let Some(previous) = previous {
             previous.close();
         }
         let window = gtk::Window::builder()
@@ -375,15 +412,24 @@ impl Media {
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         let external = gtk::Button::with_label("Open externally");
-        if let Source::File(path, _) = &source {
-            let path = path.clone();
-            external.connect_clicked(move |_| {
+        let current = gallery.clone();
+        let current_index = index.clone();
+        external.connect_clicked(move |_| {
+            if let Some(path) = current[current_index.get()].staged_path.as_ref() {
                 let _ = gio::AppInfo::launch_default_for_uri(
-                    &gio::File::for_path(&path).uri(),
+                    &gio::File::for_path(path).uri(),
                     None::<&gio::AppLaunchContext>,
                 );
-            });
-        }
+            }
+        });
+        let previous = gtk::Button::from_icon_name("go-previous-symbolic");
+        previous.set_tooltip_text(Some("Previous image"));
+        let next = gtk::Button::from_icon_name("go-next-symbolic");
+        next.set_tooltip_text(Some("Next image"));
+        previous.set_visible(gallery.len() > 1);
+        next.set_visible(gallery.len() > 1);
+        bar.append(&previous);
+        bar.append(&next);
         let fit = gtk::Button::with_label("Fit");
         let minus = gtk::Button::from_icon_name("zoom-out-symbolic");
         minus.set_tooltip_text(Some("Zoom out"));
@@ -416,11 +462,81 @@ impl Media {
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
         body.append(&scroll);
         window.set_child(Some(&body));
-        self.bind(
-            Target::Canvas(picture.downgrade(), status.downgrade()),
-            Key(source, 4096),
-        );
         let zoom = Rc::new(Cell::new(1.0_f64));
+        let update: Rc<dyn Fn()> = {
+            let this = self.clone();
+            let gallery = gallery.clone();
+            let index = index.clone();
+            let title = title.clone();
+            let picture = picture.clone();
+            let status = status.clone();
+            let scroll = scroll.clone();
+            let external = external.clone();
+            let previous = previous.downgrade();
+            let next = next.downgrade();
+            let window = window.downgrade();
+            let zoom = zoom.clone();
+            Rc::new(move || {
+                let item = &gallery[index.get()];
+                let name = item.name.as_deref().unwrap_or("Image");
+                title.set_label(&format!(
+                    "{} · {} of {}",
+                    name,
+                    index.get() + 1,
+                    gallery.len()
+                ));
+                if let Some(window) = window.upgrade() {
+                    window.set_title(Some(name));
+                }
+                zoom.set(1.0);
+                picture.fit();
+                scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
+                if let Some(previous) = previous.upgrade() {
+                    previous.set_sensitive(index.get() > 0);
+                }
+                if let Some(next) = next.upgrade() {
+                    next.set_sensitive(index.get() + 1 < gallery.len());
+                }
+                external.set_sensitive(item.staged_path.is_some());
+                if let Some(path) = item.staged_path.as_ref() {
+                    this.bind(
+                        Target::Canvas(picture.downgrade(), status.downgrade()),
+                        Key(
+                            Source::File(path.clone(), item.mime.clone().unwrap_or_default()),
+                            4096,
+                        ),
+                    );
+                } else {
+                    let widget: gtk::Widget = picture.clone().upcast();
+                    this.0
+                        .bindings
+                        .borrow_mut()
+                        .retain(|binding| binding.target.widget().as_ref() != Some(&widget));
+                    picture.set_texture(None);
+                    status.set_label("Image not available locally");
+                    status.set_visible(true);
+                }
+                if let Some(window) = window.upgrade() {
+                    this.schedule(&window);
+                }
+            })
+        };
+        update();
+        for (button, forward) in [(&previous, false), (&next, true)] {
+            let index = index.clone();
+            let update = update.clone();
+            let count = gallery.len();
+            button.connect_clicked(move |_| {
+                let value = index.get();
+                if forward && value + 1 < count {
+                    index.set(value + 1);
+                    update();
+                } else if !forward && value > 0 {
+                    index.set(value - 1);
+                    update();
+                }
+            });
+        }
         for (button, factor) in [(&plus, 1.35), (&minus, 1.0 / 1.35), (&fit, 0.0)] {
             let picture = picture.clone();
             let scroll = scroll.clone();
@@ -453,6 +569,14 @@ impl Media {
         let keys = gtk::EventControllerKey::new();
         let weak = window.downgrade();
         keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Left {
+                previous.emit_clicked();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Right {
+                next.emit_clicked();
+                return glib::Propagation::Stop;
+            }
             if key == gdk::Key::Escape {
                 if let Some(window) = weak.upgrade() {
                     window.close();
@@ -463,6 +587,16 @@ impl Media {
             }
         });
         window.add_controller(keys);
+        let inner = Rc::downgrade(&self.0);
+        window.connect_close_request(move |window| {
+            if let Some(inner) = inner.upgrade() {
+                let is_current = inner.viewer.borrow().as_ref() == Some(window);
+                if is_current {
+                    inner.viewer.borrow_mut().take();
+                }
+            }
+            glib::Propagation::Proceed
+        });
         *self.0.viewer.borrow_mut() = Some(window.clone());
         window.present();
         self.schedule(&window);

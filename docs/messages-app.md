@@ -26,12 +26,22 @@ The conversation list loads previews from locally saved messages in bounded
 batches. Phone-only conversations use a person icon and groups use a group
 icon. Accounts filters the list; Details shows the selected conversation's
 participants and account.
-Hover a message, or tab to its reply button, to reply. Hover a bubble for its
-timestamp. Messages from the same sender group together; date markers separate
+Hover a message, or tab to its reply button, to reply. Quoted replies show the
+original sender and saved text; click the quote to jump to the original message.
+If it is outside the current view, the app requests its saved context.
+Right-click a message or open its actions menu to copy text, reply, or add and
+remove reactions when the conversation supports them. Reaction counts change
+only when the daemon reports updated messages. Hover a bubble for its timestamp. Messages from the same sender group together; date markers separate
 longer gaps. The composer grows for multiline drafts.
 
 The composer supports text, replies, and attachments where the conversation
-advertises those capabilities. New-conversation creation is unavailable until
+advertises those capabilities. Choose a file with the attachment button or drag
+one into the conversation. Review its preview, add a caption, and press Send.
+Removing the attachment keeps the caption. Each message can contain one file,
+up to 50 MiB; file attachments cannot be combined with quoted replies.
+Attachment selections stay in the current window and are not saved across
+restarts. Closing with staged attachments asks whether to discard them. Text
+captions use the normal daemon draft storage. New-conversation creation is unavailable until
 the backend has verified support. The Quickshell reference client remains
 available for workflows the native app does not yet expose.
 
@@ -57,9 +67,16 @@ resend automatically. Check the conversation before sending again.
 Image attachments stored locally appear directly in the conversation. Click an
 image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
 choose Fit to see the whole image. Escape closes the viewer. Open externally
-uses your system viewer when needed. JPEG and PNG are supported; GIF, WebP, and
+uses your system viewer when needed. Previous and Next, or the left and right
+arrow keys, move between images in the opened gallery. JPEG and PNG are supported; GIF, WebP, and
 BMP depend on installed image loaders. Animated images currently show a still
 preview. Attachments without a local file show that they are unavailable locally.
+
+Open Photos and files in the conversation header to browse saved attachments,
+including those outside the current chat view. Newer media and Older media page
+through saved messages with attachments. This lists the daemon's local archive;
+it does not fetch a complete provider media library. Missing local files remain
+unavailable. Deleted messages are omitted.
 
 Contact pictures come from the daemon's synced address book. Direct
 conversations use a photo when a participant's phone number or email has an

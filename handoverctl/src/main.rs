@@ -1265,6 +1265,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::MessagePreviews { .. }
         | ServerPayload::MessageContext { .. }
         | ServerPayload::MessagingWorkspace { .. }
+        | ServerPayload::MessageMedia { .. }
         | ServerPayload::MessageDraft { .. } => {}
     }
 }

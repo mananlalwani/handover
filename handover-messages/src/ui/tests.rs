@@ -43,9 +43,14 @@ fn fixture() -> (MessagingAccount, Conversation) {
         last_activity_at: Some(1794407100000000),
         unread_count: Some(0),
         cursor: None,
-        capabilities: [MessagingCapability::Text, MessagingCapability::Replies]
-            .into_iter()
-            .collect(),
+        capabilities: [
+            MessagingCapability::Text,
+            MessagingCapability::Replies,
+            MessagingCapability::Reactions,
+            MessagingCapability::Media,
+        ]
+        .into_iter()
+        .collect(),
     };
     (account, conversation)
 }
@@ -425,11 +430,11 @@ fn fake_server(
                             response(
                                 "history",
                                 json!({"conversation_id":request["conversation_id"],"messages":[
-                                {"id":{"conversation_id":conversation.id,"local_id":"m1"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406200000000i64,"text":"Hey! Are we still on for Saturday?","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
+                                {"id":{"conversation_id":conversation.id,"local_id":"m1"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406200000000i64,"text":"Hey! Are we still on for Saturday?","attachments":[],"reply_to":null,"reactions":[{"emoji":"👍","participant_ids":["alex"],"count":1}],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m2"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794406500000000i64,"text":"Absolutely. I found a little place near the river that looks great. We could meet there around noon, grab lunch, and walk along the trail if the weather holds.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
-                                {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
+                                {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":{"conversation_id":conversation.id,"local_id":"m1"},"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m4"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407100000000i64,"text":"Will do. It's called Riverside Market. I'll send you the address shortly.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
-                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[{"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path}],"reply_to":null,"reactions":[],"deleted":false}
+                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[{"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path},{"local_id":"market-photo","mime":"image/png","name":"market-photo.png","size_bytes":null,"staged_path":staged_path}],"reply_to":null,"reactions":[],"deleted":false}
                             ],"cursor_next":null}),
                             )
                         }
@@ -465,6 +470,9 @@ fn fake_server(
                     }
                     "messages.context" => {
                         let message_id = request["message_id"].clone();
+                        if message_id["local_id"] == "m0" {
+                            thread::sleep(Duration::from_millis(500));
+                        }
                         let message = json!({"id":message_id,"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1,"text":"Found in saved history","attachments":[],"reply_to":null,"reactions":[],"deleted":false});
                         send_json(
                             &mut stream,
@@ -474,6 +482,31 @@ fn fake_server(
                             ),
                         );
                     }
+                    "messages.media" => send_json(
+                        &mut stream,
+                        response(
+                            "message_media",
+                            json!({
+                                "conversation_id":conversation.id,
+                                "messages":[{
+                                    "id":{"conversation_id":conversation.id,"local_id":"m5"},
+                                    "sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},
+                                    "transport":"rcs","sent_at":1794407160000000i64,
+                                    "text":"The entrance is on Water Street.",
+                                    "attachments":[
+                                        {"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path},
+                                        {"local_id":"market-photo","mime":"image/png","name":"market-photo.png","size_bytes":null,"staged_path":staged_path}
+                                    ],
+                                    "reply_to":null,"reactions":[],"deleted":false
+                                }],
+                                "has_more":false,"done":true
+                            }),
+                        ),
+                    ),
+                    "messages.react" | "messages.unreact" | "messages.send_file" => send_json(
+                        &mut stream,
+                        response("message_accepted", json!({"request_id":"op-fixture"})),
+                    ),
                     "messages.send" => {
                         let text = request["text"].as_str().unwrap_or("").to_owned();
                         sent.lock().unwrap().push(text);
@@ -573,6 +606,17 @@ fn find_widget(
     None
 }
 
+fn ancestor_with_class(widget: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    let mut current = Some(widget.clone());
+    while let Some(candidate) = current {
+        if candidate.has_css_class(class) {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
 fn setup_window(app: &adw::Application) -> adw::ApplicationWindow {
     pump_until(
         || {
@@ -640,7 +684,7 @@ fn native_window_round_trips_real_frontend_actions() {
             sent: sent.clone(),
             drafts,
         },
-        staged_path,
+        staged_path.clone(),
         photo_base64,
     );
     assert!(
@@ -747,6 +791,495 @@ fn native_window_round_trips_real_frontend_actions() {
         capture_fixture(&viewer, path.with_file_name(name));
     }
     viewer.close();
+
+    pump_until(
+        || ui.model.borrow().messages.len() >= 5,
+        "fixture thread with loaded replies and reactions",
+    );
+    let quoted = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget.has_css_class("quoted-message")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    let quote_label = quoted.label().unwrap_or_default();
+    assert!(
+        quote_label.contains("Alex Example"),
+        "quote sender: {quote_label}"
+    );
+    assert!(
+        quote_label.contains("Hey! Are we still on for Saturday?"),
+        "quote text: {quote_label}"
+    );
+    let context_requests_before = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "messages.context")
+        .count();
+    quoted.emit_clicked();
+    pump_until(
+        || {
+            find_widget(ui.thread.upcast_ref(), &|widget| {
+                widget.has_css_class("quote-target")
+            })
+            .is_some()
+        },
+        "quoted message jumps to loaded original",
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "messages.context")
+            .count(),
+        context_requests_before,
+        "jumping to an already loaded quote does not fetch message context"
+    );
+
+    let missing_original_reply = json!({
+        "id":{"conversation_id":id(),"local_id":"m6"},
+        "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+        "transport":"rcs","sent_at":1794407180000000i64,
+        "text":"A final note from the earlier conversation.",
+        "attachments":[],
+        "reply_to":{"conversation_id":id(),"local_id":"m0"},
+        "reactions":[],"deleted":false
+    });
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response(
+            "message_added",
+            json!({"message":missing_original_reply.clone()}),
+        ),
+    );
+    pump_until(
+        || ui.model.borrow().messages.len() == 6,
+        "subscription adds a reply to an unloaded original",
+    );
+    let messages_before_missing_quote = ui.model.borrow().messages.clone();
+    let _missing_quote = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+            button.has_css_class("quoted-message")
+                && button
+                    .label()
+                    .is_some_and(|label| label.contains("Original message unavailable locally"))
+        })
+    })
+    .expect("reply to an unloaded original starts with a fallback quote");
+    pump_until(
+        || {
+            find_widget(ui.thread.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.has_css_class("quoted-message")
+                        && button
+                            .label()
+                            .is_some_and(|label| label.contains("Found in saved history"))
+                })
+            })
+            .is_some()
+        },
+        "unloaded quote resolves from saved message context",
+    );
+    assert_eq!(
+        ui.model.borrow().messages,
+        messages_before_missing_quote,
+        "fetching quote context does not replace or change the current thread"
+    );
+    let resolved_quote = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+            button.has_css_class("quoted-message")
+                && button
+                    .label()
+                    .is_some_and(|label| label.contains("Found in saved history"))
+        })
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    resolved_quote.emit_clicked();
+    let missing_target = MessageId::new(id(), "m0");
+    pump_until(
+        || {
+            let model = ui.model.borrow();
+            model.anchor.as_ref() == Some(&missing_target)
+                && model.messages.iter().any(|message| {
+                    message.id == missing_target
+                        && message.text.as_deref() == Some("Found in saved history")
+                })
+        },
+        "resolved quote opens the original saved message context",
+    );
+    ui.open(id(), None);
+    pump_until(
+        || {
+            let model = ui.model.borrow();
+            model.selected.as_ref() == Some(&id())
+                && model.anchor.is_none()
+                && model.messages.len() >= 5
+                && model
+                    .messages
+                    .last()
+                    .is_some_and(|message| message.id.local_id == "m5")
+        },
+        "returning from quoted context reopens latest messages",
+    );
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("message_added", json!({"message":missing_original_reply})),
+    );
+    pump_until(
+        || {
+            find_widget(ui.thread.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.has_css_class("quoted-message")
+                        && button
+                            .label()
+                            .is_some_and(|label| label.contains("Found in saved history"))
+                })
+            })
+            .is_some()
+        },
+        "latest thread refetches its unloaded quote",
+    );
+    let updated_original = json!({
+        "id":{"conversation_id":id(),"local_id":"m0"},
+        "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+        "transport":"rcs","sent_at":1,
+        "text":"Updated saved history text",
+        "attachments":[],"reply_to":null,"reactions":[],"deleted":false
+    });
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("message_updated", json!({"message":updated_original})),
+    );
+    pump_until(
+        || {
+            find_widget(ui.thread.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.has_css_class("quoted-message")
+                        && button
+                            .label()
+                            .is_some_and(|label| label.contains("Updated saved history text"))
+                })
+            })
+            .is_some()
+        },
+        "subscription update refreshes a cached quote",
+    );
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response(
+            "message_removed",
+            json!({"message_id":{"conversation_id":id(),"local_id":"m0"}}),
+        ),
+    );
+    pump_until(
+        || {
+            find_widget(ui.thread.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.has_css_class("quoted-message")
+                        && button.label().is_some_and(|label| {
+                            label.contains("Original message unavailable locally")
+                        })
+                })
+            })
+            .is_some()
+                && ui
+                    .model
+                    .borrow()
+                    .messages
+                    .iter()
+                    .any(|message| message.id.local_id == "m6")
+        },
+        "subscription removal invalidates a cached quote",
+    );
+
+    let original_text = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "Hey! Are we still on for Saturday?")
+    })
+    .unwrap();
+    let message_row = ancestor_with_class(&original_text, "message-row").unwrap();
+    let actions = find_widget(&message_row, &|widget| {
+        widget
+            .downcast_ref::<gtk::MenuButton>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Message actions"))
+    })
+    .unwrap()
+    .downcast::<gtk::MenuButton>()
+    .unwrap();
+    actions.popup();
+    let actions_popover = actions.popover().expect("message actions popover");
+    pump_until(
+        || actions_popover.is_visible(),
+        "message actions menu opens",
+    );
+    let copy_action = find_widget(actions_popover.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("Copy text"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    copy_action.emit_clicked();
+    let copied_text = Rc::new(RefCell::new(None));
+    let copied = copied_text.clone();
+    ui.window
+        .clipboard()
+        .read_text_async(None::<&gio::Cancellable>, move |result| {
+            *copied.borrow_mut() = result.ok().flatten().map(|value| value.to_string());
+        });
+    pump_until(
+        || copied_text.borrow().as_deref() == Some("Hey! Are we still on for Saturday?"),
+        "message actions copies original text",
+    );
+    actions.popup();
+    pump_until(
+        || actions_popover.is_visible(),
+        "message actions menu reopens",
+    );
+    let reply_action = find_widget(actions_popover.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("Reply"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    reply_action.emit_clicked();
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| draft.value.reply_to == Some(MessageId::new(id(), "m1")))
+        },
+        "message actions reply targets original message",
+    );
+    ui.set_reply(None);
+
+    let reaction_before = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "👍 1")
+    })
+    .expect("initial reaction aggregate");
+    actions.popup();
+    let reaction_action = find_widget(actions_popover.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("👍"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    reaction_action.emit_clicked();
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.react"
+                    && request["message_id"]["local_id"] == "m1"
+                    && request["emoji"] == "👍"
+            })
+        },
+        "reaction request uses normalized message id",
+    );
+    assert_eq!(
+        reaction_before.downcast_ref::<gtk::Label>().unwrap().text(),
+        "👍 1",
+        "accepted reaction does not optimistically change the aggregate"
+    );
+    actions.popup();
+    let remove_reaction = find_widget(actions_popover.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("Remove my 👍 reaction"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    remove_reaction.emit_clicked();
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.unreact"
+                    && request["message_id"]["local_id"] == "m1"
+                    && request["emoji"] == "👍"
+            })
+        },
+        "reaction removal request uses normalized message id",
+    );
+    assert_eq!(
+        reaction_before.downcast_ref::<gtk::Label>().unwrap().text(),
+        "👍 1",
+        "accepted removal does not optimistically change the aggregate"
+    );
+
+    ui.media_button.emit_clicked();
+    pump_until(
+        || {
+            app.windows()
+                .iter()
+                .any(|window| window.title().as_deref() == Some("Photos and files"))
+        },
+        "media browser opens from conversation header",
+    );
+    pump_until(
+        || {
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request["method"] == "messages.media")
+        },
+        "media browser requests saved media",
+    );
+    let browser = app
+        .windows()
+        .into_iter()
+        .find(|window| window.title().as_deref() == Some("Photos and files"))
+        .unwrap();
+    let first_photo = find_widget(browser.upcast_ref(), &|widget| {
+        widget.has_css_class("image-attachment")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    first_photo.emit_clicked();
+    pump_until(
+        || {
+            app.windows()
+                .iter()
+                .any(|window| window.title().as_deref() == Some("route.png"))
+        },
+        "first media gallery image opens",
+    );
+    let gallery_viewer = app
+        .windows()
+        .into_iter()
+        .find(|window| window.title().as_deref() == Some("route.png"))
+        .unwrap();
+    let next_photo = find_widget(gallery_viewer.upcast_ref(), &|widget| {
+        widget.tooltip_text().as_deref() == Some("Next image")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    next_photo.emit_clicked();
+    pump_until(
+        || {
+            app.windows()
+                .iter()
+                .any(|window| window.title().as_deref() == Some("market-photo.png"))
+        },
+        "gallery navigation changes the displayed filename",
+    );
+    gallery_viewer.close();
+    browser.close();
+
+    let staged_file = gio::File::for_path(&staged_path);
+    ui.compose.buffer().set_text("caption to keep");
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty && draft.value.text == "caption to keep")
+        },
+        "attachment caption saves before drop",
+    );
+    let controllers = ui.stack.observe_controllers();
+    let drop_target = (0..controllers.n_items())
+        .find_map(|index| {
+            controllers
+                .item(index)
+                .and_then(|object| object.downcast::<gtk::DropTarget>().ok())
+        })
+        .expect("conversation stack file drop controller");
+    let one_file = gtk::gdk::FileList::from_array(std::slice::from_ref(&staged_file));
+    let one_file_value = gtk::glib::BoxedValue(one_file.to_value()).to_value();
+    assert!(
+        drop_target.emit_by_name::<bool>("drop", &[&one_file_value, &0.0f64, &0.0f64]),
+        "single local file drop is accepted"
+    );
+    pump_until(
+        || ui.attachment_row.is_visible(),
+        "staged attachment preview appears",
+    );
+    assert!(
+        !requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request["method"] == "messages.send_file"),
+        "staging an attachment does not send it"
+    );
+    let multiple_files =
+        gtk::gdk::FileList::from_array(&[staged_file.clone(), staged_file.clone()]);
+    let multiple_files_value = gtk::glib::BoxedValue(multiple_files.to_value()).to_value();
+    assert!(
+        !drop_target.emit_by_name::<bool>("drop", &[&multiple_files_value, &0.0f64, &0.0f64]),
+        "multiple file drop is rejected"
+    );
+    assert!(
+        ui.attachment_row.is_visible(),
+        "rejected drop preserves staged file"
+    );
+    assert_eq!(
+        text(&ui.compose),
+        "caption to keep",
+        "rejected drop preserves existing caption"
+    );
+    let remove_attachment = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    remove_attachment.emit_clicked();
+    pump_until(
+        || !ui.attachment_row.is_visible(),
+        "attachment can be removed from the draft",
+    );
+    assert_eq!(
+        text(&ui.compose),
+        "caption to keep",
+        "removing media retains its caption"
+    );
+    assert!(
+        ui.stage_file(id(), &staged_file),
+        "fixture image can be staged again"
+    );
+    ui.send.emit_clicked();
+    pump_until(
+        || {
+            !ui.attachment_row.is_visible()
+                && text(&ui.compose).is_empty()
+                && requests.lock().unwrap().iter().any(|request| {
+                    request["method"] == "messages.send_file"
+                        && request["conversation_id"]["local_id"] == "thread-1"
+                        && request["caption"] == "caption to keep"
+                })
+        },
+        "accepted attachment send retains caption in request then clears captured draft",
+    );
+    ui.compose.buffer().set_text("");
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty)
+        },
+        "empty draft saved before existing round-trip checks",
+    );
+
     if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
         pump_until(
             || {

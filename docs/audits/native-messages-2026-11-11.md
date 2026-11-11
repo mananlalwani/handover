@@ -225,3 +225,66 @@ the release artifacts. The reopened app has a mapped window, both services are
 active, and the daemon returns accounts and the persistent workspace over IPC.
 The existing account reconnected. This confirms startup and IPC health; the
 scroll behavior was exercised with the isolated synthetic conversation.
+
+
+## Conversation interactions and saved media
+
+Quoted replies show the original sender and saved text. The app resolves missing
+originals through saved context without replacing the current conversation.
+Clicking a quote scrolls to its loaded original or opens that message's saved
+context. Cached originals follow update and removal events. Message actions are
+available through right-click and keyboard-accessible menus. Copy and reply use
+the existing normalized message and draft models.
+
+Reactions use the existing normalized react/unreact commands only when the
+conversation advertises support. The app renders aggregates from message
+updates and never increments counts after command acceptance. Reaction errors
+have separate wording from text and media sends.
+
+File selection now stages one attachment in the composer. Drag-and-drop uses
+the same staging path. The preview supports removal and an optional caption;
+only Send submits the file. Acceptance clears only the captured selection and
+matching caption draft. Failed or uncertain requests retain both. Attachments
+cannot be combined with quoted replies. The composer accepts local regular
+UTF-8 paths up to 50 MiB, rejects symlinks, and keeps at most 32 conversation
+selections. These selections stay in memory, while captions use the existing
+daemon draft persistence. Closing with staged files offers keep or discard.
+
+Photos and files in the conversation header opens a browser over the saved
+archive, independent of the current loaded message window. The normalized
+`messages.media` method scopes every query to one known account/conversation,
+excludes deleted and text-only messages, and returns pages of 16 messages.
+Offset is bounded at 10000 and responses use the existing chunk limits. The
+browser keeps one page, at most 256 attachments, with one outstanding read and
+a ten-second deadline. It does not download missing files or claim a complete
+provider archive. Image galleries support Previous/Next and arrow keys as well
+as the existing fit, zoom, panning, and external-viewer actions.
+
+
+The private GTK scenario covers quoted sender/text previews, fetching an
+original outside the loaded window without replacing it, jumping into that
+original's saved context, and quote update/removal events. It exercises the
+message menu, clipboard copy, reply selection, reaction and removal requests,
+and unchanged reaction counts after acceptance. It opens the saved-media
+browser and navigates between generated images. A real GTK drop signal stages
+a single fixture file; a multiple-file drop preserves the existing selection
+and caption. Removing an attachment keeps its caption, while accepted file
+submission carries the caption and clears the captured draft. Existing history,
+reconnect, uncertain-send, setup, and single-instance checks remain covered.
+
+Light and narrow dark fixture layouts passed. Formatting, strict workspace
+Clippy, and the Rust workspace tests passed with 598 tests and seven ignored
+by default. The GTK scenario passed when invoked explicitly. Android build,
+lint, and unit checks passed, along with QML lint and all 49 JavaScript tests.
+The fixture supplies the interaction evidence. No live send, reaction mutation,
+authentication, or physical-phone flow was exercised.
+
+
+The matching host-built app, daemon, CLI, and desktop bridge were installed
+after backing up their previous binaries. The old app closed normally before
+the daemon restarted. All installed hashes match the release artifacts. Both
+services are active, the reopened app has a mapped window, and the existing
+account reconnected. Read-only live IPC returned the persistent workspace and
+five saved media-bearing messages for the selected conversation. This verifies
+startup and archive integration; sending and interaction semantics were tested
+with synthetic conversations.

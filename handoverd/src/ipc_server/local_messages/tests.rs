@@ -87,15 +87,15 @@ async fn archived_search_and_context_work_while_account_is_offline() {
     let dir = tempfile::tempdir().unwrap();
     let archive =
         crate::messaging_archive::MessageArchive::open(&dir.path().join("history.sqlite")).unwrap();
-    archive
-        .merge(vec![message(
-            &conversation,
-            "archived",
-            12,
-            "needle in saved history",
-        )])
-        .await
-        .unwrap();
+    let mut saved = message(&conversation, "archived", 12, "needle in saved history");
+    saved.attachments.push(Attachment {
+        local_id: "saved-image".into(),
+        mime: Some("image/png".into()),
+        name: Some("image.png".into()),
+        size_bytes: Some(12),
+        staged_path: None,
+    });
+    archive.merge(vec![saved]).await.unwrap();
     let state = state_with_account(&conversation);
     state.write().unwrap().message_archive = Some(archive);
 
@@ -115,7 +115,7 @@ async fn archived_search_and_context_work_while_account_is_offline() {
     let context = call(
         &state,
         Method::MessagesContext {
-            message_id: MessageId::new(conversation, "archived"),
+            message_id: MessageId::new(conversation.clone(), "archived"),
         },
     )
     .await;
@@ -123,6 +123,38 @@ async fn archived_search_and_context_work_while_account_is_offline() {
         matches!(&context[..], [ServerMessage { payload: ServerPayload::MessageContext { messages, done: true, .. }, .. }]
         if messages.len() == 1 && messages[0].text.as_deref() == Some("needle in saved history"))
     );
+
+    let media = call(
+        &state,
+        Method::MessagesMedia {
+            conversation_id: conversation.clone(),
+            offset: 0,
+        },
+    )
+    .await;
+    assert!(matches!(
+        &media[..],
+        [ServerMessage { payload: ServerPayload::MessageMedia { conversation_id, messages, has_more: false, done: true }, .. }]
+        if conversation_id == &conversation && messages.len() == 1 && messages[0].attachments.len() == 1
+    ));
+    let invalid = call(
+        &state,
+        Method::MessagesMedia {
+            conversation_id: conversation.clone(),
+            offset: 10_001,
+        },
+    )
+    .await;
+    assert!(matches!(
+        &invalid[..],
+        [ServerMessage {
+            payload: ServerPayload::Error {
+                code: ErrorCode::InvalidMessagingCommand,
+                ..
+            },
+            ..
+        }]
+    ));
 }
 
 #[tokio::test]
@@ -308,6 +340,13 @@ async fn unknown_account_filters_reject_search_context_and_draft_access() {
         },
         Method::MessagesDraft {
             conversation_id: hidden,
+        },
+        Method::MessagesMedia {
+            conversation_id: ConversationId::new(
+                MessagingAccountId::new("not-configured"),
+                "thread-1",
+            ),
+            offset: 0,
         },
     ] {
         let messages = call(&state, method).await;

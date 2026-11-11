@@ -224,6 +224,12 @@ pub enum Method {
         #[serde(default)]
         offset: u32,
     },
+    #[serde(rename = "messages.media")]
+    MessagesMedia {
+        conversation_id: ConversationId,
+        #[serde(default)]
+        offset: u32,
+    },
     #[serde(rename = "messages.previews")]
     MessagesPreviews {
         conversation_ids: Vec<ConversationId>,
@@ -628,6 +634,12 @@ pub enum ServerPayload {
     MessageSearch {
         hits: Vec<handover_core::MessageSearchHit>,
         has_more: bool,
+    },
+    MessageMedia {
+        conversation_id: ConversationId,
+        messages: Vec<Message>,
+        has_more: bool,
+        done: bool,
     },
     MessagePreviews {
         messages: Vec<Message>,
@@ -1561,6 +1573,38 @@ impl Client {
             ServerPayload::MessageSearch { hits, has_more } => Ok((hits, has_more)),
             payload => Err(unexpected(payload)),
         }
+    }
+
+    /// List saved messages with attachments for one conversation.
+    pub async fn message_media(
+        &mut self,
+        conversation_id: ConversationId,
+        offset: u32,
+    ) -> Result<(Vec<Message>, bool), IpcError> {
+        let expected_id = conversation_id.clone();
+        self.send(Method::MessagesMedia {
+            conversation_id,
+            offset,
+        })
+        .await?;
+        let mut has_more = false;
+        let messages = self
+            .collect_list(|payload| match payload {
+                ServerPayload::MessageMedia {
+                    conversation_id,
+                    messages,
+                    has_more: frame_has_more,
+                    done,
+                } if conversation_id == expected_id => {
+                    if done {
+                        has_more = frame_has_more;
+                    }
+                    Some((messages, done))
+                }
+                _ => None,
+            })
+            .await?;
+        Ok((messages, has_more))
     }
 
     /// Last saved message per requested conversation. Does not contact a backend.

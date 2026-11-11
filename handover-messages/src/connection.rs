@@ -17,9 +17,11 @@ pub enum Request {
     },
     History(ConversationId, Option<String>),
     Context(MessageId),
+    Quote(MessageId),
+    React(MessageId, String, bool),
     Previews(Vec<ConversationId>),
     Send(MessageDraft),
-    Attachment(ConversationId, String),
+    Attachment(MessageDraft, String),
     Read(ConversationId, Option<MessageId>),
 }
 
@@ -30,6 +32,7 @@ pub enum Reply {
     Search(Vec<MessageSearchHit>, bool),
     History(ConversationId, Vec<Message>, Option<String>),
     Context(ConversationId, Vec<Message>, Option<String>),
+    Quote(MessageId, Option<Box<Message>>),
     Previews(Vec<Message>),
     Sent(String),
     Accepted,
@@ -155,7 +158,10 @@ async fn retry(
 }
 
 async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
-    let sending = matches!(request, Request::Send(_) | Request::Attachment(..));
+    let sending = matches!(
+        request,
+        Request::Send(_) | Request::Attachment(..) | Request::React(..)
+    );
     let result = tokio::time::timeout(Duration::from_secs(255), async {
         let mut client = Client::connect_to(path).await?;
         Ok::<_, IpcError>(match request {
@@ -185,6 +191,19 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                 let (messages, cursor_next) = client.message_context_page(id).await?;
                 Reply::Context(conversation_id, messages, cursor_next)
             }
+            Request::Quote(id) => {
+                let messages = client.message_context(id.clone()).await?;
+                let message = messages.into_iter().find(|message| message.id == id);
+                Reply::Quote(id, message.map(Box::new))
+            }
+            Request::React(id, emoji, remove) => {
+                if remove {
+                    client.unreact_to_message(id, emoji).await?;
+                } else {
+                    client.react_to_message(id, emoji).await?;
+                }
+                Reply::Accepted
+            }
             Request::Previews(ids) => Reply::Previews(client.message_previews(ids).await?),
             Request::Send(draft) => Reply::Sent(match draft.reply_to {
                 Some(id) => client.send_message_reply(id, draft.text).await?,
@@ -194,8 +213,13 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                         .await?
                 }
             }),
-            Request::Attachment(id, url) => {
-                Reply::Sent(client.send_message_file(id, url, None).await?)
+            Request::Attachment(draft, url) => {
+                let caption = (!draft.text.trim().is_empty()).then_some(draft.text);
+                Reply::Sent(
+                    client
+                        .send_message_file(draft.conversation_id, url, caption)
+                        .await?,
+                )
             }
             Request::Read(id, message) => {
                 client.mark_conversation_read(id, message).await?;
