@@ -35,7 +35,9 @@ Handover is pre-1.0. Public interfaces may change.
   RCS conversations with one configured RCS SIM and an exact known sender match.
   Group and encrypted composing events are not supported.
   See the [incoming typing investigation](gmessages-typing.md).
-- Message history is a bounded cache, not a complete persistent archive.
+- Message state and fetched history pages can persist across daemon restarts.
+  The live cache and on-disk archive have limits; stored history is not a
+  complete copy of the provider's history.
 
 ## Packaging
 

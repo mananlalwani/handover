@@ -24,6 +24,11 @@ draft continuation build on these shared services.
 First-party Messages, Calls, or Contacts apps are useful where a shell panel is
 insufficient. They remain replaceable clients of the same public IPC.
 
+The [work plan](docs/work-plan.md) orders the current gaps into dependency
+remediation, validation, IPC compatibility, desktop workflows, messaging actions,
+history retention, and client scope, with completion criteria and dependencies
+for each.
+
 ## Versioning
 
 Handover remains on `0.x` while public interfaces may change. Version `1.0` means
