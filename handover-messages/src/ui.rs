@@ -16,6 +16,8 @@ type Target = (ConversationId, Option<MessageId>);
 pub struct Window {
     pub window: adw::ApplicationWindow,
     model: RefCell<Model>,
+    photos: RefCell<crate::contact_photos::ContactPhotos>,
+    media: crate::media::Media,
     commands: tokio::sync::mpsc::Sender<Command>,
     pending: RefCell<BTreeMap<u64, Request>>,
     sequence: Cell<u64>,
@@ -53,6 +55,7 @@ pub struct Window {
     last_read: RefCell<Option<MessageId>>,
     render_revision: Cell<u64>,
     search_request: Cell<Option<u64>>,
+    contacts_request: Cell<Option<u64>>,
     updating: Cell<bool>,
     draft_timer: RefCell<Option<glib::SourceId>>,
     search_timer: RefCell<Option<glib::SourceId>>,
@@ -82,18 +85,22 @@ impl Window {
         let banner = adw::Banner::new("Handover is offline. Reconnecting…");
         toolbar.add_top_bar(&banner);
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_position(330);
+        paned.set_position(300);
         paned.set_resize_start_child(false);
         paned.set_shrink_start_child(false);
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sidebar.set_width_request(290);
+        sidebar.set_width_request(260);
         sidebar.add_css_class("messages-sidebar");
-        let sidebar_header = adw::HeaderBar::new();
-        sidebar_header.set_show_end_title_buttons(false);
-        sidebar_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+        let sidebar_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        sidebar_header.add_css_class("app-chrome");
+        let sidebar_handle = gtk::WindowHandle::new();
+        sidebar_handle.set_child(Some(&sidebar_header));
         let brand = gtk::Label::new(Some("Messages"));
         brand.add_css_class("sidebar-title");
-        sidebar_header.pack_start(&brand);
+        sidebar_header.append(&brand);
+        let sidebar_space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        sidebar_space.set_hexpand(true);
+        sidebar_header.append(&sidebar_space);
         let menu = gio::Menu::new();
         menu.append(
             Some("Connect Google Messages…"),
@@ -105,8 +112,8 @@ impl Window {
             .menu_model(&menu)
             .tooltip_text("Main menu")
             .build();
-        sidebar_header.pack_end(&menu_button);
-        sidebar.append(&sidebar_header);
+        sidebar_header.append(&menu_button);
+        sidebar.append(&sidebar_handle);
         let tools = gtk::Box::new(gtk::Orientation::Vertical, 0);
         tools.add_css_class("sidebar-tools");
         let search = gtk::SearchEntry::new();
@@ -151,13 +158,16 @@ impl Window {
             .tooltip_text("Filter accounts")
             .popover(&filters)
             .build();
-        sidebar_header.pack_end(&filter_button);
+        sidebar_header.insert_child_after(&filter_button, Some(&sidebar_space));
         paned.set_start_child(Some(&sidebar));
         let content = adw::ToolbarView::new();
         content.add_css_class("conversation-pane");
         content.set_hexpand(true);
-        let content_header = adw::HeaderBar::new();
-        content_header.set_show_start_title_buttons(false);
+        let content_header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        content_header.add_css_class("app-chrome");
+        content_header.add_css_class("thread-chrome");
+        let content_handle = gtk::WindowHandle::new();
+        content_handle.set_child(Some(&content_header));
         let title = gtk::Label::new(Some("Messages"));
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -175,28 +185,48 @@ impl Window {
         heading.append(&avatar);
         heading.append(&identity);
         heading.add_css_class("contact-heading");
-        content_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-        content_header.pack_start(&heading);
+        content_header.append(&heading);
+        let thread_space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        thread_space.set_hexpand(true);
+        content_header.append(&thread_space);
         let connection_status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         connection_status.set_size_request(6, 6);
         connection_status.set_valign(gtk::Align::Center);
         connection_status.add_css_class("connection-indicator");
-        content_header.pack_end(&connection_status);
+        content_header.append(&connection_status);
         let details = gtk::Popover::new();
         let details_button = gtk::MenuButton::builder()
             .label("Details")
             .tooltip_text("Conversation details")
             .popover(&details)
             .build();
-        content_header.pack_end(&details_button);
-        content.add_top_bar(&content_header);
+        content_header.append(&details_button);
+        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        close.set_tooltip_text(Some("Close window"));
+        close.add_css_class("chrome-close");
+        let weak_window = window.downgrade();
+        close.connect_clicked(move |_| {
+            if let Some(window) = weak_window.upgrade() {
+                window.close();
+            }
+        });
+        content_header.append(&close);
+        content.add_top_bar(&content_handle);
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
-        let empty = adw::StatusPage::builder()
-            .title("Your messages, together")
-            .description("Choose a conversation to pick up where you left off.")
-            .icon_name("chat-message-new-symbolic")
-            .build();
+        let empty = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        empty.set_halign(gtk::Align::Center);
+        empty.set_valign(gtk::Align::Center);
+        let icon = gtk::Image::from_icon_name("chat-message-new-symbolic");
+        icon.set_pixel_size(36);
+        icon.add_css_class("dim-label");
+        empty.append(&icon);
+        let welcome = gtk::Label::new(Some("Choose a conversation"));
+        welcome.add_css_class("empty-title");
+        empty.append(&welcome);
+        let help = gtk::Label::new(Some("Your messages, photos and files appear here."));
+        help.add_css_class("dim-label");
+        empty.append(&help);
         stack.add_named(&empty, Some("empty"));
         let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let thread = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -318,6 +348,8 @@ impl Window {
         let this = Rc::new(Self {
             window,
             model: RefCell::new(Model::default()),
+            photos: RefCell::new(crate::contact_photos::ContactPhotos::default()),
+            media: crate::media::Media::new(),
             commands,
             pending: RefCell::new(BTreeMap::new()),
             sequence: Cell::new(0),
@@ -355,6 +387,7 @@ impl Window {
             last_read: RefCell::new(None),
             render_revision: Cell::new(0),
             search_request: Cell::new(None),
+            contacts_request: Cell::new(None),
             updating: Cell::new(false),
             draft_timer: RefCell::new(None),
             search_timer: RefCell::new(None),
@@ -370,6 +403,14 @@ impl Window {
                 this.event(event);
             }
         });
+        let weak = Rc::downgrade(&this);
+        sidebar_scroll
+            .vadjustment()
+            .connect_value_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.media.refresh();
+                }
+            });
         let weak = Rc::downgrade(&this);
         this.search.connect_search_changed(move |_| {
             if let Some(this) = weak.upgrade() {
@@ -573,6 +614,9 @@ impl Window {
             self.model.borrow_mut().notice = "Too many requests. Try again shortly.".into();
             return false;
         }
+        if matches!(request, Request::Contacts) {
+            self.contacts_request.set(Some(id));
+        }
         self.pending.borrow_mut().insert(id, request);
         true
     }
@@ -626,6 +670,7 @@ impl Window {
                     }
                 }
                 self.request(Request::Workspace);
+                self.request(Request::Contacts);
                 self.render_sidebar();
                 if let Some((id, anchor)) = self.pending_open.borrow_mut().take() {
                     self.open(id, anchor);
@@ -655,11 +700,23 @@ impl Window {
                         | ServerPayload::MessageRemoved { .. }
                         | ServerPayload::AccountRemoved { .. }
                 );
+                let contacts_changed = matches!(
+                    *payload,
+                    ServerPayload::ContactsSynced { .. } | ServerPayload::ContactsRemoved { .. }
+                );
                 let snapshots = matches!(*payload, ServerPayload::Snapshot { .. });
+                if contacts_changed || snapshots {
+                    self.contacts_request.set(None);
+                    self.photos.borrow_mut().replace(vec![]);
+                    self.media.forget_photos();
+                }
                 self.model.borrow_mut().state(*payload);
                 self.render_sidebar();
                 if thread_changed {
                     self.render_thread();
+                }
+                if contacts_changed || snapshots {
+                    self.request(Request::Contacts);
                 }
                 if snapshots {
                     self.previewed.borrow_mut().clear();
@@ -670,6 +727,9 @@ impl Window {
                 let Some(request) = self.pending.borrow_mut().remove(&id) else {
                     return;
                 };
+                if matches!(request, Request::Contacts) && self.contacts_request.get() != Some(id) {
+                    return;
+                }
                 if matches!(request, Request::Search { .. })
                     && self.search_request.get() != Some(id)
                 {
@@ -810,6 +870,11 @@ impl Window {
                     model.notice.clear();
                 }
             }
+            Reply::Contacts(contacts) => {
+                self.media.forget_photos();
+                self.photos.borrow_mut().replace(contacts);
+                self.render_sidebar();
+            }
             Reply::Previews(messages) => {
                 if let Request::Previews(ids) = request {
                     let mut model = self.model.borrow_mut();
@@ -833,7 +898,7 @@ impl Window {
 
     fn failed(&self, request: Request, error: Failure) {
         match request {
-            Request::Previews(_) => {}
+            Request::Previews(_) | Request::Contacts => {}
             Request::SaveDraft(sent) => {
                 if let Some(draft) = self
                     .model
@@ -1204,6 +1269,7 @@ impl Window {
                 conversation.unread_count.is_some_and(|count| count > 0),
                 conversation.last_activity_at,
                 conversation.kind == ConversationKind::Group,
+                self.photos.borrow().conversation(conversation),
             );
             rows.push((conversation.id.clone(), None));
         }
@@ -1214,6 +1280,7 @@ impl Window {
                 false,
                 hit.sent_at,
                 false,
+                self.photos.borrow().participant(&hit.sender),
             );
             rows.push((
                 hit.message_id.conversation_id.clone(),
@@ -1271,11 +1338,23 @@ impl Window {
         self.next_results
             .set_sensitive(model.connected && model.more);
         self.updating.set(false);
+        self.media.schedule(&self.window);
     }
-    fn add_row(&self, title: &str, subtitle: &str, unread: bool, time: Option<i64>, group: bool) {
+    fn add_row(
+        &self,
+        title: &str,
+        subtitle: &str,
+        unread: bool,
+        time: Option<i64>,
+        group: bool,
+        photo: Option<std::sync::Arc<str>>,
+    ) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let avatar = adw::Avatar::new(40, Some(title), true);
         style_avatar(&avatar, title, group);
+        if let Some(photo) = photo {
+            self.media.avatar(&avatar, photo);
+        }
         row.append(&avatar);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
         text.set_hexpand(true);
@@ -1361,6 +1440,14 @@ impl Window {
             conversation.is_some_and(|conversation| conversation.kind == ConversationKind::Group),
         );
         self.avatar.set_visible(model.selected.is_some());
+        if let Some(photo) =
+            conversation.and_then(|conversation| self.photos.borrow().conversation(conversation))
+        {
+            self.media.avatar(&self.avatar, photo);
+        } else {
+            self.media.clear_avatar(&self.avatar);
+        }
+        self.media.schedule(&self.window);
         let account = model.selected.as_ref().and_then(|id| {
             model
                 .accounts
@@ -1644,7 +1731,19 @@ impl Window {
                 message.deleted || message.text.as_ref().is_some_and(|text| !text.is_empty()),
             );
             bubble.append(&text);
+            let mut images = Vec::new();
             for attachment in message.attachments.iter().filter(|_| !message.deleted) {
+                if AttachmentKind::of_mime(attachment.mime.as_deref()) == AttachmentKind::Image {
+                    let image = self.media.attachment(attachment, &self.window);
+                    image.set_halign(if message.sender.is_self {
+                        gtk::Align::End
+                    } else {
+                        gtk::Align::Start
+                    });
+                    image.set_margin_top(6);
+                    images.push(image);
+                    continue;
+                }
                 let button =
                     gtk::Button::with_label(attachment.name.as_deref().unwrap_or("Attachment"));
                 button.set_sensitive(attachment.staged_path.is_some());
@@ -1664,7 +1763,17 @@ impl Window {
                 });
                 bubble.append(&button);
             }
+            bubble.set_visible(
+                text.is_visible()
+                    || message.reply_to.is_some()
+                    || message.attachments.iter().any(|attachment| {
+                        AttachmentKind::of_mime(attachment.mime.as_deref()) != AttachmentKind::Image
+                    }),
+            );
             column.append(&bubble);
+            for image in images {
+                column.append(&image);
+            }
             let reply = gtk::Button::from_icon_name("mail-reply-sender-symbolic");
             reply.set_tooltip_text(Some("Reply to this message"));
             reply.add_css_class("flat");
@@ -1722,6 +1831,7 @@ impl Window {
                     }
                 }
                 this.restoring.set(false);
+                this.media.refresh();
             }
             glib::ControlFlow::Break
         });
@@ -1747,6 +1857,7 @@ impl Window {
         });
     }
     fn scrolled(self: &Rc<Self>) {
+        self.media.refresh();
         if self.restoring.get() || self.updating.get() {
             return;
         }

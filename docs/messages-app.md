@@ -48,6 +48,27 @@ use later provider evidence. If the connection drops before the acknowledgement,
 the app retains the draft and warns that the outcome is unknown. It does not
 resend automatically. Check the conversation before sending again.
 
+## Images and contact pictures
+
+Image attachments stored locally appear directly in the conversation. Click an
+image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
+choose Fit to see the whole image. Escape closes the viewer. Open externally
+uses your system viewer when needed. JPEG and PNG are supported; GIF, WebP, and
+BMP depend on installed image loaders. Animated images currently show a still
+preview. Attachments without a local file show that they are unavailable locally.
+
+Contact pictures come from the daemon's synced address book. Direct
+conversations use a photo when a participant's phone number or email has an
+exact normalized match. Formatting punctuation is ignored for phone numbers;
+country codes remain part of the match. Ambiguous matches and missing photos
+use initials or a person/group icon. Display names alone never select a photo.
+Pictures refresh when the daemon reports an address-book change. The app reads
+existing contacts and does not start a phone sync or fetch remote profile images.
+
+The interface uses custom GTK title bars, neutral fallback avatars, and Inter
+when available, with a system sans-serif fallback. GTK supplies native window
+dragging, keyboard input, menus, and accessibility behavior.
+
 ## Account setup
 
 The account menu can run the optional `handover-google-messages-setup` component.

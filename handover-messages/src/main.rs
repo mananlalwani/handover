@@ -1,4 +1,7 @@
 mod connection;
+mod contact_photos;
+mod image_canvas;
+mod media;
 mod model;
 mod setup;
 mod ui;

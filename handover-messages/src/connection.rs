@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub enum Request {
     Workspace,
+    Contacts,
     Select(Option<MessagingLocation>),
     Draft(ConversationId),
     SaveDraft(MessageDraft),
@@ -24,6 +25,7 @@ pub enum Request {
 
 pub enum Reply {
     Workspace(MessagingWorkspace),
+    Contacts(Vec<Contact>),
     Draft(MessageDraft),
     Search(Vec<MessageSearchHit>, bool),
     History(ConversationId, Vec<Message>, Option<String>),
@@ -158,6 +160,7 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
         let mut client = Client::connect_to(path).await?;
         Ok::<_, IpcError>(match request {
             Request::Workspace => Reply::Workspace(client.messaging_workspace().await?),
+            Request::Contacts => Reply::Contacts(client.contacts().await?),
             Request::Select(location) => {
                 Reply::Workspace(client.select_message_location(location).await?)
             }

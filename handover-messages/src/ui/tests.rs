@@ -36,7 +36,7 @@ fn fixture() -> (MessagingAccount, Conversation) {
         participants: vec![Participant {
             local_id: "alex".into(),
             display_name: Some("Alex Example".into()),
-            address: None,
+            address: Some("+1 (312) 555-0100".into()),
             is_self: false,
         }],
         latest_message_id: None,
@@ -48,6 +48,31 @@ fn fixture() -> (MessagingAccount, Conversation) {
             .collect(),
     };
     (account, conversation)
+}
+
+fn make_media_fixtures(root: &std::path::Path) -> (PathBuf, String) {
+    let directory = root.join("fixtures");
+    std::fs::create_dir_all(&directory).expect("create private fixture directory");
+    let image = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 24, 24)
+        .expect("allocate fixture image");
+    for y in 0..24 {
+        for x in 0..24 {
+            let (r, g, b) = if (x / 6 + y / 6) % 2 == 0 {
+                (59, 130, 244)
+            } else {
+                (245, 158, 11)
+            };
+            image.put_pixel(x, y, r, g, b, 255);
+        }
+    }
+    let photo = image
+        .save_to_bufferv("jpeg", &[])
+        .expect("encode fixture contact JPEG");
+    let staged_path = directory.join("inline-map.png");
+    image
+        .savev(&staged_path, "png", &[])
+        .expect("write fixture attachment PNG");
+    (staged_path, glib::base64_encode(&photo).to_string())
 }
 
 fn conversations() -> Vec<Conversation> {
@@ -250,7 +275,12 @@ struct FixtureState {
     drafts: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 
-fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
+fn fake_server(
+    path: PathBuf,
+    state: FixtureState,
+    staged_path: PathBuf,
+    photo_base64: String,
+) -> thread::JoinHandle<()> {
     let FixtureState {
         fail_send,
         disconnect_subscription,
@@ -260,6 +290,7 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
         sent,
         drafts,
     } = state;
+    let staged_path = staged_path.to_string_lossy().into_owned();
     let listener = UnixListener::bind(path).unwrap();
     thread::spawn(move || {
         for connection in listener.incoming() {
@@ -271,6 +302,8 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
             let requests = requests.clone();
             let sent = sent.clone();
             let drafts = drafts.clone();
+            let staged_path = staged_path.clone();
+            let photo_base64 = photo_base64.clone();
             thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -370,7 +403,7 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                                 {"id":{"conversation_id":conversation.id,"local_id":"m2"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794406500000000i64,"text":"Absolutely. I found a little place near the river that looks great. We could meet there around noon, grab lunch, and walk along the trail if the weather holds.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m4"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407100000000i64,"text":"Will do. It's called Riverside Market. I'll send you the address shortly.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
-                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
+                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[{"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path}],"reply_to":null,"reactions":[],"deleted":false}
                             ],"cursor_next":null}),
                         ),
                     ),
@@ -411,6 +444,20 @@ fn fake_server(path: PathBuf, state: FixtureState) -> thread::JoinHandle<()> {
                         response(
                             "conversation_accepted",
                             json!({"conversation_id":conversation.id}),
+                        ),
+                    ),
+                    "contacts.list" => send_json(
+                        &mut stream,
+                        response(
+                            "contacts",
+                            json!({"contacts":[{
+                                "device_id":"android:gui-test",
+                                "local_id":"alex-contact",
+                                "display_name":"Alex Example",
+                                "phones":["+1 (312) 555-0100"],
+                                "emails":[],
+                                "photo":photo_base64
+                            }]}),
                         ),
                     ),
                     _ => panic!("unexpected fake IPC request: {method}"),
@@ -532,6 +579,9 @@ fn native_window_round_trips_real_frontend_actions() {
     let subscription_writer = Arc::new(Mutex::new(None));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let drafts = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    gtk::init().expect("GTK display");
+    adw::init().expect("libadwaita initialization");
+    let (staged_path, photo_base64) = make_media_fixtures(&root);
     let _server = fake_server(
         socket,
         FixtureState {
@@ -543,13 +593,13 @@ fn native_window_round_trips_real_frontend_actions() {
             sent: sent.clone(),
             drafts,
         },
+        staged_path,
+        photo_base64,
     );
     assert!(
         root.join("runtime/handover/handoverd.sock").exists(),
         "private fake daemon must be bound before constructing the window"
     );
-    gtk::init().expect("GTK display");
-    adw::init().expect("libadwaita initialization");
     if std::env::var_os("HANDOVER_MESSAGES_TEST_DARK").is_some() {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
     }
@@ -574,6 +624,82 @@ fn native_window_round_trips_real_frontend_actions() {
         || ui.model.borrow().selected_draft().is_some_and(|d| d.loaded),
         "draft load",
     );
+    pump_until(
+        || ui.avatar.custom_image().is_some(),
+        "synced contact photo in conversation header",
+    );
+    pump_until(
+        || {
+            find_widget(ui.thread.upcast_ref(), &|widget| {
+                widget
+                    .downcast_ref::<crate::image_canvas::ImageCanvas>()
+                    .is_some_and(|canvas| canvas.texture().is_some())
+            })
+            .is_some()
+        },
+        "decoded inline image preview",
+    );
+    let image_button = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget.has_css_class("image-attachment")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    image_button.emit_clicked();
+    pump_until(
+        || {
+            app.windows()
+                .iter()
+                .any(|window| window.title().as_deref() == Some("route.png"))
+        },
+        "in-app image viewer",
+    );
+    let viewer = app
+        .windows()
+        .into_iter()
+        .find(|window| window.title().as_deref() == Some("route.png"))
+        .unwrap();
+    pump_until(
+        || {
+            find_widget(viewer.upcast_ref(), &|widget| {
+                widget
+                    .downcast_ref::<crate::image_canvas::ImageCanvas>()
+                    .is_some_and(|canvas| canvas.texture().is_some())
+            })
+            .is_some()
+        },
+        "viewer image decode",
+    );
+    let canvas = find_widget(viewer.upcast_ref(), &|widget| {
+        widget.has_css_class("image-canvas")
+    })
+    .unwrap()
+    .downcast::<crate::image_canvas::ImageCanvas>()
+    .unwrap();
+    let zoom = find_widget(viewer.upcast_ref(), &|widget| {
+        widget.tooltip_text().as_deref() == Some("Zoom in")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    zoom.emit_clicked();
+    assert!(canvas.zoomed_size().0 > 0);
+    let fit = find_widget(viewer.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("Fit"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    fit.emit_clicked();
+    assert_eq!(canvas.zoomed_size(), (0, 0));
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        let name = format!("{}-viewer.png", path.file_stem().unwrap().to_string_lossy());
+        capture_fixture(&viewer, path.with_file_name(name));
+    }
+    viewer.close();
     if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
         pump_until(
             || {

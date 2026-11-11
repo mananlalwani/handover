@@ -142,3 +142,45 @@ its normal window-close flow before the daemon restarted. The new app process
 and mapped window were verified, the existing account reconnected, and the
 installed daemon returned saved previews over IPC. Visual inspection used the
 private synthetic fixture. No live send or authentication flow was attempted.
+
+## Inline images, contact pictures, and custom chrome
+
+The app now shows locally staged image attachments in the conversation and
+opens them in a native image viewer with fit, zoom, panning, Escape, and an
+external-viewer action. Thumbnails use a stable bounded layout and are decoded
+when visible. The main title bars use custom GTK window handles and controls.
+Fallback avatars use neutral styling. This replaces the earlier GNOME-oriented
+visual direction while retaining native GTK behavior.
+
+Contact photos use the existing `contacts.list` IPC response. Matching uses
+exact normalized phone numbers or email addresses, with no name-only or suffix
+matching. Conflicting photos for an address remain unresolved. Contact snapshots
+are correlated to their request; removed or replaced photo bindings are cleared,
+and old in-flight photo decodes cannot repopulate a newer photo cache.
+
+The image loader has two workers, a 32-job queue, a 64 MiB texture-cache budget,
+and 96 retained decoded cache entries. Visible widgets may also retain their displayed
+texture. Off-screen widgets release their images. Input files must be regular,
+non-symlink files no larger than 25 MiB. The decoder rejects source dimensions
+over 32,768 pixels on either edge or 100 megapixels in total and bounds decoded
+output size. Images remain local. Unsupported or missing images show a fallback.
+
+The GUI fixture generates its own PNG attachment and JPEG contact picture.
+It verifies actual decoding, the matched header photo, opening the image viewer,
+zoom and fit, and the existing draft, search, reconnect, uncertain-send, and
+single-instance paths. The custom layout passed dark and narrow light checks.
+Formatting and strict workspace Clippy passed. The Rust workspace suite passed
+590 tests, with seven environment-dependent tests ignored by default. The GUI
+scenario was invoked explicitly through its private-display launcher.
+
+The running daemon had 22 photos in its synced address book, with exact address
+matches for 34 direct conversation records. This is metadata evidence; the
+fixture supplies the automated rendering evidence. No phone sync, live send,
+remote profile-photo request, or authentication flow was performed.
+
+The host-built media app was installed and reopened after its normal draft-saving
+window close. The installed binary matches the validated release build. Its
+process and mapped window were verified. The daemon process and systemd start
+timestamp stayed unchanged during this app-only update. Physical-phone behavior
+and live media delivery were not exercised; rendering and viewer behavior were
+validated with the isolated generated fixtures.

@@ -34,9 +34,25 @@ pub fn present(parent: &adw::ApplicationWindow) {
         .default_height(460)
         .build();
     let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-    toolbar.add_top_bar(&header);
+    window.add_css_class("handover-messages");
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    header.add_css_class("app-chrome");
+    let space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    space.set_hexpand(true);
+    header.append(&space);
+    let close = gtk::Button::from_icon_name("window-close-symbolic");
+    close.add_css_class("chrome-close");
+    close.set_tooltip_text(Some("Close setup"));
+    let weak = window.downgrade();
+    close.connect_clicked(move |_| {
+        if let Some(window) = weak.upgrade() {
+            window.close();
+        }
+    });
+    header.append(&close);
+    let handle = gtk::WindowHandle::new();
+    handle.set_child(Some(&header));
+    toolbar.add_top_bar(&handle);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
     content.set_margin_top(20);
     content.set_margin_bottom(20);
@@ -62,9 +78,16 @@ pub fn present(parent: &adw::ApplicationWindow) {
     let browsers = gtk::ListBox::new();
     browsers.set_selection_mode(gtk::SelectionMode::None);
     browsers.add_css_class("boxed-list");
-    let row = adw::ActionRow::builder().title("Browser").build();
-    row.add_suffix(&picker);
-    row.set_activatable_widget(Some(&picker));
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.set_margin_top(8);
+    row.set_margin_bottom(8);
+    row.set_margin_start(14);
+    row.set_margin_end(8);
+    let label = gtk::Label::new(Some("Browser"));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    row.append(&label);
+    row.append(&picker);
     browsers.append(&row);
     content.append(&browsers);
     choose.add_css_class("flat");

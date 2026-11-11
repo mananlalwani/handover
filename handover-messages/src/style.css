@@ -1,16 +1,17 @@
+.handover-messages { font-family: "Inter", "Noto Sans", sans-serif; font-size: 0.94em; }
 .handover-messages .messages-sidebar { background: mix(@window_bg_color, @view_bg_color, 0.25); }
 .handover-messages .conversation-pane { background: @view_bg_color; }
 .handover-messages headerbar { box-shadow: none; border: none; background: transparent; min-height: 64px; }
-.handover-messages .sidebar-title { font-size: 1.45em; font-weight: 700; margin-left: 8px; }
+.handover-messages .sidebar-title { font-size: 1.12em; font-weight: 600; margin-left: 6px; }
 .handover-messages .sidebar-tools { padding: 2px 18px 16px; }
 .handover-messages .sidebar-tools searchentry { border-radius: 10px; min-height: 32px; background: alpha(@window_fg_color, 0.055); box-shadow: none; border: 1px solid alpha(@window_fg_color, 0.045); }
 .handover-messages .account-area { margin: 0 14px; }
 .handover-messages .account-picker { margin: 8px 0; font-size: 0.9em; }
 .handover-messages .account-picker > button { background: transparent; box-shadow: none; border: none; font-weight: 400; }
 .handover-messages .conversation-list { background: transparent; }
-.handover-messages .conversation-list > row { border-radius: 10px; margin: 2px 10px; padding: 12px 10px; }
-.handover-messages .conversation-list > row:selected { background: @accent_bg_color; color: @accent_fg_color; }
-.handover-messages .conversation-list > row:selected:hover { background: shade(@accent_bg_color, 0.96); }
+.handover-messages .conversation-list > row { border-radius: 8px; margin: 2px 10px; padding: 10px 10px; }
+.handover-messages .conversation-list > row:selected { background: alpha(@accent_bg_color, 0.13); color: @window_fg_color; box-shadow: inset 2px 0 @accent_bg_color; }
+.handover-messages .conversation-list > row:selected:hover { background: alpha(@accent_bg_color, 0.19); }
 .handover-messages .conversation-name { font-weight: 600; font-size: 0.98em; }
 .handover-messages .conversation-preview { font-size: 0.88em; opacity: 0.65; }
 .handover-messages .conversation-time { font-size: 0.76em; opacity: 0.6; }
@@ -47,6 +48,25 @@
 .handover-messages .reply-preview { border-left: 3px solid @accent_bg_color; padding-left: 10px; margin: 0 12px 4px; }
 .handover-messages .history-controls { margin: 0; }
 .handover-messages avatar { border-radius: 50%; }
-.handover-messages .conversation-list > row:selected avatar { background: alpha(@accent_fg_color, 0.2); color: @accent_fg_color; }
+.handover-messages avatar { background-image: none; background-color: alpha(@window_fg_color, 0.08); color: @window_fg_color; }
 
 .handover-messages .conversation-pane headerbar { border-bottom: 1px solid alpha(@window_fg_color, 0.06); }
+
+.handover-messages .app-chrome { min-height: 58px; padding: 0 12px; }
+.handover-messages .thread-chrome { border-bottom: 1px solid alpha(@window_fg_color, 0.07); }
+.handover-messages .app-chrome button { border-radius: 6px; min-height: 28px; min-width: 28px; padding: 3px 6px; background: transparent; box-shadow: none; font-weight: 400; }
+.handover-messages .app-chrome button:hover { background: alpha(@window_fg_color, 0.07); }
+.handover-messages windowcontrols { margin-left: 8px; }
+.handover-messages windowcontrols button { border-radius: 5px; min-height: 24px; min-width: 24px; padding: 0; background: transparent; }
+.handover-messages .contact-heading { margin-left: 4px; }
+.handover-messages .image-attachment { border: 0; border-radius: 12px; padding: 0; background: alpha(@window_fg_color, 0.06); box-shadow: none; }
+.handover-messages .image-attachment picture { border-radius: 12px; }
+.handover-messages .image-placeholder { font-size: 0.9em; opacity: 0.7; padding: 16px; }
+.handover-image-viewer { background: #111316; color: #f2f3f5; font-family: "Inter", "Noto Sans", sans-serif; }
+.handover-image-viewer .viewer-toolbar { min-height: 48px; padding: 6px 14px; background: #191c20; border-bottom: 1px solid #282c32; }
+.handover-image-viewer button { color: #f2f3f5; background: transparent; box-shadow: none; }
+.handover-image-viewer button:hover { background: #30353d; }
+
+.handover-messages .chrome-close { margin-left: 12px; border-radius: 5px; background: transparent; }
+.handover-messages .chrome-close:hover { background: alpha(@window_fg_color, 0.1); }
+.handover-messages .empty-title { font-size: 1.3em; font-weight: 500; }
