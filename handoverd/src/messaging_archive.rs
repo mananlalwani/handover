@@ -347,6 +347,63 @@ mod tests {
         assert!(archive.settings(Some(16)).await.is_err());
         assert_eq!(archive.settings(None).await.unwrap().0, 32);
     }
+
+    #[tokio::test]
+    async fn storage_exhaustion_preserves_the_last_complete_page_across_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite");
+        let archive = MessageArchive::open(&path).unwrap();
+        archive.settings(Some(16)).await.unwrap();
+        let mut saved = vec![message(0)];
+        archive
+            .store_page(id(), None, saved.clone(), None)
+            .await
+            .unwrap();
+        let mut filled = false;
+        for batch in 0..8 {
+            let mut replacement = message(0);
+            replacement.text = Some(format!("replacement {batch}"));
+            let mut page = vec![replacement];
+            for number in (batch * 99 + 1)..=(batch * 99 + 99) {
+                let mut item = message(number);
+                item.text = Some("📱".repeat(handover_core::messaging::MAX_TEXT_CHARS));
+                handover_core::validate_message(&item).unwrap();
+                page.push(item);
+            }
+            if archive
+                .store_page(id(), None, page.clone(), None)
+                .await
+                .is_err()
+            {
+                filled = true;
+                break;
+            }
+            saved = page;
+        }
+        assert!(filled, "bounded archive must reject writes once full");
+        assert_eq!(
+            archive
+                .history(id(), 100, None, None)
+                .await
+                .unwrap()
+                .unwrap()
+                .0,
+            saved
+        );
+        assert!(std::fs::metadata(&path).unwrap().len() <= 16 * 1024 * 1024);
+        drop(archive);
+        let archive = MessageArchive::open(&path).unwrap();
+        assert_eq!(archive.settings(None).await.unwrap().0, 16);
+        assert_eq!(
+            archive
+                .history(id(), 100, None, None)
+                .await
+                .unwrap()
+                .unwrap()
+                .0,
+            saved
+        );
+    }
     #[test]
     fn refuses_symlink_archive() {
         let directory = tempfile::tempdir().unwrap();

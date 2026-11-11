@@ -48,10 +48,12 @@ title or participants, and unread count.
 
 ## history
 
-Shows message history for one conversation. Prints a `--cursor CURSOR`
-line when older messages remain in the stored window, and a start marker
-when the window is exhausted. `--limit N` caps the page. `--cursor`
-continues from a previous page.
+Shows message history for one conversation from stored pages or the connected
+helper. Prints a `--cursor CURSOR` line when another page is available.
+`--limit N` caps the page and `--cursor` continues from a previous page. A missing
+cursor means that response offers no next page; it does not prove the provider
+has no older messages. See [message storage and recovery](../message-storage.md)
+for persistence and storage limits.
 
 ## outgoing
 

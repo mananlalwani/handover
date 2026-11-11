@@ -129,6 +129,10 @@ Check your phone's linked devices before repeating a failed attempt.
 
 An account is shown connected only after the daemon reports a usable session.
 
+Message windows and fetched history can survive daemon restarts. See
+[message storage and recovery](message-storage.md) for disk limits, the archive
+size setting, privacy, and disabling persistence. Stored history can be incomplete.
+
 To disconnect a confirmed native account, select it while online and click
 **Disconnect**, then confirm **Disconnect and unpair**. Handover asks the phone
 to unpair before removing saved credentials. If unpairing is not confirmed,
