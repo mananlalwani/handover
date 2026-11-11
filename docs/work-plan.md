@@ -114,6 +114,25 @@ client. Verify in an actual desktop session as well as fixtures.
 
 Dependencies: item 1's sharing and desktop checks, plus any relevant IPC fixes.
 
+Local sharing hardening complete: the desktop entry offers optional HTTP/HTTPS
+handling, and the send picker can request cancellation of a queued share. The
+service now consumes cancellation replies and releases its pending command.
+The native backend confirms cancellation only when it removes an unsent outbox
+entry, preserving receiver acknowledgements after dispatch. A TLS regression
+failed on the previous false-cancellation behavior before the fix.
+
+The offscreen fixture exercises the real launcher and desktop-entry command in
+14 scenarios: file paths with Unicode and reserved characters, file URLs,
+HTTP/HTTPS links, offline devices, a missing daemon, rejected sends, early
+completion, cancellation success/rejection/error, disconnects, and closing an
+accepted transfer. Repeated activation submits once. Desktop chooser behavior
+and the receiver's real effects still need live validation.
+
+Validation passed: Rust formatting, strict workspace Clippy, workspace tests,
+Android debug build/lint/JVM unit-test tasks, QML lint, all 49 JavaScript tests,
+the 14 offscreen sharing scenarios, launcher tests, and desktop-file validation.
+The ordinary Rust suite retains its environment-dependent ignored tests.
+
 ## 4. Add messaging capabilities one at a time
 
 Current gaps include conversation creation, mark-read, deletion, and outgoing
@@ -136,6 +155,14 @@ effects agree. This is four separate implementation slices, not one feature PR.
 
 Dependencies: item 1's session-recovery validation and item 2's compatibility
 policy before public contract changes.
+
+Conversation-creation investigation complete against repository sources. The
+[evidence inventory](audits/gmessages-conversation-creation-2026-11-10.md) finds
+the normalized command and helper contract already present, but no sufficient
+first-party wire evidence for native creation or reconciliation. Native support
+remains unavailable. The inventory specifies the official-client observations
+needed before implementing it; no live account request or protocol mutation was
+performed during this investigation.
 
 ## 5. Validate and document message retention
 
