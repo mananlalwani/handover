@@ -21,6 +21,15 @@ through Handover.
 Done when the patched dependency builds under the declared toolchain policy,
 archive behavior is preserved, and `cargo deny check` passes.
 
+Status on November 10: the advisory is verified against
+[RustSec](https://rustsec.org/advisories/RUSTSEC-2026-0459.html). The published
+`rusqlite` 0.41.0 and 0.41.1 packages declare Rust 1.89, confirmed through
+`cargo info`; Handover declares 1.88. The registry has no `rusqlite` 0.40.3 or
+`libsqlite3-sys` 0.38.3 backport. Upgrading therefore needs an explicit minimum
+toolchain policy change or a supported backport. Neither the declared minimum
+nor advisory exceptions were changed. This remains a release blocker; archive
+regressions were independently checked against the current dependency.
+
 ## 1. Validate existing workflows
 
 Start with the current implementation before adding capabilities. A fixture
@@ -71,6 +80,14 @@ supports a stability commitment. A protocol-number change is not itself a fix.
 
 Dependency: the automated baseline from item 1. Device testing can continue
 alongside this work.
+
+Local implementation complete: the [coverage inventory](audits/ipc-2026-11-10.md)
+records the retained tests and new boundary coverage. Quickshell now bounds and
+assembles all complete-list variants before publishing them. Daemon lag recovery
+discards superseded events before taking a replacement snapshot. Both defects
+were reproduced with failing regressions before their fixes. The
+[compatibility policy](ipc.md#compatibility-policy) documents protocol evolution
+without declaring protocol 1 stable.
 
 ## 3. Finish everyday Linux integration
 
@@ -137,6 +154,13 @@ and any added controls have explicit privacy and disk-limit semantics.
 Dependency: item 0 before shipping archive changes. Existing storage can be
 audited before item 4; new deletion actions must reconcile with stored history.
 
+Local audit complete: [message storage and recovery](message-storage.md) documents
+existing persistence, size settings, opt-out behavior, storage failures, and
+privacy limits. Existing restart, removal, and paging coverage was retained.
+A new bounded-storage test fills the archive through real history-page writes
+and confirms failed transactions preserve the previous page across restart.
+No new retention, eviction, or purge policy was introduced.
+
 ## 6. Choose the desktop client scope
 
 Quickshell remains a reference client. Use the validated workflows to decide
@@ -181,3 +205,24 @@ working tree. These results are local automated checks, not phone validation.
   licenses, and sources passed. Duplicate dependency warnings also remain.
 - Not run: connected Android instrumentation, physical-phone validation, audible
   playback, and live desktop interaction. ADB listed no connected device.
+
+## Follow-up validation
+
+The local implementation checks on November 10 passed Rust formatting, strict
+workspace Clippy, and workspace tests. QML lint, all 46 JavaScript tests, the
+offscreen send-window fixture, and launcher tests passed. The workspace suite
+still skips its environment-dependent ignored tests by default.
+
+Android build, lint, and JVM unit-test tasks passed, followed by all seven
+framework instrumentation tests on the existing Android 15 x86_64 test emulator.
+The emulator ran headlessly with a temporary read-only session and was stopped
+afterward. This is emulator evidence, not physical-device validation.
+
+The isolated systemd smoke test passed startup, private socket permissions,
+CLI access, a separate native listener, and mDNS setup. The explicitly invoked
+native pre-auth connection-limit and live multicast-discovery tests also passed.
+The installed user daemon was not replaced or restarted.
+
+`cargo deny check` still fails only the SQLite security advisory; bans, licenses,
+and sources pass. Physical-phone behavior, audible audio routing, the desktop
+credential-store integration, and live desktop interaction remain unverified.

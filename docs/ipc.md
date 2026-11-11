@@ -11,6 +11,35 @@ Their device, notification, media, call, and messaging fields use
 [`handover-core`](../crates/handover-core/src/lib.rs) models. IDs are opaque.
 Keep every component of a scoped ID and return it unchanged in commands.
 
+## Compatibility policy
+
+Protocol 1 is experimental. Install matching daemon and client releases while
+this contract is evolving; the version number alone does not guarantee that an
+older client understands every current response.
+
+- Unknown object fields may be ignored. Add a field within protocol 1 only when
+  its absence preserves existing behavior and old readers can ignore it safely.
+  New readers must supply an explicit default or accept absence for that field.
+- Required fields, record shapes, units, ID scope, ordering, and the meaning of
+  an accepted command are part of the contract. Changes to these need a protocol
+  migration rather than a new interpretation of existing data.
+- A new method can be optional when clients request it explicitly and handle
+  rejection by an older daemon. New response types or enum values are not generally
+  compatible with old clients. Rust readers reject unknown variants; Quickshell
+  warns and ignores unknown top-level message types outside an assembly. Do not
+  depend on that difference to negotiate a capability or infer a known state.
+- Every envelope must use a supported `protocol`. `hello` reports
+  `supported_protocols`; the Rust `Client::hello` returns that list for its caller
+  to check, as the CLI does. It does not automatically select or downgrade a
+  version. Never retry a mutation with a different protocol after an uncertain
+  response.
+- Check compatibility changes across the daemon, Rust client, CLI, desktop
+  bridge, and Quickshell. An Android transport change also needs its own wire
+  validation; desktop IPC versioning does not version the phone protocol.
+
+See the [IPC coverage inventory](audits/ipc-2026-11-10.md) for the current
+automated evidence. This policy does not declare protocol 1 stable.
+
 ## Framing and limits
 
 Each record is one UTF-8 JSON object followed by a newline. Every request and
@@ -99,6 +128,9 @@ reconnected.
 The daemon's broadcast channel retains 64 events. A lagging subscriber receives
 `snapshot`, or contiguous `snapshot_chunk` records, containing current state for
 its subscribed collections. Replace that state after the whole snapshot arrives.
+Before taking the recovery snapshot, the daemon drops the stale event backlog
+and registers for new events. Events arriving during snapshot delivery follow it;
+superseded events do not replay older values over the replacement state.
 The daemon does not promise to replay each missed transition or transient event.
 Messaging outgoing-operation state and audio state can follow separately.
 
