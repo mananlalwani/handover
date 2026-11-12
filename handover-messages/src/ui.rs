@@ -1851,13 +1851,17 @@ impl Window {
         model: &Model,
         message: &Message,
         reaction: &Reaction,
-    ) -> (gtk::ToggleButton, gtk::ScrolledWindow) {
+    ) -> (gtk::ToggleButton, gtk::Widget) {
         let button = gtk::ToggleButton::builder()
             .label(format!("{} {}", reaction.emoji, reaction.count))
             .tooltip_text("Reactions")
             .build();
         button.add_css_class("flat");
         button.add_css_class("reaction-chip");
+        if model.has_own_reaction(&message.id, &reaction.emoji) {
+            button.add_css_class("own-reaction");
+            button.set_tooltip_text(Some(&format!("You reacted with {}", reaction.emoji)));
+        }
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let conversation = model
             .conversations
@@ -1885,9 +1889,9 @@ impl Window {
                     }
                 })
                 .unwrap_or_else(|| "Unknown participant".into());
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             row.add_css_class("reaction-person-row");
-            let avatar = adw::Avatar::new(24, Some(&name), true);
+            let avatar = adw::Avatar::new(20, Some(&name), true);
             if let Some(participant) = participant
                 && let Some(photo) = self.photos.borrow().participant(participant)
             {
@@ -1901,9 +1905,6 @@ impl Window {
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             label.add_css_class("reaction-person");
             row.append(&label);
-            let emoji = gtk::Label::new(Some(&reaction.emoji));
-            emoji.add_css_class("reaction-person-emoji");
-            row.append(&emoji);
             content.append(&row);
         }
         let unknown = reaction.count.saturating_sub(actors.len() as u64);
@@ -1917,14 +1918,20 @@ impl Window {
             label.add_css_class("reaction-person-row");
             content.append(&label);
         }
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .max_content_height(360)
-            .propagate_natural_height(true)
-            .propagate_natural_width(true)
-            .child(&content)
-            .build();
-        (button, scroll)
+        let people = if actors.len() + usize::from(unknown > 0) <= 4 {
+            content.upcast::<gtk::Widget>()
+        } else {
+            gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .min_content_height(0)
+                .max_content_height(120)
+                .propagate_natural_height(true)
+                .propagate_natural_width(true)
+                .child(&content)
+                .build()
+                .upcast()
+        };
+        (button, people)
     }
 
     fn message_actions(self: &Rc<Self>, message: &Message) -> gtk::MenuButton {

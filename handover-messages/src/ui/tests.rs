@@ -2118,6 +2118,10 @@ fn native_window_round_trips_real_frontend_actions() {
         .unwrap()
         .downcast::<gtk::ToggleButton>()
         .unwrap();
+    assert!(
+        !reaction_chip.has_css_class("own-reaction"),
+        "another person's reaction does not use the own-reaction highlight"
+    );
     reaction_chip.set_active(true);
     let column = reaction_chip.parent().unwrap().parent().unwrap();
     let people = find_widget(&column, &|widget| widget.has_css_class("reaction-people"))
@@ -2150,6 +2154,11 @@ fn native_window_round_trips_real_frontend_actions() {
     pump_until(
         || people.is_child_revealed(),
         "inline reaction details finishes expanding",
+    );
+    assert!(
+        people.height() <= 36,
+        "one reaction person uses a compact inline row, got {}px",
+        people.height()
     );
     if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
         let path = PathBuf::from(path);
@@ -2253,6 +2262,10 @@ fn native_window_round_trips_real_frontend_actions() {
         .unwrap()
         .downcast::<gtk::ToggleButton>()
         .unwrap();
+    assert!(
+        mixed_chip.has_css_class("own-reaction"),
+        "a confirmed own reaction stays highlighted while collapsed"
+    );
     mixed_chip.set_active(true);
     let mixed_people = find_widget(&row, &|widget| widget.has_css_class("reaction-people"))
         .unwrap()
