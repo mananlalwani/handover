@@ -473,3 +473,12 @@ passed. Matching release app, daemon, and native helper binaries were installed.
 The first live diagnostic run reported waiting for settings, a registration
 attempt, and registration rejection. It also found a conversation-cursor failure
 in receive recovery. Incoming typing is not yet live-verified or resolved.
+
+Subsequent read-only lookup checks found photos for 38 direct conversations and
+76 groups using the installed matching/composite rules. These counts establish
+available matches, not a visual inspection of every private conversation.
+The normal account recovered as connected and authenticated after the bounded
+diagnostics. Registration still returned `InvalidArgument`; an observed-version
+trial was reverted. See [the typing investigation](../gmessages-typing.md) for
+the first-party module provenance and remaining evidence gap. The shared browser
+was signed out, and the temporary sign-in tab was closed.

@@ -49,3 +49,34 @@ A live check confirmed registration and an open receive connection for 55 second
 Unit and transport tests cover composing parsing, sender binding, stale events,
 publication before acknowledgement, expiry, and daemon disconnection. A real
 incoming typing event still needs user-assisted verification.
+
+## November 11 registration check
+
+The native Messages UI displays and clears synthetic typing events in its GUI
+test, but the live RCS registration currently fails with RPC status 3,
+`InvalidArgument`. The service's error text was generic. Fixed helper lifecycle
+diagnostics distinguish this failure from waiting for settings or an open receive
+connection. The ordinary messaging account recovered as connected and
+authenticated; that does not establish a working RCS typing receiver.
+
+Inspected Google's publicly served `mw_rcs_chat` module from build
+`comms-messages.web-server_20261110.01_p0`, module version
+`messagesweb.mw.en_US.nzGU8ZMoY3I.O`. Its SHA-256 is
+`537120b73848685202260f13d960b8c3491656538daa640b3da020abbbd7f28c`.
+The declared SignInSecondary layout still uses the linked account identity,
+phone identity, web device information, SPKI public key, and receive features
+represented by the native request. This inspection did not establish which
+argument the service rejected.
+
+Temporary debug instrumentation checked only request metadata and fixed error
+categories. The native identity had E.164 shape, its device had web-device shape,
+and its SPKI public key had 91 bytes. No addresses, keys, tokens, or request bodies
+were printed or retained. Testing the current observed client version on the RCS
+path did not resolve the failure, so that change was reverted. One attempt
+returned RPC status 8, `ResourceExhausted`; further manual registration probes
+were stopped. The installed release retains the tested request behavior.
+
+The next comparison needs a successful first-party registration from the user's
+already-paired web session. The shared browser reached Google's sign-in page
+and had no authenticated Messages session. No new Google login or phone pairing
+was attempted. Incoming typing remains unresolved.
