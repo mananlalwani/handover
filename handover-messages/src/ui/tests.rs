@@ -414,7 +414,7 @@ fn fake_server(
                             &mut stream,
                             response(
                                 "subscribed",
-                                json!({"devices": [], "notifications": [], "media_sessions": [], "calls": [], "messaging_accounts": [account], "conversations": all_conversations, "typing_states": [], "read_states": []}),
+                                json!({"devices": [], "notifications": [], "media_sessions": [], "calls": [], "messaging_accounts": [account], "conversations": all_conversations, "typing_states": [], "read_states": [{"conversation_id":{"account_id":ACCOUNT,"local_id":"family-chat"},"last_read_message_id":null,"unread":false}]}),
                             ),
                         );
                         *subscription_writer.lock().unwrap() = stream.try_clone().ok();
@@ -966,6 +966,64 @@ fn native_window_round_trips_real_frontend_actions() {
             .is_some()
         },
         "decoded inline image preview",
+    );
+    let family_index = ui
+        .rows
+        .borrow()
+        .iter()
+        .position(|(id, _)| id.local_id == "family-chat")
+        .unwrap();
+    let family_row = ui.list.row_at_index(family_index as i32).unwrap();
+    assert!(
+        find_widget(family_row.upcast_ref(), &|widget| widget
+            .has_css_class("unread-dot"))
+        .is_none(),
+        "initial subscription read state overrides an older conversation unread count"
+    );
+    let read_thread = ConversationId::new(MessagingAccountId::new(ACCOUNT), "maya-chen");
+    let unread_dot_visible = || {
+        let index = ui
+            .rows
+            .borrow()
+            .iter()
+            .position(|(id, _)| id == &read_thread)
+            .unwrap();
+        let row = ui.list.row_at_index(index as i32).unwrap();
+        find_widget(row.upcast_ref(), &|widget| {
+            widget.has_css_class("unread-dot")
+        })
+        .is_some()
+    };
+    assert!(unread_dot_visible());
+    ui.event(Event::State(Box::new(ServerPayload::ReadState {
+        state: ReadState {
+            conversation_id: read_thread.clone(),
+            last_read_message_id: None,
+            unread: false,
+        },
+    })));
+    pump_until(
+        || ui.sidebar_timer.borrow().is_none(),
+        "read state sidebar update",
+    );
+    assert!(
+        !unread_dot_visible(),
+        "an authoritative read event must clear the conversation dot"
+    );
+    ui.event(Event::State(Box::new(ServerPayload::ReadState {
+        state: ReadState {
+            conversation_id: read_thread.clone(),
+            last_read_message_id: None,
+            unread: true,
+        },
+    })));
+    pump_until(
+        || ui.sidebar_timer.borrow().is_none(),
+        "unread state sidebar update",
+    );
+    assert!(
+        unread_dot_visible(),
+        "a later authoritative unread event restores the dot"
     );
     let avatar_blanks = Rc::new(Cell::new(0));
     let blanks = avatar_blanks.clone();

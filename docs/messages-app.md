@@ -72,6 +72,14 @@ message previews return when typing stops. Disconnects and authoritative
 snapshots clear or replace typing state. These indicators require an incoming
 typing event from the daemon.
 
+Chat-list unread dots follow reported read-state events and conversation unread
+counts. A later explicit count supersedes an earlier read-state event; an unknown
+count preserves reported read evidence. Initial subscriptions and recovery
+snapshots restore read state. A missing dot can mean unread state is unknown.
+Opening a chat does not invent a successful read operation. The native Google
+Messages helper currently cannot mark conversations read, so viewing a chat here
+does not clear its unread state on the phone.
+
 Outgoing bubbles show status only when the daemon identifies that exact message.
 Accepted means command acceptance; Sent, Delivered, and Read require reported
 evidence. Historical messages without evidence have no status label. Local read

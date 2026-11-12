@@ -984,7 +984,7 @@ impl Window {
 
     fn event(self: &Rc<Self>, event: Event) {
         match event {
-            Event::Connected(accounts, conversations, typing) => {
+            Event::Connected(accounts, conversations, typing, read) => {
                 self.recent_threads.borrow_mut().clear();
                 {
                     let mut model = self.model.borrow_mut();
@@ -992,6 +992,7 @@ impl Window {
                     model.accounts = accounts;
                     model.conversations = conversations;
                     model.reset_typing(typing);
+                    model.reset_read(read);
                     model.statuses.clear();
                     model.outgoing.clear();
                     model.previews.clear();
@@ -1080,6 +1081,7 @@ impl Window {
                         | ServerPayload::Typing { .. }
                         | ServerPayload::ContactsSynced { .. }
                         | ServerPayload::ContactsRemoved { .. }
+                        | ServerPayload::ReadState { .. }
                 ) {
                     return;
                 }
@@ -1139,6 +1141,7 @@ impl Window {
                         | ServerPayload::MessageRemoved { .. }
                         | ServerPayload::ContactsSynced { .. }
                         | ServerPayload::ContactsRemoved { .. }
+                        | ServerPayload::ReadState { .. }
                 );
                 let contacts_changed = matches!(
                     *payload,
@@ -2237,7 +2240,7 @@ impl Window {
             let label = self.add_row(
                 &title,
                 &preview,
-                conversation.unread_count.is_some_and(|count| count > 0),
+                model.unread(&conversation.id) == Some(true),
                 conversation.last_activity_at,
                 conversation.kind == ConversationKind::Group,
                 self.photos.borrow().conversation_photos(conversation),

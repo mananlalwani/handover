@@ -267,3 +267,64 @@ fn snapshots_and_removals_clear_transient_feedback() {
     });
     assert!(model.statuses.is_empty() && model.new_messages.is_empty());
 }
+
+#[test]
+fn unread_dots_follow_reported_state_and_preserve_unknown() {
+    let a = ConversationId::new(MessagingAccountId::new("a"), "thread");
+    let b = ConversationId::new(MessagingAccountId::new("b"), "thread");
+    let mut first = conversation("a", "thread", vec![]);
+    first.unread_count = Some(3);
+    let mut second = conversation("b", "thread", vec![]);
+    second.unread_count = Some(2);
+    let mut model = Model {
+        conversations: vec![first.clone(), second],
+        ..Default::default()
+    };
+    model.reset_read(vec![ReadState {
+        conversation_id: a.clone(),
+        last_read_message_id: None,
+        unread: false,
+    }]);
+    assert_eq!(model.unread(&a), Some(false));
+    assert_eq!(model.unread(&b), Some(true));
+    first.unread_count = None;
+    model.state(ServerPayload::ConversationUpdated {
+        conversation: first.clone(),
+    });
+    assert_eq!(
+        model.unread(&a),
+        Some(false),
+        "unknown inventory counts do not erase read evidence"
+    );
+    first.unread_count = Some(1);
+    model.state(ServerPayload::ConversationUpdated {
+        conversation: first.clone(),
+    });
+    assert_eq!(
+        model.unread(&a),
+        Some(true),
+        "a later explicit count supersedes old read evidence"
+    );
+    model.state(ServerPayload::ReadState {
+        state: ReadState {
+            conversation_id: a.clone(),
+            last_read_message_id: None,
+            unread: false,
+        },
+    });
+    assert_eq!(model.unread(&a), Some(false));
+    model.state(ServerPayload::ConversationRemoved {
+        conversation_id: a.clone(),
+    });
+    first.unread_count = None;
+    model.state(ServerPayload::ConversationAdded {
+        conversation: first,
+    });
+    assert_eq!(
+        model.unread(&a),
+        None,
+        "removed read evidence must not leak into a new conversation"
+    );
+    model.reset_read(vec![]);
+    assert_eq!(model.unread(&a), None);
+}

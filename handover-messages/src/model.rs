@@ -47,6 +47,7 @@ pub struct Model {
     pub persistent: bool,
     pub outgoing: BTreeMap<String, OutgoingOperation>,
     pub typing: BTreeMap<ConversationId, Vec<String>>,
+    read_states: BTreeMap<ConversationId, bool>,
     pub statuses: BTreeMap<MessageId, MessageStatus>,
     pub new_messages: BTreeSet<MessageId>,
     pub new_messages_overflow: bool,
@@ -60,6 +61,33 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn reset_read(&mut self, states: Vec<ReadState>) {
+        self.read_states.clear();
+        for state in states.into_iter().take(4096) {
+            self.apply_read(state);
+        }
+    }
+    fn apply_read(&mut self, state: ReadState) {
+        if self
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == state.conversation_id)
+        {
+            self.read_states.insert(state.conversation_id, state.unread);
+            while self.read_states.len() > 4096 {
+                self.read_states.pop_first();
+            }
+        }
+    }
+    pub fn unread(&self, id: &ConversationId) -> Option<bool> {
+        self.read_states.get(id).copied().or_else(|| {
+            self.conversations
+                .iter()
+                .find(|conversation| &conversation.id == id)
+                .and_then(|conversation| conversation.unread_count.map(|count| count > 0))
+        })
+    }
+
     pub fn reset_typing(&mut self, states: Vec<TypingState>) {
         self.typing.clear();
         for state in states.into_iter().take(512) {
@@ -340,11 +368,13 @@ impl Model {
                 messaging_accounts,
                 conversations,
                 typing_states,
+                read_states,
                 ..
             } => {
                 self.accounts = messaging_accounts;
                 self.conversations = conversations;
                 self.reset_typing(typing_states);
+                self.reset_read(read_states);
                 self.statuses.clear();
                 self.clear_new_messages();
                 self.previews.clear();
@@ -358,6 +388,7 @@ impl Model {
                 self.accounts.push(account);
             }
             ServerPayload::AccountRemoved { account_id } => {
+                self.read_states.retain(|id, _| id.account_id != account_id);
                 self.typing.retain(|id, _| id.account_id != account_id);
                 self.statuses
                     .retain(|id, _| id.conversation_id.account_id != account_id);
@@ -387,10 +418,16 @@ impl Model {
             }
             ServerPayload::ConversationAdded { conversation }
             | ServerPayload::ConversationUpdated { conversation } => {
+                // A newer explicit unread count supersedes an earlier read event.
+                // Unknown counts do not erase the last reported read state.
+                if conversation.unread_count.is_some() {
+                    self.read_states.remove(&conversation.id);
+                }
                 self.conversations.retain(|old| old.id != conversation.id);
                 self.conversations.push(conversation);
             }
             ServerPayload::ConversationRemoved { conversation_id } => {
+                self.read_states.remove(&conversation_id);
                 self.typing.remove(&conversation_id);
                 self.statuses
                     .retain(|id, _| id.conversation_id != conversation_id);
@@ -407,6 +444,7 @@ impl Model {
                 self.apply_message(message);
             }
             ServerPayload::Typing { state } => self.apply_typing(state),
+            ServerPayload::ReadState { state } => self.apply_read(state),
             ServerPayload::MessageStatus { update } => {
                 if self
                     .accounts
