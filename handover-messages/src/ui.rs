@@ -22,6 +22,13 @@ struct RowStamp {
     quote: Option<String>,
     delivery: Option<&'static str>,
     find_query: String,
+    sender: String,
+}
+
+struct RecentThread {
+    id: ConversationId,
+    messages: Vec<Message>,
+    cursor: Option<String>,
 }
 
 struct SidebarPreview {
@@ -33,6 +40,8 @@ struct SidebarPreview {
 pub struct Window {
     pub window: adw::ApplicationWindow,
     model: RefCell<Model>,
+    recent_threads: RefCell<VecDeque<RecentThread>>,
+    cached_messages: RefCell<BTreeSet<MessageId>>,
     photos: RefCell<crate::contact_photos::ContactPhotos>,
     media: crate::media::Media,
     commands: tokio::sync::mpsc::Sender<Command>,
@@ -439,6 +448,8 @@ impl Window {
         let this = Rc::new(Self {
             window,
             model: RefCell::new(Model::default()),
+            recent_threads: RefCell::new(VecDeque::new()),
+            cached_messages: RefCell::new(BTreeSet::new()),
             photos: RefCell::new(crate::contact_photos::ContactPhotos::default()),
             media: crate::media::Media::new(),
             commands,
@@ -889,6 +900,36 @@ impl Window {
             *self.pending_open.borrow_mut() = Some((id, anchor));
             return;
         }
+        {
+            let model = self.model.borrow();
+            if let Some(current) = model.selected.as_ref()
+                && model.anchor.is_none()
+                && !model.newer_gap
+                && !model.messages.is_empty()
+                && !self.loading_latest.get()
+            {
+                let mut recent = self.recent_threads.borrow_mut();
+                recent.retain(|thread| &thread.id != current);
+                recent.push_back(RecentThread {
+                    id: current.clone(),
+                    messages: model.messages.clone(),
+                    cursor: model.cursor.clone(),
+                });
+                while recent.len() > 8 {
+                    recent.pop_front();
+                }
+            }
+        }
+        let cached = if anchor.is_none() {
+            self.recent_threads
+                .borrow()
+                .iter()
+                .find(|thread| thread.id == id)
+                .map(|thread| (thread.messages.clone(), thread.cursor.clone()))
+        } else {
+            None
+        };
+        let cached_visible = cached.is_some();
         self.find.set_conversation(Some(id.clone()));
         self.save_drafts();
         self.quotes.borrow_mut().clear();
@@ -907,9 +948,18 @@ impl Window {
             model.anchor = anchor.clone();
             model.scroll_anchor = anchor.clone();
             model.browsing_older = false;
-            model.messages.clear();
-            model.cursor = None;
-            model.notice = "Loading messages…".into();
+            let (messages, cursor) = cached.unwrap_or_default();
+            // Fresh history replaces these provisional rows, but not live updates.
+            *self.cached_messages.borrow_mut() =
+                messages.iter().map(|message| message.id.clone()).collect();
+            model.messages = messages;
+            model.cursor = cursor;
+            model.notice = if cached_visible {
+                ""
+            } else {
+                "Loading messages…"
+            }
+            .into();
         }
         self.request(Request::Draft(id.clone()));
         self.request(Request::AttachmentDraft(id.clone()));
@@ -923,6 +973,9 @@ impl Window {
             self.request(Request::History(id, None));
         }
         self.render_thread();
+        if cached_visible {
+            self.to_end();
+        }
         self.render_editor();
         self.render_attachments();
         self.render_status();
@@ -932,6 +985,7 @@ impl Window {
     fn event(self: &Rc<Self>, event: Event) {
         match event {
             Event::Connected(accounts, conversations, typing) => {
+                self.recent_threads.borrow_mut().clear();
                 {
                     let mut model = self.model.borrow_mut();
                     model.connected = true;
@@ -966,12 +1020,47 @@ impl Window {
                 }
             }
             Event::Disconnected => {
+                self.recent_threads.borrow_mut().clear();
                 let mut model = self.model.borrow_mut();
                 model.connected = false;
                 model.typing.clear();
                 model.notice = "Handover disconnected. Submitted sends are never retried.".into();
             }
             Event::State(payload) => {
+                match payload.as_ref() {
+                    ServerPayload::MessageAdded { message }
+                    | ServerPayload::MessageUpdated { message } => {
+                        self.cached_messages.borrow_mut().remove(&message.id);
+                    }
+                    ServerPayload::MessageRemoved { message_id } => {
+                        self.cached_messages.borrow_mut().remove(message_id);
+                    }
+                    _ => {}
+                }
+                self.recent_threads
+                    .borrow_mut()
+                    .retain(|thread| match payload.as_ref() {
+                        ServerPayload::Snapshot { .. } => false,
+                        ServerPayload::AccountRemoved { account_id } => {
+                            &thread.id.account_id != account_id
+                        }
+                        ServerPayload::AccountUpdated { account }
+                            if !account.connected || !account.authenticated =>
+                        {
+                            thread.id.account_id != account.id
+                        }
+                        ServerPayload::ConversationRemoved { conversation_id } => {
+                            &thread.id != conversation_id
+                        }
+                        ServerPayload::MessageAdded { message }
+                        | ServerPayload::MessageUpdated { message } => {
+                            thread.id != message.id.conversation_id
+                        }
+                        ServerPayload::MessageRemoved { message_id } => {
+                            thread.id != message_id.conversation_id
+                        }
+                        _ => true,
+                    });
                 if !matches!(
                     payload.as_ref(),
                     ServerPayload::Snapshot { .. }
@@ -1058,8 +1147,6 @@ impl Window {
                 let snapshots = matches!(*payload, ServerPayload::Snapshot { .. });
                 if contacts_changed || snapshots {
                     self.contacts_request.set(None);
-                    self.photos.borrow_mut().replace(vec![]);
-                    self.media.forget_photos();
                 }
                 if let ServerPayload::MessageAdded { message }
                 | ServerPayload::MessageUpdated { message } = payload.as_ref()
@@ -1173,6 +1260,7 @@ impl Window {
         match reply {
             Reply::Workspace(workspace) => {
                 let location = workspace.location;
+                let sidebar_changed = self.model.borrow().drafted != workspace.draft_conversations;
                 {
                     let mut model = self.model.borrow_mut();
                     model.persistent = workspace.persistent;
@@ -1199,9 +1287,19 @@ impl Window {
                         self.request(Request::Select(desired));
                     }
                 }
-                self.schedule_sidebar();
+                if sidebar_changed {
+                    self.schedule_sidebar();
+                }
             }
             Reply::Draft(draft) => {
+                let id = draft.conversation_id.clone();
+                let previous_text = self
+                    .model
+                    .borrow()
+                    .drafts
+                    .get(&id)
+                    .map(|draft| draft.value.text.clone())
+                    .unwrap_or_default();
                 if matches!(request, Request::SaveDraft(_)) {
                     self.model.borrow_mut().draft_saved(draft);
                     self.save_drafts();
@@ -1209,7 +1307,17 @@ impl Window {
                     self.model.borrow_mut().draft_loaded(draft, false);
                     self.save_drafts();
                 }
-                self.schedule_sidebar();
+                if self
+                    .model
+                    .borrow()
+                    .drafts
+                    .get(&id)
+                    .map(|draft| draft.value.text.as_str())
+                    .unwrap_or("")
+                    != previous_text
+                {
+                    self.schedule_sidebar();
+                }
             }
             Reply::Search(hits, more) => {
                 if let Request::Search {
@@ -1252,6 +1360,14 @@ impl Window {
                         }
                     }
                     self.note_message_changes(&messages);
+                    if !older {
+                        // Event handlers remove live updates from this set.
+                        let cached = self.cached_messages.take();
+                        self.model
+                            .borrow_mut()
+                            .messages
+                            .retain(|message| !cached.contains(&message.id));
+                    }
                     self.model.borrow_mut().merge(messages);
                     self.model.borrow_mut().cursor = cursor;
                     self.model.borrow_mut().notice.clear();
@@ -1315,6 +1431,7 @@ impl Window {
             }
             Reply::AttachmentDraft(saved) => {
                 let id = saved.conversation_id.clone();
+                let had_attachment = self.attachments.borrow().contains_key(&id);
                 if !self
                     .model
                     .borrow()
@@ -1361,7 +1478,14 @@ impl Window {
                     });
                 }
                 self.render_attachments();
-                self.schedule_sidebar();
+                if had_attachment
+                    != self
+                        .attachments
+                        .borrow()
+                        .contains_key(&saved.conversation_id)
+                {
+                    self.schedule_sidebar();
+                }
             }
             Reply::Quote(id, message) => {
                 if self.model.borrow().selected.as_ref() == Some(&id.conversation_id)
@@ -1375,9 +1499,10 @@ impl Window {
                 }
             }
             Reply::Contacts(contacts) => {
-                self.media.forget_photos();
-                self.photos.borrow_mut().replace(contacts);
-                self.schedule_sidebar();
+                if self.photos.borrow_mut().replace(contacts) {
+                    self.schedule_sidebar();
+                    self.render_thread();
+                }
             }
             Reply::Previews(messages) => {
                 if let Request::Previews(ids) = request {
@@ -1547,14 +1672,9 @@ impl Window {
         match original {
             Some(message) => {
                 let sender = if message.sender.is_self {
-                    "You"
+                    "You".to_owned()
                 } else {
-                    message
-                        .sender
-                        .display_name
-                        .as_deref()
-                        .or(message.sender.address.as_deref())
-                        .unwrap_or("Contact")
+                    self.photos.borrow().label(&message.sender)
                 };
                 let text = if message.deleted {
                     "Message deleted"
@@ -1970,6 +2090,30 @@ impl Window {
         }
     }
 
+    fn conversation_label(&self, model: &Model, id: &ConversationId) -> String {
+        if let Some(conversation) = model
+            .conversations
+            .iter()
+            .find(|conversation| &conversation.id == id)
+            && conversation
+                .title
+                .as_deref()
+                .is_none_or(|title| title.trim().is_empty())
+        {
+            let names = conversation
+                .participants
+                .iter()
+                .filter(|participant| !participant.is_self)
+                .map(|participant| self.photos.borrow().label(participant))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !names.is_empty() {
+                return names;
+            }
+        }
+        model.label(id)
+    }
+
     fn schedule_sidebar(self: &Rc<Self>) {
         if self.sidebar_timer.borrow().is_some() {
             return;
@@ -2035,7 +2179,7 @@ impl Window {
             .collect::<Vec<_>>();
         conversations.sort_by_key(|c| std::cmp::Reverse(c.last_activity_at));
         for conversation in conversations {
-            let title = model.label(&conversation.id);
+            let title = self.conversation_label(&model, &conversation.id);
             if !query.is_empty() && !title.to_lowercase().contains(&query) {
                 continue;
             }
@@ -2107,7 +2251,7 @@ impl Window {
         }
         for hit in &model.hits {
             self.add_row(
-                &model.label(&hit.message_id.conversation_id),
+                &self.conversation_label(&model, &hit.message_id.conversation_id),
                 &hit.snippet,
                 false,
                 hit.sent_at,
@@ -2308,7 +2452,7 @@ impl Window {
         let title = model
             .selected
             .as_ref()
-            .map(|id| model.label(id))
+            .map(|id| self.conversation_label(&model, id))
             .unwrap_or_else(|| "Messages".into());
         self.title.set_label(&title);
         let conversation = model.selected.as_ref().and_then(|id| {
@@ -2378,12 +2522,8 @@ impl Window {
                 .filter(|participant| !participant.is_self)
                 .take(32)
             {
-                let name = participant
-                    .display_name
-                    .as_deref()
-                    .or(participant.address.as_deref())
-                    .unwrap_or("Contact");
-                let label = gtk::Label::new(Some(name));
+                let name = self.photos.borrow().label(participant);
+                let label = gtk::Label::new(Some(&name));
                 label.set_xalign(0.0);
                 label.set_wrap(true);
                 label.set_max_width_chars(30);
@@ -2683,6 +2823,7 @@ impl Window {
                     .as_ref()
                     .map(|id| self.quote_label(&model, id)),
                 find_query: self.find.query(),
+                sender: self.photos.borrow().label(&message.sender),
                 delivery: if message.sender.is_self && !message.deleted {
                     model.message_status(&message.id)
                 } else {
@@ -2718,6 +2859,7 @@ impl Window {
             if let Some(old) = old {
                 self.thread.remove(&old);
             }
+            let sender_name = stamp.sender.clone();
             stamps.insert(message.id.clone(), stamp);
             let grouped = previous.is_some_and(|previous| {
                 previous.sender.local_id == message.sender.local_id
@@ -2758,14 +2900,7 @@ impl Window {
                         && conversation.kind == ConversationKind::Group
                 })
             {
-                let sender = gtk::Label::new(Some(
-                    message
-                        .sender
-                        .display_name
-                        .as_deref()
-                        .or(message.sender.address.as_deref())
-                        .unwrap_or("Contact"),
-                ));
+                let sender = gtk::Label::new(Some(&sender_name));
                 sender.set_xalign(0.0);
                 sender.add_css_class("message-sender");
                 column.append(&sender);

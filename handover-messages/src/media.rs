@@ -141,7 +141,6 @@ struct Inner {
     clock: Cell<u64>,
     scheduled: RefCell<Vec<glib::WeakRef<gtk::Widget>>>,
     viewer: RefCell<Option<gtk::Window>>,
-    photo_epoch: Cell<u64>,
 }
 #[derive(Clone)]
 pub struct Media(Rc<Inner>);
@@ -155,7 +154,6 @@ impl Media {
             clock: Cell::new(0),
             scheduled: RefCell::new(Vec::new()),
             viewer: RefCell::new(None),
-            photo_epoch: Cell::new(0),
         }))
     }
     fn bind(&self, target: Target, key: Key) {
@@ -191,25 +189,6 @@ impl Media {
         }
     }
 
-    pub fn forget_photos(&self) {
-        self.0.photo_epoch.set(self.0.photo_epoch.get() + 1);
-        self.0
-            .cache
-            .borrow_mut()
-            .retain(|key, _| !matches!(key.0, Source::Photo(_) | Source::Group(_)));
-        self.0
-            .queue
-            .borrow_mut()
-            .retain(|key| !matches!(key.0, Source::Photo(_) | Source::Group(_)));
-        self.0.bindings.borrow_mut().retain(|binding| {
-            if matches!(binding.key.0, Source::Photo(_) | Source::Group(_)) {
-                binding.target.apply(None, false);
-                false
-            } else {
-                true
-            }
-        });
-    }
     pub fn clear_avatar(&self, avatar: &adw::Avatar) {
         let widget: gtk::Widget = avatar.clone().upcast();
         self.0
@@ -271,7 +250,12 @@ impl Media {
         let mut cache = self.0.cache.borrow_mut();
         for binding in self.0.bindings.borrow().iter() {
             if !binding.target.visible() {
-                binding.target.apply(None, false);
+                // Keep small decoded avatars through unmaps and scrolling.
+                // Large message/viewer images still release their textures.
+                // Avatar bindings are capped at 1024 and textures at 128 px.
+                if matches!(binding.target, Target::Canvas(..)) {
+                    binding.target.apply(None, false);
+                }
                 continue;
             }
             if let Some(entry) = cache.get_mut(&binding.key) {
@@ -303,7 +287,6 @@ impl Media {
             };
             self.0.active.set(self.0.active.get() + 1);
             let this = self.clone();
-            let photo_epoch = self.0.photo_epoch.get();
             glib::spawn_future_local(async move {
                 let input = key.clone();
                 let result = gio::spawn_blocking(move || decode(&input.0, input.1)).await;
@@ -322,12 +305,6 @@ impl Media {
                     .upcast::<gdk::Texture>()
                 });
                 this.0.active.set(this.0.active.get() - 1);
-                if matches!(key.0, Source::Photo(_) | Source::Group(_))
-                    && photo_epoch != this.0.photo_epoch.get()
-                {
-                    this.refresh();
-                    return;
-                }
                 this.0.clock.set(this.0.clock.get() + 1);
                 this.0.cache.borrow_mut().insert(
                     key,

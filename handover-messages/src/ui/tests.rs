@@ -967,6 +967,106 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "decoded inline image preview",
     );
+    let avatar_blanks = Rc::new(Cell::new(0));
+    let blanks = avatar_blanks.clone();
+    let avatar_watch = ui.avatar.connect_custom_image_notify(move |avatar| {
+        if avatar.custom_image().is_none() {
+            blanks.set(blanks.get() + 1);
+        }
+    });
+    ui.request(Request::Contacts);
+    pump_until(
+        || {
+            !ui.pending
+                .borrow()
+                .values()
+                .any(|request| matches!(request, Request::Contacts))
+        },
+        "unchanged address book refresh",
+    );
+    assert_eq!(
+        avatar_blanks.get(),
+        0,
+        "unchanged contacts must not blank an already decoded avatar"
+    );
+    ui.avatar.set_visible(false);
+    ui.media.refresh();
+    ui.avatar.set_visible(true);
+    assert_eq!(
+        avatar_blanks.get(),
+        0,
+        "temporarily hidden avatars keep their decoded image"
+    );
+    ui.avatar.disconnect(avatar_watch);
+
+    let original_messages = ui.model.borrow().messages.clone();
+    let original_conversations_for_names = ui.model.borrow().conversations.clone();
+    {
+        let mut model = ui.model.borrow_mut();
+        model
+            .conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id())
+            .unwrap()
+            .kind = ConversationKind::Group;
+        for message in &mut model.messages {
+            if !message.sender.is_self {
+                message.sender.display_name = None;
+                message.sender.address = Some("3125550100".into());
+            }
+        }
+    }
+    ui.row_stamps.borrow_mut().clear();
+    ui.render_thread();
+    assert!(
+        find_widget(ui.thread.upcast_ref(), &|widget| {
+            widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
+                label.has_css_class("message-sender") && label.text() == "Alex Example"
+            })
+        })
+        .is_some(),
+        "group senders resolve names from synced contacts even without a provider name"
+    );
+    ui.model.borrow_mut().messages = original_messages;
+    ui.model.borrow_mut().conversations = original_conversations_for_names;
+    ui.row_stamps.borrow_mut().clear();
+    ui.render_thread();
+    let cached_message_ids = ui
+        .model
+        .borrow()
+        .messages
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<Vec<_>>();
+    ui.open(
+        ConversationId::new(MessagingAccountId::new(ACCOUNT), "maya-chen"),
+        None,
+    );
+    ui.open(id(), None);
+    assert_eq!(
+        ui.model
+            .borrow()
+            .messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>(),
+        cached_message_ids,
+        "returning to a recent conversation shows its loaded messages before network history completes"
+    );
+    pump_until(
+        || {
+            !ui.pending.borrow().values().any(|request| {
+                matches!(
+                    request,
+                    Request::History(..)
+                        | Request::Draft(_)
+                        | Request::AttachmentDraft(_)
+                        | Request::Select(_)
+                )
+            })
+        },
+        "fresh history and draft validation after cached switching",
+    );
     let row_before_background_event = ui.list.selected_row();
     let thread_before_background_event = ui.thread.first_child();
     ui.event(Event::State(Box::new(ServerPayload::Media {

@@ -155,12 +155,26 @@ without a photo does not hide the sole available photo. Direct conversations
 use one matched photo; groups combine up to four distinct available member
 photos. Missing photos use initials or a person/group icon. Display names alone
 never select a photo.
+Group sender labels, participant details, quotes, and unnamed conversation titles
+use synced contact names matched by the same normalized addresses. Contacts need
+no photo to supply a name. Conflicting names fall back to the reported identity.
+Unchanged address-book refreshes preserve decoded pictures instead of clearing
+them. Photo cache entries use image contents as their keys. Hidden avatars retain
+their small decoded textures; offscreen message images still release theirs.
+
 Pictures refresh when the daemon reports an address-book change. The app reads
 existing contacts and does not start a phone sync or fetch remote profile images.
 
 The interface uses custom GTK title bars, neutral fallback avatars, and Inter
 when available, with a system sans-serif fallback. GTK supplies native window
 dragging, keyboard input, menus, and accessibility behavior.
+
+Recent conversation switches can display the last loaded messages immediately.
+The app keeps up to eight recent threads in memory and still requests fresh
+history. Message changes, removals, account disconnects, and recovery snapshots
+invalidate affected cached views. Fresh history replaces cached rows while
+preserving updates received during the request. Cached history does not confirm
+connection, delivery, or read status.
 
 ## Account setup
 

@@ -1,14 +1,34 @@
-//! Match address-book photos by exact normalized addresses, never display names.
+//! Resolve address-book names and photos by normalized addresses.
 use handover_core::{Contact, Conversation, ConversationKind, Participant};
 use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Default)]
-pub struct ContactPhotos(BTreeMap<String, Option<Arc<str>>>);
+#[derive(Default, PartialEq)]
+pub struct ContactPhotos {
+    photos: BTreeMap<String, Option<Arc<str>>>,
+    names: BTreeMap<String, Option<String>>,
+}
 
 impl ContactPhotos {
-    pub fn replace(&mut self, contacts: Vec<Contact>) {
-        self.0.clear();
+    pub fn replace(&mut self, contacts: Vec<Contact>) -> bool {
+        let mut next = Self::default();
         for contact in contacts {
+            if !contact.display_name.trim().is_empty() {
+                for address in contact
+                    .phones
+                    .iter()
+                    .chain(&contact.emails)
+                    .filter_map(|address| key(address))
+                {
+                    next.names
+                        .entry(address)
+                        .and_modify(|name| {
+                            if name.as_deref() != Some(contact.display_name.as_str()) {
+                                *name = None;
+                            }
+                        })
+                        .or_insert_with(|| Some(contact.display_name.clone()));
+                }
+            }
             let Some(photo) = contact
                 .photo
                 .filter(|photo| !photo.is_empty() && photo.len() <= 48 * 1024)
@@ -20,7 +40,7 @@ impl ContactPhotos {
                 let Some(address) = key(address) else {
                     continue;
                 };
-                self.0
+                next.photos
                     .entry(address)
                     .and_modify(|existing| {
                         if existing.as_ref() != Some(&photo) {
@@ -30,10 +50,31 @@ impl ContactPhotos {
                     .or_insert_with(|| Some(photo.clone()));
             }
         }
+        if *self == next {
+            return false;
+        }
+        *self = next;
+        true
+    }
+
+    pub fn label(&self, participant: &Participant) -> String {
+        participant
+            .address
+            .as_deref()
+            .and_then(key)
+            .and_then(|address| self.names.get(&address))
+            .and_then(Option::as_deref)
+            .or(participant
+                .display_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty()))
+            .or(participant.address.as_deref())
+            .unwrap_or("Contact")
+            .to_owned()
     }
 
     pub fn participant(&self, participant: &Participant) -> Option<Arc<str>> {
-        self.0
+        self.photos
             .get(&key(participant.address.as_deref()?)?)
             .and_then(Clone::clone)
     }
@@ -253,6 +294,37 @@ mod tests {
         ]);
 
         assert!(photos.participant(&participant("+13125550100")).is_none());
+    }
+
+    #[test]
+    fn names_do_not_require_photos_and_unchanged_refreshes_are_stable() {
+        let mut contacts = ContactPhotos::default();
+        let alex = Contact {
+            display_name: "Alex Example".into(),
+            photo: None,
+            ..contact("+13125550100", "unused")
+        };
+        assert!(contacts.replace(vec![alex.clone()]));
+        assert_eq!(contacts.label(&participant("3125550100")), "Alex Example");
+        assert!(!contacts.replace(vec![alex]));
+        assert!(contacts.replace(vec![]));
+        assert_eq!(contacts.label(&participant("3125550100")), "Same name");
+    }
+
+    #[test]
+    fn conflicting_contact_names_fall_back_to_reported_identity() {
+        let mut contacts = ContactPhotos::default();
+        contacts.replace(vec![
+            Contact {
+                display_name: "Alex Example".into(),
+                ..contact("+13125550100", "one")
+            },
+            Contact {
+                display_name: "Another Person".into(),
+                ..contact("3125550100", "two")
+            },
+        ]);
+        assert_eq!(contacts.label(&participant("3125550100")), "Same name");
     }
 
     #[test]
