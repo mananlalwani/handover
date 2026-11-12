@@ -297,6 +297,7 @@ pub fn redact_command(command: &HelperCommand) -> String {
         HelperCommand::Login { .. } => "login".into(),
         HelperCommand::Logout { .. } => "logout".into(),
         HelperCommand::ListConversations { .. } => "list_conversations".into(),
+        HelperCommand::FetchMessage { .. } => "fetch_message".into(),
         HelperCommand::FetchHistory { .. } => "fetch_history".into(),
         HelperCommand::SendText { request_id, .. } => {
             format!("send_text request_id={request_id}")

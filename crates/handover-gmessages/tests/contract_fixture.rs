@@ -20,7 +20,7 @@ fn fixture() -> Vec<HelperEvent> {
 #[test]
 fn helper_events_decode_to_known_shapes() {
     let events = fixture();
-    assert_eq!(events.len(), 21);
+    assert_eq!(events.len(), 22);
     assert!(matches!(
         events[18],
         HelperEvent::Diagnostic {

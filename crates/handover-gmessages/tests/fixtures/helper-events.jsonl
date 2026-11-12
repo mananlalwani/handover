@@ -17,5 +17,6 @@
 {"error":"send failed","ok":false,"request_id":"r2","type":"command_result"}
 {"message":"history fetch failed","type":"error"}
 {"type":"diagnostic","code":"typing_registered"}
+{"type":"message_lookup","account":"gmessages:default","conversation":"t1","message":{"local_id":"older","sender":"peer","text":"original","reply_to":"earlier","reply_preview":"Earlier quoted text"},"fetch_id":42}
 {"account":"gmessages:default","type":"account_removed"}
 {"type":"messages","account":"gmessages:default","conversation":"t1","messages":[],"page_complete":true,"full":false,"future_flag":true}

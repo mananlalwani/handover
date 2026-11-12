@@ -7,6 +7,7 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
     method: Method,
     writer: &mut W,
     state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<crate::messaging_backend::MessagingHub>,
 ) -> Result<bool, IpcError> {
     let (workspace, archive, accounts) = {
         let state = state
@@ -206,42 +207,66 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 )
             } else if !known(&message_id.conversation_id) {
                 error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
-            } else if let Some(archive) = archive {
-                match archive.context_page(message_id.clone()).await {
-                    Ok(Some((messages, cursor))) => {
-                        let id = message_id.conversation_id;
-                        protocol::write_list_response(
-                            writer,
-                            messages,
-                            |messages| ServerPayload::MessageContext {
-                                conversation_id: id.clone(),
-                                messages: messages.to_vec(),
-                                done: true,
-                                cursor_next: cursor.clone(),
-                            },
-                            |messages, done| ServerPayload::MessageContext {
-                                conversation_id: id.clone(),
-                                messages: messages.to_vec(),
-                                done,
-                                cursor_next: cursor.clone(),
-                            },
-                        )
-                        .await?;
-                        return Ok(true);
-                    }
-                    Ok(None) => error(ErrorCode::UnknownMessage, "Saved message was not found"),
-                    Err(_) => error(
-                        ErrorCode::HistoryUnavailable,
-                        "Saved context is unavailable",
-                    ),
-                }
             } else {
+                let saved = if let Some(archive) = &archive {
+                    archive
+                        .context_page(message_id.clone())
+                        .await
+                        .map_err(|_| ())
+                } else {
+                    Err(())
+                };
+                let mut unavailable = saved.is_err();
+                let mut page = saved.ok().flatten();
+                if page.is_none() {
+                    let online = state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .messaging()
+                        .account(&message_id.conversation_id.account_id)
+                        .is_some_and(|account| account.connected && account.authenticated);
+                    if online && let Some(messaging) = messaging {
+                        match messaging.fetch_message(message_id.clone()).await {
+                            Ok(message) => {
+                                page = message.map(|message| (vec![message], None));
+                                unavailable = false;
+                            }
+                            Err(_) => unavailable = true,
+                        }
+                    }
+                }
+                if let Some((messages, cursor)) = page {
+                    let id = message_id.conversation_id;
+                    protocol::write_list_response(
+                        writer,
+                        messages,
+                        |messages| ServerPayload::MessageContext {
+                            conversation_id: id.clone(),
+                            messages: messages.to_vec(),
+                            done: true,
+                            cursor_next: cursor.clone(),
+                        },
+                        |messages, done| ServerPayload::MessageContext {
+                            conversation_id: id.clone(),
+                            messages: messages.to_vec(),
+                            done,
+                            cursor_next: cursor.clone(),
+                        },
+                    )
+                    .await?;
+                    return Ok(true);
+                }
                 error(
-                    ErrorCode::HistoryUnavailable,
-                    "Local history storage is unavailable",
+                    if unavailable {
+                        ErrorCode::HistoryUnavailable
+                    } else {
+                        ErrorCode::UnknownMessage
+                    },
+                    "Original message is unavailable",
                 )
             }
         }
+
         Method::MessagesWorkspace | Method::MessagesSelect { .. } => {
             let result = match method {
                 Method::MessagesSelect { location } => {

@@ -8,7 +8,14 @@ use prost::Message;
 use std::collections::BTreeSet;
 use zeroize::{Zeroize, Zeroizing};
 
+#[cfg(test)]
 pub(crate) fn decode(account: &str, bytes: &[u8]) -> Result<Conversation, ProbeError> {
+    project(account, bytes).map(|(conversation, _)| conversation)
+}
+pub(crate) fn project(
+    account: &str,
+    bytes: &[u8],
+) -> Result<(Conversation, Zeroizing<Vec<String>>), ProbeError> {
     let mut wire = WireConversation::decode(bytes)
         .map_err(|_| ProbeError::SessionProtocol(SessionError::ConversationEncoding))?;
     // A phone may repeat a local SIM identity without its self flag. Link
@@ -30,6 +37,7 @@ pub(crate) fn decode(account: &str, bytes: &[u8]) -> Result<Conversation, ProbeE
         .filter(|identity| !identity.participant_id.is_empty())
         .map(|identity| Zeroizing::new(identity.participant_id.clone()))
         .collect();
+    let mut self_actors = Vec::new();
     let participants = wire
         .participants
         .iter_mut()
@@ -50,6 +58,13 @@ pub(crate) fn decode(account: &str, bytes: &[u8]) -> Result<Conversation, ProbeE
                 return Err(ProbeError::SessionProtocol(
                     SessionError::ParticipantIdentity,
                 ));
+            }
+            if participant.is_self
+                && !identity.participant_id.is_empty()
+                && identity.participant_id.len() <= handover_core::messaging::MAX_ID_LEN - 5
+                && !identity.participant_id.chars().any(char::is_control)
+            {
+                self_actors.push(format!("peer:{}", identity.participant_id));
             }
             let address = Some(std::mem::take(&mut identity.id));
             let id = if participant.is_self {
@@ -165,7 +180,9 @@ pub(crate) fn decode(account: &str, bytes: &[u8]) -> Result<Conversation, ProbeE
         };
         ProbeError::SessionProtocol(category)
     })?;
-    Ok(conversation)
+    self_actors.sort();
+    self_actors.dedup();
+    Ok((conversation, Zeroizing::new(self_actors)))
 }
 
 // SI/Wv and Qv/Mv in the first-party script. Message previews, media, and
@@ -254,6 +271,38 @@ mod tests {
                 is_self: false,
             }],
         }
+    }
+    #[test]
+    fn projects_private_self_actor_aliases_from_attested_roles() {
+        let mut record = wire();
+        for (id, is_self) in [("own-one", true), ("own-two", false)] {
+            record.participants.push(WireParticipant {
+                identity: Some(WireIdentity {
+                    kind: 1,
+                    id: "+15555550101".into(),
+                    participant_id: id.into(),
+                }),
+                full_name: String::new(),
+                display_name: String::new(),
+                is_self,
+            });
+        }
+        let (conversation, actors) = project("a", &record.encode_to_vec()).unwrap();
+        assert_eq!(actors.as_slice(), ["peer:own-one", "peer:own-two"]);
+        assert_eq!(
+            conversation
+                .participants
+                .iter()
+                .filter(|participant| participant.is_self)
+                .count(),
+            1
+        );
+        assert!(
+            conversation
+                .participants
+                .iter()
+                .any(|participant| participant.local_id == "self:a")
+        );
     }
     #[test]
     fn an_attested_self_address_links_unflagged_aliases_to_the_same_self() {

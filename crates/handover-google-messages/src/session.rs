@@ -97,6 +97,7 @@ pub struct RecoveredSession {
     proof: BrowserProof,
     session_id: Uuid,
     rcs: crate::rcs::Context,
+    actors: std::sync::Mutex<crate::actor_identities::ActorIdentities>,
 }
 impl fmt::Debug for RecoveredSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -220,6 +221,7 @@ impl RecoveredSession {
             proof,
             session_id: Uuid::new_v4(),
             rcs: crate::rcs::Context::default(),
+            actors: Default::default(),
         })
     }
     pub fn account_id(&self) -> &str {
@@ -452,6 +454,10 @@ impl RecoveredSession {
                 .decrypt_payload(&reply.ciphertext)
                 .map_err(|_| ProbeError::ReceiveFailed)?;
             let mut page = crate::history::decode(conversation, plaintext.as_bytes())?;
+            self.actors
+                .lock()
+                .map_err(|_| ProbeError::NativeError)?
+                .normalize(conversation, &mut page.messages);
             let reply_id = reply.message_id;
             if !page.complete {
                 return Ok(ReadResult::History(page, reply_id));
@@ -598,7 +604,15 @@ impl RecoveredSession {
             let decoded = page
                 .conversations
                 .iter()
-                .map(|bytes| crate::conversation::decode(self.account_id(), bytes))
+                .map(|bytes| {
+                    let (conversation, actors) =
+                        crate::conversation::project(self.account_id(), bytes)?;
+                    self.actors
+                        .lock()
+                        .map_err(|_| ProbeError::NativeError)?
+                        .remember(conversation.id.clone(), actors);
+                    Ok(conversation)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             total_records += decoded.len();
             total_bytes += plaintext.as_bytes().len();
@@ -737,8 +751,9 @@ impl RecoveredSession {
                         let push = push.ok_or(ProbeError::ReceiveFailed)?;
                         let plaintext = self.pairing.pairing.decrypt_payload(&push.ciphertext)
                             .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
-                        let update = crate::updates::decode(self.account_id(), &known,
-                            plaintext.as_bytes(), push.request_id.as_str() == session_id)?;
+                        let update = crate::updates::decode_with_actors(self.account_id(), &known,
+                            plaintext.as_bytes(), push.request_id.as_str() == session_id,
+                            &mut *self.actors.lock().map_err(|_| ProbeError::NativeError)?)?;
                         if let crate::updates::Update::Conversations(records) = &update {
                             for record in records {
                                 if let Some(previous) = known.iter_mut().find(|previous| previous.id == record.id) {

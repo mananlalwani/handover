@@ -70,6 +70,29 @@ pub(crate) fn original_request(message: &str, part: &str) -> Zeroizing<Vec<u8>> 
         .encode_to_vec(),
     )
 }
+pub(crate) fn original_message(
+    conversation: &Conversation,
+    id: &str,
+    bytes: &[u8],
+) -> Result<Option<CoreMessage>, ProbeError> {
+    if bytes.len() > 512 * 1024 {
+        return Err(invalid());
+    }
+    let response = OriginalResponse::decode(bytes).map_err(|_| invalid())?;
+    if response.message.is_empty() {
+        return Ok(None);
+    }
+    let wire = WireMessage::decode(response.message.as_slice()).map_err(|_| invalid())?;
+    if wire.id != id || wire.conversation != conversation.id.local_id {
+        return Err(invalid());
+    }
+    let mut messages = decode_records(conversation, vec![response.message.clone()])?;
+    if messages.len() != 1 {
+        return Err(invalid());
+    }
+    Ok(messages.pop())
+}
+
 /// Validate the returned message against the requested thread and attachment.
 /// Only the original reference may become a full attachment download.
 pub(crate) fn original_download(
@@ -325,6 +348,14 @@ pub(crate) fn decode_records(
             sent_at: wire.timestamp.filter(|value| *value > 0),
             text,
             attachments,
+            reply_preview: wire
+                .reply
+                .as_ref()
+                .and_then(|reply| reply.preview.as_ref())
+                .and_then(|preview| preview.body.as_ref())
+                .and_then(|body| body.text.as_ref())
+                .filter(|text| !text.is_empty())
+                .cloned(),
             reply_to: wire
                 .reply
                 .as_ref()
@@ -491,6 +522,8 @@ impl Drop for WireEmoji {
 #[derive(Message)]
 #[prost(skip_debug)]
 struct ReplyReference {
+    #[prost(message, optional, tag = "3")]
+    preview: Option<ReplyExcerpt>,
     #[prost(string, tag = "1")]
     original: String,
     #[prost(message, optional, tag = "6")]
@@ -499,6 +532,24 @@ struct ReplyReference {
 impl Drop for ReplyReference {
     fn drop(&mut self) {
         self.original.zeroize();
+    }
+}
+// First-party r8a reads reply field 3, then body field 2 and its text union.
+#[derive(Message)]
+#[prost(skip_debug)]
+struct ReplyExcerpt {
+    #[prost(message, optional, tag = "2")]
+    body: Option<ReplyExcerptBody>,
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct ReplyExcerptBody {
+    #[prost(string, optional, tag = "1")]
+    text: Option<String>,
+}
+impl Drop for ReplyExcerptBody {
+    fn drop(&mut self) {
+        self.text.zeroize();
     }
 }
 #[derive(Message)]
@@ -652,6 +703,52 @@ mod tests {
         .encode_to_vec()
     }
     #[test]
+    fn reply_excerpt_survives_without_the_original_message() {
+        let mut wire = record();
+        wire.reply = Some(ReplyReference {
+            original: "not-downloaded".into(),
+            mapping: None,
+            preview: Some(ReplyExcerpt {
+                body: Some(ReplyExcerptBody {
+                    text: Some("Original quoted text".into()),
+                }),
+            }),
+        });
+        let messages = decode_records(&conversation(), vec![wire.encode_to_vec()]).unwrap();
+        assert_eq!(
+            messages[0].reply_preview.as_deref(),
+            Some("Original quoted text")
+        );
+        assert_eq!(
+            messages[0].reply_to.as_ref().unwrap().local_id,
+            "not-downloaded"
+        );
+    }
+    #[test]
+    fn original_lookup_validates_message_and_conversation_before_exposing_text() {
+        let response = OriginalResponse {
+            message: record().encode_to_vec(),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            original_message(&conversation(), "message", &response)
+                .unwrap()
+                .unwrap()
+                .id
+                .local_id,
+            "message"
+        );
+        assert!(original_message(&conversation(), "another", &response).is_err());
+        let mut foreign = conversation();
+        foreign.id.local_id = "foreign".into();
+        assert!(original_message(&foreign, "message", &response).is_err());
+        assert!(
+            original_message(&conversation(), "message", &[])
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
     fn projects_attested_reply_target_and_reaction_actors() {
         let mut wire = record();
         // Field 19, reaction field 1 contains the emoji; repeated field 2 actors.
@@ -665,6 +762,7 @@ mod tests {
         assert_eq!(messages[0].reactions[0].participant_ids, ["peer:p"]);
         assert_eq!(messages[0].reactions[0].count, 1);
         wire.reply = Some(ReplyReference {
+            preview: None,
             original: "old".into(),
             mapping: Some(ReplyMapping {
                 original: "temporary".into(),
@@ -733,6 +831,7 @@ mod tests {
                 deleted.parts.clear();
             }
             deleted.reply = Some(ReplyReference {
+                preview: None,
                 original: "earlier".into(),
                 mapping: None,
             });

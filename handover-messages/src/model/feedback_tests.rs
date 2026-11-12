@@ -41,6 +41,7 @@ fn message(id: &ConversationId, local_id: &str, sender: Participant, sent_at: i6
         sent_at: Some(sent_at),
         text: Some("same text".into()),
         attachments: vec![],
+        reply_preview: None,
         reply_to: None,
         reactions: vec![],
         deleted: false,

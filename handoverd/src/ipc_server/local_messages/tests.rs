@@ -33,6 +33,7 @@ fn message(
         sent_at: Some(sent_at),
         text: Some(text.into()),
         attachments: Vec::new(),
+        reply_preview: None,
         reply_to: None,
         reactions: Vec::new(),
         deleted: false,
@@ -68,7 +69,7 @@ fn state_with_account(conversation_id: &ConversationId) -> Arc<RwLock<crate::sta
 
 async fn call(state: &Arc<RwLock<crate::state::StateStore>>, method: Method) -> Vec<ServerMessage> {
     let (mut writer, reader) = tokio::io::duplex(handover_ipc::MAX_LINE_BYTES * 3);
-    assert!(handle(method, &mut writer, state).await.unwrap());
+    assert!(handle(method, &mut writer, state, &None).await.unwrap());
     drop(writer);
     let mut reader = BufReader::new(reader);
     let mut messages = Vec::new();
@@ -312,6 +313,7 @@ async fn previews_chunk_large_records_within_frame_bounds_and_preserve_all_recor
             },
             &mut writer,
             &state,
+            &None,
         )
         .await
         .unwrap()

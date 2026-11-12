@@ -94,6 +94,11 @@ struct FetchSerializer {
 type PageFloorKey = (String, String, Option<u64>);
 type PageFloors = HashMap<PageFloorKey, (Option<i64>, String)>;
 
+struct MessageLookup {
+    fetch_id: u64,
+    result: tokio::sync::watch::Sender<Option<Result<Option<handover_core::Message>, ()>>>,
+}
+
 struct HubInner {
     setup: Mutex<Option<(String, tokio::time::Instant)>>,
     setup_changed: Notify,
@@ -103,6 +108,7 @@ struct HubInner {
     helper_name: Mutex<Option<String>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<(), HelperCallError>>>>,
     fetches: Mutex<FetchWaiters>,
+    message_lookups: Mutex<HashMap<MessageId, MessageLookup>>,
     /// Serialize fetches per account so their cached pages and cursors
     /// are published in request order. Waiters queue rather than share a flight.
     fetch_locks: Mutex<FetchSerializers>,
@@ -146,6 +152,7 @@ impl MessagingHub {
                 helper_name: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
                 fetches: Mutex::new(HashMap::new()),
+                message_lookups: Mutex::new(HashMap::new()),
                 counter: AtomicU64::new(1),
                 shutdown: AtomicBool::new(false),
                 fetch_locks: Mutex::new(HashMap::new()),
@@ -442,6 +449,75 @@ impl MessagingHub {
         self.submit(command).await
     }
 
+    pub(crate) async fn fetch_message(
+        &self,
+        id: MessageId,
+    ) -> Result<Option<handover_core::Message>, HelperCallError> {
+        let (fetch_id, mut result, start) = {
+            let mut lookups = self.inner.message_lookups.lock().await;
+            if let Some(lookup) = lookups.get(&id) {
+                if lookup.result.receiver_count() >= 8 {
+                    return Err(HelperCallError::Busy);
+                }
+                (lookup.fetch_id, lookup.result.subscribe(), false)
+            } else {
+                if lookups.len() >= MAX_IN_FLIGHT {
+                    return Err(HelperCallError::Busy);
+                }
+                let fetch_id = self.inner.counter.fetch_add(1, Ordering::Relaxed);
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                lookups.insert(
+                    id.clone(),
+                    MessageLookup {
+                        fetch_id,
+                        result: sender,
+                    },
+                );
+                (fetch_id, receiver, true)
+            }
+        };
+        if start
+            && let Err(error) = self
+                .fire(HelperCommand::FetchMessage {
+                    account: id.conversation_id.account_id.as_str().into(),
+                    conversation: id.conversation_id.local_id.clone(),
+                    message: id.local_id.clone(),
+                    fetch_id,
+                })
+                .await
+        {
+            let mut lookups = self.inner.message_lookups.lock().await;
+            if lookups
+                .get(&id)
+                .is_some_and(|lookup| lookup.fetch_id == fetch_id)
+            {
+                lookups.remove(&id);
+            }
+            return Err(error);
+        }
+        let value = tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                if let Some(value) = result.borrow().clone() {
+                    return value.map_err(|_| HelperCallError::Unavailable);
+                }
+                result
+                    .changed()
+                    .await
+                    .map_err(|_| HelperCallError::Unavailable)?;
+            }
+        })
+        .await
+        .unwrap_or(Err(HelperCallError::Timeout));
+        let mut lookups = self.inner.message_lookups.lock().await;
+        if lookups
+            .get(&id)
+            .is_some_and(|lookup| lookup.fetch_id == fetch_id)
+        {
+            lookups.remove(&id);
+        }
+        value
+    }
+
     /// Page history through the helper and wait for the matching window.
     /// Fetches for one conversation run one at a time to preserve cursor order.
     pub(crate) async fn fetch_through_helper(
@@ -616,6 +692,7 @@ impl MessagingHub {
         for (_, sender) in self.inner.pending.lock().await.drain() {
             let _ = sender.send(Err(HelperCallError::Unavailable));
         }
+        self.inner.message_lookups.lock().await.clear();
         self.fail_fetches().await;
         // A dead helper never closes its open generations. Drop them so
         // the next helper generation starts from clean buffers instead
@@ -1210,6 +1287,66 @@ async fn ingest_event(
                 ))),
             );
         }
+        HelperEvent::MessageLookup {
+            account,
+            conversation,
+            message,
+            fetch_id,
+        } => {
+            let target = hub
+                .inner
+                .message_lookups
+                .lock()
+                .await
+                .iter()
+                .find(|(_, lookup)| lookup.fetch_id == fetch_id)
+                .map(|(id, _)| id.clone());
+            let Some(target) = target else {
+                return;
+            };
+            let normalized = if target.conversation_id.account_id.as_str() != account
+                || target.conversation_id.local_id != conversation
+            {
+                Err(())
+            } else if let Some(wire) = message {
+                normalize_message(&target.conversation_id, scrub_staged_paths(wire))
+                    .map_err(|_| ())
+                    .and_then(|mut message| {
+                        if message.id != target {
+                            return Err(());
+                        }
+                        if let Some(conversation) = state
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .messaging()
+                            .conversation(&target.conversation_id)
+                        {
+                            resolve_sender(&mut message, conversation);
+                        }
+                        Ok(Some(message))
+                    })
+            } else {
+                Ok(None)
+            };
+            if let Ok(Some(message)) = &normalized {
+                let archive = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .message_archive
+                    .clone();
+                if let Some(archive) = archive {
+                    let _ = archive.merge(vec![message.clone()]).await;
+                }
+            }
+            let mut lookups = hub.inner.message_lookups.lock().await;
+            if lookups
+                .get(&target)
+                .is_some_and(|lookup| lookup.fetch_id == fetch_id)
+                && let Some(lookup) = lookups.remove(&target)
+            {
+                let _ = lookup.result.send(Some(normalized));
+            }
+        }
         HelperEvent::Messages {
             account,
             conversation,
@@ -1659,6 +1796,11 @@ async fn ingest_event(
                 "messaging helper error"
             );
             if let Some(fetch_id) = fetch_id {
+                hub.inner
+                    .message_lookups
+                    .lock()
+                    .await
+                    .retain(|_, lookup| lookup.fetch_id != fetch_id);
                 hub.fail_fetch(fetch_id).await;
             }
         }
@@ -2621,6 +2763,148 @@ mod tests {
         worker.0.abort();
     }
 
+    #[tokio::test]
+    async fn targeted_lookup_coalesces_and_never_replaces_the_message_window() {
+        let state = Arc::new(std::sync::RwLock::new(StateStore::default()));
+        let (events, _) = broadcast::channel(64);
+        let hub = MessagingHub::new();
+        let mut seen = HashSet::new();
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Account {
+                account: "a".into(),
+                label: "Test".into(),
+                connected: true,
+                authenticated: true,
+            },
+        )
+        .await;
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::Conversations {
+                account: "a".into(),
+                conversations: vec![wire_conversation("thread")],
+                full: false,
+                generation: None,
+            },
+        )
+        .await;
+        let (sender, mut commands) = mpsc::channel(8);
+        hub.set_connection(Some("test".into()), Some(sender)).await;
+        let target = MessageId::new(
+            ConversationId::new(MessagingAccountId::new("a"), "thread"),
+            "original",
+        );
+        let first = tokio::spawn({
+            let hub = hub.clone();
+            let target = target.clone();
+            async move { hub.fetch_message(target).await }
+        });
+        let Some(HelperCommand::FetchMessage { fetch_id, .. }) = commands.recv().await else {
+            panic!("targeted command");
+        };
+        let second = tokio::spawn({
+            let hub = hub.clone();
+            let target = target.clone();
+            async move { hub.fetch_message(target).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if hub
+                    .inner
+                    .message_lookups
+                    .lock()
+                    .await
+                    .get(&target)
+                    .unwrap()
+                    .result
+                    .receiver_count()
+                    == 2
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            commands.try_recv().is_err(),
+            "identical lookups share one helper command"
+        );
+        let mut updates = events.subscribe();
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::MessageLookup {
+                account: "a".into(),
+                conversation: "thread".into(),
+                message: Some(wire_message("original")),
+                fetch_id,
+            },
+        )
+        .await;
+        assert_eq!(first.await.unwrap().unwrap().unwrap().id, target);
+        assert_eq!(second.await.unwrap().unwrap().unwrap().id, target);
+        assert!(
+            updates.try_recv().is_err(),
+            "background quote resolution cannot publish message-window changes"
+        );
+        assert!(hub.inner.message_lookups.lock().await.is_empty());
+        let wrong = tokio::spawn({
+            let hub = hub.clone();
+            let target = target.clone();
+            async move { hub.fetch_message(target).await }
+        });
+        let Some(HelperCommand::FetchMessage { fetch_id, .. }) = commands.recv().await else {
+            panic!("targeted command");
+        };
+        ingest_event(
+            &state,
+            &events,
+            &hub,
+            &mut seen,
+            HelperEvent::MessageLookup {
+                account: "other".into(),
+                conversation: "thread".into(),
+                message: Some(wire_message("original")),
+                fetch_id,
+            },
+        )
+        .await;
+        assert!(
+            wrong.await.unwrap().is_err(),
+            "foreign-account replies must not resolve a lookup"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn targeted_lookup_timeout_releases_its_slot() {
+        let hub = MessagingHub::new();
+        let (sender, mut commands) = mpsc::channel(1);
+        hub.set_connection(Some("test".into()), Some(sender)).await;
+        let id = MessageId::new(
+            ConversationId::new(MessagingAccountId::new("a"), "thread"),
+            "m",
+        );
+        let task = tokio::spawn({
+            let hub = hub.clone();
+            async move { hub.fetch_message(id).await }
+        });
+        commands.recv().await.unwrap();
+        tokio::time::advance(Duration::from_secs(41)).await;
+        assert!(matches!(task.await.unwrap(), Err(HelperCallError::Timeout)));
+        assert!(hub.inner.message_lookups.lock().await.is_empty());
+    }
+
     fn wire_conversation(id: &str) -> WireConversation {
         WireConversation {
             local_id: id.into(),
@@ -2649,6 +2933,7 @@ mod tests {
             sent_at: Some(1),
             text: Some("message".into()),
             attachments: Vec::new(),
+            reply_preview: None,
             reply_to: None,
             reactions: Vec::new(),
             deleted: false,
@@ -3084,6 +3369,7 @@ mod tests {
             sent_at: Some(sent_at),
             text: Some("message".into()),
             attachments: Vec::new(),
+            reply_preview: None,
             reply_to: None,
             reactions: Vec::new(),
             deleted: false,
@@ -3579,6 +3865,7 @@ mod tests {
                         sent_at: Some(1),
                         text: Some("message".into()),
                         attachments: Vec::new(),
+                        reply_preview: None,
                         reply_to: None,
                         reactions: Vec::new(),
                         deleted: false,

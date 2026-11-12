@@ -57,6 +57,7 @@ fn sample_message() -> Message {
         sent_at: Some(1_758_000_000_000_000),
         text: Some("Hello".into()),
         attachments: vec![],
+        reply_preview: None,
         reply_to: None,
         reactions: vec![],
         deleted: false,
@@ -443,4 +444,28 @@ fn status_lifecycle_distinguishes_acceptance_from_effect() {
             update
         );
     }
+}
+
+#[test]
+fn reply_previews_are_bounded_and_require_a_scoped_reply() {
+    let mut message = sample_message();
+    message.reply_preview = Some("Quoted\ntext".into());
+    assert!(validate_message(&message).is_err());
+    message.reply_to = Some(MessageId::new(sample_conversation_id(), "original"));
+    assert!(validate_message(&message).is_ok());
+    message.reply_preview = Some("x".repeat(MAX_TEXT_CHARS + 1));
+    assert!(validate_message(&message).is_err());
+    message.reply_preview = Some("bad\0text".into());
+    assert!(validate_message(&message).is_err());
+    message.reply_preview = Some("Quoted text".into());
+    let encoded = serde_json::to_value(&message).unwrap();
+    assert_eq!(serde_json::from_value::<Message>(encoded).unwrap(), message);
+    let mut legacy = serde_json::to_value(&message).unwrap();
+    legacy.as_object_mut().unwrap().remove("reply_preview");
+    assert!(
+        serde_json::from_value::<Message>(legacy)
+            .unwrap()
+            .reply_preview
+            .is_none()
+    );
 }

@@ -257,6 +257,7 @@ mod tests {
             sent_at: Some(i64::from(n)),
             transport: None,
             attachments: vec![],
+            reply_preview: None,
             reply_to: None,
             reactions: vec![],
             deleted: false,

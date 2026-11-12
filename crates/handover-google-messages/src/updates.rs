@@ -30,11 +30,27 @@ fn invalid() -> ProbeError {
     ProbeError::SessionProtocol(SessionError::UpdateModel)
 }
 
+#[cfg(test)]
 pub(crate) fn decode(
     account: &str,
     known: &[Conversation],
     bytes: &[u8],
     own_session: bool,
+) -> Result<Update, ProbeError> {
+    decode_with_actors(
+        account,
+        known,
+        bytes,
+        own_session,
+        &mut crate::actor_identities::ActorIdentities::default(),
+    )
+}
+pub(crate) fn decode_with_actors(
+    account: &str,
+    known: &[Conversation],
+    bytes: &[u8],
+    own_session: bool,
+    identities: &mut crate::actor_identities::ActorIdentities,
 ) -> Result<Update, ProbeError> {
     if bytes.len() > 512 * 1024 {
         return Err(invalid());
@@ -58,7 +74,8 @@ pub(crate) fn decode(
                 if bytes.is_empty() || bytes.len() > 64 * 1024 {
                     return Err(invalid());
                 }
-                let record = crate::conversation::decode(account, bytes)?;
+                let (record, actors) = crate::conversation::project(account, bytes)?;
+                identities.remember(record.id.clone(), actors);
                 if let Some(previous) = records.iter().find(|item| item.id == record.id) {
                     if previous != &record {
                         return Err(invalid());
@@ -105,6 +122,8 @@ pub(crate) fn decode(
                         }
                         Err(error) => return Err(error),
                     };
+                let mut records = records;
+                identities.normalize(conversation, &mut records);
                 for record in records {
                     let outgoing = record.sender.is_self;
                     let id = record.id.clone();

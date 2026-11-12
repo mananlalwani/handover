@@ -68,6 +68,12 @@ pub enum HelperCommand {
     ListConversations {
         account: String,
     },
+    FetchMessage {
+        account: String,
+        conversation: String,
+        message: String,
+        fetch_id: u64,
+    },
     FetchHistory {
         account: String,
         conversation: String,
@@ -204,6 +210,12 @@ pub enum HelperEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fetch_id: Option<u64>,
     },
+    MessageLookup {
+        account: String,
+        conversation: String,
+        message: Option<WireMessage>,
+        fetch_id: u64,
+    },
     MessageRemoved {
         account: String,
         conversation: String,
@@ -328,6 +340,9 @@ pub struct WireMessage {
     pub attachments: Vec<WireAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// Quoted text supplied with the reply, independent of the original's availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_preview: Option<String>,
     #[serde(default)]
     pub reactions: Vec<WireReaction>,
     #[serde(default)]

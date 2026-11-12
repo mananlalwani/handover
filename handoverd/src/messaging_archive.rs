@@ -230,6 +230,7 @@ mod tests {
             sent_at: Some(i64::from(number)),
             text: Some("fixture".into()),
             attachments: Vec::new(),
+            reply_preview: None,
             reply_to: None,
             reactions: Vec::new(),
             deleted: false,

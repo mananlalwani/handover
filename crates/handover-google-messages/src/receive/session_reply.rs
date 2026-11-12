@@ -99,12 +99,13 @@ impl ReceiveRecord {
         if response.inactive {
             return Err(ReceiveError::SessionPreempted);
         }
-        // Observed action 10 completes without a body. It attests no data or
-        // read effect; callers must refresh encrypted inventory afterward.
-        let empty_read_completion = action == 10 && response.encrypted.is_empty();
+        // Observed actions 10 and 36 can complete without a body. This
+        // attests no read effect or original content. Callers refresh inventory
+        // for reads and report no original for an empty lookup.
+        let empty_completion = matches!(action, 10 | 36) && response.encrypted.is_empty();
         if !response.plaintext.is_empty()
             || !response.auxiliary.is_empty()
-            || (!empty_read_completion && response.encrypted.len() < 48)
+            || (!empty_completion && response.encrypted.len() < 48)
             || response.encrypted.len() > 512 * 1024 + 48
         {
             return Err(ReceiveError::InvalidEnvelope);
@@ -145,8 +146,8 @@ mod tests {
         ReceiveRecord(json!([[], message]))
     }
     #[test]
-    fn empty_mark_read_completion_is_not_a_data_reply() {
-        for action in [1, 10, 31, 38, 46] {
+    fn empty_read_and_original_completions_are_not_data_replies() {
+        for action in [1, 10, 31, 36, 38, 46] {
             let mut record = record("request", "phone", false, Vec::new());
             let response = Response {
                 request_id: "request".into(),
@@ -158,20 +159,20 @@ mod tests {
             };
             record.0[1][11] = json!(STANDARD.encode(response.encode_to_vec()));
             let result = record.session_reply("request", action, b"phone");
-            if action == 10 {
+            if matches!(action, 10 | 36) {
                 assert!(
                     result.unwrap().unwrap().ciphertext.is_empty(),
-                    "observed empty mark-read completion is not confirmed read state"
+                    "observed empty completion carries no data"
                 );
                 assert!(
                     record
-                        .session_reply("other", 10, b"phone")
+                        .session_reply("other", action, b"phone")
                         .unwrap()
                         .is_none()
                 );
                 assert!(
                     record
-                        .session_reply("request", 10, b"other")
+                        .session_reply("request", action, b"other")
                         .unwrap()
                         .is_none()
                 );

@@ -1777,6 +1777,7 @@ fn native_window_round_trips_real_frontend_actions() {
         "text":"A final note from the earlier conversation.",
         "attachments":[],
         "reply_to":{"conversation_id":id(),"local_id":"m0"},
+        "reply_preview":"Quoted text from phone",
         "reactions":[],"deleted":false
     });
     send_json(
@@ -1796,10 +1797,10 @@ fn native_window_round_trips_real_frontend_actions() {
             button.has_css_class("quoted-message")
                 && button
                     .label()
-                    .is_some_and(|label| label.contains("Original message unavailable locally"))
+                    .is_some_and(|label| label.contains("Quoted text from phone"))
         })
     })
-    .expect("reply to an unloaded original starts with a fallback quote");
+    .expect("reply to an unloaded original shows the phone excerpt immediately");
     pump_until(
         || {
             find_widget(ui.thread.upcast_ref(), &|widget| {
@@ -1912,9 +1913,9 @@ fn native_window_round_trips_real_frontend_actions() {
             find_widget(ui.thread.upcast_ref(), &|widget| {
                 widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
                     button.has_css_class("quoted-message")
-                        && button.label().is_some_and(|label| {
-                            label.contains("Original message unavailable locally")
-                        })
+                        && button
+                            .label()
+                            .is_some_and(|label| label.contains("Quoted text from phone"))
                 })
             })
             .is_some()
@@ -2004,6 +2005,17 @@ fn native_window_round_trips_real_frontend_actions() {
         "message actions reply targets original message",
     );
     ui.set_reply(None);
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty && !draft.saving)
+        },
+        "reply draft clears before inspecting reaction details",
+    );
+    ui.jump_to(&MessageId::new(id(), "m1"));
+    wait_for_layout(&ui.window);
 
     let reaction_before = find_widget(ui.thread.upcast_ref(), &|widget| {
         widget
@@ -2011,6 +2023,40 @@ fn native_window_round_trips_real_frontend_actions() {
             .is_some_and(|label| label.text() == "👍 1")
     })
     .expect("initial reaction aggregate");
+    let reaction_chip = ancestor_with_class(&reaction_before, "reaction-chip")
+        .unwrap()
+        .downcast::<gtk::MenuButton>()
+        .unwrap();
+    reaction_chip.popup();
+    let people = reaction_chip.popover().unwrap();
+    pump_until(
+        || {
+            people.is_visible()
+                && find_widget(people.upcast_ref(), &|widget| {
+                    widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
+                        label.has_css_class("reaction-person") && label.text() == "Alex Example"
+                    })
+                })
+                .is_some()
+        },
+        "reaction popover shows contact name",
+    );
+    pump_until(
+        || {
+            find_widget(people.upcast_ref(), &|widget| {
+                widget
+                    .downcast_ref::<adw::Avatar>()
+                    .is_some_and(|avatar| avatar.custom_image().is_some())
+            })
+            .is_some()
+        },
+        "reaction popover uses synced contact photo",
+    );
+    reaction_chip.popdown();
+    pump_until(
+        || !people.is_visible() && !reaction_chip.is_active(),
+        "reaction people popover closes",
+    );
     actions.popup();
     assert!(
         find_widget(actions_popover.upcast_ref(), &|widget| {
@@ -2096,6 +2142,28 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap()
     .downcast::<gtk::MenuButton>()
     .unwrap();
+    let mixed_chip = find_widget(&row, &|widget| widget.has_css_class("reaction-chip"))
+        .unwrap()
+        .downcast::<gtk::MenuButton>()
+        .unwrap();
+    mixed_chip.popup();
+    let mixed_people = mixed_chip.popover().unwrap();
+    pump_until(
+        || {
+            find_widget(mixed_people.upcast_ref(), &|widget| {
+                widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
+                    label.has_css_class("reaction-person") && label.text() == "You"
+                })
+            })
+            .is_some()
+        },
+        "reaction popover identifies a confirmed self actor",
+    );
+    mixed_chip.popdown();
+    pump_until(
+        || !mixed_people.is_visible() && !mixed_chip.is_active(),
+        "mixed reaction popover closes",
+    );
     own_actions.popup();
     let own_popover = own_actions.popover().unwrap();
     let owned_reaction = find_widget(ui.thread.upcast_ref(), &|widget| {

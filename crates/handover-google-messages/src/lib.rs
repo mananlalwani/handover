@@ -4,6 +4,7 @@
 //! primitives, normalized conversation/history projection, and a shared live
 //! receiver with bounded text sends. Network effects are explicit.
 
+mod actor_identities;
 mod conversation;
 pub mod credential_store;
 pub mod history;

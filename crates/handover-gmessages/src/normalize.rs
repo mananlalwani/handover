@@ -170,6 +170,7 @@ pub fn normalize_message(
                 staged_path: attachment.staged_path,
             })
             .collect(),
+        reply_preview: wire.reply_preview,
         reply_to: wire
             .reply_to
             .map(|local_id| MessageId::new(conversation_id.clone(), local_id)),
@@ -224,6 +225,7 @@ pub fn parse_status(status: &str) -> Result<MessageStatus, NormalizeError> {
 /// Extract ids from an event for size-bounded logging (no bodies).
 pub fn event_ids(event: &HelperEvent) -> String {
     match event {
+        HelperEvent::MessageLookup { .. } => "message_lookup".into(),
         HelperEvent::Hello { name, .. } => format!("hello name_len={}", name.len()),
         HelperEvent::Account { account, .. } => format!("account {account}"),
         HelperEvent::AccountRemoved { account } => format!("account_removed {account}"),

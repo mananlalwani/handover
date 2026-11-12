@@ -1498,10 +1498,11 @@ impl Window {
                 if self.model.borrow().selected.as_ref() == Some(&id.conversation_id)
                     && self.quotes.borrow().len() < 256
                 {
-                    self.quotes
-                        .borrow_mut()
-                        .entry(id)
-                        .or_insert_with(|| message.map(|message| *message));
+                    if let Some(message) = message {
+                        self.quotes.borrow_mut().insert(id, Some(*message));
+                    } else {
+                        self.quotes.borrow_mut().entry(id).or_insert(None);
+                    }
                     self.render_thread();
                 }
             }
@@ -1706,7 +1707,22 @@ impl Window {
                 };
                 format!("{}\n{}", sender, text.chars().take(240).collect::<String>())
             }
-            None => "Original message unavailable locally".into(),
+            None if model.messages.iter().any(|message| {
+                message.reply_to.as_ref() == Some(id) && message.reply_preview.is_some()
+            }) =>
+            {
+                let preview = model
+                    .messages
+                    .iter()
+                    .find(|message| {
+                        message.reply_to.as_ref() == Some(id) && message.reply_preview.is_some()
+                    })
+                    .and_then(|message| message.reply_preview.as_deref())
+                    .unwrap_or_default();
+                format!("Reply\n{}", preview.chars().take(240).collect::<String>())
+            }
+            None if !quotes.contains_key(id) => "Loading original message…".into(),
+            None => "Original message unavailable".into(),
         }
     }
     fn jump_to(self: &Rc<Self>, target: &MessageId) {
@@ -1735,6 +1751,91 @@ impl Window {
             self.open(target.conversation_id.clone(), Some(target.clone()));
         }
     }
+    fn reaction_details(
+        &self,
+        model: &Model,
+        message: &Message,
+        reaction: &Reaction,
+    ) -> gtk::MenuButton {
+        let button = gtk::MenuButton::builder()
+            .label(format!("{} {}", reaction.emoji, reaction.count))
+            .tooltip_text("See who reacted")
+            .build();
+        button.add_css_class("flat");
+        button.add_css_class("reaction-chip");
+        button.set_direction(gtk::ArrowType::None);
+        let popover = gtk::Popover::new();
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        let heading = gtk::Label::new(Some(&format!("{} reactions", reaction.emoji)));
+        heading.add_css_class("heading");
+        heading.set_xalign(0.0);
+        content.append(&heading);
+        let conversation = model
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == message.id.conversation_id);
+        let mut actors = BTreeSet::new();
+        for actor in reaction
+            .participant_ids
+            .iter()
+            .filter(|actor| actors.insert(actor.as_str()))
+            .take(256)
+        {
+            let participant = conversation.and_then(|conversation| {
+                conversation
+                    .participants
+                    .iter()
+                    .find(|participant| &participant.local_id == actor)
+            });
+            let name = participant
+                .map(|participant| {
+                    if participant.is_self {
+                        "You".to_owned()
+                    } else {
+                        self.photos.borrow().label(participant)
+                    }
+                })
+                .unwrap_or_else(|| "Unknown participant".into());
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let avatar = adw::Avatar::new(28, Some(&name), true);
+            if let Some(participant) = participant
+                && let Some(photo) = self.photos.borrow().participant(participant)
+            {
+                self.media.avatar(&avatar, photo);
+            }
+            row.append(&avatar);
+            let label = gtk::Label::new(Some(&name));
+            label.set_xalign(0.0);
+            label.set_max_width_chars(30);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.add_css_class("reaction-person");
+            row.append(&label);
+            content.append(&row);
+        }
+        let unknown = reaction.count.saturating_sub(actors.len() as u64);
+        if unknown > 0 {
+            let label = gtk::Label::new(Some(&format!("{unknown} more with unavailable details")));
+            label.add_css_class("dim-label");
+            content.append(&label);
+        }
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .max_content_height(360)
+            .propagate_natural_height(true)
+            .propagate_natural_width(true)
+            .child(&content)
+            .build();
+        popover.set_child(Some(&scroll));
+        let media = self.media.clone();
+        popover.connect_map(move |popover| media.schedule(popover));
+        button.set_popover(Some(&popover));
+        button
+    }
+
     fn message_actions(self: &Rc<Self>, message: &Message) -> gtk::MenuButton {
         let menu = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
@@ -3096,10 +3197,7 @@ impl Window {
                 let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
                 reactions.add_css_class("reaction-strip");
                 for reaction in message.reactions.iter().take(32) {
-                    let label =
-                        gtk::Label::new(Some(&format!("{} {}", reaction.emoji, reaction.count)));
-                    label.add_css_class("reaction-chip");
-                    reactions.append(&label);
+                    reactions.append(&self.reaction_details(&model, message, reaction));
                 }
                 column.append(&reactions);
             }

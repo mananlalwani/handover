@@ -25,6 +25,7 @@ fn boundary_message() -> handover_core::Message {
         sent_at: None,
         text: Some("body".into()),
         attachments: vec![],
+        reply_preview: None,
         reply_to: Some("reply".into()),
         deleted: false,
         reactions: (0..32)

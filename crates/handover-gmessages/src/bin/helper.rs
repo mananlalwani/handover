@@ -102,6 +102,12 @@ trait Relay {
     fn login(&mut self, account: &str, bundle: &[u8]) -> Vec<HelperEvent>;
     fn logout(&mut self, account: &str) -> Vec<HelperEvent>;
     fn sync(&mut self, account: &str) -> Vec<HelperEvent>;
+    fn fetch_message(
+        &mut self,
+        account: &str,
+        conversation: &str,
+        message: &str,
+    ) -> Option<WireMessage>;
     fn fetch_history(
         &mut self,
         account: &str,
@@ -291,6 +297,7 @@ impl LoopbackRelay {
                     size_bytes: Some(25),
                     staged_path: Some(sample.into()),
                 }],
+                reply_preview: None,
                 reply_to: None,
                 reactions: vec![],
                 deleted: false,
@@ -442,6 +449,7 @@ fn text_message(local_id: &str, sender: &str, sent_at: i64, text: &str) -> WireM
         sent_at: Some(sent_at),
         text: Some(text.into()),
         attachments: vec![],
+        reply_preview: None,
         reply_to: None,
         reactions: vec![],
         deleted: false,
@@ -573,6 +581,20 @@ impl Relay for LoopbackRelay {
         events
     }
 
+    fn fetch_message(
+        &mut self,
+        account: &str,
+        conversation: &str,
+        message: &str,
+    ) -> Option<WireMessage> {
+        self.account_mut(account)?
+            .conversations
+            .get(conversation)?
+            .messages
+            .iter()
+            .find(|item| item.local_id == message)
+            .cloned()
+    }
     fn fetch_history(
         &mut self,
         account: &str,
@@ -640,6 +662,7 @@ impl Relay for LoopbackRelay {
             sent_at: Some(1_758_000_100_000_000 + thread.counter as i64),
             text: Some(text.into()),
             attachments: vec![],
+            reply_preview: None,
             reply_to: None,
             reactions: vec![],
             deleted: false,
@@ -744,6 +767,7 @@ impl Relay for LoopbackRelay {
                 size_bytes: Some(size),
                 staged_path: Some(staged_path.to_string_lossy().into_owned()),
             }],
+            reply_preview: None,
             reply_to: None,
             reactions: vec![],
             deleted: false,
@@ -1151,6 +1175,20 @@ impl LoopbackHelper {
                 self.relay.logout(&account)
             }
             HelperCommand::ListConversations { account } => self.relay.sync(&account),
+            HelperCommand::FetchMessage {
+                account,
+                conversation,
+                message,
+                fetch_id,
+            } => {
+                let message = self.relay.fetch_message(&account, &conversation, &message);
+                vec![HelperEvent::MessageLookup {
+                    account,
+                    conversation,
+                    message,
+                    fetch_id,
+                }]
+            }
             HelperCommand::FetchHistory {
                 account,
                 conversation,

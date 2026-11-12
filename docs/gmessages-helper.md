@@ -33,13 +33,13 @@ supervision only. Google protocol implementations belong in the native client.
 ## Commands and events
 
 Daemon → helper: `hello`, `login` (base64 bundle on the pipe, never argv),
-`logout`, `list_conversations`, `fetch_history`, `send_text`, `send_media`,
+`logout`, `list_conversations`, `fetch_history`, `fetch_message`, `send_text`, `send_media`,
 `react`, `mark_read`, `typing` (start only; there is no stop),
 `delete_message`, `open_conversation`, `sync`, `shutdown`.
 
 Helper → daemon: `hello`, `account`, `account_removed`, `pairing` (opaque
 prompt), `conversations`, `conversation_removed`, `messages`,
-`message_removed`, `status`, `typing`, `read`, `command_result`, `error`,
+`message_removed`, `message_lookup`, `status`, `typing`, `read`, `command_result`, `error`,
 `diagnostic`.
 
 Diagnostics contain only a closed enum code. Typing receiver codes distinguish
@@ -62,6 +62,29 @@ size-bounded chunks that share a `generation`. Only the last chunk sets
 middle chunk would drop records that arrive later. A `full: true` snapshot must carry a `generation`; events without one
 are incremental updates. Explicit history responses must echo `fetch_id` to
 complete their request.
+
+Normalized messages can carry optional `reply_preview` text supplied with a
+reply. It is an excerpt, not a downloaded original or proof that the original
+still exists. The native client reads the first-party reply excerpt separately
+from the reply target. Clients can show it while resolving the original, and
+keep it when a lookup finds no original. Old cached records omit this field.
+
+`fetch_message` requests one original message by account, conversation, message,
+and `fetch_id`. Its `message_lookup` response echoes the request scope and carries
+one normalized message or an explicit absent result. The daemon rejects a record
+whose identity differs from the request. The observed empty action-36 completion
+means no original content was supplied; it never creates a message. It can archive a validated original,
+but never treats this response as a history window or a read receipt. Online
+`messages.context` requests use this lookup when the local archive lacks the
+original. Concurrent requests for the same message share one lookup, with at most
+64 distinct lookups and eight callers per message. Timeouts release their slots.
+
+The native client maps reaction actors to the normalized self participant only
+when authenticated conversation inventory attests the provider participant ID as
+self. Its private alias index is scoped to account and conversation, capped at
+10,000 entries and 4 MiB of alias text. Unknown actors remain unknown. Public
+models never carry the private alias index. Messages reaction chips show the
+available participant names and contact photos in a popover.
 
 The native helper routes `mark_read` through its existing receive owner. It sends
 the independently observed phone action, waits for its correlated completion,

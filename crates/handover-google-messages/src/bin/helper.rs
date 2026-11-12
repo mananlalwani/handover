@@ -494,6 +494,39 @@ async fn publish_history<W: AsyncWrite + Unpin>(
     publish_messages(writer, account, conversation, fetch_id, page, true).await
 }
 
+fn wire_message(message: handover_core::Message) -> handover_gmessages::contract::WireMessage {
+    use handover_gmessages::contract::{WireAttachment, WireMessage};
+    WireMessage {
+        local_id: message.id.local_id,
+        sender: message.sender.local_id,
+        transport: message.transport.map(wire_transport),
+        sent_at: message.sent_at,
+        text: message.text,
+        attachments: message
+            .attachments
+            .into_iter()
+            .map(|item| WireAttachment {
+                local_id: item.local_id,
+                mime: item.mime,
+                name: item.name,
+                size_bytes: item.size_bytes,
+                staged_path: item.staged_path,
+            })
+            .collect(),
+        reply_preview: message.reply_preview,
+        reply_to: message.reply_to.map(|id| id.local_id),
+        reactions: message
+            .reactions
+            .into_iter()
+            .map(|reaction| handover_gmessages::contract::WireReaction {
+                emoji: reaction.emoji,
+                participant_ids: reaction.participant_ids,
+            })
+            .collect(),
+        deleted: message.deleted,
+    }
+}
+
 async fn publish_messages<W: AsyncWrite + Unpin>(
     writer: &mut W,
     account: String,
@@ -502,7 +535,6 @@ async fn publish_messages<W: AsyncWrite + Unpin>(
     page: handover_google_messages::history::HistoryPage,
     history: bool,
 ) -> std::io::Result<()> {
-    use handover_gmessages::contract::{WireAttachment, WireMessage};
     let mut event = HelperEvent::Messages {
         account,
         conversation,
@@ -514,34 +546,7 @@ async fn publish_messages<W: AsyncWrite + Unpin>(
         fetch_id,
     };
     for message in page.messages {
-        let wire = WireMessage {
-            local_id: message.id.local_id,
-            sender: message.sender.local_id,
-            transport: message.transport.map(wire_transport),
-            sent_at: message.sent_at,
-            text: message.text,
-            attachments: message
-                .attachments
-                .into_iter()
-                .map(|item| WireAttachment {
-                    local_id: item.local_id,
-                    mime: item.mime,
-                    name: item.name,
-                    size_bytes: item.size_bytes,
-                    staged_path: item.staged_path,
-                })
-                .collect(),
-            reply_to: message.reply_to.map(|id| id.local_id),
-            reactions: message
-                .reactions
-                .into_iter()
-                .map(|reaction| handover_gmessages::contract::WireReaction {
-                    emoji: reaction.emoji,
-                    participant_ids: reaction.participant_ids,
-                })
-                .collect(),
-            deleted: message.deleted,
-        };
+        let wire = wire_message(message);
         let HelperEvent::Messages { messages, .. } = &mut event else {
             unreachable!()
         };
@@ -1224,6 +1229,10 @@ where
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
                     if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendText { request_id, account, conversation, text, reply_to }) = serde_json::from_slice::<HelperCommand>(&line) {
                         queue_send(helper, &workers, &mut sends, writer, TextSend { request_id, account, conversation, text: Zeroizing::new(text), reply_to }).await?;
+                    } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::FetchMessage { account, conversation, message, fetch_id }) = serde_json::from_slice::<HelperCommand>(&line) {
+                        let model = helper.conversations.get(&(account.clone(), conversation)).cloned();
+                        let queued = helper.online.contains(&account) && model.is_some_and(|conversation| workers.get(&account).is_some_and(|worker| worker.commands.try_send(LiveCommand::FetchMessage { conversation: Box::new(conversation), message, fetch_id }).is_ok()));
+                        if !queued { publish(writer, HelperEvent::Error { message: "native original-message lookup unavailable".into(), fetch_id: Some(fetch_id) }).await?; }
                     } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::MarkRead { account, conversation, message }) = serde_json::from_slice::<HelperCommand>(&line) {
                         let queued = !mutating.contains(&account) && queue_mark_read(helper, &workers, &account, conversation, message);
                         if !queued { publish(writer, HelperEvent::Error { message: "native mark-read unavailable".into(), fetch_id: None }).await?; }
@@ -1344,6 +1353,9 @@ where
                                     helper.inflight_history = None;
                                 }
                                 publish(writer, HelperEvent::Error { message: "native history content unavailable".into(), fetch_id }).await?;
+                            }
+                            LiveEvent::MessageLookup { conversation, message, fetch_id } => {
+                                publish(writer, HelperEvent::MessageLookup { account: account.clone(), conversation, message: message.map(|message| wire_message(*message)), fetch_id }).await?;
                             }
                             LiveEvent::Read { conversation, last_read_message, unread } => {
                                 publish(writer, HelperEvent::Read { account: account.clone(), conversation, last_read_message, unread }).await?;
@@ -1656,6 +1668,10 @@ impl NativeHelper {
                 }
                 Vec::new()
             }
+            HelperCommand::FetchMessage { fetch_id, .. } => vec![HelperEvent::Error {
+                message: "native original-message lookup unavailable".into(),
+                fetch_id: Some(fetch_id),
+            }],
             HelperCommand::MarkRead { .. } | HelperCommand::Typing { .. } => Vec::new(),
             // Keep one pending history request. Unsupported or excess work
             // fails explicitly instead of leaving a daemon waiter open.
@@ -3588,6 +3604,7 @@ mod tests {
             sent_at: None,
             text: Some("synthetic".into()),
             attachments: Vec::new(),
+            reply_preview: None,
             reply_to: None,
             reactions: Vec::new(),
             deleted: false,
@@ -3650,6 +3667,7 @@ mod tests {
                 sent_at: Some(n),
                 text: Some("x".repeat(60_000)),
                 attachments: vec![],
+                reply_preview: None,
                 reply_to: None,
                 reactions: vec![],
                 deleted: false,
@@ -3710,6 +3728,7 @@ mod tests {
                 sent_at: Some(1),
                 text: Some("x".repeat(60_000)),
                 attachments: Vec::new(),
+                reply_preview: None,
                 reply_to: None,
                 reactions: Vec::new(),
                 deleted: false,
@@ -3814,6 +3833,7 @@ mod tests {
                 sent_at: Some(index as i64),
                 text: Some("Fixture".into()),
                 attachments: Vec::new(),
+                reply_preview: None,
                 reply_to: None,
                 reactions: Vec::new(),
                 deleted: false,

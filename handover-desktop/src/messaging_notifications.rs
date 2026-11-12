@@ -353,6 +353,7 @@ mod tests {
             sent_at: Some(ts),
             text: Some(format!("body-{id}")),
             attachments: vec![],
+            reply_preview: None,
             reply_to: None,
             reactions: vec![],
             deleted: false,

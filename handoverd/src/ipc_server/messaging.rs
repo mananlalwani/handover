@@ -1096,6 +1096,7 @@ mod tests {
                 sent_at: Some(index),
                 text: Some("x".repeat(8000)),
                 attachments: vec![],
+                reply_preview: None,
                 reply_to: None,
                 reactions: vec![],
                 deleted: false,
@@ -2093,6 +2094,36 @@ mod messaging_live_tests {
         assert_eq!(group.kind, handover_core::ConversationKind::Group);
         assert_eq!(group.participants.len(), 3);
 
+        // Missing archived originals use a scoped helper read without replacing
+        // the current message window or marking the conversation read.
+        wait_until(
+            || state.read().unwrap().messaging().history_loaded(&rcs.id),
+            Duration::from_secs(5),
+            "initial helper window",
+        )
+        .await;
+        let before_lookup = state
+            .read()
+            .unwrap()
+            .messaging()
+            .history(&rcs.id, 100, None)
+            .ok();
+        let original = client
+            .message_context(MessageId::new(rcs.id.clone(), "m1"))
+            .await
+            .expect("uncached original fetched through helper");
+        assert_eq!(original.len(), 1);
+        assert_eq!(original[0].id.local_id, "m1");
+        assert_eq!(
+            state
+                .read()
+                .unwrap()
+                .messaging()
+                .history(&rcs.id, 100, None)
+                .ok(),
+            before_lookup
+        );
+
         // Paged history: newest page plus an older cursor page.
         let (page, next) = client
             .messaging_history(rcs.id.clone(), Some(2), None)
@@ -2625,6 +2656,7 @@ mod messaging_failure_tests {
                 sent_at: Some(10),
                 text: Some("hello".into()),
                 attachments: vec![],
+                reply_preview: None,
                 reply_to: None,
                 reactions: vec![],
                 deleted: false,

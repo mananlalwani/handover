@@ -794,6 +794,7 @@ mod tests {
             sent_at: Some(sent_at),
             text: Some(text.into()),
             attachments: vec![],
+            reply_preview: None,
             reply_to: None,
             reactions: vec![],
             deleted: false,

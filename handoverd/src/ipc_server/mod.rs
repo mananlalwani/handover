@@ -786,7 +786,7 @@ where
         | Method::MessagesSaveDraft { .. }
         | Method::MessagesAttachmentDraft { .. }
         | Method::MessagesSaveAttachmentDraft { .. }) => {
-            return local_messages::handle(method, writer, state).await;
+            return local_messages::handle(method, writer, state, messaging).await;
         }
         Method::MessagesConversations { account_id } => {
             return handle_conversations(account_id, writer, state).await;

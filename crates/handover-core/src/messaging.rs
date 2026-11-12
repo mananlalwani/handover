@@ -248,6 +248,9 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<MessageId>,
+    /// Quoted text supplied with the reply, independent of the original's availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_preview: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<Reaction>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -638,6 +641,13 @@ pub fn validate_message(message: &Message) -> Result<(), ValidationError> {
         if let Some(name) = &attachment.name {
             check_title(name)?;
         }
+    }
+    if let Some(preview) = &message.reply_preview
+        && (message.reply_to.is_none()
+            || preview.chars().count() > MAX_TEXT_CHARS
+            || contains_disallowed_control(preview))
+    {
+        return Err(ValidationError::InvalidText);
     }
     if let Some(reply_to) = &message.reply_to {
         if reply_to.conversation_id != message.id.conversation_id {

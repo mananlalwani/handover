@@ -4,6 +4,11 @@ use handover_core::messaging::Conversation;
 use tokio::sync::{mpsc, oneshot};
 
 pub enum LiveCommand {
+    FetchMessage {
+        conversation: Box<Conversation>,
+        message: String,
+        fetch_id: u64,
+    },
     MarkRead {
         conversation: String,
         message: Option<String>,
@@ -42,6 +47,11 @@ pub enum LiveCommand {
     },
 }
 pub enum LiveEvent {
+    MessageLookup {
+        conversation: String,
+        message: Option<Box<handover_core::Message>>,
+        fetch_id: u64,
+    },
     Read {
         conversation: String,
         last_read_message: Option<String>,
@@ -254,6 +264,50 @@ impl RecoveredSession {
         *correlation.lock().map_err(|_| ProbeError::NativeError)? =
             (Zeroizing::new(String::new()), 0);
         Ok((result, reply.message_id))
+    }
+    async fn message_on_stream(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        conversation: &Conversation,
+        message: &str,
+        correlation: &std::sync::Mutex<(Zeroizing<String>, i32)>,
+        replies: &mut mpsc::Receiver<crate::receive::session_reply::SessionReply>,
+    ) -> Result<(Option<handover_core::Message>, Zeroizing<String>), ProbeError> {
+        if conversation.id.account_id.as_str() != self.account_id()
+            || message.is_empty()
+            || message.len() > handover_core::messaging::MAX_ID_LEN
+            || message.chars().any(char::is_control)
+        {
+            return Err(ProbeError::UnexpectedResponse);
+        }
+        let id = Uuid::new_v4().to_string();
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(id.clone()), 36);
+        // The observed original-message request omits its optional part field.
+        let payload = crate::history::original_request(message, "");
+        let request = self.build_request(&id, 36, &payload, 2, Some(20_000_000))?;
+        self.post_request(http, endpoint, &request).await?;
+        let reply = replies.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+        let mut message = if reply.ciphertext.is_empty() {
+            None
+        } else {
+            let plain = self
+                .pairing
+                .pairing
+                .decrypt_payload(&reply.ciphertext)
+                .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
+            crate::history::original_message(conversation, message, plain.as_bytes())?
+        };
+        if let Some(message) = &mut message {
+            self.actors
+                .lock()
+                .map_err(|_| ProbeError::NativeError)?
+                .normalize(conversation, std::slice::from_mut(message));
+        }
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(String::new()), 0);
+        Ok((message, reply.message_id))
     }
     async fn mark_read_on_stream(
         &self,
@@ -628,8 +682,70 @@ impl RecoveredSession {
                         (Zeroizing::new(String::new()), 0);
                     continue;
                 }
+                if let LiveCommand::FetchMessage {
+                    conversation,
+                    message,
+                    fetch_id,
+                } = command
+                {
+                    let result = {
+                        let lookup = tokio::time::timeout(
+                            Duration::from_secs(25),
+                            self.message_on_stream(
+                                &short,
+                                endpoint,
+                                &conversation,
+                                &message,
+                                &correlation,
+                                &mut reply_rx,
+                            ),
+                        );
+                        tokio::pin!(lookup);
+                        loop {
+                            tokio::select! {
+                                result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
+                                _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                                result = &mut lookup => break result,
+                                push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                            }
+                        }
+                    };
+                    match result {
+                        Ok(Ok((message, inbox))) => {
+                            publish(
+                                &events,
+                                LiveEvent::MessageLookup {
+                                    conversation: conversation.id.local_id.clone(),
+                                    message: message.map(Box::new),
+                                    fetch_id,
+                                },
+                            )
+                            .await?;
+                            self.acknowledge(&short, endpoint, inbox).await?;
+                        }
+                        Ok(Err(ProbeError::SessionProtocol(
+                            SessionError::UnsupportedHistoryContent,
+                        )))
+                        | Err(_) => {
+                            publish(
+                                &events,
+                                LiveEvent::HistoryUnavailable {
+                                    fetch_id: Some(fetch_id),
+                                },
+                            )
+                            .await?;
+                            *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+                                (Zeroizing::new(String::new()), 0);
+                            while reply_rx.try_recv().is_ok() {}
+                        }
+                        Ok(Err(error)) => return Err(error),
+                    }
+                    continue;
+                }
                 let (conversations, history, fetch_id) = match &command {
-                    LiveCommand::React { .. } | LiveCommand::Unpair { .. } => unreachable!(),
+                    LiveCommand::React { .. }
+                    | LiveCommand::Unpair { .. }
+                    | LiveCommand::FetchMessage { .. } => unreachable!(),
                     LiveCommand::SendText { .. } => unreachable!(),
                     LiveCommand::SendMedia { .. } => unreachable!(),
                     LiveCommand::SendingCapability => (false, None, None),
@@ -928,7 +1044,17 @@ impl RecoveredSession {
             .pairing
             .decrypt_payload(&push.ciphertext)
             .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
-        match crate::updates::decode(self.account_id(), &state.known, plaintext.as_bytes(), true)? {
+        let update = {
+            let mut actors = self.actors.lock().map_err(|_| ProbeError::NativeError)?;
+            crate::updates::decode_with_actors(
+                self.account_id(),
+                &state.known,
+                plaintext.as_bytes(),
+                true,
+                &mut actors,
+            )?
+        };
+        match update {
             crate::updates::Update::Active => {
                 if !state.online {
                     publish(events, LiveEvent::Online).await?;

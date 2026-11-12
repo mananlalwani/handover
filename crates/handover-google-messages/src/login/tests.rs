@@ -1316,6 +1316,31 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         rcs_inventory.extend_from_slice(&[0x30, 1]); // Initially unread.
         let inventory = pairing.encrypt(&rcs_inventory).unwrap().as_bytes().to_vec();
         let capability = pairing.encrypt(&[8, 1]).unwrap().as_bytes().to_vec();
+        #[derive(prost::Message)]
+        struct LookupPage {
+            #[prost(bytes = "vec", repeated, tag = "2")]
+            records: Vec<Vec<u8>>,
+        }
+        #[derive(prost::Message)]
+        struct LookupResponse {
+            #[prost(bytes = "vec", tag = "1")]
+            message: Vec<u8>,
+        }
+        let original_record = LookupPage::decode(synthetic_history_page().as_slice())
+            .unwrap()
+            .records
+            .remove(0);
+        let original_response = pairing
+            .encrypt(
+                &LookupResponse {
+                    message: original_record,
+                }
+                .encode_to_vec(),
+            )
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let missing_response = Vec::new();
         let mark_read_reply = Vec::new(); // Observed correlated bodyless completion.
         let mut read_inventory = rcs_inventory.clone();
         if !unpair_ack_failure {
@@ -1559,6 +1584,27 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                         expect_ack(&listener, "presence-check").await;
                         presence_tx.send(()).unwrap();
                         if send_code == 1 {
+                            for (payload, inbox) in [
+                                (original_response, "original-lookup"),
+                                (missing_response, "missing-lookup"),
+                            ] {
+                                let (mut lookup, _) = listener.accept().await.unwrap();
+                                let (path, body) = request(&mut lookup).await;
+                                assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                                let wrapper = rpc_request(&body);
+                                assert_eq!(wrapper.action, 36);
+                                response(&mut lookup, "application/json+protobuf", b"[]").await;
+                                rpc_push(
+                                    &mut receive,
+                                    &wrapper.request_id,
+                                    36,
+                                    payload,
+                                    inbox,
+                                    true,
+                                )
+                                .await;
+                                expect_ack(&listener, inbox).await;
+                            }
                             let (mut mark, _) = listener.accept().await.unwrap();
                             let (path, body) = request(&mut mark).await;
                             assert_eq!(path, crate::SEND_MESSAGE_PATH);
@@ -1711,7 +1757,7 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
             message.accepted.send(()).unwrap();
             commands
                 .send(LiveCommand::History {
-                    conversation: Box::new(model),
+                    conversation: Box::new(model.clone()),
                     cursor: None,
                     limit: 20,
                     fetch_id: Some(77),
@@ -1794,6 +1840,22 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 result.accepted.send(()).unwrap();
                 presence_rx.await.unwrap();
                 if send_code == 1 {
+                    for (target, fetch_id) in [("message", 700), ("missing", 701)] {
+                        commands
+                            .send(LiveCommand::FetchMessage {
+                                conversation: Box::new(model.clone()),
+                                message: target.into(),
+                                fetch_id,
+                            })
+                            .await
+                            .unwrap();
+                        let original = outgoing.recv().await.unwrap();
+                        assert!(
+                            matches!(&original.event, LiveEvent::MessageLookup { message, fetch_id: actual, .. }
+                            if *actual == fetch_id && message.as_ref().map(|message| message.id.local_id.as_str()) == if target == "message" { Some("message") } else { None })
+                        );
+                        original.accepted.send(()).unwrap();
+                    }
                     commands
                         .send(LiveCommand::MarkRead {
                             conversation: "thread-0".into(),
