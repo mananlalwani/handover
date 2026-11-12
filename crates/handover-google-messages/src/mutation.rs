@@ -51,6 +51,37 @@ pub(crate) fn reaction(
         .encode_to_vec(),
     ))
 }
+pub(crate) fn mark_read(
+    conversation: &str,
+    message: Option<&str>,
+) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
+    identifier(conversation)?;
+    if let Some(message) = message {
+        identifier(message)?;
+    }
+    Ok(Zeroizing::new(
+        MarkReadRequest {
+            conversation: conversation.into(),
+            message: message.map(str::to_owned),
+        }
+        .encode_to_vec(),
+    ))
+}
+#[derive(Message)]
+#[prost(skip_debug)]
+struct MarkReadRequest {
+    #[prost(string, tag = "2")]
+    conversation: String,
+    #[prost(string, optional, tag = "3")]
+    message: Option<String>,
+}
+impl Drop for MarkReadRequest {
+    fn drop(&mut self) {
+        self.conversation.zeroize();
+        self.message.zeroize();
+    }
+}
+
 pub(crate) fn unpair(pairing: &str) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
     uuid::Uuid::parse_str(pairing).map_err(|_| invalid())?;
     Ok(Zeroizing::new(
@@ -121,6 +152,19 @@ struct ResultCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mark_read_uses_observed_conversation_and_message_fields() {
+        assert_eq!(
+            mark_read("thread", Some("msg")).unwrap().as_slice(),
+            b"\x12\x06thread\x1a\x03msg"
+        );
+        assert_eq!(
+            mark_read("thread", None).unwrap().as_slice(),
+            b"\x12\x06thread"
+        );
+        assert!(mark_read("", Some("msg")).is_err());
+        assert!(mark_read("thread", Some("\n")).is_err());
+    }
     #[test]
     fn reaction_wire_fixture_and_rejection() {
         assert_eq!(

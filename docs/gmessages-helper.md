@@ -63,6 +63,12 @@ middle chunk would drop records that arrive later. A `full: true` snapshot must 
 are incremental updates. Explicit history responses must echo `fetch_id` to
 complete their request.
 
+The native helper routes `mark_read` through its existing receive owner. It sends
+the independently observed phone action, waits for its correlated completion,
+and refreshes authenticated conversation inventory. Only the returned unread count establishes
+the resulting `read` state. HTTP acceptance and command queuing do not prove a
+read effect. A newer unread message can keep `unread: true` after the request.
+
 `command_result ok` is acceptance, not delivery. `sent` / `delivered` /
 `displayed` arrive only as later `status` events.
 

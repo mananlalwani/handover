@@ -4,6 +4,10 @@ use handover_core::messaging::Conversation;
 use tokio::sync::{mpsc, oneshot};
 
 pub enum LiveCommand {
+    MarkRead {
+        conversation: String,
+        message: Option<String>,
+    },
     SendingCapability,
     React {
         conversation: String,
@@ -38,6 +42,11 @@ pub enum LiveCommand {
     },
 }
 pub enum LiveEvent {
+    Read {
+        conversation: String,
+        last_read_message: Option<String>,
+        unread: bool,
+    },
     Diagnostic(handover_gmessages::contract::HelperDiagnostic),
     Typing {
         conversation: String,
@@ -113,13 +122,16 @@ impl LiveState {
                 Capability::Media,
                 Capability::Replies,
                 Capability::Reactions,
+                Capability::ReadReceipts,
             ] {
                 record.capabilities.remove(&capability);
             }
             if self.can_send {
-                record
-                    .capabilities
-                    .extend([Capability::Text, Capability::Media]);
+                record.capabilities.extend([
+                    Capability::Text,
+                    Capability::Media,
+                    Capability::ReadReceipts,
+                ]);
                 if record.transport == TransportKind::Rcs {
                     record
                         .capabilities
@@ -242,6 +254,39 @@ impl RecoveredSession {
         *correlation.lock().map_err(|_| ProbeError::NativeError)? =
             (Zeroizing::new(String::new()), 0);
         Ok((result, reply.message_id))
+    }
+    async fn mark_read_on_stream(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        conversation: &str,
+        message: Option<&str>,
+        correlation: &std::sync::Mutex<(Zeroizing<String>, i32)>,
+        replies: &mut mpsc::Receiver<crate::receive::session_reply::SessionReply>,
+    ) -> Result<(), ProbeError> {
+        let id = Uuid::new_v4().to_string();
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(id.clone()), 10);
+        let payload = crate::mutation::mark_read(conversation, message)?;
+        let request = self.build_request(&id, 10, &payload, 2, Some(20_000_000))?;
+        self.post_request(http, endpoint, &request).await?;
+        let reply = replies.recv().await.ok_or(ProbeError::ReceiveFailed)?;
+        if !reply.ciphertext.is_empty() {
+            let plain = self
+                .pairing
+                .pairing
+                .decrypt_payload(&reply.ciphertext)
+                .map_err(|_| ProbeError::SessionProtocol(SessionError::UpdateAuthentication))?;
+            if plain.as_bytes().len() > 4096 {
+                return Err(ProbeError::UnexpectedResponse);
+            }
+        }
+        // The web client awaits this response without interpreting a success
+        // field. Only the subsequent inventory attests the unread state.
+        self.acknowledge(http, endpoint, reply.message_id).await?;
+        *correlation.lock().map_err(|_| ProbeError::NativeError)? =
+            (Zeroizing::new(String::new()), 0);
+        Ok(())
     }
     pub async fn run_live(
         &self,
@@ -589,6 +634,18 @@ impl RecoveredSession {
                     LiveCommand::SendMedia { .. } => unreachable!(),
                     LiveCommand::SendingCapability => (false, None, None),
                     LiveCommand::Conversations => (true, None, None),
+                    LiveCommand::MarkRead { conversation, .. } => {
+                        if !state.online
+                            || !state.can_send
+                            || !state
+                                .known
+                                .iter()
+                                .any(|model| model.id.local_id == *conversation)
+                        {
+                            continue;
+                        }
+                        (true, None, None)
+                    }
                     LiveCommand::History {
                         conversation,
                         cursor,
@@ -614,8 +671,29 @@ impl RecoveredSession {
                 };
                 let read_started = tokio::time::Instant::now();
                 let read = tokio::time::timeout(
-                    Duration::from_secs(if conversations { 120 } else { 30 }),
+                    Duration::from_secs(
+                        if conversations && !matches!(command, LiveCommand::MarkRead { .. }) {
+                            120
+                        } else {
+                            30
+                        },
+                    ),
                     async {
+                        if let LiveCommand::MarkRead {
+                            conversation,
+                            message,
+                        } = &command
+                        {
+                            self.mark_read_on_stream(
+                                &short,
+                                endpoint,
+                                conversation,
+                                message.as_deref(),
+                                &correlation,
+                                &mut reply_rx,
+                            )
+                            .await?;
+                        }
                         let mut result = self
                             .read_on_stream(
                                 &short,
@@ -693,8 +771,34 @@ impl RecoveredSession {
                     ReadResult::Conversations(mut records) => {
                         state.conversations(&mut records, true)?;
                         self.rcs.conversations(&state.known);
+                        let read_state = if let LiveCommand::MarkRead {
+                            conversation,
+                            message,
+                        } = &command
+                        {
+                            records
+                                .iter()
+                                .find(|record| record.id.local_id == *conversation)
+                                .and_then(|record| record.unread_count)
+                                .map(|count| LiveEvent::Read {
+                                    conversation: conversation.clone(),
+                                    last_read_message: if count == 0 {
+                                        message.clone()
+                                    } else {
+                                        None
+                                    },
+                                    unread: count > 0,
+                                })
+                        } else {
+                            None
+                        };
                         publish(&events, LiveEvent::Conversations(records)).await?;
-                        pending = Some(LiveCommand::SendingCapability);
+                        if let Some(read_state) = read_state {
+                            publish(&events, read_state).await?;
+                        }
+                        if !matches!(command, LiveCommand::MarkRead { .. }) {
+                            pending = Some(LiveCommand::SendingCapability);
+                        }
                     }
                     ReadResult::History(mut page, reply_id) => {
                         let LiveCommand::History {
@@ -921,6 +1025,12 @@ mod tests {
         let mut records = vec![conversation("new")];
         state.conversations(&mut records, false).unwrap();
         assert!(records[0].capabilities.contains(&MessagingCapability::Text));
+        assert!(
+            records[0]
+                .capabilities
+                .contains(&MessagingCapability::ReadReceipts),
+            "an authenticated native conversation must allow the observed mark-read operation"
+        );
         assert!(
             records[0]
                 .capabilities

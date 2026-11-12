@@ -441,6 +441,9 @@ fn wire_conversation(
                 handover_core::messaging::MessagingCapability::Reactions => {
                     Some("reactions".to_owned())
                 }
+                handover_core::messaging::MessagingCapability::ReadReceipts => {
+                    Some("read_receipts".to_owned())
+                }
                 _ => None,
             })
             .collect(),
@@ -756,6 +759,30 @@ struct MediaSend {
     path: Zeroizing<String>,
     caption: Option<Zeroizing<String>>,
 }
+fn queue_mark_read(
+    helper: &NativeHelper,
+    workers: &BTreeMap<String, LiveWorker>,
+    account: &str,
+    conversation: String,
+    message: Option<String>,
+) -> bool {
+    // Online can be published just before the capability update reaches this
+    // copy of inventory. The worker checks its current authenticated permission.
+    helper.online.contains(account)
+        && helper
+            .conversations
+            .contains_key(&(account.to_owned(), conversation.clone()))
+        && workers.get(account).is_some_and(|worker| {
+            worker
+                .commands
+                .try_send(LiveCommand::MarkRead {
+                    conversation,
+                    message,
+                })
+                .is_ok()
+        })
+}
+
 async fn queue_send<W: AsyncWrite + Unpin>(
     helper: &NativeHelper,
     workers: &BTreeMap<String, LiveWorker>,
@@ -1197,6 +1224,9 @@ where
                 if !line.is_empty() && !line.iter().all(u8::is_ascii_whitespace) {
                     if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendText { request_id, account, conversation, text, reply_to }) = serde_json::from_slice::<HelperCommand>(&line) {
                         queue_send(helper, &workers, &mut sends, writer, TextSend { request_id, account, conversation, text: Zeroizing::new(text), reply_to }).await?;
+                    } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::MarkRead { account, conversation, message }) = serde_json::from_slice::<HelperCommand>(&line) {
+                        let queued = !mutating.contains(&account) && queue_mark_read(helper, &workers, &account, conversation, message);
+                        if !queued { publish(writer, HelperEvent::Error { message: "native mark-read unavailable".into(), fetch_id: None }).await?; }
                     } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendMedia { request_id, account, conversation, path, caption }) = serde_json::from_slice::<HelperCommand>(&line) {
                         queue_media(helper, &workers, &mut sends, writer, MediaSend { request_id, account, conversation, path: Zeroizing::new(path), caption: caption.map(Zeroizing::new) }).await?;
                     } else {
@@ -1314,6 +1344,9 @@ where
                                     helper.inflight_history = None;
                                 }
                                 publish(writer, HelperEvent::Error { message: "native history content unavailable".into(), fetch_id }).await?;
+                            }
+                            LiveEvent::Read { conversation, last_read_message, unread } => {
+                                publish(writer, HelperEvent::Read { account: account.clone(), conversation, last_read_message, unread }).await?;
                             }
                             LiveEvent::Online => {
                                 credential_waiters.remove(&account);
@@ -1990,6 +2023,89 @@ impl NativeHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mark_read_queues_during_capability_publication_without_losing_scope_or_bounds() {
+        use handover_core::*;
+        let directory = tempfile::tempdir().unwrap();
+        let mut helper = helper_with_store(directory.path());
+        helper.online.insert("fixture".into());
+        helper.conversations.insert(
+            ("fixture".into(), "thread".into()),
+            Conversation {
+                id: ConversationId::new(MessagingAccountId::new("fixture"), "thread"),
+                kind: ConversationKind::Direct,
+                transport: TransportKind::Sms,
+                title: None,
+                participants: vec![],
+                latest_message_id: None,
+                last_activity_at: None,
+                unread_count: Some(1),
+                cursor: None,
+                capabilities: Default::default(),
+            },
+        );
+        let (commands, mut incoming) = mpsc::channel(1);
+        let workers = BTreeMap::from([(
+            "fixture".into(),
+            LiveWorker {
+                generation: 1,
+                ready: true,
+                commands,
+                task: None,
+            },
+        )]);
+        assert!(!queue_mark_read(
+            &helper,
+            &workers,
+            "other",
+            "thread".into(),
+            None
+        ));
+        assert!(!queue_mark_read(
+            &helper,
+            &workers,
+            "fixture",
+            "other".into(),
+            None
+        ));
+        assert!(queue_mark_read(
+            &helper,
+            &workers,
+            "fixture",
+            "thread".into(),
+            Some("seen".into())
+        ));
+        assert!(
+            !queue_mark_read(&helper, &workers, "fixture", "thread".into(), None),
+            "the worker queue remains bounded"
+        );
+        assert!(
+            matches!(incoming.recv().await, Some(LiveCommand::MarkRead { conversation, message }) if conversation == "thread" && message.as_deref() == Some("seen"))
+        );
+    }
+    #[test]
+    fn mark_read_capability_reaches_normalized_clients() {
+        use handover_core::*;
+        let conversation = Conversation {
+            id: ConversationId::new(MessagingAccountId::new("fixture"), "thread"),
+            kind: ConversationKind::Direct,
+            transport: TransportKind::Sms,
+            title: None,
+            participants: vec![],
+            latest_message_id: None,
+            last_activity_at: None,
+            unread_count: Some(1),
+            cursor: None,
+            capabilities: [MessagingCapability::ReadReceipts].into_iter().collect(),
+        };
+        assert!(
+            wire_conversation(conversation)
+                .capabilities
+                .iter()
+                .any(|value| value == "read_receipts")
+        );
+    }
 
     #[test]
     fn login_failure_preserves_safe_http_diagnostics() {

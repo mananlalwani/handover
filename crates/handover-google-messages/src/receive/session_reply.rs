@@ -99,9 +99,12 @@ impl ReceiveRecord {
         if response.inactive {
             return Err(ReceiveError::SessionPreempted);
         }
+        // Observed action 10 completes without a body. It attests no data or
+        // read effect; callers must refresh encrypted inventory afterward.
+        let empty_read_completion = action == 10 && response.encrypted.is_empty();
         if !response.plaintext.is_empty()
             || !response.auxiliary.is_empty()
-            || response.encrypted.len() < 48
+            || (!empty_read_completion && response.encrypted.len() < 48)
             || response.encrypted.len() > 512 * 1024 + 48
         {
             return Err(ReceiveError::InvalidEnvelope);
@@ -140,6 +143,42 @@ mod tests {
         message[11] = json!(STANDARD.encode(response.encode_to_vec()));
         message[16] = json!(STANDARD.encode(peer));
         ReceiveRecord(json!([[], message]))
+    }
+    #[test]
+    fn empty_mark_read_completion_is_not_a_data_reply() {
+        for action in [1, 10, 31, 38, 46] {
+            let mut record = record("request", "phone", false, Vec::new());
+            let response = Response {
+                request_id: "request".into(),
+                action,
+                plaintext: vec![],
+                encrypted: vec![],
+                inactive: false,
+                auxiliary: vec![],
+            };
+            record.0[1][11] = json!(STANDARD.encode(response.encode_to_vec()));
+            let result = record.session_reply("request", action, b"phone");
+            if action == 10 {
+                assert!(
+                    result.unwrap().unwrap().ciphertext.is_empty(),
+                    "observed empty mark-read completion is not confirmed read state"
+                );
+                assert!(
+                    record
+                        .session_reply("other", 10, b"phone")
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    record
+                        .session_reply("request", 10, b"other")
+                        .unwrap()
+                        .is_none()
+                );
+            } else {
+                assert!(matches!(result, Err(ReceiveError::InvalidEnvelope)));
+            }
+        }
     }
     #[test]
     fn correlation_precedes_payload_and_preemption_validation() {

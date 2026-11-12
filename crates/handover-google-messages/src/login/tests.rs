@@ -1312,8 +1312,21 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
         let mut rcs_inventory = synthetic_conversation_page(1);
         rcs_inventory[1] += 3;
         rcs_inventory.extend_from_slice(&[0xb0, 0x01, 2]);
+        rcs_inventory[1] += 2;
+        rcs_inventory.extend_from_slice(&[0x30, 1]); // Initially unread.
         let inventory = pairing.encrypt(&rcs_inventory).unwrap().as_bytes().to_vec();
         let capability = pairing.encrypt(&[8, 1]).unwrap().as_bytes().to_vec();
+        let mark_read_reply = Vec::new(); // Observed correlated bodyless completion.
+        let mut read_inventory = rcs_inventory.clone();
+        if !unpair_ack_failure {
+            read_inventory[1] -= 2;
+            read_inventory.truncate(read_inventory.len() - 2); // Phone now reports the zero default.
+        }
+        let read_inventory = pairing
+            .encrypt(&read_inventory)
+            .unwrap()
+            .as_bytes()
+            .to_vec();
         let send_reply = if send_code == 5 {
             vec![0x18, 1]
         } else {
@@ -1546,6 +1559,37 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                         expect_ack(&listener, "presence-check").await;
                         presence_tx.send(()).unwrap();
                         if send_code == 1 {
+                            let (mut mark, _) = listener.accept().await.unwrap();
+                            let (path, body) = request(&mut mark).await;
+                            assert_eq!(path, crate::SEND_MESSAGE_PATH);
+                            let wrapper = rpc_request(&body);
+                            assert_eq!(wrapper.action, 10);
+                            response(&mut mark, "application/json+protobuf", b"[]").await;
+                            // HTTP acceptance alone must not publish a read result.
+                            rpc_push(
+                                &mut receive,
+                                &wrapper.request_id,
+                                10,
+                                mark_read_reply,
+                                "mark-read",
+                                true,
+                            )
+                            .await;
+                            expect_ack(&listener, "mark-read").await;
+                            let (mut refresh, _) = listener.accept().await.unwrap();
+                            let wrapper = rpc_request(&request(&mut refresh).await.1);
+                            assert_eq!(wrapper.action, 1);
+                            response(&mut refresh, "application/json+protobuf", b"[]").await;
+                            rpc_push(
+                                &mut receive,
+                                &wrapper.request_id,
+                                1,
+                                read_inventory,
+                                "read-inventory",
+                                true,
+                            )
+                            .await;
+                            expect_ack(&listener, "read-inventory").await;
                             for (action, payload, id) in [
                                 (38, mutation_success.clone(), "reaction-add"),
                                 (38, mutation_rejection, "reaction-rejected"),
@@ -1750,6 +1794,26 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 result.accepted.send(()).unwrap();
                 presence_rx.await.unwrap();
                 if send_code == 1 {
+                    commands
+                        .send(LiveCommand::MarkRead {
+                            conversation: "thread-0".into(),
+                            message: Some("message".into()),
+                        })
+                        .await
+                        .unwrap();
+                    let refreshed = outgoing.recv().await.unwrap();
+                    assert!(
+                        matches!(refreshed.event, LiveEvent::Conversations(..)),
+                        "mark-read must refresh attested inventory"
+                    );
+                    refreshed.accepted.send(()).unwrap();
+                    let read = outgoing.recv().await.unwrap();
+                    assert!(
+                        matches!(read.event, LiveEvent::Read { ref last_read_message, unread, .. }
+                        if unread == unpair_ack_failure && last_read_message.as_deref() == if unread { None } else { Some("message") }),
+                        "only the phone's refreshed unread count can clear the dot"
+                    );
+                    read.accepted.send(()).unwrap();
                     // Expired queued mutations must never reach the phone.
                     for action in [38, 46] {
                         let (result, completion) = tokio::sync::oneshot::channel();

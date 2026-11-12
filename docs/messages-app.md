@@ -76,9 +76,12 @@ Chat-list unread dots follow reported read-state events and conversation unread
 counts. A later explicit count supersedes an earlier read-state event; an unknown
 count preserves reported read evidence. Initial subscriptions and recovery
 snapshots restore read state. A missing dot can mean unread state is unknown.
-Opening a chat does not invent a successful read operation. The native Google
-Messages helper currently cannot mark conversations read, so viewing a chat here
-does not clear its unread state on the phone.
+A focused conversation at its newest messages requests mark-read when the backend
+advertises support. The native helper sends the observed phone command and then
+refreshes the conversation inventory. The dot clears only when reported state
+confirms no unread messages. Reading older history or leaving the app unfocused
+does not mark the newest messages read. Returning focus or reconnecting allows a
+new request; command acceptance alone does not change the dot.
 
 Outgoing bubbles show status only when the daemon identifies that exact message.
 Accepted means command acceptance; Sent, Delivered, and Read require reported

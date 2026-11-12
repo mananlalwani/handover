@@ -613,6 +613,9 @@ impl Window {
         let weak = Rc::downgrade(&this);
         this.window.connect_is_active_notify(move |_| {
             if let Some(this) = weak.upgrade() {
+                if !this.window.is_active() {
+                    this.last_read.borrow_mut().take();
+                }
                 this.mark_read();
             }
         });
@@ -985,6 +988,7 @@ impl Window {
     fn event(self: &Rc<Self>, event: Event) {
         match event {
             Event::Connected(accounts, conversations, typing, read) => {
+                self.last_read.borrow_mut().take();
                 self.recent_threads.borrow_mut().clear();
                 {
                     let mut model = self.model.borrow_mut();
@@ -1538,6 +1542,12 @@ impl Window {
             Request::AttachmentDraft(_) | Request::SaveAttachmentDraft(..)
         );
         match request {
+            Request::Read(_, message) => {
+                if *self.last_read.borrow() == message {
+                    self.last_read.borrow_mut().take();
+                }
+                self.model.borrow_mut().notice = error.message;
+            }
             Request::Context(anchor) if self.model.borrow().anchor.as_ref() == Some(&anchor) => {
                 *self.history_error.borrow_mut() = Some(error.message);
                 self.model.borrow_mut().notice.clear();

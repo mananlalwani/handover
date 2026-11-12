@@ -144,11 +144,11 @@ pub(crate) fn decode(account: &str, bytes: &[u8]) -> Result<Conversation, ProbeE
         participants,
         latest_message_id: None,
         last_activity_at: wire.timestamp_micros.filter(|value| *value > 0),
-        unread_count: wire
-            .unread_count
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| ProbeError::SessionProtocol(SessionError::InvalidUnreadCount))?,
+        // First-party kI reads field 6 with protobuf's numeric zero default.
+        unread_count: Some(
+            u64::try_from(wire.unread_count.unwrap_or(0))
+                .map_err(|_| ProbeError::SessionProtocol(SessionError::InvalidUnreadCount))?,
+        ),
         cursor: None,
         capabilities: BTreeSet::new(),
     };
@@ -451,7 +451,7 @@ mod tests {
         let result = decode("gmessages-fixture", &wire().encode_to_vec()).unwrap();
         assert_eq!(result.id.local_id, "thread");
         assert_eq!(result.last_activity_at, Some(1234000));
-        assert_eq!(result.unread_count, None);
+        assert_eq!(result.unread_count, Some(0));
         assert_eq!(
             result.participants[0].address.as_deref(),
             Some("+15555550100")
