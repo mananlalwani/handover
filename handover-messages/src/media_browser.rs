@@ -1,7 +1,7 @@
 //! Paginated photos and files from the daemon's saved conversation history.
 use adw::prelude::*;
 use gtk::{gio, glib};
-use handover_core::{Attachment, AttachmentKind, ConversationId, Message};
+use handover_core::{Attachment, ConversationId, Message};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -237,7 +237,7 @@ impl Browser {
             .take(16)
             .flat_map(|m| m.attachments.iter().take(16))
         {
-            if AttachmentKind::of_mime(attachment.mime.as_deref()) == AttachmentKind::Image {
+            if crate::media::is_image(attachment) {
                 photos.push(attachment.clone());
             } else {
                 files.push(attachment.clone());

@@ -408,3 +408,35 @@ returned hit belongs to the requested conversation. Three accounts are present;
 one is connected and authenticated. No real messages, reactions, authentication,
 or phone actions were exercised. Save As filesystem behavior is covered by tests;
 the system file dialog was not exercised against live attachments.
+
+
+## Image format compatibility follow-up
+
+The image decoder now chooses installed raster loaders using file contents and
+MIME hints instead of a five-format allowlist. Contact photos no longer assume
+JPEG. Attachments with absent or generic MIME metadata can select the image UI
+by a registered filename extension. This applies to conversation thumbnails,
+the viewer, attachment drafts, and Photos and files. Decoding still checks the
+bytes; a filename does not bypass validation. No helper protocol types changed.
+
+Ten original synthetic fixtures cover JPEG, PNG, GIF, WebP, BMP, RGB TIFF, ICO,
+HEIC, AVIF, and JPEG XL. All ten were required and decoded locally, including
+incorrect and generic MIME hints. Tests verify bounded output dimensions.
+The private GUI test now uses HEIC attachments, including one without MIME
+metadata, and a PNG contact photo. Thumbnail, viewer, gallery, draft restoration,
+and the existing messaging scenario pass with those files.
+
+Input limits and nonregular-file rejection remain in place. Loaders that ignore
+the requested decode size receive a final scaling pass before texture creation.
+HEIF sequences and animations show still previews. SVG remains outside the
+raster viewer. Codec availability and encoding variants still matter: the local
+Glycin decoder rejected a 2-bit palette TIFF, while the RGB TIFF fixture passed.
+The Arch development package now requires libheif; Ubuntu GUI CI installs HEIF
+and WebP loaders. Remote CI was not run during this session.
+
+Validation passed with 618 workspace tests and 7 ignored tests, strict workspace
+Clippy, formatting, Android debug assembly/lint/unit tests, and QML lint. The
+format test ran with every fixture loader required. Installed the matching
+release app after normal window closure; its service is active with one mapped
+window. The daemon was not restarted. Image compatibility was tested with
+synthetic files, not private account attachments. No real messages were sent.

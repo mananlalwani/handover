@@ -71,12 +71,14 @@ fn make_media_fixtures(root: &std::path::Path) -> (PathBuf, String) {
         }
     }
     let photo = image
-        .save_to_bufferv("jpeg", &[])
-        .expect("encode fixture contact JPEG");
-    let staged_path = directory.join("inline-map.png");
-    image
-        .savev(&staged_path, "png", &[])
-        .expect("write fixture attachment PNG");
+        .save_to_bufferv("png", &[])
+        .expect("encode fixture contact PNG");
+    let staged_path = directory.join("inline-map.heic");
+    std::fs::write(
+        &staged_path,
+        include_bytes!("../../tests/fixtures/images/sample.heic"),
+    )
+    .expect("write fixture attachment HEIC");
     (staged_path, glib::base64_encode(&photo).to_string())
 }
 
@@ -583,7 +585,7 @@ fn fake_server(
                                 {"id":{"conversation_id":conversation.id,"local_id":"m2"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794406500000000i64,"text":"Absolutely. I found a little place near the river that looks great. We could meet there around noon, grab lunch, and walk along the trail if the weather holds.","attachments":[],"reply_to":null,"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m3"},"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":{"conversation_id":conversation.id,"local_id":"m1"},"reactions":[],"deleted":false},
                                 {"id":{"conversation_id":conversation.id,"local_id":"m4"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407100000000i64,"text":"Will do. It's called Riverside Market. I'll send you the address shortly.","attachments":[],"reply_to":null,"reactions":[],"deleted":false}
-                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[{"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path},{"local_id":"market-photo","mime":"image/png","name":"market-photo.png","size_bytes":null,"staged_path":staged_path}],"reply_to":null,"reactions":[],"deleted":false}
+                                ,{"id":{"conversation_id":conversation.id,"local_id":"m5"},"sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},"transport":"rcs","sent_at":1794407160000000i64,"text":"The entrance is on Water Street, just past the old brick station. Here’s the map with the route and opening hours: https://example.test/riverside-market?day=saturday&time=12%3A00. We can meet outside if it’s busy.","attachments":[{"local_id":"map-image","mime":null,"name":"route.heic","size_bytes":null,"staged_path":staged_path},{"local_id":"market-photo","mime":"image/heic","name":"market-photo.heic","size_bytes":null,"staged_path":staged_path}],"reply_to":null,"reactions":[],"deleted":false}
                             ],"cursor_next":null}),
                             )
                         }
@@ -680,8 +682,8 @@ fn fake_server(
                                     "transport":"rcs","sent_at":1794407160000000i64,
                                     "text":"The entrance is on Water Street.",
                                     "attachments":[
-                                        {"local_id":"map-image","mime":"image/png","name":"route.png","size_bytes":null,"staged_path":staged_path},
-                                        {"local_id":"market-photo","mime":"image/png","name":"market-photo.png","size_bytes":null,"staged_path":staged_path}
+                                        {"local_id":"map-image","mime":null,"name":"route.heic","size_bytes":null,"staged_path":staged_path},
+                                        {"local_id":"market-photo","mime":"image/heic","name":"market-photo.heic","size_bytes":null,"staged_path":staged_path}
                                     ],
                                     "reply_to":null,"reactions":[],"deleted":false
                                 }],
@@ -950,14 +952,14 @@ fn native_window_round_trips_real_frontend_actions() {
         || {
             app.windows()
                 .iter()
-                .any(|window| window.title().as_deref() == Some("route.png"))
+                .any(|window| window.title().as_deref() == Some("route.heic"))
         },
         "in-app image viewer",
     );
     let viewer = app
         .windows()
         .into_iter()
-        .find(|window| window.title().as_deref() == Some("route.png"))
+        .find(|window| window.title().as_deref() == Some("route.heic"))
         .unwrap();
     pump_until(
         || {
@@ -1683,14 +1685,14 @@ fn native_window_round_trips_real_frontend_actions() {
         || {
             app.windows()
                 .iter()
-                .any(|window| window.title().as_deref() == Some("route.png"))
+                .any(|window| window.title().as_deref() == Some("route.heic"))
         },
         "first media gallery image opens",
     );
     let gallery_viewer = app
         .windows()
         .into_iter()
-        .find(|window| window.title().as_deref() == Some("route.png"))
+        .find(|window| window.title().as_deref() == Some("route.heic"))
         .unwrap();
     let next_photo = find_widget(gallery_viewer.upcast_ref(), &|widget| {
         widget.tooltip_text().as_deref() == Some("Next image")
@@ -1703,7 +1705,7 @@ fn native_window_round_trips_real_frontend_actions() {
         || {
             app.windows()
                 .iter()
-                .any(|window| window.title().as_deref() == Some("market-photo.png"))
+                .any(|window| window.title().as_deref() == Some("market-photo.heic"))
         },
         "gallery navigation changes the displayed filename",
     );

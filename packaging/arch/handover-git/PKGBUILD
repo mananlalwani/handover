@@ -7,7 +7,7 @@ pkgdesc='Android and Linux continuity daemon and CLI'
 arch=('x86_64' 'aarch64')
 url='https://github.com/mananlalwani/handover'
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'openssl' 'dbus' 'gtk4' 'libadwaita')
+depends=('gcc-libs' 'glibc' 'openssl' 'dbus' 'gtk4' 'libadwaita' 'libheif')
 makedepends=('git' 'rust' 'cargo' 'cmake')
 optdepends=(
   'libpulse: capture laptop audio for phone playback'

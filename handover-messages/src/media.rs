@@ -1,11 +1,11 @@
 //! Bounded local image decoding shared by message thumbnails, photos and the viewer.
 use adw::prelude::*;
 use gtk::{gdk, gdk_pixbuf, gio, glib};
-use handover_core::Attachment;
+use handover_core::{Attachment, AttachmentKind};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
-    io::Read,
+    io::{BufRead, BufReader, Read},
     os::unix::fs::OpenOptionsExt,
     rc::Rc,
     sync::Arc,
@@ -13,6 +13,44 @@ use std::{
 
 const CACHE_BYTES: usize = 64 * 1024 * 1024;
 const FILE_BYTES: u64 = 25 * 1024 * 1024;
+
+pub fn is_image(attachment: &Attachment) -> bool {
+    if AttachmentKind::of_mime(attachment.mime.as_deref()) == AttachmentKind::Image {
+        return true;
+    }
+    let mime = attachment
+        .mime
+        .as_deref()
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if !mime.is_empty() && !mime.eq_ignore_ascii_case("application/octet-stream") {
+        return false;
+    }
+    let Some(extension) = attachment
+        .name
+        .as_deref()
+        .and_then(|name| std::path::Path::new(name).extension())
+        .and_then(|extension| extension.to_str())
+    else {
+        return false;
+    };
+    // A filename selects the preview UI only. Decoding still validates bytes.
+    gdk_pixbuf::Pixbuf::formats().iter().any(|format| {
+        !format.is_disabled()
+            && !format.is_scalable()
+            && format
+                .mime_types()
+                .iter()
+                .any(|mime| mime.starts_with("image/"))
+            && format
+                .extensions()
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+    })
+}
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum Source {
@@ -623,7 +661,10 @@ struct Decoded {
     alpha: bool,
 }
 fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
-    let (mut input, format): (Box<dyn Read>, &str) = match source {
+    if edge <= 0 {
+        return Err(());
+    }
+    let (input, hint): (Box<dyn Read>, &str) = match source {
         Source::File(path, mime) => {
             let file = std::fs::OpenOptions::new()
                 .read(true)
@@ -634,22 +675,7 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
             if !metadata.is_file() || metadata.len() > FILE_BYTES {
                 return Err(());
             }
-            let format = match mime
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "image/jpeg" | "image/jpg" => "jpeg",
-                "image/png" => "png",
-                "image/webp" => "webp",
-                "image/gif" => "gif",
-                "image/bmp" => "bmp",
-                _ => return Err(()),
-            };
-            (Box::new(file.take(FILE_BYTES + 1)), format)
+            (Box::new(file.take(FILE_BYTES + 1)), mime)
         }
         Source::Photo(photo) => {
             if photo.len() > 48 * 1024 {
@@ -657,20 +683,22 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
             }
             (
                 Box::new(std::io::Cursor::new(glib::base64_decode(photo.as_ref()))),
-                "jpeg",
+                "",
             )
         }
     };
-    let loader = gdk_pixbuf::PixbufLoader::with_type(format).map_err(|_| ())?;
+    // Use the file bytes first. Providers can omit MIME types or label HEIF
+    // variants differently, and contact photos are not necessarily JPEG.
+    let mut input = BufReader::new(input);
+    let prefix = input.fill_buf().map_err(|_| ())?;
+    let content_type = gio::content_type_guess(None::<&str>, Some(prefix)).0;
+    let detected = gio::content_type_get_mime_type(&content_type);
+    let format = raster_format(detected.as_deref(), hint).ok_or(())?;
+    let loader = gdk_pixbuf::PixbufLoader::with_type(&format).map_err(|_| ())?;
     let invalid = Rc::new(Cell::new(false));
     let prepared = invalid.clone();
     loader.connect_size_prepared(move |loader, width, height| {
-        if width <= 0
-            || height <= 0
-            || width > 32768
-            || height > 32768
-            || i64::from(width) * i64::from(height) > 100_000_000
-        {
+        if !valid_dimensions(width, height) {
             prepared.set(true);
             loader.set_size(1, 1);
             return;
@@ -700,10 +728,24 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
     }
     loader.close().map_err(|_| ())?;
     let original = loader.pixbuf().ok_or(())?;
-    let image = original.apply_embedded_orientation().unwrap_or(original);
-    if image.width() > edge || image.height() > edge {
+    if invalid.get() || !valid_dimensions(original.width(), original.height()) {
         return Err(());
     }
+    let image = original.apply_embedded_orientation().unwrap_or(original);
+    // Some loaders, including HEIF implementations, decode at full size even
+    // after set_size. Always bound the texture independently of that behavior.
+    let image = if image.width() > edge || image.height() > edge {
+        let scale = f64::from(edge) / f64::from(image.width().max(image.height()));
+        image
+            .scale_simple(
+                (f64::from(image.width()) * scale).max(1.0) as i32,
+                (f64::from(image.height()) * scale).max(1.0) as i32,
+                gdk_pixbuf::InterpType::Bilinear,
+            )
+            .ok_or(())?
+    } else {
+        image
+    };
     Ok(Decoded {
         pixels: image.read_pixel_bytes().as_ref().to_vec(),
         width: image.width(),
@@ -713,9 +755,136 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
     })
 }
 
+fn valid_dimensions(width: i32, height: i32) -> bool {
+    width > 0
+        && height > 0
+        && width <= 32768
+        && height <= 32768
+        && i64::from(width) * i64::from(height) <= 100_000_000
+}
+
+fn raster_format(detected: Option<&str>, hint: &str) -> Option<String> {
+    fn normalize(mime: &str) -> String {
+        match mime
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "image/jpg" | "image/pjpeg" => "image/jpeg".into(),
+            "image/heif-sequence" => "image/heif".into(),
+            "image/heic-sequence" => "image/heic".into(),
+            "image/x-tiff" => "image/tiff".into(),
+            "image/x-icon" => "image/vnd.microsoft.icon".into(),
+            mime => mime.into(),
+        }
+    }
+    let hint = normalize(hint);
+    // Vector documents remain outside the local raster decoder.
+    if hint == "image/svg+xml" {
+        return None;
+    }
+    let formats = gdk_pixbuf::Pixbuf::formats();
+    for mime in detected.into_iter().chain(Some(hint.as_str())) {
+        let mime = normalize(mime);
+        if !mime.starts_with("image/") {
+            continue;
+        }
+        if let Some(format) = formats.iter().find(|format| {
+            !format.is_disabled()
+                && !format.is_scalable()
+                && format
+                    .mime_types()
+                    .iter()
+                    .any(|supported| normalize(supported) == mime)
+        }) {
+            return format.name().map(|name| name.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    const FORMATS: &[(&str, &str)] = &[
+        ("jpg", "image/jpeg"),
+        ("png", "image/png"),
+        ("gif", "image/gif"),
+        ("webp", "image/webp"),
+        ("bmp", "image/bmp"),
+        ("tiff", "image/tiff"),
+        ("ico", "image/vnd.microsoft.icon"),
+        ("heic", "image/heic"),
+        ("avif", "image/avif"),
+        ("jxl", "image/jxl"),
+    ];
+
+    #[test]
+    fn installed_raster_loaders_decode_real_files_and_scale_viewer_textures() {
+        for (extension, mime) in FORMATS {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("tests/fixtures/images/sample.{extension}"));
+            if raster_format(Some(mime), mime).is_none() {
+                assert!(
+                    std::env::var_os("HANDOVER_MESSAGES_REQUIRE_ALL_IMAGE_FIXTURES").is_none(),
+                    "required image loader is missing: {extension}"
+                );
+                assert!(
+                    decode(
+                        &Source::File(path.to_string_lossy().into(), (*mime).into()),
+                        16
+                    )
+                    .is_err()
+                );
+                continue;
+            }
+            let mut attachment = Attachment {
+                local_id: "test".into(),
+                mime: None,
+                name: Some(format!("PHOTO.{}", extension.to_ascii_uppercase())),
+                size_bytes: None,
+                staged_path: None,
+            };
+            assert!(is_image(&attachment), "{extension} without MIME metadata");
+            attachment.mime = Some("application/octet-stream".into());
+            assert!(
+                is_image(&attachment),
+                "{extension} with generic MIME metadata"
+            );
+            attachment.mime = Some("text/plain".into());
+            assert!(
+                !is_image(&attachment),
+                "explicit nonimage MIME is preserved"
+            );
+            for hint in [*mime, "application/octet-stream", "image/jpeg"] {
+                let decoded = decode(
+                    &Source::File(path.to_string_lossy().into(), hint.into()),
+                    16,
+                )
+                .unwrap_or_else(|_| panic!("decode {extension} with MIME hint {hint}"));
+                let expected = if *extension == "ico" {
+                    (16, 16)
+                } else {
+                    (16, 8)
+                };
+                assert_eq!((decoded.width, decoded.height), expected, "{extension}");
+                assert!(!decoded.pixels.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn contact_photos_detect_png_instead_of_assuming_jpeg() {
+        let bytes = include_bytes!("../tests/fixtures/images/sample.png");
+        let encoded = glib::base64_encode(bytes);
+        let decoded = decode(&Source::Photo(Arc::from(encoded.as_str())), 32).unwrap();
+        assert_eq!((decoded.width, decoded.height), (32, 16));
+        assert!(raster_format(Some("image/svg+xml"), "image/svg+xml").is_none());
+    }
+
     #[test]
     fn decoder_scales_real_images_and_rejects_unsafe_local_sources() {
         let directory = tempfile::tempdir().unwrap();

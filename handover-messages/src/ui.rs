@@ -2460,9 +2460,7 @@ impl Window {
                 .iter()
                 .filter(|message| !message.deleted)
                 .flat_map(|message| &message.attachments)
-                .filter(|attachment| {
-                    AttachmentKind::of_mime(attachment.mime.as_deref()) == AttachmentKind::Image
-                })
+                .filter(|attachment| crate::media::is_image(attachment))
                 .take(256)
                 .cloned()
                 .collect::<Vec<_>>(),
@@ -2632,7 +2630,7 @@ impl Window {
             bubble.append(&text);
             let mut images = Vec::new();
             for attachment in message.attachments.iter().filter(|_| !message.deleted) {
-                if AttachmentKind::of_mime(attachment.mime.as_deref()) == AttachmentKind::Image {
+                if crate::media::is_image(attachment) {
                     let image =
                         if let Some(index) = gallery.iter().position(|item| item == attachment) {
                             self.media.attachment_gallery(
@@ -2686,9 +2684,10 @@ impl Window {
             bubble.set_visible(
                 text.is_visible()
                     || message.reply_to.is_some()
-                    || message.attachments.iter().any(|attachment| {
-                        AttachmentKind::of_mime(attachment.mime.as_deref()) != AttachmentKind::Image
-                    }),
+                    || message
+                        .attachments
+                        .iter()
+                        .any(|attachment| !crate::media::is_image(attachment)),
             );
             column.append(&bubble);
             for image in images {
@@ -3079,8 +3078,7 @@ impl Window {
             self.attachment_row.append(&reload);
         }
         if let (Some(id), Some(pending)) = (selected, attachment) {
-            if AttachmentKind::of_mime(pending.attachment.mime.as_deref()) == AttachmentKind::Image
-            {
+            if crate::media::is_image(&pending.attachment) {
                 self.attachment_row.append(
                     &self
                         .media

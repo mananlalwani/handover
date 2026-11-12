@@ -56,7 +56,7 @@ jobs:
       - name: Install desktop integration test tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y dbus-daemon playerctl gnome-keyring xvfb ffmpeg libgtk-4-media-gstreamer gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+          sudo apt-get install --no-install-recommends -y dbus-daemon playerctl gnome-keyring xvfb ffmpeg heif-gdk-pixbuf webp-pixbuf-loader libgtk-4-media-gstreamer gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
       - run: cargo test --workspace
       - name: Test credentials against a private GNOME Keyring service
         run: python3 scripts/test-secret-service.py

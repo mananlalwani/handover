@@ -101,9 +101,30 @@ Image attachments stored locally appear directly in the conversation. Click an
 image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
 choose Fit to see the whole image. Escape closes the viewer. Open externally
 uses your system viewer when needed. Previous and Next, or the left and right
-arrow keys, move between images in the opened gallery. JPEG and PNG are supported; GIF, WebP, and
-BMP depend on installed image loaders. Animated images currently show a still
-preview. Attachments without a local file show that they are unavailable locally.
+arrow keys, move between images in the opened gallery. The app uses installed
+raster-image loaders, including JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, HEIC/HEIF,
+AVIF, and JPEG XL. It detects the format from file contents before using the
+provider's MIME hint. Contact photos use the same decoder. Original attachment
+files retain their format when saved or sent. If MIME metadata is absent or
+generic, a recognized image filename selects the preview UI; the decoder still
+validates the file contents.
+
+HEIC/HEIF and AVIF need a HEIF-capable image loader. The Arch development package
+depends on `libheif`. On Ubuntu, install `heif-gdk-pixbuf` and
+`webp-pixbuf-loader`; JPEG XL needs `libjxl-gdk-pixbuf` where available.
+See Ubuntu's [HEIF loader](https://packages.ubuntu.com/noble/heif-gdk-pixbuf)
+and [JPEG XL loader](https://packages.ubuntu.com/resolute/libjxl-gdk-pixbuf).
+Newer
+GdkPixbuf installations can provide these formats through Glycin instead.
+Restart the app after installing image loaders.
+
+Support depends on the installed decoder and the encoding variant. For example,
+the current Glycin TIFF decoder rejects some low-bit-depth palette TIFFs.
+Animated images and HEIF sequences currently show a still preview. SVG and other
+vector documents remain outside the raster viewer. Input files are limited to
+25 MiB and 100 megapixels, with decoded textures scaled to the requested size.
+Unsupported files retain the Open externally and Save as actions. Attachments
+without a local file show that they are unavailable locally.
 
 Open Photos and files in the conversation header to browse saved attachments,
 including those outside the current chat view. Newer media and Older media page
