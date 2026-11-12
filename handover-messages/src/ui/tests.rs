@@ -1268,6 +1268,7 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "restore newest history after scoped search",
     );
+    let selected_sidebar_row = ui.list.selected_row();
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
         serde_json::to_value(handover_ipc::ServerMessage::from_messaging_event(
@@ -1284,13 +1285,47 @@ fn native_window_round_trips_real_frontend_actions() {
                 widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
                     label.has_css_class("typing-indicator")
                         && label.is_visible()
-                        && label.text().contains("Alex Example")
+                        && label.text() == "Typing…"
+                        && label.tooltip_text().as_deref() == Some("Alex Example is typing…")
                 })
             })
             .is_some()
         },
         "typing indicator for selected conversation",
     );
+    assert!(
+        ancestor_with_class(ui.typing_indicator.upcast_ref(), "contact-heading").is_some(),
+        "typing must be visible in the conversation header, as in QML"
+    );
+    assert!(!ui.subtitle.is_visible());
+    assert_eq!(ui.list.selected_row(), selected_sidebar_row);
+    let sidebar_typing = ui
+        .sidebar_previews
+        .borrow()
+        .iter()
+        .find(|preview| preview.conversation == id())
+        .unwrap()
+        .label
+        .upgrade()
+        .unwrap();
+    assert_eq!(sidebar_typing.text(), ui.typing_indicator.text());
+    assert!(sidebar_typing.has_css_class("typing-preview"));
+    wait_for_layout(&ui.window);
+    assert!(ui.typing_indicator.is_mapped());
+    assert!(
+        !ui.typing_indicator.layout().is_ellipsized(),
+        "Typing stays readable in narrow windows"
+    );
+    let bounds = ui.typing_indicator.compute_bounds(&ui.window).unwrap();
+    assert!(
+        bounds.y() >= 0.0 && bounds.y() < 90.0 && bounds.height() > 0.0,
+        "typing is placed at the top of the window"
+    );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        let name = format!("{}-typing.png", path.file_stem().unwrap().to_string_lossy());
+        capture_fixture(&ui.window, path.with_file_name(name));
+    }
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
         serde_json::to_value(handover_ipc::ServerMessage::from_messaging_event(
@@ -1311,6 +1346,57 @@ fn native_window_round_trips_real_frontend_actions() {
             .is_some()
         },
         "typing indicator clears after empty participant update",
+    );
+    assert!(!ui.typing_indicator.is_visible());
+    assert!(ui.subtitle.is_visible());
+    assert!(!sidebar_typing.has_css_class("typing-preview"));
+    assert_eq!(ui.list.selected_row(), selected_sidebar_row);
+    let other_thread = ConversationId::new(MessagingAccountId::new(ACCOUNT), "maya-chen");
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response(
+            "typing",
+            json!({"state":{"conversation_id":other_thread,"participant_ids":["maya-chen"]}}),
+        ),
+    );
+    pump_until(
+        || {
+            ui.sidebar_previews.borrow().iter().any(|preview| {
+                preview.conversation == other_thread
+                    && preview.label.upgrade().is_some_and(|label| {
+                        label.text().as_str() == "Typing…"
+                            && label.tooltip_text().as_deref() == Some("Maya Chen is typing…")
+                    })
+            })
+        },
+        "typing in another conversation appears in its sidebar preview",
+    );
+    assert!(
+        !ui.typing_indicator.is_visible(),
+        "another chat cannot change this header"
+    );
+    assert_eq!(ui.model.borrow().selected.as_ref(), Some(&id()));
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response(
+            "typing",
+            json!({"state":{"conversation_id":other_thread,"participant_ids":[]}}),
+        ),
+    );
+    pump_until(
+        || {
+            ui.sidebar_previews
+                .borrow()
+                .iter()
+                .filter(|preview| preview.conversation == other_thread)
+                .all(|preview| {
+                    preview
+                        .label
+                        .upgrade()
+                        .is_some_and(|label| !label.has_css_class("typing-preview"))
+                })
+        },
+        "other chat restores its message preview when typing stops",
     );
 
     let m2 = MessageId::new(id(), "m2");
@@ -1586,6 +1672,10 @@ fn native_window_round_trips_real_frontend_actions() {
     pump_until(
         || copied_text.borrow().as_deref() == Some("Hey! Are we still on for Saturday?"),
         "message actions copies original text",
+    );
+    pump_until(
+        || !actions_popover.is_visible() && !actions.is_active(),
+        "copy action finishes closing its menu before reopening",
     );
     actions.popup();
     pump_until(
@@ -2032,7 +2122,7 @@ fn native_window_round_trips_real_frontend_actions() {
         ),
     );
     pump_until(
-        || ui.typing_indicator.text().contains("Alex"),
+        || ui.typing_indicator.text() == "Typing…",
         "typing before interrupted send",
     );
     ui.compose.buffer().set_text("uncertain text");

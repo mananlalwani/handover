@@ -71,6 +71,13 @@ fn typing_is_scoped_live_deduplicated_and_never_names_an_unknown_peer() {
         },
     });
     assert_eq!(model.typing_label().as_deref(), Some("Someone is typing…"));
+    model.selected = None;
+    assert_eq!(model.typing_label(), None);
+    assert_eq!(
+        model.typing_label_for(&id).as_deref(),
+        Some("Someone is typing…")
+    );
+    model.selected = Some(id.clone());
     model.state(ServerPayload::Typing {
         state: TypingState {
             conversation_id: id.clone(),

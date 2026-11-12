@@ -62,9 +62,14 @@ draft before overwriting it. Closing with unsaved edits offers a choice to keep
 the window open or discard those edits. See [message storage](message-storage.md)
 for file locations, limits, and how to disable persistence.
 
-Incoming typing appears above the composer when the daemon reports it. The row
-keeps its height while typing starts and stops, preserving the conversation's
-position. Disconnects and authoritative snapshots clear or replace typing state.
+Incoming typing appears as a blue **Typing…** label beneath the contact name in
+the conversation header, matching QML's placement near the title. The chat-list
+preview also shows **Typing…**, including for conversations that are not open.
+Tooltips and screen-reader labels identify the reported participants. Typing
+updates preserve selection and scroll position; normal transport labels and
+message previews return when typing stops. Disconnects and authoritative
+snapshots clear or replace typing state. These indicators require an incoming
+typing event from the daemon.
 
 Outgoing bubbles show status only when the daemon identifies that exact message.
 Accepted means command acceptance; Sent, Delivered, and Read require reported

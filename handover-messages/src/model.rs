@@ -98,7 +98,9 @@ impl Model {
         }
     }
     pub fn typing_label(&self) -> Option<String> {
-        let id = self.selected.as_ref()?;
+        self.typing_label_for(self.selected.as_ref()?)
+    }
+    pub fn typing_label_for(&self, id: &ConversationId) -> Option<String> {
         if !self.connected
             || !self.accounts.iter().any(|account| {
                 account.id == id.account_id && account.connected && account.authenticated

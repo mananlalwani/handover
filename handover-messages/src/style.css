@@ -85,7 +85,8 @@
 .handover-media-browser { background: @window_bg_color; }
 .media-file-row { padding: 12px; border-radius: 9px; }
 
-.typing-indicator { font-size: 12px; color: alpha(currentColor, 0.65); }
+.handover-messages .typing-indicator { font-size: 13px; font-weight: 600; color: @accent_color; }
+.handover-messages .conversation-preview.typing-preview { color: @accent_color; opacity: 1; font-weight: 600; }
 .message-status { font-size: 11px; color: alpha(currentColor, 0.58); margin-top: 3px; margin-right: 4px; }
 
 .inline-media { border-radius: 10px; padding: 6px; background: alpha(currentColor, 0.04); }

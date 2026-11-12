@@ -24,6 +24,12 @@ struct RowStamp {
     find_query: String,
 }
 
+struct SidebarPreview {
+    conversation: ConversationId,
+    label: glib::WeakRef<gtk::Label>,
+    text: String,
+}
+
 pub struct Window {
     pub window: adw::ApplicationWindow,
     model: RefCell<Model>,
@@ -37,6 +43,7 @@ pub struct Window {
     accounts: gtk::DropDown,
     list: gtk::ListBox,
     rows: RefCell<Vec<Target>>,
+    sidebar_previews: RefCell<Vec<SidebarPreview>>,
     filter: RefCell<Option<MessagingAccountId>>,
     title: gtk::Label,
     subtitle: gtk::Label,
@@ -211,10 +218,18 @@ impl Window {
         let subtitle = gtk::Label::new(None);
         subtitle.set_xalign(0.0);
         subtitle.add_css_class("contact-subtitle");
+        let typing_indicator = gtk::Label::new(None);
+        typing_indicator.add_css_class("typing-indicator");
+        typing_indicator.set_xalign(0.0);
+        typing_indicator.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        typing_indicator.set_max_width_chars(28);
+        typing_indicator.set_single_line_mode(true);
+        typing_indicator.set_visible(false);
         let identity = gtk::Box::new(gtk::Orientation::Vertical, 2);
         identity.set_valign(gtk::Align::Center);
         identity.append(&title);
         identity.append(&subtitle);
+        identity.append(&typing_indicator);
         let avatar = adw::Avatar::new(40, None, true);
         avatar.set_visible(false);
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -316,13 +331,6 @@ impl Window {
         body.append(&viewport);
         let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
         composer_area.add_css_class("composer-area");
-        let typing_indicator = gtk::Label::new(None);
-        typing_indicator.add_css_class("typing-indicator");
-        typing_indicator.set_height_request(18);
-        typing_indicator.set_xalign(0.0);
-        typing_indicator.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        typing_indicator.set_margin_start(12);
-        composer_area.append(&typing_indicator);
         let status = gtk::Label::new(None);
         status.set_xalign(0.5);
         status.set_wrap(true);
@@ -429,6 +437,7 @@ impl Window {
             accounts,
             list,
             rows: RefCell::new(vec![]),
+            sidebar_previews: RefCell::new(vec![]),
             filter: RefCell::new(None),
             title,
             subtitle,
@@ -1868,6 +1877,7 @@ impl Window {
                 .and_then(|id| model.accounts.iter().position(|a| &a.id == id))
                 .map_or(0, |index| index as u32 + 1),
         );
+        self.sidebar_previews.borrow_mut().clear();
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -1940,7 +1950,7 @@ impl Window {
                         .into()
                     }
                 });
-            self.add_row(
+            let label = self.add_row(
                 &title,
                 &preview,
                 conversation.unread_count.is_some_and(|count| count > 0),
@@ -1948,6 +1958,11 @@ impl Window {
                 conversation.kind == ConversationKind::Group,
                 self.photos.borrow().conversation_photos(conversation),
             );
+            self.sidebar_previews.borrow_mut().push(SidebarPreview {
+                conversation: conversation.id.clone(),
+                label: label.downgrade(),
+                text: preview.replace(['\n', '\t'], " "),
+            });
             rows.push((conversation.id.clone(), None));
         }
         for hit in &model.hits {
@@ -2020,6 +2035,7 @@ impl Window {
             .set_sensitive(model.connected && model.more);
         self.updating.set(false);
         self.media.schedule(&self.window);
+        self.render_typing();
     }
     fn add_row(
         &self,
@@ -2029,7 +2045,7 @@ impl Window {
         time: Option<i64>,
         group: bool,
         photos: Vec<std::sync::Arc<str>>,
-    ) {
+    ) -> gtk::Label {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let avatar = adw::Avatar::new(40, Some(title), true);
         style_avatar(&avatar, title, group);
@@ -2065,6 +2081,7 @@ impl Window {
             row.append(&dot);
         }
         self.list.append(&row);
+        detail
     }
     fn render_editor(&self) {
         self.updating.set(true);
@@ -2091,13 +2108,34 @@ impl Window {
         self.updating.set(false);
     }
     fn render_typing(&self) {
-        let typing = self.model.borrow().typing_label();
+        let model = self.model.borrow();
+        let typing = model.typing_label();
         self.typing_indicator
-            .set_label(typing.as_deref().unwrap_or(""));
+            .set_label(if typing.is_some() { "Typing…" } else { "" });
+        self.typing_indicator.set_visible(typing.is_some());
+        self.typing_indicator.set_tooltip_text(typing.as_deref());
+        self.subtitle.set_visible(typing.is_none());
         self.typing_indicator
             .update_property(&[gtk::accessible::Property::Label(
                 typing.as_deref().unwrap_or(""),
             )]);
+        // Update previews in place so typing cannot rebuild the list or disturb
+        // its selection, scroll position, contact images, or media playback.
+        for preview in self.sidebar_previews.borrow().iter() {
+            if let Some(label) = preview.label.upgrade() {
+                if let Some(typing) = model.typing_label_for(&preview.conversation) {
+                    label.set_label("Typing…");
+                    label.set_tooltip_text(Some(&typing));
+                    label.update_property(&[gtk::accessible::Property::Label(&typing)]);
+                    label.add_css_class("typing-preview");
+                } else {
+                    label.set_label(&preview.text);
+                    label.set_tooltip_text(None);
+                    label.update_property(&[gtk::accessible::Property::Label(&preview.text)]);
+                    label.remove_css_class("typing-preview");
+                }
+            }
+        }
     }
     fn render_status(&self) {
         self.render_typing();
