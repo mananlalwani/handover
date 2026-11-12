@@ -275,7 +275,10 @@ impl Browser {
             heading.add_css_class("heading");
             self.content.append(&heading);
             for attachment in &files {
-                self.content.append(&file_row(attachment));
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                row.append(&file_row(attachment));
+                row.append(&crate::file_actions::save_button(&parent, attachment));
+                self.content.append(&row);
             }
         }
         if let Some(window) = self.window.upgrade() {

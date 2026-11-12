@@ -39,15 +39,20 @@ advertises those capabilities. Choose a file with the attachment button or drag
 one into the conversation. Review its preview, add a caption, and press Send.
 Removing the attachment keeps the caption. Each message can contain one file,
 up to 50 MiB; file attachments cannot be combined with quoted replies.
-Attachment selections stay in the current window and are not saved across
-restarts. Closing with staged attachments asks whether to discard them. Text
-captions use the normal daemon draft storage. New-conversation creation is unavailable until
+The daemon saves a private copy of each selected file alongside the draft.
+Saved selections and captions survive app and daemon restarts, including after
+the original file moves or is deleted. Send waits for the attachment-save reply.
+Closing waits for pending saves and offers keep/discard if saving fails. A draft
+changed in another window requires reloading the saved attachment before replacing
+it. With persistence disabled, attachments last only for the daemon session. New-conversation creation is unavailable until
 the backend has verified support. The Quickshell reference client remains
 available for workflows the native app does not yet expose.
 
 | Shortcut | Action |
 | --- | --- |
-| Ctrl+K or Ctrl+F | Focus search |
+| Ctrl+K | Search all saved messages |
+| Ctrl+F | Find within the current conversation |
+| Enter / Shift+Enter in Find | Next / previous match |
 | Ctrl+Enter | Send the current draft |
 | Alt+Up or Alt+Down | Move between conversations |
 
@@ -77,7 +82,20 @@ use later provider evidence. If the connection drops before the acknowledgement,
 the app retains the draft and warns that the outcome is unknown. It does not
 resend automatically. Check the conversation before sending again.
 
-## Images and contact pictures
+## Search, links, and saving files
+
+Use Find in conversation or Ctrl+F to search that chat's saved history.
+Matches highlight in the message text. Previous/Next and Shift+Enter/Enter move
+between matches, fetching the next saved-result page when needed. The counter
+shows the known result count, with + when more remain. Escape closes Find.
+Ctrl+K keeps the global saved-message search available.
+
+HTTP and HTTPS links open in your browser when clicked. Message actions include
+Copy link. Save attachment as opens a destination chooser for a locally available
+file. Images also have Save as in the viewer, and Photos and files includes save
+controls. Saving writes a new local copy and never downloads missing media.
+
+## Images, audio, video, and contact pictures
 
 Image attachments stored locally appear directly in the conversation. Click an
 image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
@@ -92,6 +110,13 @@ including those outside the current chat view. Newer media and Older media page
 through saved messages with attachments. This lists the daemon's local archive;
 it does not fetch a complete provider media library. Missing local files remain
 unavailable. Deleted messages are omitted.
+
+Audio and video attachments have inline Play controls. Media loads only after
+Play, and uses the system GTK media backend and installed codecs. Duration and
+seek controls use decoder reports. At most four media files stay loaded;
+opening another unloads the oldest player. Removing or hiding a player's row
+pauses and unloads it. Delivery-status changes preserve the player. Unsupported
+formats show an external-player action. Playback does not start automatically.
 
 Contact pictures come from the daemon's synced address book. Direct
 conversations use a photo when a participant's phone number or email has an

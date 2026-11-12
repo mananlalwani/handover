@@ -77,6 +77,31 @@ impl MessageArchive {
         account: Option<String>,
         offset: u32,
     ) -> Result<(Vec<MessageSearchHit>, bool), Error> {
+        self.search_scoped(query, account, None, offset).await
+    }
+
+    pub(crate) async fn search_conversation(
+        self: &Arc<Self>,
+        query: String,
+        conversation_id: ConversationId,
+        offset: u32,
+    ) -> Result<(Vec<MessageSearchHit>, bool), Error> {
+        self.search_scoped(
+            query,
+            Some(conversation_id.account_id.as_str().to_owned()),
+            Some(conversation_id.local_id),
+            offset,
+        )
+        .await
+    }
+
+    async fn search_scoped(
+        self: &Arc<Self>,
+        query: String,
+        account: Option<String>,
+        thread: Option<String>,
+        offset: u32,
+    ) -> Result<(Vec<MessageSearchHit>, bool), Error> {
         if query.chars().count() > 256 || query.split_whitespace().count() > 16 || offset > 10_000 {
             return Err("invalid search bounds".into());
         }
@@ -95,12 +120,14 @@ impl MessageArchive {
                 "SELECT m.payload FROM message_search s
                 JOIN messages m ON m.rowid=s.rowid WHERE message_search MATCH ?1
                 AND (?2 IS NULL OR m.account=?2)
+                AND (?3 IS NULL OR m.thread=?3)
                 ORDER BY bm25(message_search),coalesce(json_extract(m.payload,'$.sent_at'),0) DESC,
-                    m.account,m.thread,m.id LIMIT 26 OFFSET ?3",
+                    m.account,m.thread,m.id LIMIT 26 OFFSET ?4",
             )?;
-            let rows = statement.query_map(params![expression, account, offset], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let rows = statement
+                .query_map(params![expression, account, thread, offset], |row| {
+                    row.get::<_, String>(0)
+                })?;
             let mut hits = Vec::new();
             for row in rows {
                 let message: Message = serde_json::from_str(&row?)?;

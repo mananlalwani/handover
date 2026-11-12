@@ -776,13 +776,16 @@ where
             accounts: messaging_snapshot(state).accounts,
         },
         method @ (Method::MessagesSearch { .. }
+        | Method::MessagesSearchConversation { .. }
         | Method::MessagesMedia { .. }
         | Method::MessagesPreviews { .. }
         | Method::MessagesContext { .. }
         | Method::MessagesWorkspace
         | Method::MessagesSelect { .. }
         | Method::MessagesDraft { .. }
-        | Method::MessagesSaveDraft { .. }) => {
+        | Method::MessagesSaveDraft { .. }
+        | Method::MessagesAttachmentDraft { .. }
+        | Method::MessagesSaveAttachmentDraft { .. }) => {
             return local_messages::handle(method, writer, state).await;
         }
         Method::MessagesConversations { account_id } => {

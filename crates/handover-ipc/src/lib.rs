@@ -224,6 +224,13 @@ pub enum Method {
         #[serde(default)]
         offset: u32,
     },
+    #[serde(rename = "messages.search_conversation")]
+    MessagesSearchConversation {
+        conversation_id: ConversationId,
+        query: String,
+        #[serde(default)]
+        offset: u32,
+    },
     #[serde(rename = "messages.media")]
     MessagesMedia {
         conversation_id: ConversationId,
@@ -246,6 +253,15 @@ pub enum Method {
     MessagesDraft { conversation_id: ConversationId },
     #[serde(rename = "messages.save_draft")]
     MessagesSaveDraft { draft: handover_core::MessageDraft },
+    #[serde(rename = "messages.attachment_draft")]
+    MessagesAttachmentDraft { conversation_id: ConversationId },
+    #[serde(rename = "messages.save_attachment_draft")]
+    MessagesSaveAttachmentDraft {
+        conversation_id: ConversationId,
+        file_url: Option<String>,
+        mime: Option<String>,
+        revision: u64,
+    },
     #[serde(rename = "messages.typing_states")]
     MessagesTypingStates,
     #[serde(rename = "messages.read_states")]
@@ -657,6 +673,9 @@ pub enum ServerPayload {
     },
     MessageDraft {
         draft: handover_core::MessageDraft,
+    },
+    MessageAttachmentDraft {
+        draft: handover_core::MessageAttachmentDraft,
     },
     History {
         conversation_id: ConversationId,
@@ -1575,6 +1594,35 @@ impl Client {
         }
     }
 
+    pub async fn search_conversation_messages(
+        &mut self,
+        conversation_id: ConversationId,
+        query: String,
+        offset: u32,
+    ) -> Result<(Vec<handover_core::MessageSearchHit>, bool), IpcError> {
+        let expected = conversation_id.clone();
+        self.send(Method::MessagesSearchConversation {
+            conversation_id,
+            query,
+            offset,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageSearch { hits, has_more } => {
+                if hits
+                    .iter()
+                    .any(|hit| hit.message_id.conversation_id != expected)
+                {
+                    return Err(IpcError::UnexpectedResponse(
+                        "conversation search returned a hit from another conversation".into(),
+                    ));
+                }
+                Ok((hits, has_more))
+            }
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     /// List saved messages with attachments for one conversation.
     pub async fn message_media(
         &mut self,
@@ -1695,6 +1743,38 @@ impl Client {
         self.send(Method::MessagesSaveDraft { draft }).await?;
         match self.receive().await?.payload {
             ServerPayload::MessageDraft { draft } => Ok(draft),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn attachment_draft(
+        &mut self,
+        conversation_id: ConversationId,
+    ) -> Result<handover_core::MessageAttachmentDraft, IpcError> {
+        self.send(Method::MessagesAttachmentDraft { conversation_id })
+            .await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageAttachmentDraft { draft } => Ok(draft),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn save_attachment_draft(
+        &mut self,
+        conversation_id: ConversationId,
+        file_url: Option<String>,
+        mime: Option<String>,
+        revision: u64,
+    ) -> Result<handover_core::MessageAttachmentDraft, IpcError> {
+        self.send(Method::MessagesSaveAttachmentDraft {
+            conversation_id,
+            file_url,
+            mime,
+            revision,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageAttachmentDraft { draft } => Ok(draft),
             payload => Err(unexpected(payload)),
         }
     }

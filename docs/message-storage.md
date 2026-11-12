@@ -15,7 +15,15 @@ Files live under `${XDG_STATE_HOME:-$HOME/.local/state}/handover/`:
   oversized, or unsupported-version caches are not partially restored.
 - `messaging-workspace.sqlite` stores drafts and the last selected conversation
   and message position. It holds up to 128 nonempty drafts within a 16 MiB
-  database limit. Drafts are limited to 8,000 characters and 64 KiB.
+  database limit. Text drafts are limited to 8,000 characters and 64 KiB.
+  Attachment metadata and independent revision tokens use the same database.
+- `messaging-draft-files` stores daemon-owned copies of unsent attachments.
+  Files use mode `0600` inside private `0700` directories. The limits are 32
+  active attachments, 50 MiB per file, and 256 MiB of saved attachment bytes.
+  A replacement temporarily needs room for both copies. Removing a saved
+  attachment or logging out removes the corresponding copies. Empty revision
+  records prevent stale writes from restoring a cleared attachment; these are
+  bounded at 4,096 conversation records.
 - `messaging-history.sqlite` stores normalized messages and fetched history-page
   boundaries beyond the live window. Its default database limit is 1,024 MiB.
   The configurable range is 16 to 1,048,576 MiB. The limit covers the SQLite
@@ -78,7 +86,8 @@ session-only storage and reports `persistent: false` to clients.
 
 Set `HANDOVER_MESSAGING_CACHE=0` in the daemon's environment before starting it.
 This disables both normalized cache loading/writing and opening the history
-archive. Drafts and selection then live only for the daemon session. A systemd user-service override can set it:
+archive. Drafts and selection then live only for the daemon session.
+Attachment drafts use temporary session storage instead of persistent copies. A systemd user-service override can set it:
 
 ```ini
 [Service]
@@ -88,7 +97,7 @@ Environment=HANDOVER_MESSAGING_CACHE=0
 Use `systemctl --user edit handoverd.service` to add the override and restart the
 service. Restarts then rebuild message views from the helper. Disabling this
 storage does not delete existing files, disable the durable outgoing-operation
-journal, remove helper credentials, or control attachment staging.
+journal, remove helper credentials, or control helper media staging.
 
 ## Removal and recovery limits
 

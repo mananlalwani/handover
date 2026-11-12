@@ -22,7 +22,8 @@ Handover is pre-1.0. Public interfaces may change.
 - The native [Messages app](messages-app.md) currently covers existing
   conversations, saved-message search, drafts, quoted replies, attachment
   composing, saved photos/files, and capability-gated reactions. Attachment
-  selections stay in the window; only their text captions persist as drafts.
+  selections and captions persist through the daemon unless storage is disabled.
+  Inline audio/video playback depends on installed GTK media codecs.
   The media browser lists saved history and cannot download missing media.
   The app does not yet expose every messaging operation in the Quickshell reference
   client. Live phone and provider validation remains separate from its private

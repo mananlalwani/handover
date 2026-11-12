@@ -411,6 +411,15 @@ impl Media {
         title.set_hexpand(true);
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        let save = gtk::Button::with_label("Save as…");
+        let current_gallery = gallery.clone();
+        let current_index = index.clone();
+        let parent_weak = parent.downgrade();
+        save.connect_clicked(move |_| {
+            if let Some(parent) = parent_weak.upgrade() {
+                crate::file_actions::save(&parent, &current_gallery[current_index.get()]);
+            }
+        });
         let external = gtk::Button::with_label("Open externally");
         let current = gallery.clone();
         let current_index = index.clone();
@@ -441,6 +450,7 @@ impl Media {
             button.add_css_class("flat");
         }
         bar.append(&title);
+        bar.append(&save);
         bar.append(&external);
         bar.append(&minus);
         bar.append(&plus);
@@ -472,6 +482,7 @@ impl Media {
             let status = status.clone();
             let scroll = scroll.clone();
             let external = external.clone();
+            let save = save.clone();
             let previous = previous.downgrade();
             let next = next.downgrade();
             let window = window.downgrade();
@@ -498,6 +509,7 @@ impl Media {
                     next.set_sensitive(index.get() + 1 < gallery.len());
                 }
                 external.set_sensitive(item.staged_path.is_some());
+                save.set_sensitive(item.staged_path.is_some());
                 if let Some(path) = item.staged_path.as_ref() {
                     this.bind(
                         Target::Canvas(picture.downgrade(), status.downgrade()),

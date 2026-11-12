@@ -1,10 +1,14 @@
 mod attachments;
 mod connection;
 mod contact_photos;
+mod conversation_find;
+mod file_actions;
 mod image_canvas;
 mod media;
 mod media_browser;
+mod message_text;
 mod model;
+mod playback;
 mod setup;
 mod ui;
 
@@ -60,7 +64,8 @@ fn main() -> gtk::glib::ExitCode {
         window.window.present();
         gtk::glib::ExitCode::SUCCESS
     });
-    application.set_accels_for_action("win.search", &["<Control>k", "<Control>f"]);
+    application.set_accels_for_action("win.search", &["<Control>k"]);
+    application.set_accels_for_action("win.find", &["<Control>f"]);
     application.set_accels_for_action("win.send", &["<Control>Return"]);
     application.set_accels_for_action("win.previous", &["<Alt>Up"]);
     application.set_accels_for_action("win.next", &["<Alt>Down"]);

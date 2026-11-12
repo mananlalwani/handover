@@ -184,6 +184,9 @@ accounts cannot access search results, context, or drafts.
 
 | Method | Request fields | Response type |
 | --- | --- | --- |
+| `messages.search_conversation` | `conversation_id`, `query`, `offset` default 0 | `message_search` with `hits`, `has_more`, scoped to that conversation |
+| `messages.attachment_draft` | `conversation_id` | `message_attachment_draft` with `draft` |
+| `messages.save_attachment_draft` | `conversation_id`, optional `file_url`, optional `mime`, `revision` | `message_attachment_draft` with saved `draft` |
 | `messages.search` | `query`, optional `account_id`, `offset` default 0 | `message_search` with `hits`, `has_more` |
 | `messages.media` | `conversation_id`, `offset` default 0, maximum 10000 | `message_media` with `conversation_id`, `messages`, `has_more`, `done` |
 | `messages.previews` | `conversation_ids`, at most 50 | `message_previews` with `messages`, `done` |
@@ -208,6 +211,16 @@ by timestamp and message ID. Deleted and text-only messages are omitted.
 Increment offset by 16 for the next page. Collect chunked frames until `done`
 and use `has_more` from that terminal frame. The archive may change between
 requests. This operation does not contact a provider or download attachment bytes.
+
+An attachment draft contains `conversation_id`, optional normalized `attachment`,
+and an independent `revision`. Save supplies a local file URL; the daemon copies
+the file before acknowledging the revision. Omit `file_url` to remove the saved
+selection. Removal retains a revision record, so stale initial writes cannot
+restore a cleared attachment. Revision conflicts use `draft_conflict`. Loading
+never sends a message, and saving does not imply a send was accepted. Clients
+clear only the captured attachment revision after file-send acceptance. Text and
+attachment revisions are separate, so saving a caption does not overwrite a
+file selection. Workspace draft conversation IDs include attachment-only drafts.
 
 A workspace contains `location`, `draft_conversations`, and `persistent`. A
 location contains `conversation_id` and optional `message_id` in that same

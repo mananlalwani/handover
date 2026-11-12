@@ -47,7 +47,7 @@ def main():
     args = parser.parse_args()
     if args.screenshot and not shutil.which("import"):
         raise SystemExit("ImageMagick import is required for --screenshot")
-    for tool in ("cargo", "dbus-daemon", "Xvfb"):
+    for tool in ("cargo", "dbus-daemon", "Xvfb", "ffmpeg"):
         if not shutil.which(tool):
             raise SystemExit(f"Required tool is missing: {tool}")
     built = subprocess.run(
@@ -83,6 +83,7 @@ def main():
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)
             environment["HANDOVER_MESSAGES_TEST_SCREENSHOT"] = str(args.screenshot.resolve())
         environment["GDK_BACKEND"] = "x11"
+        environment["GSK_RENDERER"] = "cairo"
         environment["GTK_A11Y"] = "none"
         environment["HANDOVER_MESSAGES_TEST_BINARY"] = applications[0]
         for name in ("DATA_HOME", "CONFIG_HOME", "STATE_HOME", "CACHE_HOME"):

@@ -80,6 +80,75 @@ fn make_media_fixtures(root: &std::path::Path) -> (PathBuf, String) {
     (staged_path, glib::base64_encode(&photo).to_string())
 }
 
+fn make_av_fixtures(root: &std::path::Path) -> (PathBuf, PathBuf) {
+    let directory = root.join("fixtures");
+    std::fs::create_dir_all(&directory).expect("create private media fixture directory");
+
+    let audio_path = directory.join("sample.wav");
+    let sample_rate = 8_000u32;
+    let samples = sample_rate * 3;
+    let data_len = samples * 2;
+    let mut wav = Vec::with_capacity((44 + data_len) as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for index in 0..samples {
+        let sample = ((index as f32 * 440.0 * std::f32::consts::TAU / sample_rate as f32).sin()
+            * 400.0) as i16;
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(&audio_path, wav).expect("write short WAV fixture");
+
+    let video_path = directory.join("sample.webm");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=160x120:d=3",
+            "-an",
+            "-c:v",
+            "libvpx",
+            "-y",
+        ])
+        .arg(&video_path)
+        .status()
+        .expect("ffmpeg is required to create the tiny video fixture");
+    assert!(
+        status.success(),
+        "ffmpeg failed to create the video fixture"
+    );
+    (audio_path, video_path)
+}
+
+fn assert_media_fd_stream_opens(path: &std::path::Path) {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let source = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .expect("open local media fixture without following symlinks");
+    let fd_path = format!("/proc/self/fd/{}", source.as_raw_fd());
+    assert!(
+        gtk::gio::File::for_path(fd_path)
+            .read(None::<&gtk::gio::Cancellable>)
+            .is_ok(),
+        "GTK GIO can read the pinned local media descriptor"
+    );
+}
+
 fn conversations() -> Vec<Conversation> {
     let first = fixture().1;
     let mut items = vec![first];
@@ -287,6 +356,7 @@ struct FixtureState {
     requests: Arc<Mutex<Vec<Value>>>,
     sent: Arc<Mutex<Vec<String>>>,
     drafts: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
+    attachment_drafts: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 
 fn fake_server(
@@ -294,6 +364,7 @@ fn fake_server(
     state: FixtureState,
     staged_path: PathBuf,
     photo_base64: String,
+    attachment_staging: PathBuf,
 ) -> thread::JoinHandle<()> {
     let FixtureState {
         fail_send,
@@ -303,6 +374,7 @@ fn fake_server(
         requests,
         sent,
         drafts,
+        attachment_drafts,
     } = state;
     let staged_path = staged_path.to_string_lossy().into_owned();
     let listener = UnixListener::bind(path).unwrap();
@@ -316,7 +388,9 @@ fn fake_server(
             let requests = requests.clone();
             let sent = sent.clone();
             let drafts = drafts.clone();
+            let attachment_drafts = attachment_drafts.clone();
             let staged_path = staged_path.clone();
+            let attachment_staging = attachment_staging.clone();
             let photo_base64 = photo_base64.clone();
             thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -408,6 +482,81 @@ fn fake_server(
                             response("message_draft", json!({"draft":draft})),
                         );
                     }
+                    "messages.attachment_draft" => {
+                        let conversation_id = request["conversation_id"].clone();
+                        let key = conversation_id.to_string();
+                        let draft = attachment_drafts
+                            .lock()
+                            .unwrap()
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(|| json!({"conversation_id":conversation_id,"attachment":null,"revision":0}));
+                        send_json(
+                            &mut stream,
+                            response("message_attachment_draft", json!({"draft":draft})),
+                        );
+                    }
+                    "messages.save_attachment_draft" => {
+                        let conversation_id = request["conversation_id"].clone();
+                        let key = conversation_id.to_string();
+                        let mut saved = attachment_drafts.lock().unwrap();
+                        let current = saved.get(&key).cloned().unwrap_or_else(|| {
+                            json!({"conversation_id":conversation_id,"attachment":null,"revision":0})
+                        });
+                        if current["revision"].as_u64().unwrap_or(0)
+                            != request["revision"].as_u64().unwrap_or(0)
+                        {
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "error",
+                                    json!({"code":"draft_conflict","message":"Attachment draft changed"}),
+                                ),
+                            );
+                            return;
+                        }
+                        let attachment = if let Some(file_url) = request["file_url"].as_str() {
+                            let source = gtk::gio::File::for_uri(file_url)
+                                .path()
+                                .expect("fixture attachment URL is local");
+                            let basename = source.file_name().expect("fixture file has a basename");
+                            let directory = attachment_staging.join(format!(
+                                "{}-{}",
+                                request["conversation_id"]["account_id"]
+                                    .as_str()
+                                    .unwrap_or("account"),
+                                request["conversation_id"]["local_id"]
+                                    .as_str()
+                                    .unwrap_or("conversation")
+                            ));
+                            std::fs::create_dir_all(&directory)
+                                .expect("create private attachment draft staging directory");
+                            let staged = directory.join(basename);
+                            std::fs::copy(&source, &staged)
+                                .expect("copy fixture attachment into private staging");
+                            let metadata = std::fs::metadata(&staged)
+                                .expect("read private staged attachment metadata");
+                            json!({
+                                "local_id":"fixture-attachment-draft",
+                                "mime":request["mime"],
+                                "name":basename.to_string_lossy(),
+                                "size_bytes":metadata.len(),
+                                "staged_path":staged.to_string_lossy()
+                            })
+                        } else {
+                            Value::Null
+                        };
+                        let draft = json!({
+                            "conversation_id":conversation_id,
+                            "attachment":attachment,
+                            "revision":current["revision"].as_u64().unwrap_or(0) + 1
+                        });
+                        saved.insert(key, draft.clone());
+                        send_json(
+                            &mut stream,
+                            response("message_attachment_draft", json!({"draft":draft})),
+                        );
+                    }
                     "messages.history" => send_json(&mut stream, {
                         if request["conversation_id"]["local_id"] == "scroll-history" {
                             let older = request["cursor"].as_str() == Some("older-50");
@@ -448,6 +597,38 @@ fn fake_server(
                             response("message_search", json!({"hits":[hit],"has_more":false})),
                         );
                     }
+                    "messages.search_conversation" => {
+                        let conversation_id = request["conversation_id"].clone();
+                        let offset = request["offset"].as_u64().unwrap_or(0);
+                        let hits = if conversation_id["local_id"] == "thread-1"
+                            && !request["query"].as_str().unwrap_or("").trim().is_empty()
+                        {
+                            match offset {
+                                0 => vec![json!({
+                                    "message_id":{"conversation_id":conversation_id,"local_id":"m1"},
+                                    "snippet":"Hey! Are we still on for Saturday?",
+                                    "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+                                    "sent_at":1794406200000000i64
+                                })],
+                                25 => vec![json!({
+                                    "message_id":{"conversation_id":conversation_id,"local_id":"m3"},
+                                    "snippet":"Perfect, send me the name when you get a chance.",
+                                    "sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},
+                                    "sent_at":1794406800000000i64
+                                })],
+                                _ => Vec::new(),
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        let has_more = conversation_id["local_id"] == "thread-1"
+                            && offset == 0
+                            && !request["query"].as_str().unwrap_or("").trim().is_empty();
+                        send_json(
+                            &mut stream,
+                            response("message_search", json!({"hits":hits,"has_more":has_more})),
+                        );
+                    }
                     "messages.context"
                         if request["message_id"]["conversation_id"]["local_id"]
                             == "scroll-history" =>
@@ -473,7 +654,12 @@ fn fake_server(
                         if message_id["local_id"] == "m0" {
                             thread::sleep(Duration::from_millis(500));
                         }
-                        let message = json!({"id":message_id,"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1,"text":"Found in saved history","attachments":[],"reply_to":null,"reactions":[],"deleted":false});
+                        let body = if message_id["local_id"] == "m1" {
+                            "Hey! Are we still on for Saturday?"
+                        } else {
+                            "Found in saved history"
+                        };
+                        let message = json!({"id":message_id,"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1,"text":body,"attachments":[],"reply_to":null,"reactions":[],"deleted":false});
                         send_json(
                             &mut stream,
                             response(
@@ -562,7 +748,7 @@ fn pump_until(mut condition: impl FnMut() -> bool, description: &str) {
     panic!("timed out waiting for {description}");
 }
 
-fn capture_fixture(window: &impl IsA<gtk::Widget>, path: PathBuf) {
+fn wait_for_layout(window: &impl IsA<gtk::Widget>) {
     let frames = Rc::new(Cell::new(0));
     let rendered = frames.clone();
     window.add_tick_callback(move |_, _| {
@@ -574,6 +760,10 @@ fn capture_fixture(window: &impl IsA<gtk::Widget>, path: PathBuf) {
         }
     });
     pump_until(|| frames.get() >= 3, "fixture layout and paint");
+}
+
+fn capture_fixture(window: &impl IsA<gtk::Widget>, path: PathBuf) {
+    wait_for_layout(window);
     let status = Command::new("import")
         .args(["-window", "root"])
         .arg(path)
@@ -683,9 +873,13 @@ fn native_window_round_trips_real_frontend_actions() {
     let subscription_writer = Arc::new(Mutex::new(None));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let drafts = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let attachment_drafts = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     gtk::init().expect("GTK display");
     adw::init().expect("libadwaita initialization");
     let (staged_path, photo_base64) = make_media_fixtures(&root);
+    let (audio_path, video_path) = make_av_fixtures(&root);
+    assert_media_fd_stream_opens(&audio_path);
+    assert_media_fd_stream_opens(&video_path);
     let _server = fake_server(
         socket,
         FixtureState {
@@ -696,9 +890,11 @@ fn native_window_round_trips_real_frontend_actions() {
             requests: requests.clone(),
             sent: sent.clone(),
             drafts,
+            attachment_drafts,
         },
         staged_path.clone(),
         photo_base64,
+        root.join("fixture-attachment-drafts"),
     );
     assert!(
         root.join("runtime/handover/handoverd.sock").exists(),
@@ -808,6 +1004,248 @@ fn native_window_round_trips_real_frontend_actions() {
     pump_until(
         || ui.model.borrow().messages.len() >= 5,
         "fixture thread with loaded replies and reactions",
+    );
+    let av_message = json!({
+        "id":{"conversation_id":id(),"local_id":"av-fixture"},
+        "sender":{"local_id":"self","display_name":"You","address":null,"is_self":true},
+        "transport":"rcs","sent_at":1794407170000000i64,
+        "text":"Local playback fixtures",
+        "attachments":[
+            {"local_id":"audio-fixture","mime":"audio/wav","name":"sample.wav","size_bytes":null,"staged_path":audio_path},
+            {"local_id":"video-fixture","mime":"video/webm","name":"sample.webm","size_bytes":null,"staged_path":video_path}
+        ],
+        "reply_to":null,"reactions":[],"deleted":false
+    });
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("message_added", json!({"message":av_message})),
+    );
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .messages
+                .iter()
+                .any(|message| message.id.local_id == "av-fixture")
+        },
+        "audio and video attachment event",
+    );
+    for kind in ["audio-attachment", "video-attachment"] {
+        let player_widget =
+            find_widget(ui.thread.upcast_ref(), &|widget| widget.has_css_class(kind)).unwrap();
+        assert!(
+            find_widget(&player_widget, &|widget| widget
+                .downcast_ref::<gtk::MediaControls>()
+                .is_some()
+                || widget.downcast_ref::<gtk::Video>().is_some())
+            .is_none(),
+            "unopened attachments must not create decoder controls"
+        );
+        let start = find_widget(&player_widget, &|widget| {
+            widget.tooltip_text().as_deref() == Some("Load and play this attachment")
+        })
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+        start.emit_clicked();
+        let stream = if kind == "audio-attachment" {
+            find_widget(&player_widget, &|widget| {
+                widget.downcast_ref::<gtk::MediaControls>().is_some()
+            })
+            .unwrap()
+            .downcast::<gtk::MediaControls>()
+            .unwrap()
+            .media_stream()
+            .unwrap()
+        } else {
+            find_widget(&player_widget, &|widget| {
+                widget.downcast_ref::<gtk::Video>().is_some()
+            })
+            .unwrap()
+            .downcast::<gtk::Video>()
+            .unwrap()
+            .media_stream()
+            .unwrap()
+        };
+        assert!(stream.is_muted(), "synthetic fixture playback stays silent");
+        pump_until(
+            || stream.is_prepared() || stream.error().is_some(),
+            "Play prepares the generated media",
+        );
+        assert!(
+            stream.error().is_none(),
+            "fixture media must decode: {:?}",
+            stream.error()
+        );
+        pump_until(
+            || stream.timestamp() > 0 || stream.error().is_some(),
+            "Play advances the media timestamp",
+        );
+        assert!(stream.timestamp() > 0);
+        send_json(
+            subscription_writer.lock().unwrap().as_mut().unwrap(),
+            response(
+                "message_status",
+                json!({"update":{"message_id":{"conversation_id":id(),"local_id":"av-fixture"},"status":"delivered"}}),
+            ),
+        );
+        pump_until(
+            || {
+                ui.model
+                    .borrow()
+                    .message_status(&MessageId::new(id(), "av-fixture"))
+                    == Some("Delivered")
+            },
+            "receipt decoration during playback",
+        );
+        assert!(
+            stream.is_playing(),
+            "receipts must preserve the playing stream"
+        );
+        stream.pause();
+        assert!(!stream.is_playing());
+        stream.play();
+        let row = ancestor_with_class(&player_widget, "message-row").unwrap();
+        row.set_visible(false);
+        pump_until(
+            || {
+                // MediaFile retains cached stream flags after clear; the
+                // removed source establishes that the backend was unloaded.
+                stream
+                    .downcast_ref::<gtk::MediaFile>()
+                    .is_some_and(|file| file.file().is_none())
+            },
+            "unmapping unloads playback",
+        );
+        row.set_visible(true);
+    }
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response(
+            "message_removed",
+            json!({"message_id":{"conversation_id":id(),"local_id":"av-fixture"}}),
+        ),
+    );
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .messages
+                .iter()
+                .all(|message| message.id.local_id != "av-fixture")
+        },
+        "media fixture event removal",
+    );
+    let map_text = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text().contains("The entrance is on Water Street"))
+    })
+    .expect("map message text label");
+    let markup = map_text.downcast_ref::<gtk::Label>().unwrap().label();
+    assert!(
+        markup.contains(
+            "href=\"https://example.test/riverside-market?day=saturday&amp;time=12%3A00\""
+        ),
+        "safe link markup: {markup}"
+    );
+    let map_row = ancestor_with_class(&map_text, "message-row").unwrap();
+    let map_actions = find_widget(&map_row, &|widget| {
+        widget
+            .downcast_ref::<gtk::MenuButton>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Message actions"))
+    })
+    .unwrap()
+    .downcast::<gtk::MenuButton>()
+    .unwrap();
+    map_actions.popup();
+    let map_menu = map_actions.popover().expect("map message actions menu");
+    pump_until(|| map_menu.is_visible(), "map message actions menu opens");
+    let copy_link = find_widget(map_menu.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("Copy link"))
+    })
+    .expect("copy-link action");
+    copy_link
+        .downcast_ref::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    let copied_link = Rc::new(RefCell::new(None));
+    let copied = copied_link.clone();
+    ui.window
+        .clipboard()
+        .read_text_async(None::<&gio::Cancellable>, move |result| {
+            *copied.borrow_mut() = result.ok().flatten().map(|value| value.to_string());
+        });
+    pump_until(
+        || {
+            copied_link.borrow().as_deref()
+                == Some("https://example.test/riverside-market?day=saturday&time=12%3A00")
+        },
+        "copy-link action copies the visible HTTPS URL",
+    );
+
+    ui.find.show();
+    ui.find.entry.set_text("Saturday");
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.search_conversation"
+                    && request["conversation_id"]["local_id"] == "thread-1"
+                    && request["query"] == "Saturday"
+                    && request["offset"] == 0
+            }) && ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "m1"))
+                && ui.model.borrow().messages.iter().any(|message| {
+                    message.id.local_id == "m1"
+                        && message
+                            .text
+                            .as_deref()
+                            .is_some_and(|text| text.contains("Saturday"))
+                })
+                && !ui.restoring.get()
+        },
+        "conversation-scoped find selects the first match",
+    );
+    let highlighted = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text().contains("Hey! Are we still on for Saturday?"))
+    })
+    .expect("first search result label");
+    assert!(
+        highlighted
+            .downcast_ref::<gtk::Label>()
+            .unwrap()
+            .label()
+            .contains("<span"),
+        "search terms are rendered as a literal highlighted span"
+    );
+    ui.find.next.emit_clicked();
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.search_conversation"
+                    && request["conversation_id"]["local_id"] == "thread-1"
+                    && request["offset"] == 25
+            }) && ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "m3"))
+        },
+        "next find page selects the second fixture message",
+    );
+    ui.find.previous.emit_clicked();
+    pump_until(
+        || ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "m1")),
+        "previous find page returns to the first fixture message",
+    );
+    ui.find.close();
+    ui.open(id(), None);
+    pump_until(
+        || {
+            ui.model.borrow().messages.len() == 5
+                && ui.model.borrow().anchor.is_none()
+                && !ui.restoring.get()
+        },
+        "restore newest history after scoped search",
     );
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
@@ -1087,6 +1525,13 @@ fn native_window_round_trips_real_frontend_actions() {
     })
     .unwrap();
     let message_row = ancestor_with_class(&original_text, "message-row").unwrap();
+    // At narrow widths the older row can be outside the scroll viewport.
+    // Bring it into view as a user would before opening its actions.
+    ui.jump_to(&MessageId {
+        conversation_id: id(),
+        local_id: "m1".into(),
+    });
+    wait_for_layout(&ui.window);
     let actions = find_widget(&message_row, &|widget| {
         widget
             .downcast_ref::<gtk::MenuButton>()
@@ -1302,6 +1747,29 @@ fn native_window_round_trips_real_frontend_actions() {
             .any(|request| request["method"] == "messages.send_file"),
         "staging an attachment does not send it"
     );
+    pump_until(
+        || {
+            ui.attachment_state
+                .borrow()
+                .get(&id())
+                .is_some_and(|draft| draft.attachment.is_some() && !ui.unsaved_attachment(&id()))
+        },
+        "attachment draft is acknowledged as saved",
+    );
+    let attachment_state = ui.attachment_state.borrow();
+    let saved_path = attachment_state[&id()]
+        .attachment
+        .as_ref()
+        .and_then(|attachment| attachment.staged_path.as_deref())
+        .expect("saved attachment has a private staged path");
+    assert_ne!(saved_path, staged_path.to_string_lossy());
+    assert!(PathBuf::from(saved_path).starts_with(root.join("fixture-attachment-drafts")));
+    assert_eq!(
+        PathBuf::from(saved_path).file_name(),
+        staged_path.file_name(),
+        "fake daemon copy keeps the fixture basename"
+    );
+    drop(attachment_state);
     let multiple_files =
         gtk::gdk::FileList::from_array(&[staged_file.clone(), staged_file.clone()]);
     let multiple_files_value = gtk::glib::BoxedValue(multiple_files.to_value()).to_value();
@@ -1328,7 +1796,14 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap();
     remove_attachment.emit_clicked();
     pump_until(
-        || !ui.attachment_row.is_visible(),
+        || {
+            !ui.attachment_row.is_visible()
+                && ui
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .is_some_and(|draft| draft.attachment.is_none() && draft.revision > 0)
+        },
         "attachment can be removed from the draft",
     );
     assert_eq!(
@@ -1340,6 +1815,81 @@ fn native_window_round_trips_real_frontend_actions() {
         ui.stage_file(id(), &staged_file),
         "fixture image can be staged again"
     );
+    pump_until(
+        || {
+            ui.attachment_state
+                .borrow()
+                .get(&id())
+                .is_some_and(|draft| draft.attachment.is_some() && !ui.unsaved_attachment(&id()))
+        },
+        "restaged attachment save is acknowledged before sending",
+    );
+    let first_subscription = subscription_writer
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("first window subscription remains connected")
+        .try_clone()
+        .unwrap();
+    std::fs::remove_file(&staged_path).expect("original fixture can be removed after staging");
+    let restored_window = Window::new(&app);
+    restored_window.window.present();
+    pump_until(
+        || restored_window.model.borrow().connected,
+        "second window connects to the same fake daemon",
+    );
+    restored_window.open(id(), None);
+    pump_until(
+        || {
+            restored_window.model.borrow().selected.as_ref() == Some(&id())
+                && restored_window
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .and_then(|draft| draft.attachment.as_ref())
+                    .and_then(|attachment| attachment.staged_path.as_ref())
+                    .is_some_and(|path| {
+                        PathBuf::from(path).starts_with(root.join("fixture-attachment-drafts"))
+                            && PathBuf::from(path).is_file()
+                    })
+        },
+        "new window restores private attachment after original source is removed",
+    );
+    restored_window.window.close();
+    drop(restored_window);
+    pump_until(
+        || subscription_writer.lock().unwrap().is_none(),
+        "second window subscription closes",
+    );
+    *subscription_writer.lock().unwrap() = Some(first_subscription);
+
+    let other = ConversationId::new(MessagingAccountId::new(ACCOUNT), "other");
+    ui.open(other.clone(), None);
+    pump_until(
+        || ui.model.borrow().selected.as_ref() == Some(&other),
+        "switch away from attachment draft",
+    );
+    ui.open(id(), None);
+    pump_until(
+        || {
+            ui.model.borrow().selected.as_ref() == Some(&id())
+                && ui
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .is_some_and(|draft| {
+                        draft.attachment.as_ref().is_some_and(|attachment| {
+                            attachment.staged_path.as_deref().is_some_and(|path| {
+                                PathBuf::from(path)
+                                    .starts_with(root.join("fixture-attachment-drafts"))
+                            })
+                        })
+                    })
+                && ui.attachment_row.is_visible()
+                && ui.send.is_sensitive()
+        },
+        "saved attachment draft restores after switching conversations",
+    );
     ui.send.emit_clicked();
     pump_until(
         || {
@@ -1350,6 +1900,11 @@ fn native_window_round_trips_real_frontend_actions() {
                         && request["conversation_id"]["local_id"] == "thread-1"
                         && request["caption"] == "caption to keep"
                 })
+                && ui
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .is_some_and(|draft| draft.attachment.is_none() && draft.revision > 0)
         },
         "accepted attachment send retains caption in request then clears captured draft",
     );

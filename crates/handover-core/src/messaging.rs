@@ -277,6 +277,15 @@ pub struct Attachment {
     pub staged_path: Option<String>,
 }
 
+/// Local unsent attachment selection for one conversation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessageAttachmentDraft {
+    pub conversation_id: ConversationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+    pub revision: u64,
+}
+
 /// Coarse attachment family derived from the MIME type. Used for display
 /// grouping only; the original MIME string remains on the attachment.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

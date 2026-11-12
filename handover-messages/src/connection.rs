@@ -10,6 +10,8 @@ pub enum Request {
     Select(Option<MessagingLocation>),
     Draft(ConversationId),
     SaveDraft(MessageDraft),
+    AttachmentDraft(ConversationId),
+    SaveAttachmentDraft(ConversationId, Option<String>, Option<String>, u64),
     Search {
         query: String,
         account: Option<MessagingAccountId>,
@@ -21,7 +23,7 @@ pub enum Request {
     React(MessageId, String, bool),
     Previews(Vec<ConversationId>),
     Send(MessageDraft),
-    Attachment(MessageDraft, String),
+    Attachment(MessageDraft, String, u64),
     Read(ConversationId, Option<MessageId>),
 }
 
@@ -29,6 +31,7 @@ pub enum Reply {
     Workspace(MessagingWorkspace),
     Contacts(Vec<Contact>),
     Draft(MessageDraft),
+    AttachmentDraft(MessageAttachmentDraft),
     Search(Vec<MessageSearchHit>, bool),
     History(ConversationId, Vec<Message>, Option<String>),
     Context(ConversationId, Vec<Message>, Option<String>),
@@ -172,6 +175,14 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                 Reply::Workspace(client.select_message_location(location).await?)
             }
             Request::Draft(id) => Reply::Draft(client.message_draft(id).await?),
+            Request::AttachmentDraft(id) => {
+                Reply::AttachmentDraft(client.attachment_draft(id).await?)
+            }
+            Request::SaveAttachmentDraft(id, url, mime, revision) => Reply::AttachmentDraft(
+                client
+                    .save_attachment_draft(id, url, mime, revision)
+                    .await?,
+            ),
             Request::SaveDraft(draft) => Reply::Draft(client.save_message_draft(draft).await?),
             Request::Search {
                 query,
@@ -214,7 +225,7 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                         .await?
                 }
             }),
-            Request::Attachment(draft, url) => {
+            Request::Attachment(draft, url, _) => {
                 let caption = (!draft.text.trim().is_empty()).then_some(draft.text);
                 Reply::Sent(
                     client

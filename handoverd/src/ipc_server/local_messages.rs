@@ -64,6 +64,42 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 )
             }
         }
+        Method::MessagesSearchConversation {
+            conversation_id,
+            query,
+            offset,
+        } => {
+            if handover_core::validate_conversation_id(&conversation_id).is_err()
+                || query.chars().count() > 256
+                || query.split_whitespace().count() > 16
+                || offset > 10_000
+            {
+                error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "Conversation search requires a valid conversation and search within the search bounds",
+                )
+            } else if !known(&conversation_id) {
+                error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+            } else if let Some(archive) = archive {
+                match archive
+                    .search_conversation(query, conversation_id, offset)
+                    .await
+                {
+                    Ok((hits, has_more)) => {
+                        ServerMessage::new(ServerPayload::MessageSearch { hits, has_more })
+                    }
+                    Err(_) => error(
+                        ErrorCode::HistoryUnavailable,
+                        "Saved-message search is unavailable",
+                    ),
+                }
+            } else {
+                error(
+                    ErrorCode::HistoryUnavailable,
+                    "Local history storage is unavailable",
+                )
+            }
+        }
         Method::MessagesMedia {
             conversation_id,
             offset,
@@ -277,6 +313,68 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                         "Draft exceeds its limits or has invalid scope",
                     ),
                     Err(_) => error(ErrorCode::BackendUnavailable, "Draft could not be saved"),
+                }
+            }
+        }
+        Method::MessagesAttachmentDraft { conversation_id } => {
+            if !known(&conversation_id) {
+                error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+            } else {
+                match workspace.attachment_draft(conversation_id).await {
+                    Ok(draft) => {
+                        ServerMessage::new(ServerPayload::MessageAttachmentDraft { draft })
+                    }
+                    Err(_) => error(
+                        ErrorCode::BackendUnavailable,
+                        "Attachment draft is unavailable",
+                    ),
+                }
+            }
+        }
+        Method::MessagesSaveAttachmentDraft {
+            conversation_id,
+            file_url,
+            mime,
+            revision,
+        } => {
+            if !known(&conversation_id) {
+                error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+            } else {
+                match workspace
+                    .save_attachment_draft(conversation_id, file_url, mime, revision)
+                    .await
+                {
+                    Ok(draft) => {
+                        let present = state
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .messaging()
+                            .snapshot_accounts()
+                            .iter()
+                            .any(|account| account.id == draft.conversation_id.account_id);
+                        if present {
+                            ServerMessage::new(ServerPayload::MessageAttachmentDraft { draft })
+                        } else {
+                            let _ = workspace
+                                .remove_account(
+                                    draft.conversation_id.account_id.as_str().to_owned(),
+                                )
+                                .await;
+                            error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+                        }
+                    }
+                    Err(crate::messaging_workspace::WorkspaceError::Conflict) => error(
+                        ErrorCode::DraftConflict,
+                        "Attachment draft changed in another window; reload it before replacing it",
+                    ),
+                    Err(crate::messaging_workspace::WorkspaceError::Invalid(_)) => error(
+                        ErrorCode::InvalidMessagingCommand,
+                        "Attachment draft is invalid",
+                    ),
+                    Err(_) => error(
+                        ErrorCode::BackendUnavailable,
+                        "Attachment draft could not be saved",
+                    ),
                 }
             }
         }

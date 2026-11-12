@@ -1,8 +1,8 @@
 //! Small, private persistence for the messaging view and unsent drafts.
 use handover_core::{
-    ConversationId, MessageDraft, MessageId, MessagingLocation, MessagingWorkspace,
-    validate_conversation_id as validate_core_conversation_id, validate_message_draft,
-    validate_messaging_location,
+    ConversationId, MessageAttachmentDraft, MessageDraft, MessageId, MessagingLocation,
+    MessagingWorkspace, validate_conversation_id as validate_core_conversation_id,
+    validate_message_draft, validate_messaging_location,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
@@ -12,6 +12,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
+
+mod attachment_drafts;
 
 const MAX_DRAFTS: usize = 128;
 const MAX_DRAFT_BYTES: usize = 64 * 1024;
@@ -37,12 +39,14 @@ enum Store {
 struct MemoryState {
     location: Option<MessagingLocation>,
     drafts: BTreeMap<ConversationId, MessageDraft>,
+    attachments: BTreeMap<ConversationId, MessageAttachmentDraft>,
     revision: u64,
 }
 
 pub(crate) struct Workspace {
     store: Mutex<Store>,
     persistent: bool,
+    files: Option<attachment_drafts::FileRoot>,
 }
 
 impl Default for Workspace {
@@ -50,6 +54,7 @@ impl Default for Workspace {
         Self {
             store: Mutex::new(Store::Memory(MemoryState::default())),
             persistent: false,
+            files: attachment_drafts::FileRoot::temporary(),
         }
     }
 }
@@ -96,12 +101,17 @@ impl Workspace {
                 text TEXT NOT NULL, reply_to TEXT, revision INTEGER NOT NULL,
                 PRIMARY KEY(account,thread));
              CREATE TABLE IF NOT EXISTS location(id INTEGER PRIMARY KEY CHECK(id=1),
-                account TEXT NOT NULL, thread TEXT NOT NULL, message TEXT);",
+                account TEXT NOT NULL, thread TEXT NOT NULL, message TEXT);
+             CREATE TABLE IF NOT EXISTS attachment_drafts(account TEXT NOT NULL,thread TEXT NOT NULL,
+                payload TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(account,thread));",
         )?;
-        Ok(Arc::new(Self {
+        let workspace = Arc::new(Self {
             store: Mutex::new(Store::Database(db)),
             persistent: true,
-        }))
+            files: Some(attachment_drafts::FileRoot::persistent(parent)?),
+        });
+        workspace.clean_attachment_files()?;
+        Ok(workspace)
     }
 
     pub(crate) async fn get(self: &Arc<Self>) -> Result<MessagingWorkspace, Error> {
@@ -165,6 +175,9 @@ impl Workspace {
                     state
                         .drafts
                         .retain(|id, _| id.account_id.as_str() != account);
+                    state
+                        .attachments
+                        .retain(|id, _| id.account_id.as_str() != account);
                     if state.location.as_ref().is_some_and(|location| {
                         location.conversation_id.account_id.as_str() == account
                     }) {
@@ -175,11 +188,14 @@ impl Workspace {
                 Store::Database(db) => {
                     let tx = db.transaction()?;
                     tx.execute("DELETE FROM drafts WHERE account=?1", [&account])?;
+                    tx.execute("DELETE FROM attachment_drafts WHERE account=?1", [&account])?;
                     tx.execute("DELETE FROM location WHERE account=?1", [&account])?;
                     tx.commit()?;
                     Ok(())
                 }
-            })
+            })?;
+            this.clean_attachment_files()?;
+            Ok(())
         })
         .await?
     }
@@ -328,7 +344,20 @@ fn read_workspace(store: &mut Store, persistent: bool) -> Result<MessagingWorksp
     let (location, drafts) = match store {
         Store::Memory(state) => (
             state.location.clone(),
-            state.drafts.keys().cloned().collect(),
+            state
+                .drafts
+                .keys()
+                .chain(
+                    state
+                        .attachments
+                        .iter()
+                        .filter(|(_, draft)| draft.attachment.is_some())
+                        .map(|(id, _)| id),
+                )
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
         ),
         Store::Database(db) => {
             let location = db
@@ -352,7 +381,7 @@ fn read_workspace(store: &mut Store, persistent: bool) -> Result<MessagingWorksp
                 )
                 .optional()?;
             let mut stmt =
-                db.prepare("SELECT account,thread FROM drafts ORDER BY account,thread")?;
+                db.prepare("SELECT account,thread FROM drafts UNION SELECT account,thread FROM attachment_drafts WHERE json_extract(payload,'$.attachment') IS NOT NULL ORDER BY account,thread")?;
             let drafts = stmt
                 .query_map([], |row| {
                     Ok(ConversationId::new(

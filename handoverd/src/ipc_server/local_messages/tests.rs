@@ -158,6 +158,40 @@ async fn archived_search_and_context_work_while_account_is_offline() {
 }
 
 #[tokio::test]
+async fn conversation_search_is_scoped_to_one_thread_and_account() {
+    let (_, conversation) = identity();
+    let other_thread = ConversationId::new(conversation.account_id.clone(), "thread-2");
+    let other_account = ConversationId::new(MessagingAccountId::new("other-account"), "thread-1");
+    let dir = tempfile::tempdir().unwrap();
+    let archive =
+        crate::messaging_archive::MessageArchive::open(&dir.path().join("history.sqlite")).unwrap();
+    archive
+        .merge(vec![
+            message(&conversation, "one", 3, "shared phrase"),
+            message(&other_thread, "two", 2, "shared phrase"),
+            message(&other_account, "three", 1, "shared phrase"),
+        ])
+        .await
+        .unwrap();
+    let state = state_with_account(&conversation);
+    state.write().unwrap().message_archive = Some(archive);
+
+    let response = call(
+        &state,
+        Method::MessagesSearchConversation {
+            conversation_id: conversation.clone(),
+            query: "shared".into(),
+            offset: 0,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&response[..], [ServerMessage { payload: ServerPayload::MessageSearch { hits, has_more: false }, .. }]
+        if hits.len() == 1 && hits[0].message_id.conversation_id == conversation)
+    );
+}
+
+#[tokio::test]
 async fn previews_return_newest_saved_message_per_requested_account_and_omit_empty_threads() {
     let account_a = MessagingAccountId::new("fixture-a");
     let account_b = MessagingAccountId::new("fixture-b");

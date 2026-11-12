@@ -337,3 +337,74 @@ The reopened app has a mapped window and the daemon returns the existing
 connected account. The daemon PID and start timestamp stayed unchanged.
 Presence, delivery labels, and the arrival/jump race were tested with isolated
 fixtures. No live send, reaction, phone typing, or delivery flow was exercised.
+
+
+## Media playback, conversation search, exports, and attachment drafts
+
+Audio and video attachments now use native GTK playback controls. Opening a
+conversation does not prepare every decoder. Play loads the selected file, and
+at most four players retain loaded media. Hiding or removing a row pauses and
+unloads its player. Status-label updates reuse the row and stream. Source files
+must be local regular files of at most 50 MiB. The player opens with no-follow
+flags and retains that descriptor while GTK reads its local file URI. Codec
+errors show a fixed fallback and an external-player action; playback never starts
+without the user's Play action.
+
+Message text escapes markup and creates links only for explicit HTTP/HTTPS URLs.
+Copy link actions use the parsed visible URLs. Search highlights use Unicode
+case folding with original byte boundaries and merge overlapping term matches.
+Save as exports a locally staged file through a bounded, no-follow read and an
+atomic destination replacement. Missing or unsupported media is not downloaded.
+Export tests cover destination replacement and rejection of nonregular sources.
+
+Find in conversation uses the new normalized `messages.search_conversation`
+method. Its account and thread scope is enforced in the archive query and checked
+again by the SDK. The global search method is unchanged. Find debounces requests,
+keeps at most one read in flight and one result page, ignores old generations,
+and navigates through pages of 25 saved hits. It shows known result counts with
++ when more remain. Ctrl+F opens Find, Ctrl+K opens global search, and Enter or
+Shift+Enter selects the next or previous match.
+
+Attachment selections use an independent normalized attachment-draft model and
+revision. The daemon copies selected files into private storage before replying.
+Metadata shares the messaging workspace database; file copies live in
+`messaging-draft-files`. There are at most 32 active files, 50 MiB each and
+256 MiB of saved bytes. Replacements temporarily retain both copies. The daemon
+holds a file-store lock and cleans unreferenced staging directories. Files and
+directories use modes 0600 and 0700. Cleared selections retain revision records
+to reject stale initial writes, bounded at 4096 records.
+
+The app waits for attachment load/save replies before enabling Send. Captions
+retain their independent text-draft revisions. Accepted sends clear only the
+captured attachment revision. Failed or uncertain saves keep the selection and
+show retry/reload controls. Conflicting saves require reloading the stored
+selection. Closing waits for saves; a failed save offers keep or discard.
+Disabling persistence uses temporary daemon-session storage and the app reports
+that scope.
+
+Archive tests cover scoped matches across accounts and conversations. Workspace
+tests copy a file, remove the original, reopen the database, and verify the
+saved bytes and revision. They also reject symlink and nonlocal sources, retain
+old selections on failure, check stale writes after removal, and verify account
+cleanup. The private GUI fixture generates audio/video files and exercises the
+new playback, search, links, and draft flows. CI test dependencies now include
+the GTK media backend, codecs, and FFmpeg fixture generator.
+
+Validation passed with 616 workspace tests and 7 ignored tests, strict workspace
+Clippy, formatting, Android debug assembly/lint/unit tests, QML lint, and all 49
+JavaScript tests. The GUI scenario passed at the regular window size and at
+760 pixels in dark mode. It checks real decoding of generated WAV and VP8 WebM
+files, search navigation, link copying, and attachment restoration after deleting
+the original file. The private display uses software rendering. Playback unload
+clears the media source without queuing a redundant pause before backend teardown.
+The native GTK backend retains cached stream flags after clearing its source, so
+the unload assertion checks source removal. Ubuntu CI has not run locally.
+
+Installed matching release app, daemon, CLI, and desktop binaries locally after
+closing the app normally. The daemon and Messages services are active, with one
+mapped app window. Read-only live IPC confirms persistent workspace storage, an
+attachment-draft lookup, and 25 scoped search hits with more available. Every
+returned hit belongs to the requested conversation. Three accounts are present;
+one is connected and authenticated. No real messages, reactions, authentication,
+or phone actions were exercised. Save As filesystem behavior is covered by tests;
+the system file dialog was not exercised against live attachments.
