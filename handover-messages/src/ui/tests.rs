@@ -2012,6 +2012,15 @@ fn native_window_round_trips_real_frontend_actions() {
     })
     .expect("initial reaction aggregate");
     actions.popup();
+    assert!(
+        find_widget(actions_popover.upcast_ref(), &|widget| {
+            widget
+                .downcast_ref::<gtk::Button>()
+                .is_some_and(|button| button.label().as_deref() == Some("Remove my 👍 reaction"))
+        })
+        .is_none(),
+        "someone else's reaction must not be offered as my removable reaction"
+    );
     let reaction_action = find_widget(actions_popover.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
@@ -2036,8 +2045,66 @@ fn native_window_round_trips_real_frontend_actions() {
         "👍 1",
         "accepted reaction does not optimistically change the aggregate"
     );
-    actions.popup();
-    let remove_reaction = find_widget(actions_popover.upcast_ref(), &|widget| {
+    pump_until(
+        || !actions_popover.is_visible() && !actions.is_active(),
+        "reaction picker finishes closing",
+    );
+    let mut own_conversation = ui
+        .model
+        .borrow()
+        .conversations
+        .iter()
+        .find(|conversation| conversation.id == id())
+        .unwrap()
+        .clone();
+    own_conversation.participants.push(Participant {
+        local_id: "self".into(),
+        display_name: None,
+        address: None,
+        is_self: true,
+    });
+    ui.event(Event::State(Box::new(ServerPayload::ConversationUpdated {
+        conversation: own_conversation,
+    })));
+    let mut owned_message = ui
+        .model
+        .borrow()
+        .messages
+        .iter()
+        .find(|message| message.id == MessageId::new(id(), "m1"))
+        .unwrap()
+        .clone();
+    owned_message.reactions[0]
+        .participant_ids
+        .push("self".into());
+    owned_message.reactions[0].count = 2;
+    ui.event(Event::State(Box::new(ServerPayload::MessageUpdated {
+        message: owned_message.clone(),
+    })));
+    let original_text = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "Hey! Are we still on for Saturday?")
+    })
+    .unwrap();
+    let row = ancestor_with_class(&original_text, "message-row").unwrap();
+    let own_actions = find_widget(&row, &|widget| {
+        widget
+            .downcast_ref::<gtk::MenuButton>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Message actions"))
+    })
+    .unwrap()
+    .downcast::<gtk::MenuButton>()
+    .unwrap();
+    own_actions.popup();
+    let own_popover = own_actions.popover().unwrap();
+    let owned_reaction = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "👍 2")
+    })
+    .unwrap();
+    let remove_reaction = find_widget(own_popover.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
             .is_some_and(|button| button.label().as_deref() == Some("Remove my 👍 reaction"))
@@ -2057,9 +2124,34 @@ fn native_window_round_trips_real_frontend_actions() {
         "reaction removal request uses normalized message id",
     );
     assert_eq!(
-        reaction_before.downcast_ref::<gtk::Label>().unwrap().text(),
-        "👍 1",
+        owned_reaction.downcast_ref::<gtk::Label>().unwrap().text(),
+        "👍 2",
         "accepted removal does not optimistically change the aggregate"
+    );
+
+    pump_until(
+        || {
+            !ui.pending
+                .borrow()
+                .values()
+                .any(|request| matches!(request, Request::React(..)))
+        },
+        "reaction removal command finishes",
+    );
+    owned_message.reactions[0]
+        .participant_ids
+        .retain(|id| id != "self");
+    owned_message.reactions[0].count = 1;
+    ui.event(Event::State(Box::new(ServerPayload::MessageUpdated {
+        message: owned_message,
+    })));
+    remove_reaction.emit_clicked();
+    assert!(
+        !ui.pending
+            .borrow()
+            .values()
+            .any(|request| matches!(request, Request::React(_, _, true))),
+        "a stale remove button must not remove a reaction after ownership changes"
     );
 
     ui.media_button.emit_clicked();
@@ -2692,13 +2784,16 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     pump_until(
         || {
-            ui.model
-                .borrow()
-                .messages
-                .iter()
-                .any(|message| message.id.local_id == "live-arrival")
+            ui.model.borrow().messages.iter().any(|message| {
+                message.id.local_id == "live-arrival"
+                    && message.text.as_deref() == Some("The same incoming message was updated.")
+            })
         },
         "duplicate message update applied",
+    );
+    pump_until(
+        || !ui.restoring.get(),
+        "viewport restored after duplicate message update",
     );
     assert_eq!(ui.latest.label().as_deref(), Some("1 new message ↓"));
     ui.latest.emit_clicked();

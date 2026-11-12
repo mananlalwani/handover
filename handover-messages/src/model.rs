@@ -174,6 +174,29 @@ impl Model {
             format!("{name} and {} others are typing…", peers.len() - 1)
         })
     }
+    pub fn has_own_reaction(&self, id: &MessageId, emoji: &str) -> bool {
+        let Some(conversation) = self
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == id.conversation_id)
+        else {
+            return false;
+        };
+        self.messages
+            .iter()
+            .find(|message| &message.id == id && !message.deleted)
+            .is_some_and(|message| {
+                message.reactions.iter().any(|reaction| {
+                    reaction.emoji == emoji
+                        && reaction.participant_ids.iter().any(|actor| {
+                            conversation.participants.iter().any(|participant| {
+                                participant.is_self && &participant.local_id == actor
+                            })
+                        })
+                })
+            })
+    }
+
     pub fn message_status(&self, id: &MessageId) -> Option<&'static str> {
         if let Some(operation) = self
             .outgoing

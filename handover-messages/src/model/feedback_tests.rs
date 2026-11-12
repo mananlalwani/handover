@@ -328,3 +328,58 @@ fn unread_dots_follow_reported_state_and_preserve_unknown() {
     model.reset_read(vec![]);
     assert_eq!(model.unread(&a), None);
 }
+
+#[test]
+fn reaction_ownership_requires_a_known_self_actor_in_the_same_conversation() {
+    let a = ConversationId::new(MessagingAccountId::new("a"), "thread");
+    let b = ConversationId::new(MessagingAccountId::new("b"), "thread");
+    let mut incoming = message(&a, "message", participant("peer", None, false), 1);
+    incoming.reactions = vec![
+        Reaction {
+            emoji: "👍".into(),
+            participant_ids: vec!["peer".into()],
+            count: 1,
+        },
+        Reaction {
+            emoji: "❤️".into(),
+            participant_ids: vec!["peer".into(), "self-a".into()],
+            count: 2,
+        },
+        Reaction {
+            emoji: "😂".into(),
+            participant_ids: vec!["unknown".into()],
+            count: 1,
+        },
+        Reaction {
+            emoji: "😮".into(),
+            participant_ids: vec![],
+            count: 1,
+        },
+    ];
+    let mut foreign = incoming.clone();
+    foreign.id.conversation_id = b.clone();
+    let mut model = Model {
+        conversations: vec![
+            conversation(
+                "a",
+                "thread",
+                vec![
+                    participant("self-a", None, true),
+                    participant("peer", None, false),
+                ],
+            ),
+            conversation("b", "thread", vec![participant("self-b", None, true)]),
+        ],
+        messages: vec![incoming.clone(), foreign.clone()],
+        ..Default::default()
+    };
+    assert!(!model.has_own_reaction(&incoming.id, "👍"));
+    assert!(model.has_own_reaction(&incoming.id, "❤️"));
+    assert!(!model.has_own_reaction(&incoming.id, "😂"));
+    assert!(!model.has_own_reaction(&incoming.id, "😮"));
+    assert!(!model.has_own_reaction(&foreign.id, "❤️"));
+    model.messages[0].deleted = true;
+    assert!(!model.has_own_reaction(&incoming.id, "❤️"));
+    model.messages.clear();
+    assert!(!model.has_own_reaction(&incoming.id, "❤️"));
+}

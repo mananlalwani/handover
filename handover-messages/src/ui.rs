@@ -1836,7 +1836,16 @@ impl Window {
                 reactions.append(&button);
             }
             content.append(&reactions);
-            for reaction in message.reactions.iter().take(32) {
+            for reaction in message
+                .reactions
+                .iter()
+                .filter(|reaction| {
+                    self.model
+                        .borrow()
+                        .has_own_reaction(&message.id, &reaction.emoji)
+                })
+                .take(32)
+            {
                 let button =
                     gtk::Button::with_label(&format!("Remove my {} reaction", reaction.emoji));
                 button.add_css_class("flat");
@@ -1870,6 +1879,7 @@ impl Window {
         let model = self.model.borrow();
         if model.selected.as_ref() != Some(&id.conversation_id)
             || !model.can(MessagingCapability::Reactions)
+            || (remove && !model.has_own_reaction(id, emoji))
             || self
                 .pending
                 .borrow()

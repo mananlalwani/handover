@@ -83,6 +83,13 @@ confirms no unread messages. Reading older history or leaving the app unfocused
 does not mark the newest messages read. Returning focus or reconnecting allows a
 new request; command acceptance alone does not change the dot.
 
+Reaction removal appears only when reported reaction participants include a
+participant identified as self in that conversation. Other people's reactions
+and reactions with unknown ownership remain visible without a removal action.
+The app rechecks current ownership when a removal is clicked, so an outdated
+menu cannot submit it after the reported reaction changes. Acceptance alone
+does not change the displayed reaction count.
+
 Outgoing bubbles show status only when the daemon identifies that exact message.
 Accepted means command acceptance; Sent, Delivered, and Read require reported
 evidence. Historical messages without evidence have no status label. Local read
