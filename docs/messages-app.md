@@ -62,7 +62,8 @@ draft before overwriting it. Closing with unsaved edits offers a choice to keep
 the window open or discard those edits. See [message storage](message-storage.md)
 for file locations, limits, and how to disable persistence.
 
-Incoming typing appears as a blue **Typing…** label beneath the contact name in
+Incoming typing appears above the message box with the participant name, and as
+a blue **Typing…** label beneath the contact name in
 the conversation header, matching QML's placement near the title. The chat-list
 preview also shows **Typing…**, including for conversations that are not open.
 Tooltips and screen-reader labels identify the reported participants. Typing
@@ -169,6 +170,14 @@ lists installed Chromium browsers and displays the setup component's progress.
 Authentication stays in the browser and existing helper. The phone verification
 step still needs the phone; saving credentials does not prove that the helper
 has connected. Existing accounts need no new setup for this app.
+
+After opening Google Messages in a browser, close that browser tab, select a
+conversation in Handover, and choose **Reconnect** from the main menu at the top
+left. This requests a sync for that conversation's account using its saved
+pairing. With no conversation selected, it uses the account filter, or all known
+accounts if the filter is All accounts. Acceptance does not confirm a connection;
+the account indicator updates when the daemon reports its state. Reconnect does
+not unpair the phone or retry outgoing messages.
 
 ## Desktop alerts
 

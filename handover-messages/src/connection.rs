@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 pub enum Request {
     Workspace,
     Contacts,
+    Sync(MessagingAccountId),
     Select(Option<MessagingLocation>),
     Draft(ConversationId),
     SaveDraft(MessageDraft),
@@ -171,6 +172,10 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
         Ok::<_, IpcError>(match request {
             Request::Workspace => Reply::Workspace(client.messaging_workspace().await?),
             Request::Contacts => Reply::Contacts(client.contacts().await?),
+            Request::Sync(account) => {
+                client.messaging_sync(account).await?;
+                Reply::Accepted
+            }
             Request::Select(location) => {
                 Reply::Workspace(client.select_message_location(location).await?)
             }

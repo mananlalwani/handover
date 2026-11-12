@@ -436,6 +436,13 @@ fn fake_server(
                         }
                         subscription_writer.lock().unwrap().take();
                     }
+                    "messages.sync" => send_json(
+                        &mut stream,
+                        response(
+                            "account_accepted",
+                            json!({"account_id":request["account_id"]}),
+                        ),
+                    ),
                     "messages.workspace" | "messages.select" => send_json(
                         &mut stream,
                         response(
@@ -1268,6 +1275,42 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "restore newest history after scoped search",
     );
+    let (mut reconnect_account, _) = fixture();
+    reconnect_account.connected = false;
+    ui.event(Event::State(Box::new(ServerPayload::AccountUpdated {
+        account: reconnect_account.clone(),
+    })));
+    let reconnect_sidebar_row = ui.list.selected_row();
+    gio::prelude::ActionGroupExt::activate_action(&ui.window, "reconnect", None);
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.sync" && request["account_id"] == ACCOUNT
+            }) && ui
+                .pending
+                .borrow()
+                .values()
+                .all(|request| !matches!(request, Request::Sync(_)))
+        },
+        "Reconnect resumes the selected account through the existing sync contract",
+    );
+    assert_eq!(ui.list.selected_row(), reconnect_sidebar_row);
+    assert_eq!(ui.model.borrow().notice, "Reconnect requested.");
+
+    assert!(
+        !ui.model
+            .borrow()
+            .accounts
+            .iter()
+            .find(|account| account.id.as_str() == ACCOUNT)
+            .unwrap()
+            .connected,
+        "accepting reconnect must not invent a successful connection"
+    );
+    reconnect_account.connected = true;
+    ui.event(Event::State(Box::new(ServerPayload::AccountUpdated {
+        account: reconnect_account,
+    })));
     let selected_sidebar_row = ui.list.selected_row();
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
@@ -1298,6 +1341,8 @@ fn native_window_round_trips_real_frontend_actions() {
         "typing must be visible in the conversation header, as in QML"
     );
     assert!(!ui.subtitle.is_visible());
+    assert_eq!(ui.composer_typing.text(), "Alex Example is typing…");
+    assert!(ancestor_with_class(ui.composer_typing.upcast_ref(), "composer-area").is_some());
     assert_eq!(ui.list.selected_row(), selected_sidebar_row);
     let sidebar_typing = ui
         .sidebar_previews
@@ -1312,6 +1357,13 @@ fn native_window_round_trips_real_frontend_actions() {
     assert!(sidebar_typing.has_css_class("typing-preview"));
     wait_for_layout(&ui.window);
     assert!(ui.typing_indicator.is_mapped());
+    assert!(ui.composer_typing.is_mapped());
+    let typing_bounds = ui.composer_typing.compute_bounds(&ui.window).unwrap();
+    let compose_bounds = ui.compose.compute_bounds(&ui.window).unwrap();
+    assert!(
+        typing_bounds.y() + typing_bounds.height() <= compose_bounds.y(),
+        "participant typing appears directly above the message box"
+    );
     assert!(
         !ui.typing_indicator.layout().is_ellipsized(),
         "Typing stays readable in narrow windows"
@@ -1348,6 +1400,7 @@ fn native_window_round_trips_real_frontend_actions() {
         "typing indicator clears after empty participant update",
     );
     assert!(!ui.typing_indicator.is_visible());
+    assert!(ui.composer_typing.text().is_empty());
     assert!(ui.subtitle.is_visible());
     assert!(!sidebar_typing.has_css_class("typing-preview"));
     assert_eq!(ui.list.selected_row(), selected_sidebar_row);

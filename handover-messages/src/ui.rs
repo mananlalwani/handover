@@ -81,6 +81,7 @@ pub struct Window {
     latest: gtk::Button,
     status: gtk::Label,
     typing_indicator: gtk::Label,
+    composer_typing: gtk::Label,
     draft_status: gtk::Label,
     reply: gtk::Label,
     reload: gtk::Button,
@@ -146,6 +147,7 @@ impl Window {
             Some("Connect Google Messages…"),
             Some("win.connect-account"),
         );
+        menu.append(Some("Reconnect"), Some("win.reconnect"));
         menu.append(Some("About Handover Messages"), Some("win.about"));
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -331,6 +333,15 @@ impl Window {
         body.append(&viewport);
         let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
         composer_area.add_css_class("composer-area");
+        let composer_typing = gtk::Label::new(None);
+        composer_typing.add_css_class("typing-indicator");
+        composer_typing.add_css_class("composer-typing-indicator");
+        composer_typing.set_xalign(0.0);
+        composer_typing.set_margin_start(40);
+        composer_typing.set_single_line_mode(true);
+        composer_typing.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        composer_typing.set_height_request(18);
+        composer_area.append(&composer_typing);
         let status = gtk::Label::new(None);
         status.set_xalign(0.5);
         status.set_wrap(true);
@@ -475,6 +486,7 @@ impl Window {
             latest,
             status,
             typing_indicator,
+            composer_typing,
             draft_status,
             reply,
             reload,
@@ -769,6 +781,7 @@ impl Window {
             ("connect-account", 4),
             ("about", 5),
             ("find", 6),
+            ("reconnect", 7),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(&this);
@@ -783,6 +796,7 @@ impl Window {
                         3 => this.navigate(1),
                         4 => this.connect_account(),
                         6 => this.find.show(),
+                        7 => this.reconnect(),
                         _ => this.about(),
                     }
                 }
@@ -792,6 +806,38 @@ impl Window {
         this.render_sidebar();
         this.render_status();
         this
+    }
+
+    fn reconnect(&self) {
+        let accounts = {
+            let model = self.model.borrow();
+            if !model.connected {
+                return;
+            }
+            let selected = model
+                .selected
+                .as_ref()
+                .map(|id| id.account_id.clone())
+                .or_else(|| self.filter.borrow().clone());
+            model
+                .accounts
+                .iter()
+                .filter(|account| selected.as_ref().is_none_or(|id| id == &account.id))
+                .map(|account| account.id.clone())
+                .collect::<Vec<_>>()
+        };
+        for account in accounts {
+            if !self
+                .pending
+                .borrow()
+                .values()
+                .any(|request| matches!(request, Request::Sync(id) if id == &account))
+                && !self.request(Request::Sync(account))
+            {
+                break;
+            }
+        }
+        self.render_status();
     }
 
     fn request(&self, request: Request) -> bool {
@@ -1279,7 +1325,11 @@ impl Window {
                     self.render_sidebar();
                 }
             }
-            Reply::Accepted => {}
+            Reply::Accepted => {
+                if matches!(request, Request::Sync(_)) {
+                    self.model.borrow_mut().notice = "Reconnect requested.".into();
+                }
+            }
         }
     }
 
@@ -2114,6 +2164,9 @@ impl Window {
             .set_label(if typing.is_some() { "Typing…" } else { "" });
         self.typing_indicator.set_visible(typing.is_some());
         self.typing_indicator.set_tooltip_text(typing.as_deref());
+        self.composer_typing
+            .set_label(typing.as_deref().unwrap_or(""));
+        self.composer_typing.set_tooltip_text(typing.as_deref());
         self.subtitle.set_visible(typing.is_none());
         self.typing_indicator
             .update_property(&[gtk::accessible::Property::Label(
@@ -2140,6 +2193,21 @@ impl Window {
     fn render_status(&self) {
         self.render_typing();
         let model = self.model.borrow();
+        if let Some(action) = self
+            .window
+            .lookup_action("reconnect")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(
+                model.connected
+                    && !model.accounts.is_empty()
+                    && !self
+                        .pending
+                        .borrow()
+                        .values()
+                        .any(|request| matches!(request, Request::Sync(_))),
+            );
+        }
         self.banner.set_revealed(!model.connected);
         self.stack
             .set_visible_child_name(if model.selected.is_some() {
