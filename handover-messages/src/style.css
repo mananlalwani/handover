@@ -79,16 +79,14 @@
 .quoted-message { background: alpha(currentColor, 0.07); border: none; border-left: 3px solid alpha(currentColor, 0.4); border-radius: 7px; padding: 7px 10px; font-size: 12px; }
 .quote-target .message-bubble { outline: 2px solid @accent_color; outline-offset: 3px; }
 .reaction-strip { margin-top: 5px; }
-.reaction-chip { padding: 0; background: transparent; }
-.reaction-chip > button { min-height: 20px; min-width: 0; border: 1px solid alpha(@window_fg_color, 0.09); border-radius: 12px; padding: 1px 7px; background: mix(@view_bg_color, @window_bg_color, 0.65); color: @window_fg_color; box-shadow: none; font-size: 12px; font-weight: 400; }
-.reaction-chip > button:hover { background: mix(@view_bg_color, @window_fg_color, 0.09); }
-.reaction-chip > button:checked { background: alpha(@accent_bg_color, 0.13); border-color: alpha(@accent_bg_color, 0.3); }
-.reaction-chip > button:focus-visible { outline: 2px solid alpha(@accent_bg_color, 0.65); outline-offset: 2px; }
-.reaction-people { background: transparent; border: none; box-shadow: none; font-family: "Inter", "Noto Sans", sans-serif; font-size: 13px; }
-.reaction-people > contents { padding: 5px; border-radius: 12px; border: 1px solid alpha(@window_fg_color, 0.12); background: @popover_bg_color; color: @popover_fg_color; box-shadow: 0 4px 16px alpha(black, 0.16); }
-.reaction-person-row { min-width: 200px; padding: 7px 9px; }
-.reaction-person { font-weight: 400; }
-.reaction-person-emoji { margin-left: 12px; font-size: 18px; }
+.reaction-chip { min-height: 20px; min-width: 0; border: 1px solid alpha(@window_fg_color, 0.09); border-radius: 12px; padding: 1px 7px; background: mix(@view_bg_color, @window_bg_color, 0.65); color: @window_fg_color; box-shadow: none; font-size: 12px; font-weight: 400; }
+.reaction-chip:hover { background: mix(@view_bg_color, @window_fg_color, 0.09); }
+.reaction-chip:checked { background: alpha(@accent_bg_color, 0.13); border-color: alpha(@accent_bg_color, 0.3); }
+.reaction-chip:focus-visible { outline: 2px solid alpha(@accent_bg_color, 0.65); outline-offset: 2px; }
+.reaction-people > scrolledwindow { margin-top: 4px; border-left: 2px solid alpha(@accent_bg_color, 0.3); padding: 2px 0 2px 4px; }
+.reaction-person-row { padding: 4px 6px; }
+.reaction-person { font-size: 12px; font-weight: 400; }
+.reaction-person-emoji { margin-left: 8px; font-size: 15px; }
 .attachment-preview { padding: 10px; border-radius: 12px; background: alpha(currentColor, 0.04); }
 .attachment-preview .image-attachment { min-width: 112px; min-height: 84px; }
 .handover-media-browser { background: @window_bg_color; }

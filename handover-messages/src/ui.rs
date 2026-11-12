@@ -1851,18 +1851,13 @@ impl Window {
         model: &Model,
         message: &Message,
         reaction: &Reaction,
-    ) -> gtk::MenuButton {
-        let button = gtk::MenuButton::builder()
+    ) -> (gtk::ToggleButton, gtk::ScrolledWindow) {
+        let button = gtk::ToggleButton::builder()
             .label(format!("{} {}", reaction.emoji, reaction.count))
             .tooltip_text("Reactions")
             .build();
         button.add_css_class("flat");
         button.add_css_class("reaction-chip");
-        button.set_direction(gtk::ArrowType::None);
-        let popover = gtk::Popover::new();
-        popover.add_css_class("reaction-people");
-        popover.set_has_arrow(false);
-        popover.set_position(gtk::PositionType::Top);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let conversation = model
             .conversations
@@ -1892,7 +1887,7 @@ impl Window {
                 .unwrap_or_else(|| "Unknown participant".into());
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             row.add_css_class("reaction-person-row");
-            let avatar = adw::Avatar::new(28, Some(&name), true);
+            let avatar = adw::Avatar::new(24, Some(&name), true);
             if let Some(participant) = participant
                 && let Some(photo) = self.photos.borrow().participant(participant)
             {
@@ -1902,7 +1897,7 @@ impl Window {
             let label = gtk::Label::new(Some(&name));
             label.set_xalign(0.0);
             label.set_hexpand(true);
-            label.set_max_width_chars(30);
+            label.set_max_width_chars(24);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             label.add_css_class("reaction-person");
             row.append(&label);
@@ -1929,11 +1924,7 @@ impl Window {
             .propagate_natural_width(true)
             .child(&content)
             .build();
-        popover.set_child(Some(&scroll));
-        let media = self.media.clone();
-        popover.connect_map(move |popover| media.schedule(popover));
-        button.set_popover(Some(&popover));
-        button
+        (button, scroll)
     }
 
     fn message_actions(self: &Rc<Self>, message: &Message) -> gtk::MenuButton {
@@ -3297,10 +3288,50 @@ impl Window {
             if !message.reactions.is_empty() && !message.deleted {
                 let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
                 reactions.add_css_class("reaction-strip");
-                for reaction in message.reactions.iter().take(32) {
-                    reactions.append(&self.reaction_details(&model, message, reaction));
+                let align = if message.sender.is_self {
+                    gtk::Align::End
+                } else {
+                    gtk::Align::Start
+                };
+                reactions.set_halign(align);
+                let details = gtk::Revealer::builder()
+                    .transition_type(gtk::RevealerTransitionType::SlideDown)
+                    .transition_duration(140)
+                    .halign(align)
+                    .build();
+                details.add_css_class("reaction-people");
+                let items: Vec<_> = message
+                    .reactions
+                    .iter()
+                    .take(32)
+                    .map(|reaction| self.reaction_details(&model, message, reaction))
+                    .collect();
+                let buttons: Vec<_> = items.iter().map(|(button, _)| button.downgrade()).collect();
+                for (button, content) in items {
+                    let others = buttons.clone();
+                    let panel = details.downgrade();
+                    let media = self.media.clone();
+                    button.connect_toggled(move |button| {
+                        let Some(panel) = panel.upgrade() else {
+                            return;
+                        };
+                        if button.is_active() {
+                            for other in others.iter().filter_map(glib::WeakRef::upgrade) {
+                                if other != *button {
+                                    other.set_active(false);
+                                }
+                            }
+                            panel.set_child(Some(&content));
+                            panel.set_reveal_child(true);
+                            media.schedule(&panel);
+                        } else if panel.child().as_ref() == Some(content.upcast_ref()) {
+                            panel.set_reveal_child(false);
+                        }
+                    });
+                    reactions.append(&button);
                 }
                 column.append(&reactions);
+                column.append(&details);
             }
             wrapper.append(&row);
             self.thread.insert_child_after(&wrapper, preceding.as_ref());

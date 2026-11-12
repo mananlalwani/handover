@@ -2116,13 +2116,17 @@ fn native_window_round_trips_real_frontend_actions() {
     .expect("initial reaction aggregate");
     let reaction_chip = ancestor_with_class(&reaction_before, "reaction-chip")
         .unwrap()
-        .downcast::<gtk::MenuButton>()
+        .downcast::<gtk::ToggleButton>()
         .unwrap();
-    reaction_chip.popup();
-    let people = reaction_chip.popover().unwrap();
+    reaction_chip.set_active(true);
+    let column = reaction_chip.parent().unwrap().parent().unwrap();
+    let people = find_widget(&column, &|widget| widget.has_css_class("reaction-people"))
+        .unwrap()
+        .downcast::<gtk::Revealer>()
+        .unwrap();
     pump_until(
         || {
-            people.is_visible()
+            people.is_child_revealed()
                 && find_widget(people.upcast_ref(), &|widget| {
                     widget.downcast_ref::<gtk::Label>().is_some_and(|label| {
                         label.has_css_class("reaction-person") && label.text() == "Alex Example"
@@ -2130,7 +2134,7 @@ fn native_window_round_trips_real_frontend_actions() {
                 })
                 .is_some()
         },
-        "reaction popover shows contact name",
+        "inline reaction details shows contact name",
     );
     pump_until(
         || {
@@ -2141,7 +2145,11 @@ fn native_window_round_trips_real_frontend_actions() {
             })
             .is_some()
         },
-        "reaction popover uses synced contact photo",
+        "inline reaction details uses synced contact photo",
+    );
+    pump_until(
+        || people.is_child_revealed(),
+        "inline reaction details finishes expanding",
     );
     if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
         let path = PathBuf::from(path);
@@ -2151,10 +2159,10 @@ fn native_window_round_trips_real_frontend_actions() {
         );
         capture_fixture(&ui.window, path.with_file_name(name));
     }
-    reaction_chip.popdown();
+    reaction_chip.set_active(false);
     pump_until(
-        || !people.is_visible() && !reaction_chip.is_active(),
-        "reaction people popover closes",
+        || !people.reveals_child() && !reaction_chip.is_active(),
+        "inline reaction details collapse",
     );
     actions.popup();
     assert!(
@@ -2243,10 +2251,13 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap();
     let mixed_chip = find_widget(&row, &|widget| widget.has_css_class("reaction-chip"))
         .unwrap()
-        .downcast::<gtk::MenuButton>()
+        .downcast::<gtk::ToggleButton>()
         .unwrap();
-    mixed_chip.popup();
-    let mixed_people = mixed_chip.popover().unwrap();
+    mixed_chip.set_active(true);
+    let mixed_people = find_widget(&row, &|widget| widget.has_css_class("reaction-people"))
+        .unwrap()
+        .downcast::<gtk::Revealer>()
+        .unwrap();
     pump_until(
         || {
             find_widget(mixed_people.upcast_ref(), &|widget| {
@@ -2256,12 +2267,12 @@ fn native_window_round_trips_real_frontend_actions() {
             })
             .is_some()
         },
-        "reaction popover identifies a confirmed self actor",
+        "inline reaction details identifies a confirmed self actor",
     );
-    mixed_chip.popdown();
+    mixed_chip.set_active(false);
     pump_until(
-        || !mixed_people.is_visible() && !mixed_chip.is_active(),
-        "mixed reaction popover closes",
+        || !mixed_people.reveals_child() && !mixed_chip.is_active(),
+        "mixed inline reaction details closes",
     );
     own_actions.popup();
     let own_popover = own_actions.popover().unwrap();
