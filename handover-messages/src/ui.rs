@@ -2075,7 +2075,32 @@ impl Window {
                 });
                 reactions.append(&button);
             }
+            let more = gtk::MenuButton::builder()
+                .label("More reactions…")
+                .tooltip_text("More reactions")
+                .build();
+            more.add_css_class("flat");
+            let weak = Rc::downgrade(self);
+            let id = message.id.clone();
+            let popup = popover.downgrade();
+            more.set_create_popup_func(move |more| {
+                let chooser = gtk::EmojiChooser::new();
+                let weak = weak.clone();
+                let id = id.clone();
+                let popup = popup.clone();
+                chooser.connect_emoji_picked(move |chooser, emoji| {
+                    if let Some(this) = weak.upgrade() {
+                        this.react(&id, emoji, false);
+                    }
+                    chooser.popdown();
+                    if let Some(popup) = popup.upgrade() {
+                        popup.popdown();
+                    }
+                });
+                more.set_popover(Some(&chooser));
+            });
             content.append(&reactions);
+            content.append(&more);
             for reaction in message
                 .reactions
                 .iter()

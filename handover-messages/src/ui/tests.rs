@@ -2195,6 +2195,41 @@ fn native_window_round_trips_real_frontend_actions() {
         .is_none(),
         "someone else's reaction must not be offered as my removable reaction"
     );
+    let more_reactions = find_widget(actions_popover.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::MenuButton>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("More reactions"))
+    })
+    .expect("full emoji reaction picker")
+    .downcast::<gtk::MenuButton>()
+    .unwrap();
+    more_reactions.popup();
+    let chooser = more_reactions
+        .popover()
+        .unwrap()
+        .downcast::<gtk::EmojiChooser>()
+        .expect("native emoji chooser with search and categories");
+    pump_until(|| chooser.is_visible(), "full emoji picker opens");
+    for emoji in ["🦊", "👩🏽‍💻", "🇺🇸"] {
+        actions.popup();
+        more_reactions.popup();
+        chooser.emit_by_name::<()>("emoji-picked", &[&emoji]);
+        pump_until(
+            || {
+                requests.lock().unwrap().iter().any(|request| {
+                    request["method"] == "messages.react"
+                        && request["message_id"]["local_id"] == "m1"
+                        && request["emoji"] == emoji
+                })
+            },
+            "full emoji selection preserves Unicode in the reaction request",
+        );
+        pump_until(
+            || !actions_popover.is_visible() && !chooser.is_visible(),
+            "emoji selection closes both popovers",
+        );
+    }
+    actions.popup();
     let reaction_action = find_widget(actions_popover.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
