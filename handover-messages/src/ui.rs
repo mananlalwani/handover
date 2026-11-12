@@ -1854,21 +1854,16 @@ impl Window {
     ) -> gtk::MenuButton {
         let button = gtk::MenuButton::builder()
             .label(format!("{} {}", reaction.emoji, reaction.count))
-            .tooltip_text("See who reacted")
+            .tooltip_text("Reactions")
             .build();
         button.add_css_class("flat");
         button.add_css_class("reaction-chip");
         button.set_direction(gtk::ArrowType::None);
         let popover = gtk::Popover::new();
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        content.set_margin_top(12);
-        content.set_margin_bottom(12);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
-        let heading = gtk::Label::new(Some(&format!("{} reactions", reaction.emoji)));
-        heading.add_css_class("heading");
-        heading.set_xalign(0.0);
-        content.append(&heading);
+        popover.add_css_class("reaction-people");
+        popover.set_has_arrow(false);
+        popover.set_position(gtk::PositionType::Top);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let conversation = model
             .conversations
             .iter()
@@ -1896,6 +1891,7 @@ impl Window {
                 })
                 .unwrap_or_else(|| "Unknown participant".into());
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            row.add_css_class("reaction-person-row");
             let avatar = adw::Avatar::new(28, Some(&name), true);
             if let Some(participant) = participant
                 && let Some(photo) = self.photos.borrow().participant(participant)
@@ -1905,16 +1901,25 @@ impl Window {
             row.append(&avatar);
             let label = gtk::Label::new(Some(&name));
             label.set_xalign(0.0);
+            label.set_hexpand(true);
             label.set_max_width_chars(30);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             label.add_css_class("reaction-person");
             row.append(&label);
+            let emoji = gtk::Label::new(Some(&reaction.emoji));
+            emoji.add_css_class("reaction-person-emoji");
+            row.append(&emoji);
             content.append(&row);
         }
         let unknown = reaction.count.saturating_sub(actors.len() as u64);
         if unknown > 0 {
-            let label = gtk::Label::new(Some(&format!("{unknown} more with unavailable details")));
+            let label = gtk::Label::new(Some(&format!(
+                "{unknown} {}",
+                if unknown == 1 { "other" } else { "others" }
+            )));
+            label.set_tooltip_text(Some("Participant details are unavailable"));
             label.add_css_class("dim-label");
+            label.add_css_class("reaction-person-row");
             content.append(&label);
         }
         let scroll = gtk::ScrolledWindow::builder()

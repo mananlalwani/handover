@@ -2143,6 +2143,14 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "reaction popover uses synced contact photo",
     );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        let name = format!(
+            "{}-reactions.png",
+            path.file_stem().unwrap().to_string_lossy()
+        );
+        capture_fixture(&ui.window, path.with_file_name(name));
+    }
     reaction_chip.popdown();
     pump_until(
         || !people.is_visible() && !reaction_chip.is_active(),
