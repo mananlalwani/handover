@@ -44,6 +44,7 @@ pub struct Window {
     list: gtk::ListBox,
     rows: RefCell<Vec<Target>>,
     sidebar_previews: RefCell<Vec<SidebarPreview>>,
+    sidebar_timer: RefCell<Option<glib::SourceId>>,
     filter: RefCell<Option<MessagingAccountId>>,
     title: gtk::Label,
     subtitle: gtk::Label,
@@ -449,6 +450,7 @@ impl Window {
             list,
             rows: RefCell::new(vec![]),
             sidebar_previews: RefCell::new(vec![]),
+            sidebar_timer: RefCell::new(None),
             filter: RefCell::new(None),
             title,
             subtitle,
@@ -529,11 +531,18 @@ impl Window {
         });
         let weak = Rc::downgrade(&this);
         glib::spawn_future_local(async move {
+            let mut turn = std::time::Instant::now();
             while let Ok(event) = events.recv().await {
                 let Some(this) = weak.upgrade() else {
                     break;
                 };
                 this.event(event);
+                // A continuously ready channel must still let GTK dispatch
+                // input, redraws, and the compositor's responsiveness checks.
+                if turn.elapsed() >= std::time::Duration::from_millis(8) {
+                    glib::timeout_future(std::time::Duration::from_millis(1)).await;
+                    turn = std::time::Instant::now();
+                }
             }
         });
         let weak = Rc::downgrade(&this);
@@ -963,24 +972,84 @@ impl Window {
                 model.notice = "Handover disconnected. Submitted sends are never retried.".into();
             }
             Event::State(payload) => {
+                if !matches!(
+                    payload.as_ref(),
+                    ServerPayload::Snapshot { .. }
+                        | ServerPayload::AccountAdded { .. }
+                        | ServerPayload::AccountUpdated { .. }
+                        | ServerPayload::AccountRemoved { .. }
+                        | ServerPayload::ConversationAdded { .. }
+                        | ServerPayload::ConversationUpdated { .. }
+                        | ServerPayload::ConversationRemoved { .. }
+                        | ServerPayload::MessageAdded { .. }
+                        | ServerPayload::MessageUpdated { .. }
+                        | ServerPayload::MessageRemoved { .. }
+                        | ServerPayload::MessageStatus { .. }
+                        | ServerPayload::OutgoingOperations { .. }
+                        | ServerPayload::OutgoingOperation { .. }
+                        | ServerPayload::OutgoingOperationRemoved { .. }
+                        | ServerPayload::Typing { .. }
+                        | ServerPayload::ContactsSynced { .. }
+                        | ServerPayload::ContactsRemoved { .. }
+                ) {
+                    return;
+                }
                 if matches!(payload.as_ref(), ServerPayload::Typing { .. }) {
                     self.model.borrow_mut().state(*payload);
                     self.render_typing();
                     return;
                 }
-                let thread_changed = matches!(
-                    *payload,
-                    ServerPayload::MessageAdded { .. }
+                let thread_changed = {
+                    let model = self.model.borrow();
+                    let selected = model.selected.as_ref();
+                    match payload.as_ref() {
+                        ServerPayload::MessageAdded { message }
+                        | ServerPayload::MessageUpdated { message } => {
+                            selected == Some(&message.id.conversation_id)
+                        }
+                        ServerPayload::MessageRemoved { message_id } => {
+                            selected == Some(&message_id.conversation_id)
+                        }
+                        ServerPayload::MessageStatus { update } => {
+                            selected == Some(&update.message_id.conversation_id)
+                        }
+                        ServerPayload::ConversationUpdated { conversation } => {
+                            selected == Some(&conversation.id)
+                        }
+                        ServerPayload::AccountUpdated { account } => {
+                            selected.is_some_and(|id| id.account_id == account.id)
+                        }
+                        ServerPayload::AccountRemoved { account_id } => {
+                            selected.is_some_and(|id| &id.account_id == account_id)
+                        }
+                        ServerPayload::OutgoingOperation { operation } => {
+                            selected == Some(&operation.conversation_id)
+                        }
+                        ServerPayload::OutgoingOperations { operations, .. } => operations
+                            .iter()
+                            .any(|operation| selected == Some(&operation.conversation_id)),
+                        ServerPayload::OutgoingOperationRemoved { operation_id } => model
+                            .outgoing
+                            .get(operation_id)
+                            .is_some_and(|operation| selected == Some(&operation.conversation_id)),
+                        ServerPayload::Snapshot { .. } => true,
+                        _ => false,
+                    }
+                };
+                let sidebar_changed = matches!(
+                    payload.as_ref(),
+                    ServerPayload::Snapshot { .. }
+                        | ServerPayload::AccountAdded { .. }
+                        | ServerPayload::AccountUpdated { .. }
+                        | ServerPayload::AccountRemoved { .. }
+                        | ServerPayload::ConversationAdded { .. }
+                        | ServerPayload::ConversationUpdated { .. }
+                        | ServerPayload::ConversationRemoved { .. }
+                        | ServerPayload::MessageAdded { .. }
                         | ServerPayload::MessageUpdated { .. }
                         | ServerPayload::MessageRemoved { .. }
-                        | ServerPayload::AccountRemoved { .. }
-                        | ServerPayload::AccountUpdated { .. }
-                        | ServerPayload::ConversationUpdated { .. }
-                        | ServerPayload::Snapshot { .. }
-                        | ServerPayload::MessageStatus { .. }
-                        | ServerPayload::OutgoingOperations { .. }
-                        | ServerPayload::OutgoingOperation { .. }
-                        | ServerPayload::OutgoingOperationRemoved { .. }
+                        | ServerPayload::ContactsSynced { .. }
+                        | ServerPayload::ContactsRemoved { .. }
                 );
                 let contacts_changed = matches!(
                     *payload,
@@ -1030,7 +1099,9 @@ impl Window {
                         .retain(|id, _| &id.account_id != account_id);
                 }
                 self.model.borrow_mut().state(*payload);
-                self.render_sidebar();
+                if sidebar_changed {
+                    self.schedule_sidebar();
+                }
                 if thread_changed {
                     self.render_thread();
                 }
@@ -1128,7 +1199,7 @@ impl Window {
                         self.request(Request::Select(desired));
                     }
                 }
-                self.render_sidebar();
+                self.schedule_sidebar();
             }
             Reply::Draft(draft) => {
                 if matches!(request, Request::SaveDraft(_)) {
@@ -1138,7 +1209,7 @@ impl Window {
                     self.model.borrow_mut().draft_loaded(draft, false);
                     self.save_drafts();
                 }
-                self.render_sidebar();
+                self.schedule_sidebar();
             }
             Reply::Search(hits, more) => {
                 if let Request::Search {
@@ -1190,7 +1261,7 @@ impl Window {
                     }
                     self.mark_read();
                     if !older {
-                        self.render_sidebar();
+                        self.schedule_sidebar();
                     }
                 }
             }
@@ -1290,7 +1361,7 @@ impl Window {
                     });
                 }
                 self.render_attachments();
-                self.render_sidebar();
+                self.schedule_sidebar();
             }
             Reply::Quote(id, message) => {
                 if self.model.borrow().selected.as_ref() == Some(&id.conversation_id)
@@ -1306,7 +1377,7 @@ impl Window {
             Reply::Contacts(contacts) => {
                 self.media.forget_photos();
                 self.photos.borrow_mut().replace(contacts);
-                self.render_sidebar();
+                self.schedule_sidebar();
             }
             Reply::Previews(messages) => {
                 if let Request::Previews(ids) = request {
@@ -1322,7 +1393,7 @@ impl Window {
                         }
                     }
                     drop(model);
-                    self.render_sidebar();
+                    self.schedule_sidebar();
                 }
             }
             Reply::Accepted => {
@@ -1899,7 +1970,26 @@ impl Window {
         }
     }
 
+    fn schedule_sidebar(self: &Rc<Self>) {
+        if self.sidebar_timer.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        *self.sidebar_timer.borrow_mut() = Some(glib::timeout_add_local_once(
+            std::time::Duration::from_millis(16),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    this.sidebar_timer.borrow_mut().take();
+                    this.render_sidebar();
+                }
+            },
+        ));
+    }
+
     fn render_sidebar(&self) {
+        if let Some(timer) = self.sidebar_timer.borrow_mut().take() {
+            timer.remove();
+        }
         self.updating.set(true);
         let selected = self
             .list

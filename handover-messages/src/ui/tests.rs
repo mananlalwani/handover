@@ -967,6 +967,69 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "decoded inline image preview",
     );
+    let row_before_background_event = ui.list.selected_row();
+    let thread_before_background_event = ui.thread.first_child();
+    ui.event(Event::State(Box::new(ServerPayload::Media {
+        media_sessions: vec![],
+    })));
+    assert_eq!(
+        ui.list.selected_row(),
+        row_before_background_event,
+        "unrelated continuity events must not rebuild the entire conversation list"
+    );
+    assert_eq!(ui.thread.first_child(), thread_before_background_event);
+    // Match a real library's scale while keeping all data synthetic.
+    let original_conversations = ui.model.borrow().conversations.clone();
+    let (_, prototype) = fixture();
+    let mut background_conversations = Vec::new();
+    for index in 0..426 {
+        let mut conversation = prototype.clone();
+        conversation.id.local_id = format!("background-{index}");
+        conversation.title = Some(format!("Background chat {index}"));
+        conversation.last_activity_at = Some(0);
+        background_conversations.push(conversation);
+    }
+    ui.model
+        .borrow_mut()
+        .conversations
+        .extend(background_conversations.clone());
+    ui.render_sidebar();
+    let row_before_burst = ui.list.selected_row();
+    let thread_revision = ui.render_revision.get();
+    for index in 0..100 {
+        let mut conversation =
+            background_conversations[index % background_conversations.len()].clone();
+        conversation.title = Some(format!("Updated background chat {index}"));
+        ui.event(Event::State(Box::new(ServerPayload::ConversationUpdated {
+            conversation,
+        })));
+    }
+    assert_eq!(
+        ui.render_revision.get(),
+        thread_revision,
+        "an inventory burst for other chats must not rebuild the open thread"
+    );
+    assert_eq!(
+        ui.list.selected_row(),
+        row_before_burst,
+        "inventory events coalesce before touching GTK rows"
+    );
+    pump_until(
+        || ui.sidebar_timer.borrow().is_none(),
+        "coalesced sidebar update",
+    );
+    assert!(
+        find_widget(ui.list.upcast_ref(), &|widget| {
+            widget
+                .downcast_ref::<gtk::Label>()
+                .is_some_and(|label| label.text() == "Updated background chat 99")
+        })
+        .is_some(),
+        "coalescing must retain the last inventory update"
+    );
+    assert_eq!(ui.model.borrow().selected.as_ref(), Some(&id()));
+    ui.model.borrow_mut().conversations = original_conversations;
+    ui.render_sidebar();
     let image_button = find_widget(ui.thread.upcast_ref(), &|widget| {
         widget.has_css_class("image-attachment")
     })
@@ -1280,6 +1343,10 @@ fn native_window_round_trips_real_frontend_actions() {
     ui.event(Event::State(Box::new(ServerPayload::AccountUpdated {
         account: reconnect_account.clone(),
     })));
+    pump_until(
+        || ui.sidebar_timer.borrow().is_none(),
+        "offline account sidebar update",
+    );
     let reconnect_sidebar_row = ui.list.selected_row();
     gio::prelude::ActionGroupExt::activate_action(&ui.window, "reconnect", None);
     pump_until(
@@ -1311,6 +1378,10 @@ fn native_window_round_trips_real_frontend_actions() {
     ui.event(Event::State(Box::new(ServerPayload::AccountUpdated {
         account: reconnect_account,
     })));
+    pump_until(
+        || ui.sidebar_timer.borrow().is_none(),
+        "restored account sidebar update",
+    );
     let selected_sidebar_row = ui.list.selected_row();
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
