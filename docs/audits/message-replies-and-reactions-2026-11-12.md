@@ -3,7 +3,8 @@
 The GTK client previously required the quoted original in its current window or
 local archive. The native client decoded the reply target but discarded the
 phone-supplied excerpt. A read-only archive inventory found 163 replies among the
-10,000 most recent stored records, with 159 distinct referenced originals absent.
+10,000 most recent stored records, with 159 distinct referenced IDs absent. This measured failed ID resolution,
+not whether the original message content had been downloaded.
 No message contents, contact identities, or provider identifiers were recorded.
 
 ## First-party evidence
@@ -64,3 +65,29 @@ fixture at regular width and at 760 pixels in dark mode. The GTK fixture checks
 immediate phone excerpts, later original resolution, unavailable originals,
 reaction participant photos, self labels, and ownership guards. Tests requiring
 live audio hardware remain ignored by the workspace suite.
+
+## Follow-up: reply navigation used the wrong identity
+
+Clicking a reply could report unavailable even when its original was the
+preceding loaded message. The native decoder selected reply identity field 6.2,
+the transport ID, while normalized message IDs retain the phone ID. The same
+first-party capture's `Tr` projection distinguishes field 1 as the phone ID
+`Ic` and field 2 as the transport identity. Its reply projection selects an ID
+for the web client's own model. Copying that selection into Handover's phone-ID
+model broke reference equality.
+
+Reply normalization now prefers the attested phone ID in field 6.1. It preserves
+the existing fallback when that ID is absent. No text, sender, adjacency, or
+approximate matching establishes identity.
+
+The native regression decodes an original and its reply in one page, then
+requires the reply target to equal the original's normalized identity. It failed
+before the correction and passes afterward. The GTK fixture also verifies that
+clicking a loaded quote highlights the original without requesting context.
+
+After installing the helper, three refreshed real replies changed to corrected
+targets. All three matched archived originals. A read-only `messages.context`
+request returned the exact corrected original. Existing cached records are
+corrected when the helper refreshes their phone records; no old messages or
+archive pages were deleted. Workspace formatting, strict Clippy, workspace tests,
+Android assemble/lint/unit tests, QML lint, and the narrow dark GTK fixture pass.

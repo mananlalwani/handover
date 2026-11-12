@@ -68,6 +68,10 @@ reply. It is an excerpt, not a downloaded original or proof that the original
 still exists. The native client reads the first-party reply excerpt separately
 from the reply target. Clients can show it while resolving the original, and
 keep it when a lookup finds no original. Old cached records omit this field.
+Reply targets use the same phone message ID as normalized message records when
+the phone supplies its identity mapping. Transport IDs remain fallback values
+when no phone ID is supplied. Clients never infer identity from quoted text or
+message adjacency.
 
 `fetch_message` requests one original message by account, conversation, message,
 and `fetch_id`. Its `message_lookup` response echoes the request scope and carries

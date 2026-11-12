@@ -364,10 +364,14 @@ pub(crate) fn decode_records(
                         .mapping
                         .as_ref()
                         .and_then(|mapping| {
-                            if !mapping.assigned.is_empty() {
-                                Some(mapping.assigned.as_str())
-                            } else if !mapping.original.is_empty() {
+                            // Message.id stays the phone ID used by history,
+                            // actions, and paging. The first-party identity
+                            // mapping's second field is a transport ID, not
+                            // the ID of a different original message.
+                            if !mapping.original.is_empty() {
                                 Some(mapping.original.as_str())
+                            } else if !mapping.assigned.is_empty() {
+                                Some(mapping.assigned.as_str())
                             } else {
                                 None
                             }
@@ -749,6 +753,31 @@ mod tests {
         );
     }
     #[test]
+    fn clicking_a_reply_resolves_the_loaded_original_in_the_same_page() {
+        let mut original = record();
+        original.id = "phone-message-id".into();
+        let mut reply = record();
+        reply.id = "reply-id".into();
+        reply.reply = Some(ReplyReference {
+            original: "transport-message-id".into(),
+            mapping: Some(ReplyMapping {
+                original: "phone-message-id".into(),
+                assigned: "transport-message-id".into(),
+            }),
+            preview: None,
+        });
+        let messages = decode_records(
+            &conversation(),
+            vec![original.encode_to_vec(), reply.encode_to_vec()],
+        )
+        .unwrap();
+        let target = messages[1].reply_to.as_ref().unwrap();
+        assert_eq!(
+            target, &messages[0].id,
+            "a reply to the preceding loaded message must resolve to that message's normalized identity"
+        );
+    }
+    #[test]
     fn projects_attested_reply_target_and_reaction_actors() {
         let mut wire = record();
         // Field 19, reaction field 1 contains the emoji; repeated field 2 actors.
@@ -770,7 +799,7 @@ mod tests {
             }),
         });
         let messages = decode_records(&conversation(), vec![wire.encode_to_vec()]).unwrap();
-        assert_eq!(messages[0].reply_to.as_ref().unwrap().local_id, "assigned");
+        assert_eq!(messages[0].reply_to.as_ref().unwrap().local_id, "temporary");
         wire.reactions.push(WireReaction {
             emoji: Some(WireEmoji {
                 value: "👍".into()
