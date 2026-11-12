@@ -393,7 +393,7 @@ impl Window {
             .left_margin(8)
             .right_margin(8)
             .build();
-        compose.set_tooltip_text(Some("Write a message · Ctrl+Enter to send"));
+        compose.set_tooltip_text(Some("Enter to send · Shift+Enter for a new line"));
         let compose_scroll = gtk::ScrolledWindow::builder()
             .min_content_height(18)
             .max_content_height(160)
@@ -414,7 +414,7 @@ impl Window {
         overlay.add_overlay(&placeholder);
         composer.append(&overlay);
         let send = gtk::Button::from_icon_name("go-up-symbolic");
-        send.set_tooltip_text(Some("Send message · Ctrl+Enter"));
+        send.set_tooltip_text(Some("Send message · Enter"));
         send.add_css_class("suggested-action");
         send.add_css_class("circular");
         send.set_valign(gtk::Align::Center);
@@ -629,6 +629,32 @@ impl Window {
                 this.send_text();
             }
         });
+        let composing = Rc::new(Cell::new(false));
+        this.compose.connect_preedit_changed({
+            let composing = composing.clone();
+            move |_, text| composing.set(!text.is_empty())
+        });
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&this);
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter)
+                && !modifiers.intersects(
+                    gtk::gdk::ModifierType::SHIFT_MASK
+                        | gtk::gdk::ModifierType::CONTROL_MASK
+                        | gtk::gdk::ModifierType::ALT_MASK
+                        | gtk::gdk::ModifierType::SUPER_MASK,
+                )
+                && !composing.get()
+            {
+                if let Some(this) = weak.upgrade() {
+                    this.send_text();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        this.compose.add_controller(keys);
         let weak = Rc::downgrade(&this);
         this.attach.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
@@ -2928,7 +2954,7 @@ impl Window {
                     } else if model.persistent {
                         String::new()
                     } else {
-                        "Draft held for this daemon session · Ctrl+Enter to send".into()
+                        "Draft held for this daemon session · Enter to send".into()
                     }
                 })
                 .unwrap_or_default(),

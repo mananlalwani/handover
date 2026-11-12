@@ -2867,8 +2867,49 @@ fn native_window_round_trips_real_frontend_actions() {
         "account online state event",
     );
 
+    let compose_controllers = ui.compose.observe_controllers();
+    let compose_keys = (0..compose_controllers.n_items())
+        .filter_map(|index| compose_controllers.item(index))
+        .filter_map(|object| object.downcast::<gtk::EventControllerKey>().ok())
+        .find(|controller| controller.propagation_phase() == gtk::PropagationPhase::Capture)
+        .expect("composer send key controller");
     ui.compose.buffer().set_text("accepted text");
-    ui.send.emit_clicked();
+    assert!(
+        !compose_keys.emit_by_name::<bool>(
+            "key-pressed",
+            &[
+                &gtk::gdk::Key::Return,
+                &0u32,
+                &gtk::gdk::ModifierType::SHIFT_MASK,
+            ]
+        ),
+        "Shift+Enter reaches the text view's newline handler"
+    );
+    ui.compose.emit_preedit_changed("composing");
+    assert!(
+        !compose_keys.emit_by_name::<bool>(
+            "key-pressed",
+            &[
+                &gtk::gdk::Key::Return,
+                &0u32,
+                &gtk::gdk::ModifierType::empty(),
+            ]
+        ),
+        "Enter confirms input-method composition without sending"
+    );
+    assert!(sent.lock().unwrap().is_empty());
+    ui.compose.emit_preedit_changed("");
+    assert!(
+        compose_keys.emit_by_name::<bool>(
+            "key-pressed",
+            &[
+                &gtk::gdk::Key::Return,
+                &0u32,
+                &gtk::gdk::ModifierType::empty(),
+            ]
+        ),
+        "Enter sends and does not insert a newline"
+    );
     pump_until(
         || sent.lock().unwrap().len() == 1 && text(&ui.compose).is_empty(),
         "accepted send clears captured draft",
