@@ -2111,7 +2111,7 @@ fn native_window_round_trips_real_frontend_actions() {
     let reaction_before = find_widget(ui.thread.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Label>()
-            .is_some_and(|label| label.text() == "👍 1")
+            .is_some_and(|label| label.has_css_class("reaction-emoji") && label.text() == "👍")
     })
     .expect("initial reaction aggregate");
     let reaction_chip = ancestor_with_class(&reaction_before, "reaction-chip")
@@ -2121,6 +2121,12 @@ fn native_window_round_trips_real_frontend_actions() {
     assert!(
         !reaction_chip.has_css_class("own-reaction"),
         "another person's reaction does not use the own-reaction highlight"
+    );
+    assert!(
+        find_widget(reaction_chip.upcast_ref(), &|widget| widget
+            .is::<adw::Avatar>())
+        .is_none(),
+        "direct reactions show the emoji without faces"
     );
     reaction_chip.set_active(true);
     let column = reaction_chip.parent().unwrap().parent().unwrap();
@@ -2150,6 +2156,12 @@ fn native_window_round_trips_real_frontend_actions() {
             .is_some()
         },
         "inline reaction details uses synced contact photo",
+    );
+    assert!(
+        find_widget(people.upcast_ref(), &|widget| widget
+            .has_css_class("reaction-remove"))
+        .is_none(),
+        "someone else's reaction details cannot offer removal"
     );
     pump_until(
         || people.is_child_revealed(),
@@ -2204,8 +2216,8 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     assert_eq!(
         reaction_before.downcast_ref::<gtk::Label>().unwrap().text(),
-        "👍 1",
-        "accepted reaction does not optimistically change the aggregate"
+        "👍",
+        "accepted reaction keeps the direct-conversation chip emoji-only"
     );
     pump_until(
         || !actions_popover.is_visible() && !actions.is_active(),
@@ -2224,6 +2236,13 @@ fn native_window_round_trips_real_frontend_actions() {
         display_name: None,
         address: None,
         is_self: true,
+    });
+    own_conversation.kind = ConversationKind::Group;
+    own_conversation.participants.push(Participant {
+        local_id: "jordan".into(),
+        display_name: Some("Jordan".into()),
+        address: None,
+        is_self: false,
     });
     ui.event(Event::State(Box::new(ServerPayload::ConversationUpdated {
         conversation: own_conversation,
@@ -2250,14 +2269,6 @@ fn native_window_round_trips_real_frontend_actions() {
     })
     .unwrap();
     let row = ancestor_with_class(&original_text, "message-row").unwrap();
-    let own_actions = find_widget(&row, &|widget| {
-        widget
-            .downcast_ref::<gtk::MenuButton>()
-            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Message actions"))
-    })
-    .unwrap()
-    .downcast::<gtk::MenuButton>()
-    .unwrap();
     let mixed_chip = find_widget(&row, &|widget| widget.has_css_class("reaction-chip"))
         .unwrap()
         .downcast::<gtk::ToggleButton>()
@@ -2265,6 +2276,23 @@ fn native_window_round_trips_real_frontend_actions() {
     assert!(
         mixed_chip.has_css_class("own-reaction"),
         "a confirmed own reaction stays highlighted while collapsed"
+    );
+    assert_eq!(
+        widgets_with_class(mixed_chip.upcast_ref(), "reaction-face").len(),
+        2,
+        "group reaction chips show the reacting participants' faces"
+    );
+    pump_until(
+        || {
+            widgets_with_class(mixed_chip.upcast_ref(), "reaction-face")
+                .iter()
+                .any(|widget| {
+                    widget
+                        .downcast_ref::<adw::Avatar>()
+                        .is_some_and(|avatar| avatar.custom_image().is_some())
+                })
+        },
+        "group reaction chip uses the reacting contact's photo",
     );
     mixed_chip.set_active(true);
     let mixed_people = find_widget(&row, &|widget| widget.has_css_class("reaction-people"))
@@ -2282,27 +2310,32 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "inline reaction details identifies a confirmed self actor",
     );
-    mixed_chip.set_active(false);
-    pump_until(
-        || !mixed_people.reveals_child() && !mixed_chip.is_active(),
-        "mixed inline reaction details closes",
-    );
-    own_actions.popup();
-    let own_popover = own_actions.popover().unwrap();
-    let owned_reaction = find_widget(ui.thread.upcast_ref(), &|widget| {
-        widget
-            .downcast_ref::<gtk::Label>()
-            .is_some_and(|label| label.text() == "👍 2")
+    let owned_reaction = find_widget(mixed_chip.upcast_ref(), &|widget| {
+        widget.has_css_class("reaction-emoji")
     })
     .unwrap();
-    let remove_reaction = find_widget(own_popover.upcast_ref(), &|widget| {
+    let remove_reaction = find_widget(mixed_people.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.label().as_deref() == Some("Remove my 👍 reaction"))
+            .is_some_and(|button| button.label().as_deref() == Some("Remove"))
     })
     .unwrap()
     .downcast::<gtk::Button>()
     .unwrap();
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        pump_until(
+            || mixed_people.is_child_revealed(),
+            "own reaction details finish expanding",
+        );
+        let path = PathBuf::from(path);
+        capture_fixture(
+            &ui.window,
+            path.with_file_name(format!(
+                "{}-group-reactions.png",
+                path.file_stem().unwrap().to_string_lossy()
+            )),
+        );
+    }
     remove_reaction.emit_clicked();
     pump_until(
         || {
@@ -2316,8 +2349,14 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     assert_eq!(
         owned_reaction.downcast_ref::<gtk::Label>().unwrap().text(),
-        "👍 2",
-        "accepted removal does not optimistically change the aggregate"
+        "👍",
+        "accepted removal keeps the emoji until the provider confirms the change"
+    );
+    assert!(
+        ui.model
+            .borrow()
+            .has_own_reaction(&MessageId::new(id(), "m1"), "👍"),
+        "accepted removal alone cannot erase the confirmed own reaction"
     );
 
     pump_until(

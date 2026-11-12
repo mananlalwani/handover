@@ -88,6 +88,9 @@
 .reaction-people > box, .reaction-people > scrolledwindow { margin-top: 2px; border-left: 2px solid alpha(@accent_bg_color, 0.3); padding: 0 0 0 4px; }
 .reaction-person-row { padding: 2px 4px; }
 .reaction-person { font-size: 12px; font-weight: 400; }
+.reaction-emoji { font-size: 14px; }
+.reaction-overflow { font-size: 10px; opacity: 0.7; }
+.reaction-remove { min-height: 20px; padding: 1px 6px; font-size: 11px; color: @accent_color; }
 .attachment-preview { padding: 10px; border-radius: 12px; background: alpha(currentColor, 0.04); }
 .attachment-preview .image-attachment { min-width: 112px; min-height: 84px; }
 .handover-media-browser { background: @window_bg_color; }

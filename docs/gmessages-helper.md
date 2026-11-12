@@ -95,6 +95,10 @@ self. Its private alias index is scoped to account and conversation, capped at
 10,000 entries and 4 MiB of alias text. Unknown actors remain unknown. Public
 models never carry the private alias index. Messages reaction chips expand the
 available participant names and contact photos inline beneath the message.
+One-to-one reaction chips show only the emoji. Group chips add up to three
+reacting participants' avatars and an overflow count. Expanded details offer
+removal only on the attested self participant's row. Acceptance does not remove
+the displayed reaction until a provider update confirms the change.
 
 The native helper routes `mark_read` through its existing receive owner. It sends
 the independently observed phone action, waits for its correlated completion,

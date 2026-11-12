@@ -1847,13 +1847,12 @@ impl Window {
         }
     }
     fn reaction_details(
-        &self,
+        self: &Rc<Self>,
         model: &Model,
         message: &Message,
         reaction: &Reaction,
     ) -> (gtk::ToggleButton, gtk::Widget) {
         let button = gtk::ToggleButton::builder()
-            .label(format!("{} {}", reaction.emoji, reaction.count))
             .tooltip_text("Reactions")
             .build();
         button.add_css_class("flat");
@@ -1867,6 +1866,14 @@ impl Window {
             .conversations
             .iter()
             .find(|conversation| conversation.id == message.id.conversation_id);
+        let group =
+            conversation.is_some_and(|conversation| conversation.kind == ConversationKind::Group);
+        let chip = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+        let emoji = gtk::Label::new(Some(&reaction.emoji));
+        emoji.add_css_class("reaction-emoji");
+        chip.append(&emoji);
+        button.set_child(Some(&chip));
+        let mut faces = 0u64;
         let mut actors = BTreeSet::new();
         for actor in reaction
             .participant_ids
@@ -1889,6 +1896,17 @@ impl Window {
                     }
                 })
                 .unwrap_or_else(|| "Unknown participant".into());
+            if group && faces < 3 {
+                let avatar = adw::Avatar::new(16, Some(&name), participant.is_some());
+                avatar.add_css_class("reaction-face");
+                if let Some(participant) = participant
+                    && let Some(photo) = self.photos.borrow().participant(participant)
+                {
+                    self.media.avatar(&avatar, photo);
+                }
+                chip.append(&avatar);
+                faces += 1;
+            }
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             row.add_css_class("reaction-person-row");
             let avatar = adw::Avatar::new(20, Some(&name), true);
@@ -1905,7 +1923,30 @@ impl Window {
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             label.add_css_class("reaction-person");
             row.append(&label);
+            if participant.is_some_and(|participant| participant.is_self)
+                && model.has_own_reaction(&message.id, &reaction.emoji)
+            {
+                let remove = gtk::Button::with_label("Remove");
+                remove.add_css_class("flat");
+                remove.add_css_class("reaction-remove");
+                remove.set_tooltip_text(Some("Remove your reaction"));
+                remove.set_sensitive(model.can(MessagingCapability::Reactions));
+                let weak = Rc::downgrade(self);
+                let id = message.id.clone();
+                let emoji = reaction.emoji.clone();
+                remove.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.react(&id, &emoji, true);
+                    }
+                });
+                row.append(&remove);
+            }
             content.append(&row);
+        }
+        if group && reaction.count > faces {
+            let overflow = gtk::Label::new(Some(&format!("+{}", reaction.count - faces)));
+            overflow.add_css_class("reaction-overflow");
+            chip.append(&overflow);
         }
         let unknown = reaction.count.saturating_sub(actors.len() as u64);
         if unknown > 0 {
