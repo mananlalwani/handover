@@ -54,6 +54,35 @@ pub fn from_file(file: &gtk::gio::File) -> Result<PendingAttachment, String> {
     })
 }
 
+/// Encode clipboard pixels away from the GTK thread into a private temporary file.
+pub fn clipboard_image(texture: &gtk::gdk::Texture) -> Result<tempfile::NamedTempFile, String> {
+    use gtk::gdk::prelude::*;
+    let pixels = i64::from(texture.width()) * i64::from(texture.height());
+    if pixels <= 0 || pixels > (MAX_ATTACHMENT_BYTES / 4) as i64 {
+        return Err(
+            "Clipboard image is too large. Save it to a file and attach it instead.".into(),
+        );
+    }
+    let file = tempfile::Builder::new()
+        .prefix("pasted-image-")
+        .suffix(".png")
+        .tempfile()
+        .map_err(|_| "Unable to create a temporary image".to_owned())?;
+    texture
+        .save_to_png(file.path())
+        .map_err(|_| "Unable to save clipboard image".to_owned())?;
+    if file
+        .as_file()
+        .metadata()
+        .map_err(|_| "Unable to read clipboard image".to_owned())?
+        .len()
+        > MAX_ATTACHMENT_BYTES
+    {
+        return Err("Clipboard image exceeds the 50 MiB attachment limit".into());
+    }
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;

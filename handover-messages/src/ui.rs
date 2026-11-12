@@ -66,6 +66,8 @@ pub struct Window {
     placeholder: gtk::Label,
     reply_row: gtk::Box,
     attachments: RefCell<BTreeMap<ConversationId, crate::attachments::PendingAttachment>>,
+    clipboard_files: RefCell<BTreeMap<ConversationId, tempfile::NamedTempFile>>,
+    paste_pending: Cell<bool>,
     attachment_row: gtk::Box,
     attachment_state: RefCell<BTreeMap<ConversationId, MessageAttachmentDraft>>,
     attachment_errors: RefCell<BTreeMap<ConversationId, String>>,
@@ -474,6 +476,8 @@ impl Window {
             placeholder,
             reply_row,
             attachments: RefCell::new(BTreeMap::new()),
+            clipboard_files: RefCell::new(BTreeMap::new()),
+            paste_pending: Cell::new(false),
             attachment_row,
             attachment_state: RefCell::new(BTreeMap::new()),
             attachment_errors: RefCell::new(BTreeMap::new()),
@@ -629,6 +633,24 @@ impl Window {
         this.attach.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
                 this.attach_file();
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        this.compose.connect_paste_clipboard(move |compose| {
+            let clipboard = compose.clipboard();
+            let formats = clipboard.formats();
+            if formats.contains_type(gtk::gdk::Texture::static_type())
+                || formats.contains_type(gtk::gdk::FileList::static_type())
+                || formats.contain_mime_type("text/uri-list")
+                || formats
+                    .mime_types()
+                    .iter()
+                    .any(|mime| mime.starts_with("image/"))
+            {
+                compose.stop_signal_emission_by_name("paste-clipboard");
+                if let Some(this) = weak.upgrade() {
+                    this.paste_image(clipboard);
+                }
             }
         });
         let weak = Rc::downgrade(&this);
@@ -3645,6 +3667,92 @@ impl Window {
                 != pending.attachment.staged_path.as_ref()
         })
     }
+    fn paste_image(self: &Rc<Self>, clipboard: gtk::gdk::Clipboard) {
+        let Some(id) = self.model.borrow().selected.clone() else {
+            return;
+        };
+        if self.paste_pending.get() || !self.model.borrow().can(MessagingCapability::Media) {
+            return;
+        }
+        if self.attachments.borrow().contains_key(&id) {
+            self.model.borrow_mut().notice =
+                "Remove the current attachment before pasting another.".into();
+            self.render_status();
+            return;
+        }
+        self.paste_pending.set(true);
+        let epoch = self.history_epoch.get();
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result = async {
+                if clipboard
+                    .formats()
+                    .contains_type(gtk::gdk::FileList::static_type())
+                    || clipboard.formats().contain_mime_type("text/uri-list")
+                {
+                    let value = clipboard
+                        .read_value_future(
+                            gtk::gdk::FileList::static_type(),
+                            glib::Priority::DEFAULT,
+                        )
+                        .await
+                        .map_err(|_| "Unable to read copied image".to_owned())?;
+                    let files = value
+                        .get::<gtk::gdk::FileList>()
+                        .map_err(|_| "Unable to read copied image".to_owned())?
+                        .files();
+                    if files.len() != 1 {
+                        return Err("Copy one image at a time.".to_owned());
+                    }
+                    let metadata = crate::attachments::from_file(&files[0])?;
+                    if !crate::media::is_image(&metadata.attachment) {
+                        return Err(
+                            "The copied file is not an image. Use Attach a file instead."
+                                .to_owned(),
+                        );
+                    }
+                    return Ok((files[0].clone(), None));
+                }
+                let texture = clipboard
+                    .read_texture_future()
+                    .await
+                    .map_err(|_| "Unable to read clipboard image".to_owned())?
+                    .ok_or_else(|| "No image is available on the clipboard".to_owned())?;
+                let (sender, receiver) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let _ = sender.send_blocking(crate::attachments::clipboard_image(&texture));
+                });
+                let file = receiver
+                    .recv()
+                    .await
+                    .map_err(|_| "Unable to prepare clipboard image".to_owned())??;
+                Ok((gio::File::for_path(file.path()), Some(file)))
+            }
+            .await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.paste_pending.set(false);
+            if this.model.borrow().selected.as_ref() != Some(&id)
+                || this.history_epoch.get() != epoch
+            {
+                return;
+            }
+            match result {
+                Ok((image, temporary)) => {
+                    if this.stage_file(id.clone(), &image)
+                        && let Some(temporary) = temporary
+                    {
+                        this.clipboard_files.borrow_mut().insert(id, temporary);
+                    }
+                }
+                Err(error) => {
+                    this.model.borrow_mut().notice = error;
+                    this.render_status();
+                }
+            }
+        });
+    }
     fn attach_file(self: &Rc<Self>) {
         let Some(id) = self.model.borrow().selected.clone() else {
             return;
@@ -3708,6 +3816,16 @@ impl Window {
         }
     }
     fn render_attachments(self: &Rc<Self>) {
+        self.clipboard_files.borrow_mut().retain(|id, file| {
+            self.attachments.borrow().get(id).is_some_and(|pending| {
+                pending
+                    .attachment
+                    .staged_path
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    == Some(file.path())
+            })
+        });
         while let Some(child) = self.attachment_row.first_child() {
             self.attachment_row.remove(&child);
         }

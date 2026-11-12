@@ -2500,7 +2500,108 @@ fn native_window_round_trips_real_frontend_actions() {
                 .and_then(|object| object.downcast::<gtk::DropTarget>().ok())
         })
         .expect("conversation stack file drop controller");
+    ui.compose.clipboard().set_text("pasted text");
+    ui.compose.buffer().set_text("");
+    ui.compose.emit_by_name::<()>("paste-clipboard", &[]);
+    pump_until(
+        || text(&ui.compose) == "pasted text",
+        "ordinary text paste still works",
+    );
+    ui.compose.buffer().set_text("caption to keep");
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty)
+        },
+        "caption restored before image paste",
+    );
+    let clipboard_image = gtk::gdk::Texture::from_file(&staged_file).unwrap();
+    ui.compose.clipboard().set_texture(&clipboard_image);
+    ui.compose.emit_by_name::<()>("paste-clipboard", &[]);
+    pump_until(
+        || ui.attachment_row.is_visible() && !ui.attachment_saving(&id()),
+        "pasting a clipboard image stages a saved attachment",
+    );
+    assert_eq!(
+        text(&ui.compose),
+        "caption to keep",
+        "image paste preserves caption"
+    );
+    let pasted = ui
+        .attachment_state
+        .borrow()
+        .get(&id())
+        .unwrap()
+        .attachment
+        .clone()
+        .unwrap();
+    assert_eq!(pasted.mime.as_deref(), Some("image/png"));
+    assert!(
+        std::fs::read(pasted.staged_path.unwrap())
+            .unwrap()
+            .starts_with(b"\x89PNG\r\n\x1a\n")
+    );
+    assert!(
+        !requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"] == "messages.send_file"),
+        "pasting an image never sends automatically"
+    );
+    let remove_paste = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    remove_paste.emit_clicked();
+    pump_until(
+        || !ui.attachment_row.is_visible() && !ui.attachment_saving(&id()),
+        "pasted image can be removed before another attachment",
+    );
     let one_file = gtk::gdk::FileList::from_array(std::slice::from_ref(&staged_file));
+    ui.compose
+        .clipboard()
+        .set_content(Some(&gtk::gdk::ContentProvider::for_value(
+            &one_file.to_value(),
+        )))
+        .unwrap();
+    ui.compose.emit_by_name::<()>("paste-clipboard", &[]);
+    pump_until(
+        || ui.attachment_row.is_visible() && !ui.attachment_saving(&id()),
+        "copied image file pastes into the saved attachment draft",
+    );
+    assert_eq!(
+        ui.attachment_state
+            .borrow()
+            .get(&id())
+            .unwrap()
+            .attachment
+            .as_ref()
+            .unwrap()
+            .name,
+        staged_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    );
+    let remove_file_paste = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    remove_file_paste.emit_clicked();
+    pump_until(
+        || !ui.attachment_row.is_visible() && !ui.attachment_saving(&id()),
+        "copied image attachment can be removed",
+    );
     let one_file_value = gtk::glib::BoxedValue(one_file.to_value()).to_value();
     assert!(
         drop_target.emit_by_name::<bool>("drop", &[&one_file_value, &0.0f64, &0.0f64]),
