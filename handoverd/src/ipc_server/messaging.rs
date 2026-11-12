@@ -2124,6 +2124,29 @@ mod messaging_live_tests {
             before_lookup
         );
 
+        let archive = crate::messaging_archive::MessageArchive::open(
+            &directory.path().join("refresh.sqlite"),
+        )
+        .unwrap();
+        let mut stale_original = original[0].clone();
+        stale_original.text = Some("Stale archived metadata".into());
+        archive
+            .store_page(rcs.id.clone(), None, vec![stale_original], None)
+            .await
+            .unwrap();
+        state.write().unwrap().message_archive = Some(archive);
+        let fresh = client
+            .refresh_message_context(MessageId::new(rcs.id.clone(), "m1"))
+            .await
+            .expect("refresh saved source page through helper");
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id.local_id, "m1");
+        assert_eq!(
+            fresh[0].text, original[0].text,
+            "explicit refresh must bypass the stale archive page"
+        );
+        state.write().unwrap().message_archive = None;
+
         // Paged history: newest page plus an older cursor page.
         let (page, next) = client
             .messaging_history(rcs.id.clone(), Some(2), None)

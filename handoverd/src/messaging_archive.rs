@@ -156,6 +156,18 @@ impl MessageArchive {
             Ok(Some((messages,next)))
         }).await
     }
+    /// Boundary of a provider page containing this exact archived message.
+    pub(crate) async fn page_cursor(
+        self: &Arc<Self>,
+        id: MessageId,
+    ) -> Result<Option<Option<String>>, Error> {
+        self.run(move |db| {
+            let before: Option<String> = db.query_row(
+                "SELECT before_id FROM pages WHERE account=?1 AND thread=?2 AND EXISTS(SELECT 1 FROM json_each(pages.ids) WHERE value=?3) ORDER BY rowid DESC LIMIT 1",
+                params![id.conversation_id.account_id.as_str(), id.conversation_id.local_id, id.local_id], |row| row.get(0)).optional()?;
+            Ok(before.map(|before| (!before.is_empty()).then_some(before)))
+        }).await
+    }
     pub(crate) async fn remove_message(self: &Arc<Self>, id: MessageId) -> Result<(), Error> {
         self.run(move |db| {
             db.execute(
@@ -235,6 +247,35 @@ mod tests {
             reactions: Vec::new(),
             deleted: false,
         }
+    }
+    #[tokio::test]
+    async fn refresh_cursor_selects_the_scoped_page_containing_the_source_message() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = MessageArchive::open(&directory.path().join("history.sqlite")).unwrap();
+        archive
+            .store_page(id(), None, vec![message(3)], Some("m0003".into()))
+            .await
+            .unwrap();
+        archive
+            .store_page(
+                id(),
+                Some("m0003".into()),
+                vec![message(1), message(2)],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            archive.page_cursor(message(1).id).await.unwrap(),
+            Some(Some("m0003".into()))
+        );
+        assert_eq!(
+            archive.page_cursor(message(3).id).await.unwrap(),
+            Some(None)
+        );
+        let mut foreign = message(1).id;
+        foreign.conversation_id.account_id = MessagingAccountId::new("other");
+        assert_eq!(archive.page_cursor(foreign).await.unwrap(), None);
     }
     #[tokio::test]
     async fn history_beyond_the_live_window_survives_restart_and_supports_smaller_pages() {

@@ -1329,6 +1329,21 @@ async fn ingest_event(
                 Ok(None)
             };
             if let Ok(Some(message)) = &normalized {
+                let loaded = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .message(&message.id)
+                    .is_some();
+                if loaded {
+                    apply_backend_event(
+                        state,
+                        events,
+                        StateEvent::Messaging(MessagingEvent::Message(MessageEvent::Updated(
+                            message.clone(),
+                        ))),
+                    );
+                }
                 let archive = state
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

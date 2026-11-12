@@ -91,3 +91,34 @@ request returned the exact corrected original. Existing cached records are
 corrected when the helper refreshes their phone records; no old messages or
 archive pages were deleted. Workspace formatting, strict Clippy, workspace tests,
 Android assemble/lint/unit tests, QML lint, and the narrow dark GTK fixture pass.
+
+## Follow-up: recover stale cached replies on click
+
+The ID correction did not update every older archive record. A further check of
+the selected conversation found 212 archived messages and two replies, one with
+an unresolved cached target. The latest-page check in the previous follow-up
+missed that older reply. Its single-message refresh returned no record.
+
+The new GUI regression inserts a stale reply while its original remains loaded,
+clicks the quote, and requires the corrected target and loaded original to
+remain visible. It failed before the recovery path. A second assertion verifies
+that unavailable destination context preserves the visible messages.
+
+An explicit `messages.context` refresh now uses the stored provider page boundary
+for the source reply. It fetches that page through the helper and requires the
+source's exact identity in the returned page. It does not guess identity from
+text or adjacency. The GTK client refreshes unresolved reply metadata, then
+follows the corrected target. Destination context must contain that exact target
+before replacing the current view. Ordinary archive reads retain their existing
+behavior, including offline reads.
+
+A live refresh of the previously unresolved source returned the exact reply in
+2.7 seconds. Its target changed to an original already in the same archive.
+A subsequent context request returned that exact original. This verifies the
+older cached record that the latest-page check had missed. The actual live GUI
+click was not automated; the click path is covered by the GTK fixture.
+
+The update was installed in both the daemon and Messages app. Workspace
+formatting, strict Clippy, workspace tests, Android assemble/lint/unit tests,
+QML lint, JavaScript tests, and the GTK fixture passed. No real messages or
+reactions were sent, and no archived messages or page boundaries were deleted.

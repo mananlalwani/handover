@@ -116,6 +116,7 @@ async fn archived_search_and_context_work_while_account_is_offline() {
     let context = call(
         &state,
         Method::MessagesContext {
+            refresh: false,
             message_id: MessageId::new(conversation.clone(), "archived"),
         },
     )
@@ -123,6 +124,25 @@ async fn archived_search_and_context_work_while_account_is_offline() {
     assert!(
         matches!(&context[..], [ServerMessage { payload: ServerPayload::MessageContext { messages, done: true, .. }, .. }]
         if messages.len() == 1 && messages[0].text.as_deref() == Some("needle in saved history"))
+    );
+
+    let refreshed = call(
+        &state,
+        Method::MessagesContext {
+            message_id: MessageId::new(conversation.clone(), "archived"),
+            refresh: true,
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            &refreshed[0].payload,
+            ServerPayload::Error {
+                code: ErrorCode::HistoryUnavailable,
+                ..
+            }
+        ),
+        "an explicit refresh must not silently return stale archived metadata when the helper is unavailable"
     );
 
     let media = call(
@@ -372,6 +392,7 @@ async fn unknown_account_filters_reject_search_context_and_draft_access() {
             offset: 0,
         },
         Method::MessagesContext {
+            refresh: false,
             message_id: MessageId::new(hidden.clone(), "secret"),
         },
         Method::MessagesDraft {
@@ -496,6 +517,7 @@ async fn context_chunks_large_valid_records_within_frame_bounds_and_preserves_al
     let frames = call(
         &state,
         Method::MessagesContext {
+            refresh: false,
             message_id: messages[10].id.clone(),
         },
     )
@@ -561,6 +583,7 @@ async fn saved_context_exposes_an_older_history_continuation() {
     let replies = call(
         &state,
         Method::MessagesContext {
+            refresh: false,
             message_id: MessageId::new(conversation, "m025"),
         },
     )

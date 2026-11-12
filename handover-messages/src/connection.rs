@@ -20,7 +20,9 @@ pub enum Request {
     },
     History(ConversationId, Option<String>),
     Context(MessageId),
+    ReplyContext(MessageId),
     Quote(MessageId),
+    ResolveReply(MessageId),
     React(MessageId, String, bool),
     Previews(Vec<ConversationId>),
     Send(MessageDraft),
@@ -37,6 +39,7 @@ pub enum Reply {
     History(ConversationId, Vec<Message>, Option<String>),
     Context(ConversationId, Vec<Message>, Option<String>),
     Quote(MessageId, Option<Box<Message>>),
+    Resolved(MessageId, Option<Box<Message>>),
     Previews(Vec<Message>),
     Sent(String),
     Accepted,
@@ -209,7 +212,7 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                     .await?;
                 Reply::History(id, messages, next)
             }
-            Request::Context(id) => {
+            Request::Context(id) | Request::ReplyContext(id) => {
                 let conversation_id = id.conversation_id.clone();
                 let (messages, cursor_next) = client.message_context_page(id).await?;
                 Reply::Context(conversation_id, messages, cursor_next)
@@ -218,6 +221,11 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                 let messages = client.message_context(id.clone()).await?;
                 let message = messages.into_iter().find(|message| message.id == id);
                 Reply::Quote(id, message.map(Box::new))
+            }
+            Request::ResolveReply(id) => {
+                let messages = client.refresh_message_context(id.clone()).await?;
+                let message = messages.into_iter().find(|message| message.id == id);
+                Reply::Resolved(id, message.map(Box::new))
             }
             Request::React(id, emoji, remove) => {
                 if remove {

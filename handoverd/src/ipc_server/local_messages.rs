@@ -194,7 +194,10 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 )
             }
         }
-        Method::MessagesContext { message_id } => {
+        Method::MessagesContext {
+            message_id,
+            refresh,
+        } => {
             if handover_core::validate_messaging_location(&handover_core::MessagingLocation {
                 conversation_id: message_id.conversation_id.clone(),
                 message_id: Some(message_id.clone()),
@@ -208,7 +211,7 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
             } else if !known(&message_id.conversation_id) {
                 error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
             } else {
-                let saved = if let Some(archive) = &archive {
+                let saved = if !refresh && let Some(archive) = &archive {
                     archive
                         .context_page(message_id.clone())
                         .await
@@ -226,7 +229,45 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                         .account(&message_id.conversation_id.account_id)
                         .is_some_and(|account| account.connected && account.authenticated);
                     if online && let Some(messaging) = messaging {
-                        match messaging.fetch_message(message_id.clone()).await {
+                        let source_page = if refresh && let Some(archive) = &archive {
+                            archive.page_cursor(message_id.clone()).await.ok().flatten()
+                        } else {
+                            None
+                        };
+                        let result = if let Some(before) = source_page {
+                            let fetched = messaging
+                                .fetch_through_helper(
+                                    message_id.conversation_id.account_id.as_str(),
+                                    &message_id.conversation_id.local_id,
+                                    100,
+                                    before.clone(),
+                                )
+                                .await;
+                            match (fetched, &archive) {
+                                (Ok(()), Some(archive)) => {
+                                    match archive
+                                        .history(
+                                            message_id.conversation_id.clone(),
+                                            100,
+                                            before,
+                                            None,
+                                        )
+                                        .await
+                                    {
+                                        Ok(Some((records, _))) => Ok(records
+                                            .into_iter()
+                                            .find(|message| message.id == message_id)),
+                                        _ => Err(
+                                            crate::messaging_backend::HelperCallError::Unavailable,
+                                        ),
+                                    }
+                                }
+                                _ => Err(crate::messaging_backend::HelperCallError::Unavailable),
+                            }
+                        } else {
+                            messaging.fetch_message(message_id.clone()).await
+                        };
+                        match result {
                             Ok(message) => {
                                 page = message.map(|message| (vec![message], None));
                                 unavailable = false;

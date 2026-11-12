@@ -80,7 +80,13 @@ whose identity differs from the request. The observed empty action-36 completion
 means no original content was supplied; it never creates a message. It can archive a validated original,
 but never treats this response as a history window or a read receipt. Online
 `messages.context` requests use this lookup when the local archive lacks the
-original. Concurrent requests for the same message share one lookup, with at most
+original. `messages.context` also accepts optional `refresh: true`. It bypasses
+cached message metadata and refreshes the saved provider page containing the
+source message when that boundary is available. Only a returned record with the
+exact requested identity completes that refresh. Without a saved page, it uses
+the single-message lookup. A stale cached reply therefore refreshes its own
+metadata before the GTK client follows an unresolved target. Failed resolution
+keeps the current conversation visible. Concurrent requests for the same message share one lookup, with at most
 64 distinct lookups and eight callers per message. Timeouts release their slots.
 
 The native client maps reaction actors to the normalized self participant only

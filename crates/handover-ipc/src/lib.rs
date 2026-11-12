@@ -242,7 +242,11 @@ pub enum Method {
         conversation_ids: Vec<ConversationId>,
     },
     #[serde(rename = "messages.context")]
-    MessagesContext { message_id: MessageId },
+    MessagesContext {
+        message_id: MessageId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        refresh: bool,
+    },
     #[serde(rename = "messages.workspace")]
     MessagesWorkspace,
     #[serde(rename = "messages.select")]
@@ -1682,8 +1686,31 @@ impl Client {
         &mut self,
         message_id: MessageId,
     ) -> Result<(Vec<Message>, Option<String>), IpcError> {
+        self.message_context_page_with_refresh(message_id, false)
+            .await
+    }
+
+    /// Read fresh message metadata without replacing a conversation window.
+    pub async fn refresh_message_context(
+        &mut self,
+        message_id: MessageId,
+    ) -> Result<Vec<Message>, IpcError> {
+        self.message_context_page_with_refresh(message_id, true)
+            .await
+            .map(|(messages, _)| messages)
+    }
+
+    async fn message_context_page_with_refresh(
+        &mut self,
+        message_id: MessageId,
+        refresh: bool,
+    ) -> Result<(Vec<Message>, Option<String>), IpcError> {
         let id = message_id.conversation_id.clone();
-        self.send(Method::MessagesContext { message_id }).await?;
+        self.send(Method::MessagesContext {
+            message_id,
+            refresh,
+        })
+        .await?;
         let mut cursor = None;
         let messages = self
             .collect_list(|payload| match payload {

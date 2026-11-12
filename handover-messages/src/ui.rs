@@ -886,7 +886,13 @@ impl Window {
             self.model.borrow_mut().notice = "Too many requests. Try again shortly.".into();
             return false;
         }
-        if matches!(request, Request::History(..) | Request::Context(_)) {
+        if matches!(
+            request,
+            Request::History(..)
+                | Request::Context(_)
+                | Request::ReplyContext(_)
+                | Request::ResolveReply(_)
+        ) {
             self.history_epochs
                 .borrow_mut()
                 .insert(id, self.history_epoch.get());
@@ -1211,9 +1217,14 @@ impl Window {
                 let Some(request) = self.pending.borrow_mut().remove(&id) else {
                     return;
                 };
-                if matches!(request, Request::History(..) | Request::Context(_))
-                    && self.history_epochs.borrow_mut().remove(&id)
-                        != Some(self.history_epoch.get())
+                if matches!(
+                    request,
+                    Request::History(..)
+                        | Request::Context(_)
+                        | Request::ReplyContext(_)
+                        | Request::ResolveReply(_)
+                ) && self.history_epochs.borrow_mut().remove(&id)
+                    != Some(self.history_epoch.get())
                 {
                     return;
                 }
@@ -1389,10 +1400,33 @@ impl Window {
                 }
             }
             Reply::Context(id, messages, cursor) => {
-                let matches = if let Request::Context(anchor) = request {
-                    self.model.borrow().anchor.as_ref() == Some(&anchor)
-                } else {
-                    false
+                let matches = match &request {
+                    Request::Context(anchor) => self.model.borrow().anchor.as_ref() == Some(anchor),
+                    Request::ReplyContext(anchor)
+                        if self.model.borrow().selected.as_ref() == Some(&id)
+                            && messages.iter().any(|message| &message.id == anchor) =>
+                    {
+                        self.history_epoch.set(self.history_epoch.get() + 1);
+                        self.history_epochs.borrow_mut().clear();
+                        self.quotes.borrow_mut().clear();
+                        self.history_cursors.borrow_mut().clear();
+                        self.history_error.borrow_mut().take();
+                        self.cached_messages.borrow_mut().clear();
+                        self.loading_latest.set(false);
+                        let mut model = self.model.borrow_mut();
+                        model.anchor = Some(anchor.clone());
+                        model.scroll_anchor = Some(anchor.clone());
+                        model.messages.clear();
+                        model.browsing_older = true;
+                        model.newer_gap = false;
+                        drop(model);
+                        self.request(Request::Select(Some(MessagingLocation {
+                            conversation_id: id.clone(),
+                            message_id: Some(anchor.clone()),
+                        })));
+                        true
+                    }
+                    _ => false,
                 };
                 if matches && self.model.borrow().selected.as_ref() == Some(&id) {
                     self.note_message_changes(&messages);
@@ -1506,6 +1540,35 @@ impl Window {
                     self.render_thread();
                 }
             }
+            Reply::Resolved(source, message) => {
+                if self.model.borrow().selected.as_ref() != Some(&source.conversation_id) {
+                    return;
+                }
+                if let Some(message) = message {
+                    let target = message.reply_to.clone();
+                    let mut model = self.model.borrow_mut();
+                    if let Some(saved) = model.messages.iter_mut().find(|saved| saved.id == source)
+                    {
+                        *saved = *message;
+                    }
+                    drop(model);
+                    self.render_thread();
+                    if let Some(target) = target {
+                        if self.rendered.borrow().contains(&target) {
+                            self.jump_to(&target);
+                        } else {
+                            self.request(Request::ReplyContext(target));
+                        }
+                    } else {
+                        self.model.borrow_mut().notice =
+                            "The phone no longer supplies this reply's original.".into();
+                    }
+                } else {
+                    self.model.borrow_mut().notice =
+                        "The phone could not return this reply. Your conversation is still open."
+                            .into();
+                }
+            }
             Reply::Contacts(contacts) => {
                 if self.photos.borrow_mut().replace(contacts) {
                     self.schedule_sidebar();
@@ -1558,6 +1621,19 @@ impl Window {
                 *self.history_error.borrow_mut() = Some(error.message);
                 self.model.borrow_mut().notice.clear();
                 self.loading_latest.set(false);
+            }
+            Request::ReplyContext(id) => {
+                if self.model.borrow().selected.as_ref() == Some(&id.conversation_id) {
+                    self.model.borrow_mut().notice =
+                        "The original message is unavailable. Your conversation is still open."
+                            .into();
+                }
+            }
+            Request::ResolveReply(id) => {
+                if self.model.borrow().selected.as_ref() == Some(&id.conversation_id) {
+                    self.model.borrow_mut().notice =
+                        "Couldn't refresh this reply. Your conversation is still open.".into();
+                }
             }
             Request::Quote(id) => {
                 if self.model.borrow().selected.as_ref() == Some(&id.conversation_id)
@@ -1749,6 +1825,25 @@ impl Window {
             }
         } else {
             self.open(target.conversation_id.clone(), Some(target.clone()));
+        }
+    }
+    fn jump_to_reply(self: &Rc<Self>, source: &MessageId, target: &MessageId) {
+        if self.rendered.borrow().contains(target) {
+            self.jump_to(target);
+        } else if self
+            .quotes
+            .borrow()
+            .get(target)
+            .is_some_and(Option::is_some)
+        {
+            self.request(Request::ReplyContext(target.clone()));
+        } else if !self
+            .pending
+            .borrow()
+            .values()
+            .any(|request| matches!(request, Request::ResolveReply(id) if id == source))
+        {
+            self.request(Request::ResolveReply(source.clone()));
         }
     }
     fn reaction_details(
@@ -3061,9 +3156,10 @@ impl Window {
                 }
                 let weak = Rc::downgrade(self);
                 let target = target.clone();
+                let source = message.id.clone();
                 quote.connect_clicked(move |_| {
                     if let Some(this) = weak.upgrade() {
-                        this.jump_to(&target);
+                        this.jump_to_reply(&source, &target);
                     }
                 });
                 bubble.append(&quote);

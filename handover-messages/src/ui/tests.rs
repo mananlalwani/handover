@@ -660,6 +660,27 @@ fn fake_server(
                     }
                     "messages.context" => {
                         let message_id = request["message_id"].clone();
+                        if message_id["local_id"] == "stale-target" {
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "error",
+                                    json!({"code":"unknown_message","message":"Original message unavailable"}),
+                                ),
+                            );
+                            return;
+                        }
+                        if request["refresh"] == true && message_id["local_id"] == "m3" {
+                            let message = json!({"id":message_id,"sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"transport":"rcs","sent_at":1794406800000000i64,"text":"Perfect, send me the name when you get a chance.","attachments":[],"reply_to":{"conversation_id":conversation.id,"local_id":"m1"},"reactions":[],"deleted":false});
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "message_context",
+                                    json!({"conversation_id":conversation.id,"messages":[message],"done":true}),
+                                ),
+                            );
+                            return;
+                        }
                         if message_id["local_id"] == "m0" {
                             thread::sleep(Duration::from_millis(500));
                         }
@@ -1769,6 +1790,76 @@ fn native_window_round_trips_real_frontend_actions() {
         context_requests_before,
         "jumping to an already loaded quote does not fetch message context"
     );
+
+    let mut stale_reply = ui
+        .model
+        .borrow()
+        .messages
+        .iter()
+        .find(|message| message.id.local_id == "m3")
+        .unwrap()
+        .clone();
+    stale_reply.reply_to = Some(MessageId::new(id(), "stale-target"));
+    stale_reply.reply_preview = Some("Hey! Are we still on for Saturday?".into());
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("message_updated", json!({"message":stale_reply})),
+    );
+    pump_until(
+        || {
+            ui.model.borrow().messages.iter().any(|message| {
+                message.id.local_id == "m3"
+                    && message
+                        .reply_to
+                        .as_ref()
+                        .is_some_and(|target| target.local_id == "stale-target")
+            })
+        },
+        "stale archived reply reaches the UI",
+    );
+    let stale_quote = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+            button.has_css_class("quoted-message")
+                && button
+                    .label()
+                    .is_some_and(|label| label.starts_with("Reply\n"))
+        })
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    stale_quote.emit_clicked();
+    pump_until(
+        || {
+            ui.model.borrow().messages.iter().any(|message| {
+                message.id.local_id == "m3"
+                    && message
+                        .reply_to
+                        .as_ref()
+                        .is_some_and(|target| target.local_id == "m1")
+            }) && ui
+                .model
+                .borrow()
+                .messages
+                .iter()
+                .any(|message| message.id.local_id == "m1")
+        },
+        "clicking a stale reply refreshes its target and retains the loaded original",
+    );
+
+    let retained_messages = ui.model.borrow().messages.clone();
+    ui.request(Request::ReplyContext(MessageId::new(id(), "stale-target")));
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .notice
+                .contains("Your conversation is still open")
+        },
+        "unavailable reply destination keeps the conversation visible",
+    );
+    assert_eq!(ui.model.borrow().messages, retained_messages);
+    ui.model.borrow_mut().notice.clear();
 
     let missing_original_reply = json!({
         "id":{"conversation_id":id(),"local_id":"m6"},
