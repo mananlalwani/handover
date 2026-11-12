@@ -254,13 +254,13 @@ fn conversations() -> Vec<Conversation> {
                 Participant {
                     local_id: "contact-1".into(),
                     display_name: Some("Maya Chen".into()),
-                    address: None,
+                    address: Some("3125550100".into()),
                     is_self: false,
                 },
                 Participant {
                     local_id: "contact-2".into(),
                     display_name: Some("Jordan Lee".into()),
-                    address: None,
+                    address: Some("Jordan@Example.test".into()),
                     is_self: false,
                 },
             ]
@@ -725,6 +725,13 @@ fn fake_server(
                                 "phones":["+1 (312) 555-0100"],
                                 "emails":[],
                                 "photo":photo_base64
+                            },{
+                                "device_id":"android:gui-test",
+                                "local_id":"jordan-contact",
+                                "display_name":"Jordan Lee",
+                                "phones":[],
+                                "emails":["jordan@example.test"],
+                                "photo":glib::base64_encode(include_bytes!("../../tests/fixtures/images/sample.png")).to_string()
                             }]}),
                         ),
                     ),
@@ -929,6 +936,18 @@ fn native_window_round_trips_real_frontend_actions() {
     pump_until(
         || ui.avatar.custom_image().is_some(),
         "synced contact photo in conversation header",
+    );
+    pump_until(
+        || {
+            find_widget(ui.list.upcast_ref(), &|widget| {
+                widget.downcast_ref::<adw::Avatar>().is_some_and(|avatar| {
+                    avatar.icon_name().as_deref() == Some("system-users-symbolic")
+                        && avatar.custom_image().is_some()
+                })
+            })
+            .is_some()
+        },
+        "group member photos in sidebar with QML-compatible address matching",
     );
     pump_until(
         || {

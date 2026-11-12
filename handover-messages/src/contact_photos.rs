@@ -9,10 +9,13 @@ impl ContactPhotos {
     pub fn replace(&mut self, contacts: Vec<Contact>) {
         self.0.clear();
         for contact in contacts {
-            let photo = contact
+            let Some(photo) = contact
                 .photo
                 .filter(|photo| !photo.is_empty() && photo.len() <= 48 * 1024)
-                .map(Arc::<str>::from);
+                .map(Arc::<str>::from)
+            else {
+                continue;
+            };
             for address in contact.phones.iter().chain(&contact.emails) {
                 let Some(address) = key(address) else {
                     continue;
@@ -20,11 +23,11 @@ impl ContactPhotos {
                 self.0
                     .entry(address)
                     .and_modify(|existing| {
-                        if *existing != photo {
+                        if existing.as_ref() != Some(&photo) {
                             *existing = None;
                         }
                     })
-                    .or_insert_with(|| photo.clone());
+                    .or_insert_with(|| Some(photo.clone()));
             }
         }
     }
@@ -35,20 +38,25 @@ impl ContactPhotos {
             .and_then(Clone::clone)
     }
 
-    pub fn conversation(&self, conversation: &Conversation) -> Option<Arc<str>> {
-        if conversation.kind != ConversationKind::Direct {
-            return None;
-        }
-        let mut photos = conversation
+    pub fn conversation_photos(&self, conversation: &Conversation) -> Vec<Arc<str>> {
+        let mut photos = Vec::new();
+        for photo in conversation
             .participants
             .iter()
             .filter(|p| !p.is_self)
-            .filter_map(|p| self.participant(p));
-        let first = photos.next()?;
-        if photos.any(|photo| photo != first) {
-            None
+            .filter_map(|p| self.participant(p))
+        {
+            if !photos.contains(&photo) {
+                photos.push(photo);
+            }
+            if photos.len() == 4 {
+                break;
+            }
+        }
+        if conversation.kind == ConversationKind::Direct && photos.len() > 1 {
+            Vec::new()
         } else {
-            Some(first)
+            photos
         }
     }
 }
@@ -59,7 +67,11 @@ fn key(address: &str) -> Option<String> {
         if local.is_empty() || domain.is_empty() || domain.contains('@') {
             return None;
         }
-        return Some(format!("email:{local}@{}", domain.to_ascii_lowercase()));
+        return Some(format!(
+            "email:{}@{}",
+            local.to_ascii_lowercase(),
+            domain.to_ascii_lowercase()
+        ));
     }
     if address
         .chars()
@@ -68,15 +80,30 @@ fn key(address: &str) -> Option<String> {
         return None;
     }
     let digits: String = address.chars().filter(char::is_ascii_digit).collect();
-    (7..=15)
-        .contains(&digits.len())
-        .then(|| format!("phone:{digits}"))
+    if !(7..=15).contains(&digits.len()) {
+        return None;
+    }
+    // Preserve the QML client's explicit NANP equivalence. Do not strip
+    // arbitrary international prefixes or match numbers by their suffix.
+    let national = if digits.len() == 11 && digits.starts_with('1') {
+        &digits[1..]
+    } else {
+        &digits
+    };
+    if national.len() == 10
+        && matches!(national.as_bytes()[0], b'2'..=b'9')
+        && matches!(national.as_bytes()[3], b'2'..=b'9')
+    {
+        Some(format!("nanp:{national}"))
+    } else {
+        Some(format!("phone:{digits}"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use handover_core::DeviceId;
+    use handover_core::{ConversationId, DeviceId, MessagingAccountId, TransportKind};
     fn contact(phone: &str, photo: &str) -> Contact {
         Contact {
             device_id: DeviceId::new("phone"),
@@ -95,15 +122,49 @@ mod tests {
             is_self: false,
         }
     }
+
+    fn conversation(kind: ConversationKind, participants: Vec<Participant>) -> Conversation {
+        Conversation {
+            id: ConversationId::new(MessagingAccountId::new("account"), "conversation"),
+            kind,
+            transport: TransportKind::Sms,
+            title: None,
+            participants,
+            latest_message_id: None,
+            last_activity_at: None,
+            unread_count: None,
+            cursor: None,
+            capabilities: Default::default(),
+        }
+    }
+
+    fn contact_with_email(email: &str, photo: &str) -> Contact {
+        Contact {
+            emails: vec![email.into()],
+            ..contact("", photo)
+        }
+    }
+
+    fn participant_with_address(address: &str, is_self: bool) -> Participant {
+        Participant {
+            local_id: address.into(),
+            display_name: None,
+            address: Some(address.into()),
+            is_self,
+        }
+    }
     #[test]
-    fn exact_addresses_match_formatting_without_guessing_country_or_names() {
+    fn matching_accepts_formatting_and_nanp_country_code_without_using_names() {
         let mut photos = ContactPhotos::default();
         photos.replace(vec![contact("+1 (312) 555-0100", "photo")]);
         assert_eq!(
             photos.participant(&participant("+13125550100")).as_deref(),
             Some("photo")
         );
-        assert!(photos.participant(&participant("3125550100")).is_none());
+        assert_eq!(
+            photos.participant(&participant("3125550100")).as_deref(),
+            Some("photo")
+        );
         assert!(photos.participant(&participant("Same name")).is_none());
         photos.replace(vec![
             contact("+13125550100", "one"),
@@ -112,5 +173,113 @@ mod tests {
         assert!(photos.participant(&participant("+13125550100")).is_none());
         photos.replace(vec![]);
         assert!(photos.participant(&participant("+13125550100")).is_none());
+    }
+
+    #[test]
+    fn invalid_nanp_and_non_nanp_numbers_do_not_suffix_match() {
+        let mut photos = ContactPhotos::default();
+        photos.replace(vec![
+            contact("+1 123 555 0100", "invalid-nanp"),
+            contact("+44 20 7946 0018", "uk-number"),
+            contact("+1 312 555 0911", "ends-in-short-code"),
+        ]);
+
+        assert!(photos.participant(&participant("1235550100")).is_none());
+        assert!(photos.participant(&participant("020 7946 0018")).is_none());
+        assert!(photos.participant(&participant("911")).is_none());
+        assert_eq!(
+            photos
+                .participant(&participant("+44 (20) 7946-0018"))
+                .as_deref(),
+            Some("uk-number")
+        );
+    }
+
+    #[test]
+    fn email_matching_ignores_ascii_case_in_local_part_and_domain() {
+        let mut photos = ContactPhotos::default();
+        photos.replace(vec![contact_with_email("Alex.Example@Mail.test", "photo")]);
+
+        assert_eq!(
+            photos
+                .participant(&participant("alex.example@mail.TEST"))
+                .as_deref(),
+            Some("photo")
+        );
+    }
+
+    #[test]
+    fn contact_without_photo_after_photo_does_not_hide_the_unique_photo() {
+        let with_photo = contact("+13125550100", "photo");
+        let without_photo = Contact {
+            photo: None,
+            ..contact("+1 (312) 555-0100", "unused")
+        };
+        let mut photos = ContactPhotos::default();
+
+        photos.replace(vec![with_photo.clone(), without_photo.clone()]);
+        assert_eq!(
+            photos.participant(&participant("+13125550100")).as_deref(),
+            Some("photo")
+        );
+    }
+
+    #[test]
+    fn contact_without_photo_before_photo_does_not_hide_the_unique_photo() {
+        let with_photo = contact("+13125550100", "photo");
+        let without_photo = Contact {
+            photo: None,
+            ..contact("+1 (312) 555-0100", "unused")
+        };
+        let mut photos = ContactPhotos::default();
+        photos.replace(vec![without_photo, with_photo]);
+        assert_eq!(
+            photos.participant(&participant("+13125550100")).as_deref(),
+            Some("photo")
+        );
+    }
+
+    #[test]
+    fn photo_conflict_stays_ambiguous_after_a_photo_less_duplicate() {
+        let without_photo = Contact {
+            photo: None,
+            ..contact("+13125550100", "unused")
+        };
+        let mut photos = ContactPhotos::default();
+        photos.replace(vec![
+            contact("+13125550100", "one"),
+            contact("+1 (312) 555-0100", "two"),
+            without_photo,
+        ]);
+
+        assert!(photos.participant(&participant("+13125550100")).is_none());
+    }
+
+    #[test]
+    fn group_photos_are_distinct_ordered_bounded_and_exclude_self() {
+        let mut photos = ContactPhotos::default();
+        photos.replace(vec![
+            contact("+13125550101", "one"),
+            contact("+13125550102", "two"),
+            contact("+13125550103", "three"),
+            contact("+13125550104", "four"),
+            contact("+13125550105", "five"),
+        ]);
+        let group = conversation(
+            ConversationKind::Group,
+            vec![
+                participant_with_address("+13125550105", true),
+                participant_with_address("+13125550102", false),
+                participant_with_address("+13125550101", false),
+                participant_with_address("+13125550102", false),
+                participant_with_address("+13125550103", false),
+                participant_with_address("+13125550104", false),
+                participant_with_address("+13125550105", false),
+            ],
+        );
+
+        let group_photos = photos.conversation_photos(&group);
+        let result: Vec<_> = group_photos.iter().map(|photo| photo.as_ref()).collect();
+        assert_eq!(result, vec!["two", "one", "three", "four"]);
     }
 }

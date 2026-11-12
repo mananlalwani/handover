@@ -8,6 +8,7 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use handover_core::messaging::{Conversation, ConversationKind, TransportKind};
+use handover_gmessages::contract::HelperDiagnostic;
 use p256::{elliptic_curve::Generate, pkcs8::EncodePublicKey};
 use prost::Message;
 use reqwest::header::HeaderMap;
@@ -66,10 +67,12 @@ impl Context {
             .as_deref()
             .filter(|value| crate::valid_account_email(value))
         else {
+            let _ = diagnostic(&events, HelperDiagnostic::TypingAuthenticationRequired).await;
             std::future::pending::<()>().await;
             return;
         };
         let Ok(headers) = proof.validate_messaging() else {
+            let _ = diagnostic(&events, HelperDiagnostic::TypingAuthenticationRequired).await;
             return;
         };
         let Ok(http) = crate::client(true) else {
@@ -97,8 +100,9 @@ impl Context {
             let current = config.borrow_and_update().clone();
             if let Some(current) = current {
                 let attempt = async {
+                    diagnostic(&events, HelperDiagnostic::TypingConnecting).await?;
                     let registration = register(&transport, &current, email, device, &key).await?;
-                    eprintln!("native RCS registered");
+                    diagnostic(&events, HelperDiagnostic::TypingRegistered).await?;
                     receive(
                         &transport,
                         &current,
@@ -117,7 +121,14 @@ impl Context {
                             matches!(error.http_status(), Some(400 | 401 | 403))
                                 || matches!(error.rpc_status(), Some(crate::RpcStatus::Unauthenticated | crate::RpcStatus::PermissionDenied | crate::RpcStatus::InvalidArgument))
                         });
-                        if let Err(error) = result { eprintln!("native RCS receive stopped: {error:?}"); }
+                        if let Err(error) = result {
+                            let code = if matches!(error.http_status(), Some(401 | 403))
+                                || matches!(error.rpc_status(), Some(crate::RpcStatus::Unauthenticated | crate::RpcStatus::PermissionDenied)) {
+                                HelperDiagnostic::TypingAuthenticationRequired
+                            } else if terminal { HelperDiagnostic::TypingRegistrationRejected }
+                            else { HelperDiagnostic::TypingRetrying };
+                            if diagnostic(&events, code).await.is_err() { return; }
+                        }
                         (false, terminal)
                     }
                 };
@@ -143,8 +154,14 @@ impl Context {
                     changed = config.changed() => { if changed.is_err() { return; } delay = 1; }
                     _ = tokio::time::sleep(Duration::from_secs(delay)) => { delay = (delay * 2).min(60); }
                 }
-            } else if config.changed().await.is_err() {
-                return;
+            } else {
+                if diagnostic(&events, HelperDiagnostic::TypingWaitingSettings)
+                    .await
+                    .is_err()
+                    || config.changed().await.is_err()
+                {
+                    return;
+                }
             }
         }
     }
@@ -491,7 +508,7 @@ async fn receive(
     let mut request = json!([header(Some(&registration.token)), null, null, []]);
     let body = Zeroizing::new(serde_json::to_vec(&request).map_err(|_| invalid())?);
     crate::registration::erase_strings(&mut request);
-    let (tx, mut rx) = mpsc::channel(16);
+    let (tx, mut rx) = mpsc::channel::<Option<TypingEvent>>(16);
     let url = format!("{}{}", config.endpoint, crate::RECEIVE_MESSAGES_PATH);
     let receive = crate::receive_json_when_ready(
         &transport.stream,
@@ -502,12 +519,14 @@ async fn receive(
             if let crate::receive::ReceiveEvent::Record(record) = event
                 && let Some(typing) = typing(&record)?
             {
-                tx.try_send(typing)
+                tx.try_send(Some(typing))
                     .map_err(|_| ReceiveError::Backpressure)?;
             }
             Ok(())
         },
-        || {},
+        || {
+            let _ = tx.try_send(None);
+        },
     );
     tokio::pin!(receive);
     let expiry = tokio::time::sleep(registration.lifetime);
@@ -524,7 +543,10 @@ async fn receive(
                     for conversation in expired { active.remove(&conversation); publish(events, conversation, Vec::new()).await?; }
                 }
                 event = rx.recv() => {
-                    let event = event.ok_or(ProbeError::ReceiveFailed)?;
+                    let Some(event) = event.ok_or(ProbeError::ReceiveFailed)? else {
+                        diagnostic(events, HelperDiagnostic::TypingReceiveOpen).await?;
+                        continue;
+                    };
                     let binding = bind(&known.borrow(), &event.sender).map(|(conversation, participant)| (conversation.to_owned(), participant.to_owned()));
                     let Some((conversation, participant)) = binding else { continue; };
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| ProbeError::NativeError)?;
@@ -549,6 +571,24 @@ async fn receive(
         }
     }.await
 }
+async fn diagnostic(
+    events: &mpsc::Sender<LiveOutput>,
+    code: HelperDiagnostic,
+) -> Result<(), ProbeError> {
+    let (accepted, processed) = tokio::sync::oneshot::channel();
+    events
+        .send(LiveOutput {
+            event: LiveEvent::Diagnostic(code),
+            accepted,
+        })
+        .await
+        .map_err(|_| ProbeError::NativeError)?;
+    tokio::time::timeout(Duration::from_secs(30), processed)
+        .await
+        .map_err(|_| ProbeError::Timeout)?
+        .map_err(|_| ProbeError::NativeError)
+}
+
 async fn publish(
     events: &mpsc::Sender<LiveOutput>,
     conversation: String,

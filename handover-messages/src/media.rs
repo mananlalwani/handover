@@ -56,6 +56,7 @@ pub fn is_image(attachment: &Attachment) -> bool {
 enum Source {
     File(String, String),
     Photo(Arc<str>),
+    Group(Vec<Arc<str>>),
 }
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct Key(Source, i32);
@@ -195,13 +196,13 @@ impl Media {
         self.0
             .cache
             .borrow_mut()
-            .retain(|key, _| !matches!(key.0, Source::Photo(_)));
+            .retain(|key, _| !matches!(key.0, Source::Photo(_) | Source::Group(_)));
         self.0
             .queue
             .borrow_mut()
-            .retain(|key| !matches!(key.0, Source::Photo(_)));
+            .retain(|key| !matches!(key.0, Source::Photo(_) | Source::Group(_)));
         self.0.bindings.borrow_mut().retain(|binding| {
-            if matches!(binding.key.0, Source::Photo(_)) {
+            if matches!(binding.key.0, Source::Photo(_) | Source::Group(_)) {
                 binding.target.apply(None, false);
                 false
             } else {
@@ -222,6 +223,16 @@ impl Media {
             Target::Avatar(avatar.downgrade()),
             Key(Source::Photo(photo), 128),
         );
+    }
+    pub fn avatar_photos(&self, avatar: &adw::Avatar, photos: Vec<Arc<str>>) {
+        match photos.as_slice() {
+            [] => self.clear_avatar(avatar),
+            [photo] => self.avatar(avatar, photo.clone()),
+            _ => self.bind(
+                Target::Avatar(avatar.downgrade()),
+                Key(Source::Group(photos), 128),
+            ),
+        }
     }
     pub fn schedule(&self, widget: &impl IsA<gtk::Widget>) {
         let owner = widget.as_ref().downgrade();
@@ -311,7 +322,9 @@ impl Media {
                     .upcast::<gdk::Texture>()
                 });
                 this.0.active.set(this.0.active.get() - 1);
-                if matches!(key.0, Source::Photo(_)) && photo_epoch != this.0.photo_epoch.get() {
+                if matches!(key.0, Source::Photo(_) | Source::Group(_))
+                    && photo_epoch != this.0.photo_epoch.get()
+                {
                     this.refresh();
                     return;
                 }
@@ -665,6 +678,7 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
         return Err(());
     }
     let (input, hint): (Box<dyn Read>, &str) = match source {
+        Source::Group(photos) => return decode_group(photos, edge),
         Source::File(path, mime) => {
             let file = std::fs::OpenOptions::new()
                 .read(true)
@@ -755,6 +769,67 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
     })
 }
 
+fn decode_group(photos: &[Arc<str>], edge: i32) -> Result<Decoded, ()> {
+    if !(2..=4).contains(&photos.len()) || !(2..=512).contains(&edge) {
+        return Err(());
+    }
+    let images = photos
+        .iter()
+        .filter_map(|photo| decode(&Source::Photo(photo.clone()), edge).ok())
+        .collect::<Vec<_>>();
+    if images.len() < 2 {
+        return images.into_iter().next().ok_or(());
+    }
+    let stride = edge as usize * 4;
+    let mut pixels = vec![0; stride * edge as usize];
+    for (index, image) in images.iter().enumerate() {
+        let half = edge / 2;
+        let (x, y, width, height) = match (images.len(), index) {
+            (2, 0) | (3, 0) => (0, 0, half, edge),
+            (2, _) => (half, 0, edge - half, edge),
+            (3, 1) => (half, 0, edge - half, half),
+            (3, _) => (half, half, edge - half, edge - half),
+            (_, i) => {
+                let x = (i as i32 % 2) * half;
+                let y = (i as i32 / 2) * half;
+                (
+                    x,
+                    y,
+                    if x == 0 { half } else { edge - half },
+                    if y == 0 { half } else { edge - half },
+                )
+            }
+        };
+        let scale = (f64::from(width) / f64::from(image.width))
+            .max(f64::from(height) / f64::from(image.height));
+        let left = (f64::from(image.width) - f64::from(width) / scale) / 2.0;
+        let top = (f64::from(image.height) - f64::from(height) / scale) / 2.0;
+        let channels = if image.alpha { 4 } else { 3 };
+        for dy in 0..height {
+            for dx in 0..width {
+                let sx = ((f64::from(dx) + 0.5) / scale + left) as usize;
+                let sy = ((f64::from(dy) + 0.5) / scale + top) as usize;
+                let source = sy.min(image.height as usize - 1) * image.stride
+                    + sx.min(image.width as usize - 1) * channels;
+                let target = (y + dy) as usize * stride + (x + dx) as usize * 4;
+                pixels[target..target + 3].copy_from_slice(&image.pixels[source..source + 3]);
+                pixels[target + 3] = if image.alpha {
+                    image.pixels[source + 3]
+                } else {
+                    255
+                };
+            }
+        }
+    }
+    Ok(Decoded {
+        pixels,
+        width: edge,
+        height: edge,
+        stride,
+        alpha: true,
+    })
+}
+
 fn valid_dimensions(width: i32, height: i32) -> bool {
     width > 0
         && height > 0
@@ -809,6 +884,45 @@ fn raster_format(detected: Option<&str>, hint: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn group_avatars_combine_member_photos_and_tolerate_a_bad_photo() {
+        let make = |color| {
+            let image =
+                gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 4, 4).unwrap();
+            image.fill(color);
+            Arc::<str>::from(
+                glib::base64_encode(&image.save_to_bufferv("png", &[]).unwrap()).as_str(),
+            )
+        };
+        let red = make(0xff0000ff);
+        let blue = make(0x0000ffff);
+        let image = decode(&Source::Group(vec![red.clone(), blue.clone()]), 32).unwrap();
+        assert_eq!((image.width, image.height), (32, 32));
+        assert_eq!(&image.pixels[..4], &[255, 0, 0, 255]);
+        assert_eq!(&image.pixels[16 * 4..16 * 4 + 4], &[0, 0, 255, 255]);
+        let image = decode(
+            &Source::Group(vec![red.clone(), Arc::from("bad"), blue.clone()]),
+            32,
+        )
+        .unwrap();
+        assert_eq!(&image.pixels[16 * 4..16 * 4 + 4], &[0, 0, 255, 255]);
+        for count in [3, 4] {
+            let photos = (0..count)
+                .map(|i| if i == 0 { red.clone() } else { blue.clone() })
+                .collect();
+            let image = decode(&Source::Group(photos), 33).unwrap();
+            assert_eq!(image.pixels.len(), 33 * 33 * 4);
+            assert!(
+                image
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| pixel[3] == 255)
+            );
+        }
+        assert!(decode(&Source::Group(vec![Arc::from("bad"), Arc::from("bad")]), 32).is_err());
+    }
     const FORMATS: &[(&str, &str)] = &[
         ("jpg", "image/jpeg"),
         ("png", "image/png"),

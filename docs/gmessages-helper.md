@@ -39,7 +39,14 @@ Daemon → helper: `hello`, `login` (base64 bundle on the pipe, never argv),
 
 Helper → daemon: `hello`, `account`, `account_removed`, `pairing` (opaque
 prompt), `conversations`, `conversation_removed`, `messages`,
-`message_removed`, `status`, `typing`, `read`, `command_result`, `error`.
+`message_removed`, `status`, `typing`, `read`, `command_result`, `error`,
+`diagnostic`.
+
+Diagnostics contain only a closed enum code. Typing receiver codes distinguish
+waiting for phone settings, attempting registration, registered, an open receive
+connection, authentication required, registration rejected, and retrying. The
+daemon journals these codes without provider text, account addresses, or tokens.
+They describe receiver lifecycle evidence and do not imply that a peer is typing.
 
 Unknown protocol versions fail the handshake. Lines over 1 MiB and bad JSON
 are dropped without echoing content. Unknown status tokens and capability

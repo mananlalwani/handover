@@ -440,3 +440,36 @@ format test ran with every fixture loader required. Installed the matching
 release app after normal window closure; its service is active with one mapped
 window. The daemon was not restarted. Image compatibility was tested with
 synthetic files, not private account attachments. No real messages were sent.
+
+
+## Contact photo parity and typing diagnosis
+
+The Rust migration omitted QML's validated NANP country-code equivalence and
+ASCII-insensitive email matching, and excluded all group photos. Read-only
+comparison of cached data found QML photo matches for 38 direct conversations
+and 74 groups, while the original Rust lookup found 32 direct matches and no
+groups. This was a client regression, not evidence that all missing photos were
+absent from the phone.
+
+The app now preserves those address rules. Direct conversations use one
+unambiguous photo; groups use up to four distinct member photos in a local
+composite. Conflicting real photos remain ambiguous. Photo-less duplicates no
+longer hide the only available photo. Two regressions reproduced that duplicate
+bug before the fix. Tests cover international and short-code exclusions,
+case handling, group member order, self exclusion, composite pixels, and corrupt
+photo fallback. The GUI scenario verifies group photos with national-number and
+mixed-case email members, alongside the existing contact/header/viewer checks.
+
+Added closed helper diagnostic codes for typing receiver lifecycle. The daemon
+journals only these fixed codes. Successful registration and an open receive
+response are distinct evidence. Codes carry no arbitrary helper text, account
+addresses, credentials, or provider payloads. Contract fixtures and RCS transport
+tests cover decoding and publication order. Public IPC typing semantics did not
+change.
+
+Formatting, strict workspace Clippy, 626 workspace tests with 7 ignored, Android
+assembly/lint/unit tests, QML lint, 49 JavaScript tests, and the private GUI scenario
+passed. Matching release app, daemon, and native helper binaries were installed.
+The first live diagnostic run reported waiting for settings, a registration
+attempt, and registration rejection. It also found a conversation-cursor failure
+in receive recovery. Incoming typing is not yet live-verified or resolved.

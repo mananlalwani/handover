@@ -1593,6 +1593,10 @@ async fn ingest_event(
             }
             Err(error) => warn!(%error, "dropping unknown message status"),
         },
+        HelperEvent::Diagnostic { code } => {
+            // The contract admits only fixed enum values, never helper text.
+            tracing::info!(?code, "messaging helper diagnostic");
+        }
         HelperEvent::Typing {
             account,
             conversation,

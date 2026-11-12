@@ -1946,7 +1946,7 @@ impl Window {
                 conversation.unread_count.is_some_and(|count| count > 0),
                 conversation.last_activity_at,
                 conversation.kind == ConversationKind::Group,
-                self.photos.borrow().conversation(conversation),
+                self.photos.borrow().conversation_photos(conversation),
             );
             rows.push((conversation.id.clone(), None));
         }
@@ -1957,7 +1957,11 @@ impl Window {
                 false,
                 hit.sent_at,
                 false,
-                self.photos.borrow().participant(&hit.sender),
+                self.photos
+                    .borrow()
+                    .participant(&hit.sender)
+                    .into_iter()
+                    .collect(),
             );
             rows.push((
                 hit.message_id.conversation_id.clone(),
@@ -2024,14 +2028,12 @@ impl Window {
         unread: bool,
         time: Option<i64>,
         group: bool,
-        photo: Option<std::sync::Arc<str>>,
+        photos: Vec<std::sync::Arc<str>>,
     ) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let avatar = adw::Avatar::new(40, Some(title), true);
         style_avatar(&avatar, title, group);
-        if let Some(photo) = photo {
-            self.media.avatar(&avatar, photo);
-        }
+        self.media.avatar_photos(&avatar, photos);
         row.append(&avatar);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
         text.set_hexpand(true);
@@ -2125,13 +2127,10 @@ impl Window {
             conversation.is_some_and(|conversation| conversation.kind == ConversationKind::Group),
         );
         self.avatar.set_visible(model.selected.is_some());
-        if let Some(photo) =
-            conversation.and_then(|conversation| self.photos.borrow().conversation(conversation))
-        {
-            self.media.avatar(&self.avatar, photo);
-        } else {
-            self.media.clear_avatar(&self.avatar);
-        }
+        let photos = conversation
+            .map(|conversation| self.photos.borrow().conversation_photos(conversation))
+            .unwrap_or_default();
+        self.media.avatar_photos(&self.avatar, photos);
         self.media.schedule(&self.window);
         let account = model.selected.as_ref().and_then(|id| {
             model

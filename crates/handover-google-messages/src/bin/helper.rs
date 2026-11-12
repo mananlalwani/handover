@@ -1297,6 +1297,9 @@ where
                 match signal {
                     LiveSignal::Output(output) => {
                         match output.event {
+                            LiveEvent::Diagnostic(code) => {
+                                publish(writer, HelperEvent::Diagnostic { code }).await?;
+                            }
                             LiveEvent::Typing { conversation, participants } => {
                                 publish(writer, HelperEvent::Typing { account: account.clone(), conversation, participants }).await?;
                             }

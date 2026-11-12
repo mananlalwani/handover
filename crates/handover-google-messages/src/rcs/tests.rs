@@ -2,6 +2,41 @@ use super::*;
 use handover_core::messaging::{ConversationId, MessagingAccountId, Participant};
 use std::collections::BTreeSet;
 
+#[tokio::test]
+async fn receiver_diagnostics_wait_for_publication_and_have_no_payload_fields() {
+    let (events, mut outputs) = mpsc::channel(1);
+    let publication = diagnostic(&events, HelperDiagnostic::TypingRegistered);
+    tokio::pin!(publication);
+    let output = tokio::select! {
+        result = &mut publication => panic!("publication completed early: {result:?}"),
+        output = outputs.recv() => output.unwrap(),
+    };
+    assert!(matches!(
+        output.event,
+        LiveEvent::Diagnostic(HelperDiagnostic::TypingRegistered)
+    ));
+    tokio::select! {
+        result = &mut publication => panic!("publication was not acknowledged: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
+    output.accepted.send(()).unwrap();
+    publication.await.unwrap();
+    let encoded = serde_json::to_value(handover_gmessages::contract::HelperEvent::Diagnostic {
+        code: HelperDiagnostic::TypingRegistered,
+    })
+    .unwrap();
+    assert_eq!(
+        encoded,
+        json!({"type":"diagnostic","code":"typing_registered"})
+    );
+    assert!(
+        serde_json::from_value::<handover_gmessages::contract::HelperEvent>(
+            json!({"type":"diagnostic","code":"arbitrary provider payload"})
+        )
+        .is_err()
+    );
+}
+
 fn conversation(id: &str) -> Conversation {
     Conversation {
         id: ConversationId::new(MessagingAccountId::new("test"), id),
@@ -240,6 +275,12 @@ async fn receive_publishes_before_ack_and_expires_without_an_idle_packet() {
         &mut active,
     );
     tokio::pin!(network);
+    let opened = tokio::select! { result = &mut network => panic!("receive ended: {result:?}"), output = outputs.recv() => output.unwrap() };
+    assert!(matches!(
+        opened.event,
+        LiveEvent::Diagnostic(HelperDiagnostic::TypingReceiveOpen)
+    ));
+    opened.accepted.send(()).unwrap();
     let output = tokio::select! { result = &mut network => panic!("receive ended: {result:?}"), output = outputs.recv() => output.unwrap() };
     assert!(
         matches!(output.event, LiveEvent::Typing { conversation, participants } if conversation == "thread" && participants == ["peer"])

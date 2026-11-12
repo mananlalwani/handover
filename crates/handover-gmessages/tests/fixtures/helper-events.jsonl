@@ -16,5 +16,6 @@
 {"ok":true,"request_id":"r1","type":"command_result"}
 {"error":"send failed","ok":false,"request_id":"r2","type":"command_result"}
 {"message":"history fetch failed","type":"error"}
+{"type":"diagnostic","code":"typing_registered"}
 {"account":"gmessages:default","type":"account_removed"}
 {"type":"messages","account":"gmessages:default","conversation":"t1","messages":[],"page_complete":true,"full":false,"future_flag":true}

@@ -293,6 +293,7 @@ pub fn event_ids(event: &HelperEvent) -> String {
             format!("command_result {request_id} ok={ok}")
         }
         HelperEvent::Error { .. } => "error".into(),
+        HelperEvent::Diagnostic { code } => format!("diagnostic {code:?}"),
     }
 }
 

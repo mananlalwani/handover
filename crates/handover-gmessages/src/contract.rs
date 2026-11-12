@@ -17,6 +17,19 @@ use serde::{Deserialize, Serialize};
 /// Helper contract version. Bumped only for breaking changes; unknown
 /// versions are rejected on both sides.
 pub const HELPER_PROTOCOL: u32 = 1;
+
+/// Fixed lifecycle evidence for diagnostics. Never carries provider payloads.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperDiagnostic {
+    TypingWaitingSettings,
+    TypingConnecting,
+    TypingRegistered,
+    TypingReceiveOpen,
+    TypingAuthenticationRequired,
+    TypingRegistrationRejected,
+    TypingRetrying,
+}
 /// Reported by the in-tree Google Messages helper in the `Hello` event.
 pub const NATIVE_GOOGLE_MESSAGES_HELPER_NAME: &str = "handover-google-messages-helper/native";
 
@@ -130,6 +143,9 @@ pub enum HelperCommand {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HelperEvent {
+    Diagnostic {
+        code: HelperDiagnostic,
+    },
     Hello {
         helper_protocol: u32,
         name: String,

@@ -38,6 +38,7 @@ pub enum LiveCommand {
     },
 }
 pub enum LiveEvent {
+    Diagnostic(handover_gmessages::contract::HelperDiagnostic),
     Typing {
         conversation: String,
         participants: Vec<String>,

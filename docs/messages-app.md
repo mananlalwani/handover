@@ -141,9 +141,14 @@ formats show an external-player action. Playback does not start automatically.
 
 Contact pictures come from the daemon's synced address book. Direct
 conversations use a photo when a participant's phone number or email has an
-exact normalized match. Formatting punctuation is ignored for phone numbers;
-country codes remain part of the match. Ambiguous matches and missing photos
-use initials or a person/group icon. Display names alone never select a photo.
+normalized match. Formatting punctuation is ignored for phone numbers. Valid
+North American 10-digit numbers match their country-code 1 form, preserving the
+QML client's behavior; other country codes are retained. Email matching ignores
+ASCII case. Conflicting photos remain ambiguous, while a duplicate contact
+without a photo does not hide the sole available photo. Direct conversations
+use one matched photo; groups combine up to four distinct available member
+photos. Missing photos use initials or a person/group icon. Display names alone
+never select a photo.
 Pictures refresh when the daemon reports an address-book change. The app reads
 existing contacts and does not start a phone sync or fetch remote profile images.
 
