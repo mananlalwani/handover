@@ -2907,6 +2907,11 @@ impl Window {
             }
             let bubble = gtk::Box::new(gtk::Orientation::Vertical, 6);
             bubble.add_css_class("message-bubble");
+            bubble.set_halign(if message.sender.is_self {
+                gtk::Align::End
+            } else {
+                gtk::Align::Start
+            });
             bubble.add_css_class(if message.sender.is_self {
                 "outgoing"
             } else {

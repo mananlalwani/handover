@@ -1013,6 +1013,9 @@ fn native_window_round_trips_real_frontend_actions() {
             if !message.sender.is_self {
                 message.sender.display_name = None;
                 message.sender.address = Some("3125550100".into());
+                message.text = Some("Hi".into());
+                message.reply_to = None;
+                message.attachments.clear();
             }
         }
     }
@@ -1026,6 +1029,24 @@ fn native_window_round_trips_real_frontend_actions() {
         })
         .is_some(),
         "group senders resolve names from synced contacts even without a provider name"
+    );
+    wait_for_layout(&ui.window);
+    let sender_label = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget.has_css_class("message-sender")
+    })
+    .unwrap();
+    let sender_column = sender_label.parent().unwrap();
+    let short_bubble = find_widget(&sender_column, &|widget| {
+        widget.has_css_class("message-bubble")
+    })
+    .unwrap();
+    let bubble_bounds = short_bubble.compute_bounds(&sender_column).unwrap();
+    let name_bounds = sender_label.compute_bounds(&sender_column).unwrap();
+    assert!(
+        bubble_bounds.width() > 0.0 && bubble_bounds.width() < name_bounds.width(),
+        "a short group message bubble must not stretch to the sender name's width: bubble={}, name={}",
+        bubble_bounds.width(),
+        name_bounds.width()
     );
     ui.model.borrow_mut().messages = original_messages;
     ui.model.borrow_mut().conversations = original_conversations_for_names;
