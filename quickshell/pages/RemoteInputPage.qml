@@ -1,43 +1,97 @@
+import ".."
+import "../components"
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Quickshell
-import ".."
 
 Rectangle {
     required property var window
-    Layout.fillWidth: true
-    implicitHeight: remoteInputColumn.implicitHeight + 24
-    radius: 8
-    color: "#303741"
+
+    radius: 12
+    color: "#1b2532"
     visible: window.page === "remote-input"
 
     ColumnLayout {
-        id: remoteInputColumn
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 8
+        anchors.margins: 20
+        spacing: 16
 
-        Text { text: "Remote input"; color: "#ffffff"; font.pixelSize: 16; font.bold: true }
-        Text { text: "Use the buttons to control the selected native phone."; color: "#c6cbd6" }
-        RowLayout {
-            Layout.fillWidth: true
-            Button { text: "Left click"; onClicked: HandoverService.remoteInput(window.appDevices[0], "click", 0, 0, 1, "") }
-            Button { text: "Right click"; onClicked: HandoverService.remoteInput(window.appDevices[0], "click", 0, 0, 3, "") }
-            Button { text: "Scroll up"; onClicked: HandoverService.remoteInput(window.appDevices[0], "scroll", 0, -1, 0, "") }
-            Button { text: "Scroll down"; onClicked: HandoverService.remoteInput(window.appDevices[0], "scroll", 0, 1, 0, "") }
+        Text {
+            text: "Phone input"
+            color: "#edf1f7"
+            font.pixelSize: 17
+            font.bold: true
         }
+
+        Text {
+            Layout.fillWidth: true
+            text: "Send clicks, scrolling, or text to the selected phone. The phone must support remote input."
+            color: "#aab7c8"
+            wrapMode: Text.WordWrap
+        }
+
+        EmptyState {
+            Layout.fillWidth: true
+            visible: !window.selectedDeviceAvailable
+            title: "No connected phone selected"
+            description: "Choose a connected phone from the device picker above."
+        }
+
+        Flow {
+            Layout.fillWidth: true
+            spacing: 8
+            enabled: window.selectedDeviceAvailable
+
+            ActionButton {
+                text: "Left click"
+                onClicked: HandoverService.remoteInput(window.selectedDevice, "click", 0, 0, 1, "")
+            }
+
+            ActionButton {
+                text: "Right click"
+                onClicked: HandoverService.remoteInput(window.selectedDevice, "click", 0, 0, 3, "")
+            }
+
+            ActionButton {
+                text: "Scroll up"
+                onClicked: HandoverService.remoteInput(window.selectedDevice, "scroll", 0, -1, 0, "")
+            }
+
+            ActionButton {
+                text: "Scroll down"
+                onClicked: HandoverService.remoteInput(window.selectedDevice, "scroll", 0, 1, 0, "")
+            }
+
+        }
+
         RowLayout {
             Layout.fillWidth: true
-            TextField { id: remoteText; Layout.fillWidth: true; placeholderText: "Text to type on Linux" }
-            Button {
-                text: "Type"
-                enabled: remoteText.text.length > 0
+
+            InputField {
+                id: remoteText
+
+                Layout.fillWidth: true
+                placeholderText: "Text to type on the phone"
+                maximumLength: 512
+                enabled: window.selectedDeviceAvailable
+            }
+
+            ActionButton {
+                text: "Type text"
+                enabled: window.selectedDeviceAvailable && remoteText.text.length > 0
                 onClicked: {
-                    HandoverService.remoteInput(window.appDevices[0], "type", 0, 0, 0, remoteText.text);
-                    remoteText.clear();
+                    if (HandoverService.remoteInput(window.selectedDevice, "type", 0, 0, 0, remoteText.text))
+                        remoteText.clear();
+
                 }
             }
+
         }
+
+        Item {
+            Layout.fillHeight: true
+        }
+
     }
+
 }

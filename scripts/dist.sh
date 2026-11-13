@@ -36,6 +36,7 @@ mkdir -p \
 	"$STAGE_DIR/share/licenses/handover/ukey2" \
 	"$STAGE_DIR/share/systemd/user" \
 	"$STAGE_DIR/share/handover/quickshell/pages" \
+	"$STAGE_DIR/share/handover/quickshell/components" \
 	"$STAGE_DIR/share/handover/google-messages/tools/chrome-observer"
 
 install -Dm755 target/release/handoverd "$STAGE_DIR/bin/handoverd"
@@ -91,6 +92,8 @@ install -Dm644 quickshell/README.md \
 	"$STAGE_DIR/share/handover/quickshell/README.md"
 install -Dm644 quickshell/pages/*.qml \
 	"$STAGE_DIR/share/handover/quickshell/pages/"
+install -Dm644 quickshell/components/*.qml \
+	"$STAGE_DIR/share/handover/quickshell/components/"
 install -Dm755 google-messages/tools/install_native_probe.py \
 	"$STAGE_DIR/share/handover/google-messages/tools/install_native_probe.py"
 install -Dm644 google-messages/tools/chrome-observer/manifest.json \

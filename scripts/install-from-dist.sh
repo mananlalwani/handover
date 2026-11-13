@@ -65,7 +65,7 @@ install -Dm644 "$ROOT/share/fish/vendor_completions.d/handoverctl.fish" \
 	"$USER_DATA_HOME/systemd/user/handoverd.service" "$PREFIX/bin/handoverd"
 "$ROOT/install-service-unit.sh" "$ROOT/share/systemd/user/handover-desktop.service" \
 	"$USER_DATA_HOME/systemd/user/handover-desktop.service" "$PREFIX/bin/handover-desktop"
-install -d "$USER_DATA_HOME/handover/quickshell/pages"
+install -d "$USER_DATA_HOME/handover/quickshell/pages" "$USER_DATA_HOME/handover/quickshell/components"
 install -Dm644 "$ROOT/share/handover/quickshell/HandoverService.qml" \
 	"$USER_DATA_HOME/handover/quickshell/HandoverService.qml"
 install -Dm644 "$ROOT/share/handover/quickshell/IpcRequest.qml" \
@@ -82,6 +82,8 @@ install -Dm644 "$ROOT/share/handover/quickshell/README.md" \
 	"$USER_DATA_HOME/handover/quickshell/README.md"
 install -Dm644 "$ROOT/share/handover/quickshell/pages/"*.qml \
 	"$USER_DATA_HOME/handover/quickshell/pages/"
+install -Dm644 "$ROOT/share/handover/quickshell/components/"*.qml \
+	"$USER_DATA_HOME/handover/quickshell/components/"
 install -Dm755 "$ROOT/share/handover/google-messages/tools/install_native_probe.py" \
 	"$USER_DATA_HOME/handover/google-messages/tools/install_native_probe.py"
 install -Dm644 "$ROOT/share/handover/google-messages/tools/chrome-observer/manifest.json" \

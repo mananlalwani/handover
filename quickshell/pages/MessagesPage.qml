@@ -1,56 +1,194 @@
+import ".."
+import "../AccountPicker.js" as AccountPicker
+import "../components"
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import Quickshell
-import ".."
-import "../AccountPicker.js" as AccountPicker
 
 Rectangle {
     id: messagesCard
+
     required property var window
-    anchors.fill: parent
-    anchors.margins: 0
-    radius: 8
-    color: "#303741"
-    visible: window.page === "messages"
     property var selectedConversation: null
     property var replyingTo: null
     property string status: ""
     property string disconnectingAccountId: ""
     property string accountNotice: ""
-    GoogleMessagesSetup { id: googleSetup }
+    property bool includeOfflineAccounts: false
+    property var accountChoices: AccountPicker.choices(HandoverService.messagingAccounts, includeOfflineAccounts)
+    property string selectedAccountId: ""
+    property bool explicitAccountSelection: false
+    property var selectedAccount: accountChoices.find((item) => {
+        return item.id === selectedAccountId;
+    }) || null
+    property var accountConversations: selectedAccount ? HandoverService.conversations.filter((item) => {
+        return item.id.account_id === selectedAccount.id;
+    }).slice().sort((a, b) => {
+        return (b.last_activity_at || 0) - (a.last_activity_at || 0);
+    }) : []
+    property string selectedKey: selectedConversation ? HandoverService.conversationKey(selectedConversation) : ""
+    property var selectedMessages: selectedKey && HandoverService.conversationMessages[selectedKey] ? HandoverService.conversationMessages[selectedKey] : []
+    property var selectedTyping: selectedConversation ? HandoverService.typingStates.find((item) => {
+        return item.conversation_id.account_id === selectedConversation.account_id && item.conversation_id.local_id === selectedConversation.local_id;
+    }) : null
+    property var selectedRead: selectedConversation ? HandoverService.readStates.find((item) => {
+        return item.conversation_id.account_id === selectedConversation.account_id && item.conversation_id.local_id === selectedConversation.local_id;
+    }) : null
+    property var selectedOutgoingOperation: selectedConversation ? HandoverService.outgoingOperations.filter((item) => {
+        return HandoverService.sameConversationId(item.conversation_id, selectedConversation);
+    }).slice().sort((a, b) => {
+        return (b.created_at || 0) - (a.created_at || 0) || (a.id < b.id ? 1 : (a.id > b.id ? -1 : 0));
+    })[0] || null : null
+    property bool automaticHistoryStarted: false
+    property bool selectedOnline: !!selectedAccount && selectedAccount.connected && selectedAccount.authenticated
+
+    function conversationLabel(conversation) {
+        if (!conversation)
+            return "Select a conversation";
+
+        const others = conversation.participants.filter((item) => {
+            return !item.is_self;
+        });
+        const title = String(conversation.title || "");
+        const numericTitle = /^[+0-9 ().-]+$/.test(title) && /[0-9]/.test(title);
+        const directNumberTitle = conversation.kind === "direct" && numericTitle && others.length <= 1;
+        if (title && !directNumberTitle)
+            return title;
+
+        if (others.length === 0 && conversation.participants.some((item) => {
+            return item.is_self;
+        }))
+            return "You";
+
+        return others.map((item) => {
+            return HandoverService.contactLabel(item);
+        }).join(", ");
+    }
+
+    function messageText(message) {
+        if (message.deleted)
+            return "Message deleted";
+
+        return message.text || ((message.attachments || []).length > 0 ? "📎 " + message.attachments.map((item) => {
+            return item.name || item.mime || "attachment";
+        }).join(", ") : "");
+    }
+
+    function senderLabel(sender) {
+        return HandoverService.contactLabel(sender);
+    }
+
+    function messageTimestamp(message) {
+        if (!message || !message.sent_at)
+            return "";
+
+        return Qt.formatDateTime(new Date(Number(message.sent_at) / 1000), "MMM d, yyyy · h:mm AP");
+    }
+
+    function outgoingStatusLabel(operation) {
+        if (!operation)
+            return "";
+
+        const outcome = operation.outcome;
+        if (outcome === "unknown")
+            return "Outcome unknown. Check the conversation before sending again.";
+
+        if (outcome === "submitting")
+            return "Sending…";
+
+        if (outcome === "rejected")
+            return "Send rejected";
+
+        const provider = outcome && outcome.provider;
+        if (!provider)
+            return "";
+
+        if (typeof provider === "object")
+            return "Failed";
+
+        switch (provider) {
+        case "accepted":
+            return "Accepted";
+        case "sent":
+            return "Sent";
+        case "delivered":
+            return "Delivered";
+        case "displayed":
+            return "Displayed";
+        default:
+            return "";
+        }
+    }
+
+    anchors.fill: parent
+    anchors.margins: 0
+    radius: 8
+    color: "#1b2532"
+    visible: window.page === "messages"
+    onAccountChoicesChanged: {
+        if (!accountChoices.some((item) => {
+            return item.id === selectedAccountId;
+        }))
+            explicitAccountSelection = false;
+
+        selectedAccountId = AccountPicker.selectedId(accountChoices, explicitAccountSelection ? selectedAccountId : "");
+    }
+    onSelectedAccountIdChanged: {
+        selectedConversation = null;
+        replyingTo = null;
+    }
+    onSelectedOnlineChanged: {
+        automaticHistoryStarted = false;
+        HandoverService.setHistoryFocus(visible && selectedOnline ? selectedConversation : null);
+    }
+    onVisibleChanged: {
+        automaticHistoryStarted = false;
+        HandoverService.setHistoryFocus(visible ? selectedConversation : null);
+    }
+    onSelectedConversationChanged: {
+        automaticHistoryStarted = false;
+        HandoverService.setHistoryFocus(visible ? selectedConversation : null);
+        modernMessageList.followTail = true;
+        Qt.callLater(() => {
+            return modernMessageList.positionViewAtEnd();
+        });
+    }
+
+    GoogleMessagesSetup {
+        id: googleSetup
+    }
+
     Dialog {
         id: archiveDialog
-        anchors.centerIn: parent
-        modal: true
-        title: "Private archive size"
+
         property bool saving: false
         property bool refreshing: false
         property string error: ""
+
+        anchors.centerIn: parent
+        modal: true
+        title: "Private archive size"
         standardButtons: Dialog.Cancel
-        footer: DialogButtonBox {
-            standardButtons: DialogButtonBox.Cancel
-            onRejected: archiveDialog.reject()
-            Button {
-                text: "Save"
-                enabled: !archiveDialog.saving && !archiveDialog.refreshing
-                    && !HandoverService.archiveSaving && HandoverService.connected
-                onClicked: {
-                    archiveDialog.error = "";
-                    archiveDialog.saving = HandoverService.sendRequest("messages.archive_settings", { limit_mib: archiveLimit.value });
-                    if (!archiveDialog.saving)
-                        archiveDialog.error = HandoverService.lastError;
-                }
-            }
+        onOpened: {
+            saving = false;
+            error = "";
+            refreshing = HandoverService.sendRequest("messages.archive_settings", {
+            });
+            if (!refreshing)
+                error = HandoverService.lastError;
+
+            archiveLimit.value = HandoverService.archiveSettings ? HandoverService.archiveSettings.limitMiB : 1024;
         }
+
         Connections {
-            target: HandoverService
             function onArchiveSettingsChanged() {
-                if (archiveDialog.visible && !archiveDialog.saving && !archiveDialog.refreshing
-                        && HandoverService.archiveSettings)
+                if (archiveDialog.visible && !archiveDialog.saving && !archiveDialog.refreshing && HandoverService.archiveSettings)
                     archiveLimit.value = HandoverService.archiveSettings.limitMiB;
+
             }
+
             function onArchiveSettingsFinished(saving, success, error) {
                 if (saving && archiveDialog.saving) {
                     archiveDialog.saving = false;
@@ -66,775 +204,819 @@ Rectangle {
                         archiveLimit.value = HandoverService.archiveSettings.limitMiB;
                 }
             }
+
+            target: HandoverService
         }
-        onOpened: {
-            saving = false;
-            error = "";
-            refreshing = HandoverService.sendRequest("messages.archive_settings", {});
-            if (!refreshing)
-                error = HandoverService.lastError;
-            archiveLimit.value = HandoverService.archiveSettings ? HandoverService.archiveSettings.limitMiB : 1024;
-        }
-        contentItem: ColumnLayout {
-            Label { text: "Maximum stored message history (MiB)" }
-            SpinBox { id: archiveLimit; from: 16; to: 1048576; stepSize: 256; editable: true }
-            Label {
-                text: HandoverService.archiveSettings
-                    ? "Currently used: " + (HandoverService.archiveSettings.usedBytes / 1048576).toFixed(1) + " MiB"
-                    : "Archive unavailable"
+
+        footer: DialogButtonBox {
+            standardButtons: DialogButtonBox.Cancel
+            onRejected: archiveDialog.reject()
+
+            ActionButton {
+                text: "Save"
+                enabled: !archiveDialog.saving && !archiveDialog.refreshing && !HandoverService.archiveSaving && HandoverService.connected
+                onClicked: {
+                    archiveDialog.error = "";
+                    archiveDialog.saving = HandoverService.sendRequest("messages.archive_settings", {
+                        "limit_mib": archiveLimit.value
+                    });
+                    if (!archiveDialog.saving)
+                        archiveDialog.error = HandoverService.lastError;
+
+                }
             }
-            Label { text: "Default: 1024 MiB (1 GiB). Stored history is preserved." }
-            Label { text: archiveDialog.error; color: "#fca5a5"; visible: text.length > 0 }
+
         }
+
+        contentItem: ColumnLayout {
+            Label {
+                text: "Maximum stored message history (MiB)"
+            }
+
+            SpinBox {
+                id: archiveLimit
+
+                from: 16
+                to: 1.04858e+06
+                stepSize: 256
+                editable: true
+            }
+
+            Label {
+                text: HandoverService.archiveSettings ? "Currently used: " + (HandoverService.archiveSettings.usedBytes / 1.04858e+06).toFixed(1) + " MiB" : "Archive unavailable"
+            }
+
+            Label {
+                text: "Default: 1024 MiB (1 GiB). Stored history is preserved."
+            }
+
+            Label {
+                text: archiveDialog.error
+                color: "#fca5a5"
+                visible: text.length > 0
+            }
+
+        }
+
     }
+
     Dialog {
         id: disconnectDialog
+
         property string accountId: ""
         property string accountLabel: ""
+
+        implicitHeight: disconnectText.implicitHeight + 140
         anchors.centerIn: parent
         width: Math.min(440, messagesCard.width - 28)
         modal: true
         title: "Disconnect account?"
         standardButtons: Dialog.Cancel
-        contentItem: Label {
-            text: "Ask your phone to unpair " + disconnectDialog.accountLabel
-                + " from Handover, then remove its saved credentials? You can connect again later."
-                + "\n\nHandover keeps the credentials if phone unpairing is not confirmed."
+
+        contentItem: Text {
+            id: disconnectText
+
+            color: "#edf1f7"
+            font.pixelSize: 13
+            width: disconnectDialog.availableWidth
+            text: "Ask your phone to unpair " + disconnectDialog.accountLabel + " from Handover, then remove its saved credentials? You can connect again later." + "\n\nHandover keeps the credentials if phone unpairing is not confirmed."
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
         }
+
         footer: DialogButtonBox {
             standardButtons: DialogButtonBox.Cancel
             onRejected: disconnectDialog.reject()
-            Button {
+
+            ActionButton {
                 text: "Disconnect and unpair"
-                enabled: HandoverService.connected && !HandoverService.pendingMessaging
-                    && HandoverService.messagingAccounts.some(account =>
-                        account.id === disconnectDialog.accountId)
+                enabled: HandoverService.connected && !HandoverService.pendingMessaging && HandoverService.messagingAccounts.some((account) => {
+                    return account.id === disconnectDialog.accountId;
+                })
                 onClicked: {
                     if (HandoverService.logoutAccount(disconnectDialog.accountId)) {
                         messagesCard.disconnectingAccountId = disconnectDialog.accountId;
                         messagesCard.accountNotice = "Waiting for phone unpairing confirmation...";
                         disconnectDeadline.restart();
                         disconnectDialog.accept();
-                    } else
+                    } else {
                         messagesCard.accountNotice = HandoverService.lastError;
+                    }
                 }
             }
+
         }
+
     }
+
     Timer {
         id: disconnectDeadline
+
         interval: 30000
         onTriggered: {
             messagesCard.disconnectingAccountId = "";
             messagesCard.accountNotice = "Unpairing was not confirmed. Check your phone's linked devices before retrying.";
         }
     }
+
     Connections {
-        target: HandoverService
         function onMessagingAccountsChanged() {
-            if (messagesCard.disconnectingAccountId && HandoverService.connected
-                && !HandoverService.messagingAccounts.some(account =>
-                    account.id === messagesCard.disconnectingAccountId)) {
+            if (messagesCard.disconnectingAccountId && HandoverService.connected && !HandoverService.messagingAccounts.some((account) => {
+                return account.id === messagesCard.disconnectingAccountId;
+            })) {
                 disconnectDeadline.stop();
                 messagesCard.disconnectingAccountId = "";
                 messagesCard.accountNotice = "Account disconnected.";
             }
         }
+
+        target: HandoverService
     }
+
     FileDialog {
         id: attachmentDialog
+
         title: "Attach one file"
         fileMode: FileDialog.OpenFile
         onAccepted: {
-            if (messagesCard.selectedConversation
-                && !HandoverService.sendAttachment(
-                    messagesCard.selectedConversation, selectedFile.toString(), "")) {
+            if (messagesCard.selectedConversation && !HandoverService.sendAttachment(messagesCard.selectedConversation, selectedFile.toString(), ""))
                 messagesCard.status = HandoverService.lastError;
-            }
+
         }
     }
-    property bool includeOfflineAccounts: false
-    property var accountChoices: AccountPicker.choices(HandoverService.messagingAccounts,
-        includeOfflineAccounts)
-    property string selectedAccountId: ""
-    property bool explicitAccountSelection: false
-    property var selectedAccount: accountChoices.find(item => item.id === selectedAccountId) || null
-    onAccountChoicesChanged: {
-        if (!accountChoices.some(item => item.id === selectedAccountId))
-            explicitAccountSelection = false;
-        selectedAccountId = AccountPicker.selectedId(accountChoices,
-            explicitAccountSelection ? selectedAccountId : "");
-    }
-    onSelectedAccountIdChanged: {
-        selectedConversation = null;
-        replyingTo = null;
-    }
-    property var accountConversations: selectedAccount
-        ? HandoverService.conversations.filter(item =>
-            item.id.account_id === selectedAccount.id).slice().sort((a, b) =>
-                (b.last_activity_at || 0) - (a.last_activity_at || 0))
-        : []
-    property string selectedKey: selectedConversation
-        ? HandoverService.conversationKey(selectedConversation) : ""
-    property var selectedMessages: selectedKey
-        && HandoverService.conversationMessages[selectedKey]
-        ? HandoverService.conversationMessages[selectedKey] : []
-    property var selectedTyping: selectedConversation
-        ? HandoverService.typingStates.find(item =>
-            item.conversation_id.account_id === selectedConversation.account_id
-            && item.conversation_id.local_id === selectedConversation.local_id)
-        : null
-    property var selectedRead: selectedConversation
-        ? HandoverService.readStates.find(item =>
-            item.conversation_id.account_id === selectedConversation.account_id
-            && item.conversation_id.local_id === selectedConversation.local_id)
-        : null
-    property var selectedOutgoingOperation: selectedConversation
-        ? HandoverService.outgoingOperations.filter(item =>
-            HandoverService.sameConversationId(item.conversation_id, selectedConversation))
-            .slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0)
-                || (a.id < b.id ? 1 : (a.id > b.id ? -1 : 0)))[0] || null
-        : null
-    property bool automaticHistoryStarted: false
-    property bool selectedOnline: !!selectedAccount && selectedAccount.connected && selectedAccount.authenticated
-    onSelectedOnlineChanged: {
-        automaticHistoryStarted = false;
-        HandoverService.setHistoryFocus(visible && selectedOnline ? selectedConversation : null);
-    }
-    onVisibleChanged: {
-        automaticHistoryStarted = false;
-        HandoverService.setHistoryFocus(visible ? selectedConversation : null);
-    }
+
     Timer {
         interval: 5000
         repeat: true
-        running: messagesCard.visible && messagesCard.selectedConversation !== null
-            && !!messagesCard.selectedAccount && messagesCard.selectedAccount.connected
-            && messagesCard.selectedAccount.authenticated && !messagesCard.automaticHistoryStarted
-            && !HandoverService.isLoadingAllHistory(messagesCard.selectedConversation)
-            && !HandoverService.historyRequests[messagesCard.selectedKey]
+        running: messagesCard.visible && messagesCard.selectedConversation !== null && !!messagesCard.selectedAccount && messagesCard.selectedAccount.connected && messagesCard.selectedAccount.authenticated && !messagesCard.automaticHistoryStarted && !HandoverService.isLoadingAllHistory(messagesCard.selectedConversation) && !HandoverService.historyRequests[messagesCard.selectedKey]
         onTriggered: {
             messagesCard.automaticHistoryStarted = HandoverService.loadAllHistory(messagesCard.selectedConversation, true);
         }
     }
-    onSelectedConversationChanged: {
-        automaticHistoryStarted = false;
-        HandoverService.setHistoryFocus(visible ? selectedConversation : null);
-        modernMessageList.followTail = true;
-        Qt.callLater(() => modernMessageList.positionViewAtEnd());
-    }
 
-    function conversationLabel(conversation) {
-        if (!conversation)
-            return "Select a conversation";
-        const others = conversation.participants.filter(item => !item.is_self);
-        const title = String(conversation.title || "");
-        const numericTitle = /^[+0-9 ().-]+$/.test(title) && /[0-9]/.test(title);
-        const directNumberTitle = conversation.kind === "direct" && numericTitle
-            && others.length <= 1;
-        if (title && !directNumberTitle)
-            return title;
-        if (others.length === 0 && conversation.participants.some(item => item.is_self))
-            return "You";
-        return others.map(item =>
-            HandoverService.contactLabel(item)).join(", ");
-    }
+    Item {
+        id: modernMessages
 
-    function messageText(message) {
-        if (message.deleted)
-            return "Message deleted";
-        return message.text || ((message.attachments || []).length > 0
-            ? "📎 " + message.attachments.map(item =>
-                item.name || item.mime || "attachment").join(", ") : "");
-    }
-
-    function senderLabel(sender) {
-        return HandoverService.contactLabel(sender);
-    }
-
-    function messageTimestamp(message) {
-        if (!message || !message.sent_at)
-            return "";
-        return Qt.formatDateTime(
-            new Date(Number(message.sent_at) / 1000),
-            "MMM d, yyyy · h:mm AP");
-    }
-
-    function outgoingStatusLabel(operation) {
-        if (!operation)
-            return "";
-        const outcome = operation.outcome;
-        if (outcome === "unknown")
-            return "Outcome unknown. Check the conversation before sending again.";
-        if (outcome === "submitting")
-            return "Sending…";
-        if (outcome === "rejected")
-            return "Send rejected";
-        const provider = outcome && outcome.provider;
-        if (!provider)
-            return "";
-        if (typeof provider === "object")
-            return "Failed";
-        switch (provider) {
-        case "accepted": return "Accepted";
-        case "sent": return "Sent";
-        case "delivered": return "Delivered";
-        case "displayed": return "Displayed";
-        default: return "";
-        }
-    }
-
-Item {
-    id: modernMessages
-    parent: messagesCard
-    anchors.fill: parent
-    anchors.margins: 14
-    visible: window.page === "messages"
-
-    ColumnLayout {
+        parent: messagesCard
         anchors.fill: parent
-        spacing: 10
+        anchors.margins: 14
+        visible: window.page === "messages"
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-            Text {
-                text: "Messages"
-                color: "#f3f4f6"
-                font.pixelSize: 24
-                font.bold: true
-            }
-            Item { Layout.fillWidth: true }
-            Button {
-                text: "Archive size"
-                enabled: HandoverService.connected && !!HandoverService.archiveSettings
-                onClicked: archiveDialog.open()
-            }
-            Button {
-                text: "Connect Google Messages"
-                enabled: HandoverService.connected
-                onClicked: googleSetup.prepare()
-            }
-            CheckBox {
-                text: "Include offline accounts"
-                visible: HandoverService.messagingAccounts.some(account =>
-                    !account.connected || !account.authenticated)
-                checked: messagesCard.includeOfflineAccounts
-                onToggled: messagesCard.includeOfflineAccounts = checked
-            }
-            ComboBox {
-                id: modernAccountPicker
-                Layout.preferredWidth: 290
-                model: messagesCard.accountChoices
-                textRole: "displayLabel"
-                currentIndex: messagesCard.accountChoices.findIndex(item =>
-                    item.id === messagesCard.selectedAccountId)
-                onActivated: index => {
-                    messagesCard.explicitAccountSelection = true;
-                    messagesCard.selectedAccountId = messagesCard.accountChoices[index].id;
-                }
-            }
-            Button {
-                text: "↻"
-                enabled: modernAccountPicker.count > 0
-                    && !HandoverService.pendingMessaging
-                onClicked: HandoverService.syncAccount(
-                    messagesCard.selectedAccount.id)
-            }
-            Button {
-                text: "Disconnect"
-                enabled: !!messagesCard.selectedAccount && HandoverService.connected
-                    && !HandoverService.pendingMessaging
-                    && !messagesCard.disconnectingAccountId
-                    && messagesCard.selectedAccount.connected
-                    && messagesCard.selectedAccount.authenticated
-                onClicked: {
-                    disconnectDialog.accountId = messagesCard.selectedAccount.id;
-                    disconnectDialog.accountLabel = messagesCard.selectedAccount.displayLabel;
-                    disconnectDialog.open();
-                }
-            }
-        }
-
-        Text {
-            Layout.fillWidth: true
-            text: messagesCard.accountNotice
-            visible: text.length > 0
-            color: "#9caec5"
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-        }
-
-        Text {
-            Layout.fillWidth: true
-            color: "#ffb4ab"
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            visible: HandoverService.pairingPrompt !== null
-            text: HandoverService.pairingPrompt
-                ? "Pairing " + HandoverService.pairingPrompt.accountId
-                    + ": " + HandoverService.pairingPrompt.prompt
-                : ""
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+        ColumnLayout {
+            anchors.fill: parent
             spacing: 10
 
-            Rectangle {
-                Layout.preferredWidth: 240
-                Layout.fillHeight: true
-                radius: 12
-                color: "#202733"
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
 
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 6
-                    TextField {
-                        id: conversationSearch
-                        Layout.fillWidth: true
-                        placeholderText: "Search conversations"
-                        background: Rectangle {
-                            radius: 8
-                            color: "#151a23"
-                            border.color: "#344154"
-                        }
+                ChoiceBox {
+                    id: modernAccountPicker
+
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 440
+                    model: messagesCard.accountChoices
+                    textRole: "displayLabel"
+                    displayText: count > 0 ? currentText : "No messaging account"
+                    currentIndex: messagesCard.accountChoices.findIndex((item) => {
+                        return item.id === messagesCard.selectedAccountId;
+                    })
+                    onActivated: (index) => {
+                        messagesCard.explicitAccountSelection = true;
+                        messagesCard.selectedAccountId = messagesCard.accountChoices[index].id;
                     }
-                    ListView {
-                        id: modernConversationList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        model: messagesCard.accountConversations.filter(item =>
-                            !conversationSearch.text.trim()
-                            || messagesCard.conversationLabel(item).toLowerCase().includes(
-                                conversationSearch.text.trim().toLowerCase()))
-                        delegate: Item {
-                            required property var modelData
-                            width: modernConversationList.width
-                            height: 58
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: 8
-                                color: messagesCard.selectedConversation !== null
-                                    && HandoverService.sameConversationId(
-                                        messagesCard.selectedConversation, modelData.id)
-                                    ? "#314b6c" : "transparent"
-                            }
-                            Rectangle {
-                                x: 8
-                                y: 9
-                                width: 40
-                                height: 40
-                                radius: 20
-                                color: "#526d9b"
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: messagesCard.conversationLabel(modelData).charAt(0).toUpperCase()
-                                    color: "#ffffff"
-                                    font.pixelSize: 18
-                                     font.bold: true
-                                 }
-                             }
-                             Image {
-                                 anchors.left: parent.left
-                                 anchors.leftMargin: 8
-                                 anchors.verticalCenter: parent.verticalCenter
-                                 width: 40
-                                 height: 40
-                                 source: {
-                                     const participant = modelData.participants
-                                         .find(item => !item.is_self);
-                                     return HandoverService.contactPhoto(participant);
-                                 }
-                                 fillMode: Image.PreserveAspectCrop
-                                 visible: source !== ""
-                                 z: 2
-                             }
-                             Column {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 58
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 2
-                                Text {
-                                    width: parent.width
-                                    text: messagesCard.conversationLabel(modelData)
-                                    color: "#f3f4f6"
-                                    elide: Text.ElideRight
-                                    font.pixelSize: 14
-                                }
-                                Text {
-                                    text: String(modelData.transport || "unknown").toUpperCase()
-                                    color: "#9caec5"
-                                    font.pixelSize: 11
-                                }
-                            }
-                            Rectangle {
-                                visible: !!modelData.unread_count
-                                anchors.right: parent.right
-                                anchors.rightMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 20
-                                height: 20
-                                radius: 10
-                                color: "#4e9bea"
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: modelData.unread_count || ""
-                                    color: "#ffffff"
-                                    font.pixelSize: 11
-                                }
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                onClicked: {
-                                    messagesCard.selectedConversation = modelData.id;
-                                    messagesCard.replyingTo = null;
-                                    HandoverService.loadHistory(modelData.id, 20);
-                                    HandoverService.markRead(modelData.id);
-                                }
-                            }
-                        }
-                    }
-                    TextField {
-                        id: modernOpenField
-                        Layout.fillWidth: true
-                        placeholderText: "Phone or email"
-                        visible: modernAccountPicker.count > 0
-                    }
-                    Button {
-                        Layout.fillWidth: true
-                        text: "New conversation"
-                        enabled: modernOpenField.text.trim().length > 0
-                            && !HandoverService.pendingMessaging
-                        onClicked: {
-                            if (HandoverService.openConversation(
-                                messagesCard.selectedAccount.id,
-                                [modernOpenField.text.trim()]))
-                                modernOpenField.text = "";
-                        }
-                    }
+                    Accessible.name: "Messaging account"
                 }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                ActionButton {
+                    text: "Connect account"
+                    primary: modernAccountPicker.count === 0
+                    enabled: HandoverService.connected
+                    onClicked: googleSetup.prepare()
+                }
+
+                ActionButton {
+                    text: "Account options"
+                    onClicked: accountOptions.open()
+
+                    Menu {
+                        id: accountOptions
+
+                        y: parent.height + 4
+
+                        MenuItem {
+                            text: "Sync account"
+                            enabled: !!messagesCard.selectedAccount && !HandoverService.pendingMessaging
+                            onTriggered: HandoverService.syncAccount(messagesCard.selectedAccount.id)
+                        }
+
+                        MenuItem {
+                            text: "Archive size…"
+                            enabled: HandoverService.connected && !!HandoverService.archiveSettings
+                            onTriggered: archiveDialog.open()
+                        }
+
+                        MenuItem {
+                            text: "Include offline accounts"
+                            checkable: true
+                            checked: messagesCard.includeOfflineAccounts
+                            onToggled: messagesCard.includeOfflineAccounts = checked
+                        }
+
+                        MenuSeparator {
+                        }
+
+                        MenuItem {
+                            text: "Disconnect account…"
+                            enabled: !!messagesCard.selectedAccount && HandoverService.connected && !HandoverService.pendingMessaging && !messagesCard.disconnectingAccountId && messagesCard.selectedAccount.connected && messagesCard.selectedAccount.authenticated
+                            onTriggered: {
+                                disconnectDialog.accountId = messagesCard.selectedAccount.id;
+                                disconnectDialog.accountLabel = messagesCard.selectedAccount.displayLabel;
+                                disconnectDialog.open();
+                            }
+                        }
+
+                    }
+
+                }
+
             }
 
-            Rectangle {
+            Text {
+                Layout.fillWidth: true
+                text: messagesCard.accountNotice
+                visible: text.length > 0
+                color: "#9caec5"
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+            }
+
+            Text {
+                Layout.fillWidth: true
+                color: "#ffb4ab"
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                visible: HandoverService.pairingPrompt !== null
+                text: HandoverService.pairingPrompt ? "Pairing " + HandoverService.pairingPrompt.accountId + ": " + HandoverService.pairingPrompt.prompt : ""
+            }
+
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                radius: 12
-                color: "#1d2430"
+                spacing: 10
 
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    spacing: 8
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text {
-                            Layout.fillWidth: true
-                            text: messagesCard.selectedConversation
-                                ? messagesCard.conversationLabel(
-                                    messagesCard.accountConversations.find(item =>
-                                        HandoverService.sameConversationId(
-                                            item.id, messagesCard.selectedConversation)))
-                                : "Select a conversation"
-                            color: "#f3f4f6"
-                            font.pixelSize: 18
-                            font.bold: true
-                        }
-                        Text {
-                            text: messagesCard.selectedTyping ? "typing…" : ""
-                            color: "#8db8e8"
-                        }
-                    }
-                    MessageList {
-                        id: modernMessageList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        spacing: 8
-                        messages: messagesCard.selectedMessages
-                        ScrollBar.vertical: ScrollBar {
-                            policy: ScrollBar.AsNeeded
-                            implicitWidth: 14
-                            minimumSize: 0.1
-                            contentItem: Rectangle {
-                                implicitWidth: 10
-                                radius: 5
-                                color: parent.pressed ? "#b8c8dc"
-                                    : parent.hovered ? "#91a6c0" : "#647991"
-                            }
-                        }
-                        delegate: Item {
-                            required property var modelData
-                            property var messageData: modelData
-                            width: modernMessageList.width
-                            height: modernBubble.implicitHeight + 4
-                            Rectangle {
-                                id: bubbleBackground
-                                anchors.left: modelData.sender.is_self ? undefined : parent.left
-                                anchors.right: modelData.sender.is_self ? parent.right : undefined
-                                width: Math.min(parent.width * 0.78, 500)
-                                height: modernBubble.implicitHeight
-                                radius: 14
-                                color: modelData.transport === "sms"
-                                    ? (modelData.sender.is_self ? "#765126" : "#493a2b")
-                                    : (modelData.sender.is_self ? "#28649b" : "#2a3442")
-                            }
-                            ColumnLayout {
-                                id: modernBubble
-                                anchors.left: modelData.sender.is_self ? undefined : parent.left
-                                anchors.right: modelData.sender.is_self ? parent.right : undefined
-                                width: Math.min(parent.width * 0.78, 500)
-                                spacing: 3
-                                Text {
-                                    Layout.fillWidth: true
-                                    Layout.leftMargin: 12
-                                    Layout.rightMargin: 12
-                                    Layout.topMargin: 10
-                                    text: {
-                                        const conversation = messagesCard.accountConversations.find(item =>
-                                            HandoverService.sameConversationId(
-                                                item.id, modelData.id.conversation_id));
-                                        const group = conversation && conversation.kind === "group";
-                                        return (!modelData.sender.is_self || group)
-                                            ? messagesCard.senderLabel(modelData.sender) : "You";
-                                    }
-                                    color: "#b9d7f2"
-                                    wrapMode: Text.Wrap
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    Layout.leftMargin: 12
-                                    Layout.rightMargin: 12
-                                    visible: !modelData.deleted && !!modelData.reply_to
-                                    text: {
-                                        const target = modelData.reply_to;
-                                        if (!target)
-                                            return "";
-                                        const original = messagesCard.selectedMessages.find(item =>
-                                            item.id.local_id === target.local_id);
-                                        return "Reply to: " + (original
-                                            ? messagesCard.messageText(original) : "an earlier message");
-                                    }
-                                    color: "#b9d7f2"
-                                    textFormat: Text.PlainText
-                                    maximumLineCount: 2
-                                    elide: Text.ElideRight
-                                    wrapMode: Text.Wrap
-                                }
-                                TextEdit {
-                                    Layout.fillWidth: true
-                                    Layout.leftMargin: 12
-                                    Layout.rightMargin: 12
-                                    textFormat: TextEdit.PlainText
-                                    readOnly: true
-                                    selectByMouse: true
-                                    text: messagesCard.messageText(modelData)
-                                    font.italic: !!modelData.deleted
-                                    color: modelData.deleted ? "#aebed0" : "#ffffff"
-                                    wrapMode: TextEdit.Wrap
-                                    font.pixelSize: 14
-                                }
-                                Repeater {
-                                    model: modelData.deleted ? [] : (modelData.attachments || [])
-                                    Button {
-                                        required property var modelData
-                                        Layout.leftMargin: 8
-                                        Layout.rightMargin: 8
-                                        text: "📎 " + (modelData.name || modelData.mime || "Open attachment")
-                                        flat: true
-                                        enabled: !!modelData.staged_path
-                                        onClicked: Qt.openUrlExternally(
-                                            "file://" + modelData.staged_path)
-                                    }
-                                }
-                                Flow {
-                                    Layout.fillWidth: true
-                                    Layout.leftMargin: 12
-                                    Layout.rightMargin: 12
-                                    visible: !modelData.deleted && (modelData.reactions || []).length > 0
-                                    Repeater {
-                                        model: messageData.deleted ? [] : (messageData.reactions || [])
-                                        Button {
-                                            required property var modelData
-                                            text: modelData.emoji + " ×" + modelData.count
-                                            flat: true
-                                            ToolTip.visible: hovered
-                                            ToolTip.text: "Remove your reaction"
-                                            enabled: !messageData.deleted && messagesCard.accountConversations.some(item =>
-                                                HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
-                                                && item.capabilities.includes("reactions"))
-                                            onClicked: HandoverService.unreact(
-                                                messagesCard.selectedConversation,
-                                                messageData.id.local_id, modelData.emoji)
-                                        }
-                                    }
-                                }
-                                Row {
-                                    Layout.leftMargin: 8
-                                    Layout.rightMargin: 8
-                                    Layout.bottomMargin: 6
-                                    spacing: 4
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: messagesCard.messageTimestamp(modelData)
-                                        color: "#aebed0"
-                                        font.pixelSize: 10
-                                    }
-                                    Button {
-                                        text: "Reply"
-                                        flat: true
-                                        enabled: !messageData.deleted && !!messagesCard.selectedAccount
-                                            && messagesCard.accountConversations.some(item =>
-                                                HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
-                                                && item.capabilities.includes("replies"))
-                                        onClicked: messagesCard.replyingTo = modelData.id.local_id
-                                    }
-                                    Repeater {
-                                        model: ["❤️", "👍", "😂"]
-                                        Button {
-                                            required property var modelData
-                                            text: modelData
-                                            flat: true
-                                            enabled: !messageData.deleted && messagesCard.accountConversations.some(item =>
-                                                HandoverService.sameConversationId(item.id, messageData.id.conversation_id)
-                                                && item.capabilities.includes("reactions"))
-                                            onClicked: HandoverService.react(
-                                                messagesCard.selectedConversation,
-                                                messageData.id.local_id,
-                                                modelData)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        visible: messagesCard.outgoingStatusLabel(
-                            messagesCard.selectedOutgoingOperation).length > 0
-                        text: messagesCard.outgoingStatusLabel(
-                            messagesCard.selectedOutgoingOperation)
-                        color: messagesCard.selectedOutgoingOperation
-                            && messagesCard.selectedOutgoingOperation.outcome === "unknown"
-                            ? "#ffcf8b" : "#9caec5"
-                        wrapMode: Text.Wrap
-                        elide: Text.ElideRight
-                        font.pixelSize: 12
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: messagesCard.selectedConversation !== null
+                Rectangle {
+                    Layout.preferredWidth: Math.min(260, messagesCard.width * 0.34)
+                    Layout.fillHeight: true
+                    radius: 12
+                    color: "#202733"
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 8
                         spacing: 6
-                        Text {
+
+                        InputField {
+                            id: conversationSearch
+
                             Layout.fillWidth: true
-                            color: messagesCard.replyingTo !== null
-                                ? "#9fc5e8" : "#9caec5"
-                            elide: Text.ElideRight
-                            text: {
-                                if (messagesCard.replyingTo !== null)
-                                    return "Replying to " + messagesCard.replyingTo;
-                                if (HandoverService.isLoadingAllHistory(
-                                        messagesCard.selectedConversation))
-                                    return "Loading all messages…";
-                                if (messagesCard.status.length > 0)
-                                    return messagesCard.status;
-                                if (messagesCard.selectedMessages.length === 0)
-                                    return "Loading messages…";
-                                return messagesCard.selectedMessages.length + " messages";
+                            placeholderText: "Search conversations"
+
+                            background: Rectangle {
+                                radius: 8
+                                color: "#151a23"
+                                border.color: "#344154"
                             }
+
                         }
-                        ToolButton {
-                            text: "⋯"
-                            onClicked: messageOptions.open()
-                            Menu {
-                                id: messageOptions
-                                MenuItem {
-                                    text: "Load older messages"
-                                    enabled: !HandoverService.pendingMessaging
-                                        && HandoverService.conversationCursors[
-                                            messagesCard.selectedKey] !== undefined
-                                    onTriggered: HandoverService.loadHistory(
-                                        messagesCard.selectedConversation, 20,
-                                        HandoverService.conversationCursors[
-                                            messagesCard.selectedKey])
+
+                        ListView {
+                            id: modernConversationList
+
+                            spacing: 14
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            model: messagesCard.accountConversations.filter((item) => {
+                                return !conversationSearch.text.trim() || messagesCard.conversationLabel(item).toLowerCase().includes(conversationSearch.text.trim().toLowerCase());
+                            })
+
+                            ScrollBar.vertical: ScrollBar {
+                            }
+
+                            delegate: Item {
+                                required property var modelData
+
+                                width: modernConversationList.width
+                                height: 58
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 8
+                                    color: messagesCard.selectedConversation !== null && HandoverService.sameConversationId(messagesCard.selectedConversation, modelData.id) ? "#314b6c" : "transparent"
                                 }
-                                MenuItem {
-                                    text: "Load all messages"
-                                    enabled: !HandoverService.isLoadingAllHistory(
-                                        messagesCard.selectedConversation)
-                                        && !HandoverService.pendingMessaging
-                                    onTriggered: {
-                                        messagesCard.status = "requesting complete history…";
-                                        if (!HandoverService.loadAllHistory(
-                                            messagesCard.selectedConversation))
-                                            messagesCard.status = HandoverService.lastError;
+
+                                Rectangle {
+                                    x: 8
+                                    y: 9
+                                    width: 40
+                                    height: 40
+                                    radius: 20
+                                    color: "#526d9b"
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: messagesCard.conversationLabel(modelData).charAt(0).toUpperCase()
+                                        color: "#ffffff"
+                                        font.pixelSize: 18
+                                        font.bold: true
+                                    }
+
+                                }
+
+                                Image {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 40
+                                    height: 40
+                                    source: {
+                                        const participant = modelData.participants.find((item) => {
+                                            return !item.is_self;
+                                        });
+                                        return HandoverService.contactPhoto(participant);
+                                    }
+                                    fillMode: Image.PreserveAspectCrop
+                                    visible: source !== ""
+                                    z: 2
+                                }
+
+                                Column {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 58
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 2
+
+                                    Text {
+                                        width: parent.width
+                                        text: messagesCard.conversationLabel(modelData)
+                                        color: "#f3f4f6"
+                                        elide: Text.ElideRight
+                                        font.pixelSize: 14
+                                    }
+
+                                    Text {
+                                        text: String(modelData.transport || "unknown").toUpperCase()
+                                        color: "#9caec5"
+                                        font.pixelSize: 11
+                                    }
+
+                                }
+
+                                Rectangle {
+                                    visible: !!modelData.unread_count
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 20
+                                    height: 20
+                                    radius: 10
+                                    color: "#4e9bea"
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: modelData.unread_count || ""
+                                        color: "#ffffff"
+                                        font.pixelSize: 11
+                                    }
+
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        messagesCard.selectedConversation = modelData.id;
+                                        messagesCard.replyingTo = null;
+                                        HandoverService.loadHistory(modelData.id, 20);
+                                        HandoverService.markRead(modelData.id);
                                     }
                                 }
-                                MenuItem {
-                                    text: "Cancel reply"
-                                    visible: messagesCard.replyingTo !== null
-                                    onTriggered: messagesCard.replyingTo = null
-                                }
+
                             }
+
                         }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        TextField {
-                            id: modernComposeField
+
+                        EmptyState {
                             Layout.fillWidth: true
-                            placeholderText: "Write a message…"
-                            background: Rectangle {
-                                radius: 18
-                                color: "#151a23"
-                                border.color: "#3a4a60"
-                            }
-                            enabled: messagesCard.selectedConversation !== null
-                                && !HandoverService.pendingMessaging
-                            onAccepted: modernSendButton.clicked()
+                            visible: modernConversationList.count === 0
+                            title: modernAccountPicker.count === 0 ? "Connect an account" : "No conversations"
+                            description: modernAccountPicker.count === 0 ? "Use Connect account to link Google Messages." : conversationSearch.text.trim() ? "Try another search." : "Sync this account or start a conversation."
                         }
-                        Button {
-                            id: modernSendButton
-                            text: "↑"
-                            font.pixelSize: 18
-                            font.bold: true
-                            enabled: modernComposeField.text.trim().length > 0
-                                && messagesCard.selectedConversation !== null
-                                && !HandoverService.pendingMessaging
+
+                        InputField {
+                            id: modernOpenField
+
+                            Layout.fillWidth: true
+                            placeholderText: "Phone or email"
+                            visible: modernAccountPicker.count > 0
+                        }
+
+                        ActionButton {
+                            Layout.fillWidth: true
+                            text: "New conversation"
+                            visible: modernAccountPicker.count > 0
+                            enabled: !!messagesCard.selectedAccount && modernOpenField.text.trim().length > 0 && !HandoverService.pendingMessaging
                             onClicked: {
-                                if (HandoverService.sendText(
-                                    messagesCard.selectedConversation,
-                                    modernComposeField.text,
-                                    messagesCard.replyingTo)) {
-                                    modernComposeField.text = "";
-                                    messagesCard.replyingTo = null;
+                                if (HandoverService.openConversation(messagesCard.selectedAccount.id, [modernOpenField.text.trim()]))
+                                    modernOpenField.text = "";
+
+                            }
+                        }
+
+                    }
+
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: 12
+                    color: "#1d2430"
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 20
+                        spacing: 8
+
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: messagesCard.selectedConversation ? messagesCard.conversationLabel(messagesCard.accountConversations.find((item) => {
+                                    return HandoverService.sameConversationId(item.id, messagesCard.selectedConversation);
+                                })) : "Select a conversation"
+                                color: "#f3f4f6"
+                                font.pixelSize: 18
+                                font.bold: true
+                            }
+
+                            Text {
+                                text: messagesCard.selectedTyping ? "typing…" : ""
+                                color: "#8db8e8"
+                            }
+
+                        }
+
+                        MessageList {
+                            id: modernMessageList
+
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            spacing: 8
+                            messages: messagesCard.selectedMessages
+
+                            ScrollBar.vertical: ScrollBar {
+                                policy: ScrollBar.AsNeeded
+                                implicitWidth: 14
+                                minimumSize: 0.1
+
+                                contentItem: Rectangle {
+                                    opacity: parent.size < 1 ? 1 : 0
+                                    implicitWidth: 10
+                                    radius: 5
+                                    color: parent.pressed ? "#b8c8dc" : parent.hovered ? "#91a6c0" : "#647991"
+                                }
+
+                            }
+
+                            delegate: Item {
+                                required property var modelData
+                                property var messageData: modelData
+
+                                width: modernMessageList.width
+                                height: modernBubble.implicitHeight + 4
+
+                                Rectangle {
+                                    id: bubbleBackground
+
+                                    anchors.left: modelData.sender.is_self ? undefined : parent.left
+                                    anchors.right: modelData.sender.is_self ? parent.right : undefined
+                                    width: Math.min(parent.width * 0.78, 500)
+                                    height: modernBubble.implicitHeight
+                                    radius: 14
+                                    color: modelData.transport === "sms" ? (modelData.sender.is_self ? "#765126" : "#493a2b") : (modelData.sender.is_self ? "#28649b" : "#2a3442")
+                                }
+
+                                ColumnLayout {
+                                    id: modernBubble
+
+                                    anchors.left: modelData.sender.is_self ? undefined : parent.left
+                                    anchors.right: modelData.sender.is_self ? parent.right : undefined
+                                    width: Math.min(parent.width * 0.78, 500)
+                                    spacing: 3
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        Layout.rightMargin: 12
+                                        Layout.topMargin: 10
+                                        text: {
+                                            const conversation = messagesCard.accountConversations.find((item) => {
+                                                return HandoverService.sameConversationId(item.id, modelData.id.conversation_id);
+                                            });
+                                            const group = conversation && conversation.kind === "group";
+                                            return (!modelData.sender.is_self || group) ? messagesCard.senderLabel(modelData.sender) : "You";
+                                        }
+                                        color: "#b9d7f2"
+                                        wrapMode: Text.Wrap
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        Layout.rightMargin: 12
+                                        visible: !modelData.deleted && !!modelData.reply_to
+                                        text: {
+                                            const target = modelData.reply_to;
+                                            if (!target)
+                                                return "";
+
+                                            const original = messagesCard.selectedMessages.find((item) => {
+                                                return item.id.local_id === target.local_id;
+                                            });
+                                            return "Reply to: " + (original ? messagesCard.messageText(original) : "an earlier message");
+                                        }
+                                        color: "#b9d7f2"
+                                        textFormat: Text.PlainText
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                        wrapMode: Text.Wrap
+                                    }
+
+                                    TextEdit {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        Layout.rightMargin: 12
+                                        textFormat: TextEdit.PlainText
+                                        readOnly: true
+                                        selectByMouse: true
+                                        text: messagesCard.messageText(modelData)
+                                        font.italic: !!modelData.deleted
+                                        color: modelData.deleted ? "#aebed0" : "#ffffff"
+                                        wrapMode: TextEdit.Wrap
+                                        font.pixelSize: 14
+                                    }
+
+                                    Repeater {
+                                        model: modelData.deleted ? [] : (modelData.attachments || [])
+
+                                        ActionButton {
+                                            required property var modelData
+
+                                            Layout.leftMargin: 8
+                                            Layout.rightMargin: 8
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            text: modelData.name || modelData.mime || "Open attachment"
+                                            flat: true
+                                            enabled: !!modelData.staged_path
+                                            onClicked: Qt.openUrlExternally("file://" + modelData.staged_path)
+                                        }
+
+                                    }
+
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        Layout.rightMargin: 12
+                                        visible: !modelData.deleted && (modelData.reactions || []).length > 0
+
+                                        Repeater {
+                                            model: messageData.deleted ? [] : (messageData.reactions || [])
+
+                                            ActionButton {
+                                                required property var modelData
+
+                                                text: modelData.emoji + " ×" + modelData.count
+                                                flat: true
+                                                ToolTip.visible: hovered
+                                                ToolTip.text: "Remove your reaction"
+                                                enabled: !messageData.deleted && messagesCard.accountConversations.some((item) => {
+                                                    return HandoverService.sameConversationId(item.id, messageData.id.conversation_id) && (item.capabilities || []).includes("reactions");
+                                                })
+                                                onClicked: HandoverService.unreact(messagesCard.selectedConversation, messageData.id.local_id, modelData.emoji)
+                                            }
+
+                                        }
+
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        Layout.rightMargin: 8
+                                        Layout.bottomMargin: 6
+                                        spacing: 4
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: messagesCard.messageTimestamp(modelData)
+                                            color: "#aebed0"
+                                            font.pixelSize: 10
+                                            elide: Text.ElideRight
+                                        }
+
+                                        ToolButton {
+                                            text: "⋯"
+                                            implicitWidth: 32
+                                            implicitHeight: 26
+                                            Accessible.name: "Message actions"
+                                            onClicked: bubbleActions.open()
+
+                                            Menu {
+                                                id: bubbleActions
+
+                                                MenuItem {
+                                                    text: "Reply"
+                                                    enabled: !messageData.deleted && !!messagesCard.selectedAccount && messagesCard.accountConversations.some((item) => {
+                                                        return HandoverService.sameConversationId(item.id, messageData.id.conversation_id) && (item.capabilities || []).includes("replies");
+                                                    })
+                                                    onTriggered: messagesCard.replyingTo = messageData.id.local_id
+                                                }
+
+                                                Menu {
+                                                    title: "React"
+                                                    enabled: !messageData.deleted && messagesCard.accountConversations.some((item) => {
+                                                        return HandoverService.sameConversationId(item.id, messageData.id.conversation_id) && (item.capabilities || []).includes("reactions");
+                                                    })
+
+                                                    MenuItem {
+                                                        text: "Love"
+                                                        onTriggered: HandoverService.react(messagesCard.selectedConversation, messageData.id.local_id, "❤️")
+                                                    }
+
+                                                    MenuItem {
+                                                        text: "Like"
+                                                        onTriggered: HandoverService.react(messagesCard.selectedConversation, messageData.id.local_id, "👍")
+                                                    }
+
+                                                    MenuItem {
+                                                        text: "Laugh"
+                                                        onTriggered: HandoverService.react(messagesCard.selectedConversation, messageData.id.local_id, "😂")
+                                                    }
+
+                                                }
+
+                                            }
+
+                                        }
+
+                                    }
+
+                                }
+
+                            }
+
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: messagesCard.outgoingStatusLabel(messagesCard.selectedOutgoingOperation).length > 0
+                            text: messagesCard.outgoingStatusLabel(messagesCard.selectedOutgoingOperation)
+                            color: messagesCard.selectedOutgoingOperation && messagesCard.selectedOutgoingOperation.outcome === "unknown" ? "#ffcf8b" : "#9caec5"
+                            wrapMode: Text.Wrap
+                            elide: Text.ElideRight
+                            font.pixelSize: 12
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: messagesCard.selectedConversation !== null
+                            spacing: 6
+
+                            Text {
+                                Layout.fillWidth: true
+                                color: messagesCard.replyingTo !== null ? "#9fc5e8" : "#9caec5"
+                                elide: Text.ElideRight
+                                text: {
+                                    if (messagesCard.replyingTo !== null)
+                                        return "Replying to " + messagesCard.replyingTo;
+
+                                    if (HandoverService.isLoadingAllHistory(messagesCard.selectedConversation))
+                                        return "Loading all messages…";
+
+                                    if (messagesCard.status.length > 0)
+                                        return messagesCard.status;
+
+                                    if (messagesCard.selectedMessages.length === 0)
+                                        return "Loading messages…";
+
+                                    return messagesCard.selectedMessages.length + " messages";
                                 }
                             }
-                            background: Rectangle {
-                                radius: 18
-                                color: modernSendButton.enabled ? "#3d8bd9" : "#303947"
+
+                            ToolButton {
+                                text: "⋯"
+                                onClicked: messageOptions.open()
+
+                                Menu {
+                                    id: messageOptions
+
+                                    MenuItem {
+                                        text: "Load older messages"
+                                        enabled: !HandoverService.pendingMessaging && HandoverService.conversationCursors[messagesCard.selectedKey] !== undefined
+                                        onTriggered: HandoverService.loadHistory(messagesCard.selectedConversation, 20, HandoverService.conversationCursors[messagesCard.selectedKey])
+                                    }
+
+                                    MenuItem {
+                                        text: "Load all messages"
+                                        enabled: !HandoverService.isLoadingAllHistory(messagesCard.selectedConversation) && !HandoverService.pendingMessaging
+                                        onTriggered: {
+                                            messagesCard.status = "requesting complete history…";
+                                            if (!HandoverService.loadAllHistory(messagesCard.selectedConversation))
+                                                messagesCard.status = HandoverService.lastError;
+
+                                        }
+                                    }
+
+                                    MenuItem {
+                                        text: "Cancel reply"
+                                        visible: messagesCard.replyingTo !== null
+                                        onTriggered: messagesCard.replyingTo = null
+                                    }
+
+                                }
+
                             }
+
                         }
-                        Button {
-                            text: "＋  Attach"
-                            enabled: messagesCard.selectedConversation !== null
-                                && !HandoverService.pendingMessaging
-                            onClicked: attachmentDialog.open()
+
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            InputField {
+                                id: modernComposeField
+
+                                Layout.fillWidth: true
+                                placeholderText: "Write a message…"
+                                enabled: messagesCard.selectedConversation !== null && !HandoverService.pendingMessaging
+                                onAccepted: modernSendButton.clicked()
+
+                                background: Rectangle {
+                                    radius: 18
+                                    color: "#151a23"
+                                    border.color: "#3a4a60"
+                                }
+
+                            }
+
+                            ActionButton {
+                                id: modernSendButton
+
+                                text: "Send"
+                                font.pixelSize: 13
+                                font.bold: true
+                                enabled: modernComposeField.text.trim().length > 0 && messagesCard.selectedConversation !== null && !HandoverService.pendingMessaging
+                                onClicked: {
+                                    if (HandoverService.sendText(messagesCard.selectedConversation, modernComposeField.text, messagesCard.replyingTo)) {
+                                        modernComposeField.text = "";
+                                        messagesCard.replyingTo = null;
+                                    }
+                                }
+
+                                background: Rectangle {
+                                    radius: 18
+                                    color: modernSendButton.enabled ? "#3d8bd9" : "#303947"
+                                }
+
+                            }
+
+                            ActionButton {
+                                text: "Attach"
+                                enabled: messagesCard.selectedConversation !== null && !HandoverService.pendingMessaging
+                                onClicked: attachmentDialog.open()
+                            }
+
                         }
+
                     }
+
                 }
+
             }
+
         }
+
     }
-}
 
 }

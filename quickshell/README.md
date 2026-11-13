@@ -26,8 +26,11 @@ result. Closing the window or choosing New share does not cancel an accepted
 transfer. After a daemon disconnect, the outcome remains unknown.
 The launcher passes the optional resource through `HANDOVER_SHARE_RESOURCE`.
 
-The sidebar provides views for Overview, Messages, Calls, Notifications, Media,
-Contacts, Clipboard, Phone files, Commands, Remote input, and Transfers.
+The sidebar groups conversations and playback under Workspace, sharing under
+Sharing, and less frequent actions under Tools. Overview focuses on devices;
+media, notifications, and transfers each have their own page. The device picker
+at the top selects the phone used for clipboard, file browsing, calls, contact
+sync, and remote input. Device selection stays stable when device lists reorder.
 Overview lists native phones with ping, ring, lock, keep-awake, and tethering
 actions. Clipboard includes history, and Commands runs names from the local
 allowlist.
@@ -86,7 +89,9 @@ after submission leaves an unknown outcome, described in its error string.
 `devices`. `shareFinished` reports whether daemon acceptance was observed, not
 delivery. Its final `unknown` flag distinguishes a lost reply from a reported
 rejection. `shareCancelFinished` has the same flag for an uncertain cancellation;
-the original transfer can still report a result. The example includes a one-file chooser and a URL field. Incoming
+the original transfer can still report a result. The Send & transfers page includes a file chooser, a link field, and queued-transfer
+cancellation. It tracks acceptance, progress, completion, and unknown outcomes
+using the same state handling as the dedicated send picker. Incoming
 share events carry the source device.
 
 ## Media
@@ -95,10 +100,9 @@ share events carry the source device.
 `play`, `pause`, `play_pause`, `previous`, `next`, `seek`, or `set_position`.
 The daemon validates the command. Playback state updates only when the backend
 reports it. `mediaFinished` reports whether a command was accepted. The
-example includes a small media card with previous, play/pause, and next,
-gated by each session's advertised capabilities. When seeking is supported,
-the card offers ten-second back and forward requests. It does not animate a
-progress bar from sparse backend updates.
+Media page separates laptop audio streaming from phone playback, with
+previous, play/pause, and next gated by each session's advertised capabilities.
+It does not animate a progress bar from sparse backend updates.
 
 ## Messages and contacts
 
