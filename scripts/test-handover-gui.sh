@@ -17,18 +17,24 @@ cat > "$TMP_DIR/fake-bin/quickshell" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" > "$HANDOVER_GUI_ARGS"
 printf '%s' "${HANDOVER_SHARE_RESOURCE-<unset>}" > "$HANDOVER_GUI_RESOURCE"
+printf '%s' "${HANDOVER_BIN_DIR-<unset>}" > "$HANDOVER_GUI_BINDIR"
 EOF
 chmod +x "$TMP_DIR/fake-bin/quickshell"
 
 run_gui() {
 	HANDOVER_GUI_ARGS="$TMP_DIR/args" \
 	HANDOVER_GUI_RESOURCE="$TMP_DIR/resource" \
+	HANDOVER_GUI_BINDIR="$TMP_DIR/bindir" \
 	XDG_DATA_HOME="$EMPTY_DATA_HOME" \
 	PATH="$TMP_DIR/fake-bin:$PATH" \
 	"$BIN_DIR/handover-gui" "$@"
 }
 
 run_gui --example argument
+if test "$(cat "$TMP_DIR/bindir")" != "$BIN_DIR"; then
+	echo "handover-gui did not expose its installation bin directory" >&2
+	exit 1
+fi
 expected="$TMP_DIR/expected"
 printf '%s\n' --path "$DATA_HOME/handover/quickshell/example.qml" --example argument > "$expected"
 if ! cmp -s "$expected" "$TMP_DIR/args"; then

@@ -106,6 +106,16 @@ It does not animate a progress bar from sparse backend updates.
 
 ## Messages and contacts
 
+Messages opens with a recommendation to use the standalone Rust app. If
+`handover-messages` is installed in `~/.local/bin`, beside the `handover-gui`
+launcher, or in `PATH`, **Open Handover
+Messages** launches it independently of Quickshell. Otherwise, QML messaging
+stays available with a warning. **Install Handover Messages** can install the
+executable selected from an extracted Linux release or a local build, without
+restarting the daemon. The helper requires Python 3; see the
+[native app instructions](../docs/messages-app.md) for dependencies and details.
+
+
 Messaging state is account-scoped, never device-scoped:
 `messagingAccounts`, `conversations`, `conversationMessages` (keyed by
 `account:thread`), `typingStates`, `readStates`, and `pairingPrompt`.

@@ -43,8 +43,8 @@ def source_assets():
               "third_party/ukey2/LICENSE": "share/licenses/handover/ukey2/LICENSE",
               "third_party/ukey2/README.md": "share/licenses/handover/ukey2/README.md"}
     assets["scripts/install-service-unit.sh"] = "install-service-unit.sh"
-    for path in [*(ROOT / "quickshell").iterdir(), *(ROOT / "quickshell/pages").iterdir()]:
-        if path.is_file() and path.stem != "messages" and (path.suffix in (".qml", ".js") or path.name == "README.md"):
+    for path in [*(ROOT / "quickshell").iterdir(), *(ROOT / "quickshell/pages").iterdir(), *(ROOT / "quickshell/components").iterdir()]:
+        if path.is_file() and path.stem != "messages" and (path.suffix in (".qml", ".js", ".py") or path.name == "README.md"):
             assets[str(path.relative_to(ROOT))] = "share/handover/" + str(path.relative_to(ROOT))
     for name in ("setup_google_messages.py", "chromium_login_probe.py", "chromium_auth_capture.py",
                  "chromium_browsers.py", "install_native_probe.py"):

@@ -2,6 +2,8 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+HANDOVER_BIN_DIR=$script_dir
+export HANDOVER_BIN_DIR
 configured_data_home=
 if test -f "$script_dir/handover-gui.data-home"; then
 	IFS= read -r configured_data_home < "$script_dir/handover-gui.data-home" || :

@@ -83,6 +83,7 @@ install -Dm644 quickshell/IpcRequest.qml \
 	"$STAGE_DIR/share/handover/quickshell/IpcRequest.qml"
 install -Dm644 quickshell/MessageList.qml \
 	"$STAGE_DIR/share/handover/quickshell/MessageList.qml"
+install -Dm644 quickshell/MessagesApp.py "$STAGE_DIR/share/handover/quickshell/MessagesApp.py"
 install -Dm644 quickshell/*.js "$STAGE_DIR/share/handover/quickshell/"
 install -Dm644 quickshell/example.qml \
 	"$STAGE_DIR/share/handover/quickshell/example.qml"

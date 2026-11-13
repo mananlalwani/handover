@@ -56,12 +56,14 @@ install-files:
 	install -Dm644 quickshell/HandoverService.qml $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	install -Dm644 quickshell/IpcRequest.qml $(QUICKSHELL_INSTALL_DIR)/IpcRequest.qml
 	install -Dm644 quickshell/MessageList.qml $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
+	install -Dm644 quickshell/MessagesApp.py $(QUICKSHELL_INSTALL_DIR)/MessagesApp.py
 	install -Dm644 quickshell/*.js $(QUICKSHELL_INSTALL_DIR)/
 	install -Dm644 quickshell/example.qml $(QUICKSHELL_INSTALL_DIR)/example.qml
 	install -Dm644 quickshell/send.qml $(QUICKSHELL_INSTALL_DIR)/send.qml
 	install -Dm644 quickshell/README.md $(QUICKSHELL_INSTALL_DIR)/README.md
-	install -d $(QUICKSHELL_INSTALL_DIR)/pages
+	install -d $(QUICKSHELL_INSTALL_DIR)/pages $(QUICKSHELL_INSTALL_DIR)/components
 	install -Dm644 quickshell/pages/*.qml $(QUICKSHELL_INSTALL_DIR)/pages/
+	install -Dm644 quickshell/components/*.qml $(QUICKSHELL_INSTALL_DIR)/components/
 	install -Dm755 google-messages/tools/install_native_probe.py $(GOOGLE_MESSAGES_TOOLS_DIR)/install_native_probe.py
 	install -Dm644 google-messages/tools/chrome-observer/manifest.json $(GOOGLE_MESSAGES_TOOLS_DIR)/chrome-observer/manifest.json
 	install -Dm644 google-messages/tools/chrome-observer/popup.html $(GOOGLE_MESSAGES_TOOLS_DIR)/chrome-observer/popup.html
@@ -114,11 +116,13 @@ uninstall-user:
 	rm -f $(QUICKSHELL_INSTALL_DIR)/HandoverService.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/IpcRequest.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/MessageList.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/MessagesApp.py
 	rm -f $(QUICKSHELL_INSTALL_DIR)/*.js
 	rm -f $(QUICKSHELL_INSTALL_DIR)/example.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/send.qml
 	rm -f $(QUICKSHELL_INSTALL_DIR)/README.md
 	rm -f $(QUICKSHELL_INSTALL_DIR)/pages/*.qml
+	rm -f $(QUICKSHELL_INSTALL_DIR)/components/*.qml
 	rm -f $(GOOGLE_MESSAGES_TOOLS_DIR)/install_native_probe.py
 	rm -f $(GOOGLE_MESSAGES_TOOLS_DIR)/chrome-observer/manifest.json
 	rm -f $(GOOGLE_MESSAGES_TOOLS_DIR)/chrome-observer/popup.html
@@ -128,5 +132,6 @@ uninstall-user:
 	-rmdir $(GOOGLE_MESSAGES_TOOLS_DIR)
 	-rmdir $(DESTDIR)$(USER_DATA_HOME)/handover/google-messages
 	-rmdir $(QUICKSHELL_INSTALL_DIR)/pages
+	-rmdir $(QUICKSHELL_INSTALL_DIR)/components
 	-rmdir $(QUICKSHELL_INSTALL_DIR)
 	-systemctl --user daemon-reload

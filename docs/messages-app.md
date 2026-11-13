@@ -11,6 +11,19 @@ Install the matching Handover binaries, then launch `handover-messages` or open
 Handover Messages from your application launcher. Source builds can use
 `cargo run -p handover-messages`. GTK 4.10 and libadwaita 1.4 or newer are required.
 
+The Quickshell Messages page recommends this app and offers **Open Handover
+Messages** when it finds an executable in `~/.local/bin`, beside the `handover-gui` launcher, or in `PATH`. If it is not
+installed, the page keeps QML messaging available with a fallback warning.
+**Use QML fallback** also remains available when the standalone app is installed.
+
+**Install Handover Messages** opens a user-only installer. Download and extract
+the matching Linux release, then choose its `bin/handover-messages` executable,
+or choose an executable from your own build. The installer copies it to
+`~/.local/bin` and adds an application launcher under your user data directory.
+It does not install dependencies, restart the daemon, or change phone pairing.
+GTK and libadwaita must already be installed. These Quickshell install and launch
+controls require Python 3. Launch failures leave the QML fallback available.
+
 Choose an account and conversation. Offline accounts retain their saved history
 and drafts; send controls require the account's reported connection and
 capabilities. Search matches conversation names and saved message text. It does

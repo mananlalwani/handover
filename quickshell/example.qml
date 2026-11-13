@@ -337,11 +337,27 @@ ShellRoot {
 
                         }
 
-                        MessagesPage {
-                            id: messagesCard
-
-                            window: window
+                        ColumnLayout {
                             anchors.fill: parent
+                            visible: window.page === "messages"
+                            spacing: 12
+
+                            MessagesAppPrompt {
+                                id: messagesApp
+
+                                Layout.fillWidth: true
+                                Layout.fillHeight: !showFallback
+                            }
+
+                            MessagesPage {
+                                id: messagesCard
+
+                                window: window
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                visible: window.page === "messages" && messagesApp.showFallback
+                            }
+
                         }
 
                         CallsPage {

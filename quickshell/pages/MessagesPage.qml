@@ -122,8 +122,6 @@ Rectangle {
         }
     }
 
-    anchors.fill: parent
-    anchors.margins: 0
     radius: 8
     color: "#1b2532"
     visible: window.page === "messages"

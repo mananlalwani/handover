@@ -72,6 +72,8 @@ install -Dm644 "$ROOT/share/handover/quickshell/IpcRequest.qml" \
 	"$USER_DATA_HOME/handover/quickshell/IpcRequest.qml"
 install -Dm644 "$ROOT/share/handover/quickshell/MessageList.qml" \
 	"$USER_DATA_HOME/handover/quickshell/MessageList.qml"
+install -Dm644 "$ROOT/share/handover/quickshell/MessagesApp.py" \
+	"$USER_DATA_HOME/handover/quickshell/MessagesApp.py"
 install -Dm644 "$ROOT/share/handover/quickshell/"*.js \
 	"$USER_DATA_HOME/handover/quickshell/"
 install -Dm644 "$ROOT/share/handover/quickshell/example.qml" \
