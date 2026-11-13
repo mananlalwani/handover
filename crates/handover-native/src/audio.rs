@@ -79,6 +79,28 @@ impl NativeBackend {
     }
 
     pub fn start_audio(&self, peer: &str, event: Event) -> Result<(), NativeCommandError> {
+        self.start_audio_session(peer, event, true)
+    }
+
+    pub(crate) fn set_audio_from_phone(
+        &self,
+        peer: &str,
+        enabled: bool,
+        event: Event,
+    ) -> Result<(), NativeCommandError> {
+        if enabled {
+            self.start_audio_session(peer, event, false)
+        } else {
+            self.stop_audio(peer, event)
+        }
+    }
+
+    fn start_audio_session(
+        &self,
+        peer: &str,
+        event: Event,
+        replace: bool,
+    ) -> Result<(), NativeCommandError> {
         let mut nonce = [0u8; 16];
         openssl::rand::rand_bytes(&mut nonce).map_err(|_| NativeCommandError::QueueFull)?;
         let id = hex::encode(nonce);
@@ -89,6 +111,14 @@ impl NativeBackend {
             let mut inner = self.inner.lock().unwrap();
             if !inner.active.contains_key(peer) || !inner.audio.contains_key(peer) {
                 return Err(NativeCommandError::Offline);
+            }
+            if !replace
+                && matches!(
+                    inner.audio[peer].phase,
+                    AudioStreamPhase::Starting | AudioStreamPhase::Streaming
+                )
+            {
+                return Ok(());
             }
             realtime = inner.audio[peer].realtime;
             let queue = inner.outbox.entry(peer.to_owned()).or_default();
@@ -221,7 +251,8 @@ impl NativeBackend {
             audio.id.clear();
             audio.phase = phase;
             // Also stops a phone waiting for data or an offer still in flight.
-            if let Some(queue) = inner.outbox.get_mut(peer) {
+            if inner.active.contains_key(peer) {
+                let queue = inner.outbox.entry(peer.to_owned()).or_default();
                 queue.retain(|message| !matches!(message, Message::AudioOffer { stream_id, .. } | Message::AudioRtcOffer { stream_id, .. } if stream_id == id));
                 if queue.len() < crate::limits::MAX_OUTBOX_PER_PEER {
                     queue.push(Message::AudioStop {

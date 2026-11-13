@@ -716,7 +716,26 @@ class MainActivity : android.app.Activity() {
         val remoteInputPage = buildRemoteInputPage()
         val remotePage = buildRemoteDesktopPage()
         val laptopAudioPage = featurePage(
-            "Laptop audio", "Pause or resume the laptop player while keeping the audio stream connected.",
+            "Laptop audio", "Control the audio stream and the laptop player separately.",
+            panel(sectionTitle("Stream to this phone"), TextView(this).apply {
+                text = "Pausing the stream leaves the laptop player running. Laptop audio output returns when the last stream stops."
+                textSize = 14f
+                setTextColor(Color.rgb(70, 77, 94))
+            }, LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                listOf("Start stream" to true, "Pause stream" to false).forEach { (label, enabled) ->
+                    addView(secondary(Button(this@MainActivity).apply {
+                        text = label
+                        setOnClickListener {
+                            val queued = HandoverForegroundService.setLaptopAudioStreaming(enabled)
+                            android.widget.Toast.makeText(this@MainActivity,
+                                if (queued) "Stream request queued for laptop"
+                                else "Connect to your laptop first",
+                                android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }), LinearLayout.LayoutParams(0, -2, 1f))
+                }
+            }),
             panel(sectionTitle("Playback"), primary(Button(this).apply {
                 text = "Pause / resume"
                 setOnClickListener {

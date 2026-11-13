@@ -1268,6 +1268,14 @@ impl NativeBackend {
                     last_received = Instant::now();
                     self.audio_rtc_answer(&id, &stream_id, sdp);
                 }
+                Ok(Message::AudioStreamSet {
+                    protocol: WIRE_VERSION,
+                    enabled,
+                }) => {
+                    last_received = Instant::now();
+                    // The authenticated control session chooses its own receiver only.
+                    let _ = self.set_audio_from_phone(&id, enabled, event.clone());
+                }
                 Ok(Message::AudioPlaybackToggle {
                     protocol: WIRE_VERSION,
                     stream_id,

@@ -104,6 +104,10 @@ pub(crate) struct WireFileEntry {
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Message {
+    AudioStreamSet {
+        protocol: u32,
+        enabled: bool,
+    },
     AudioPlaybackToggle {
         protocol: u32,
         stream_id: String,
@@ -522,7 +526,8 @@ fn is_true(value: &bool) -> bool {
 impl Message {
     pub(crate) fn version(&self) -> u32 {
         match self {
-            Self::AudioPlaybackToggle { protocol, .. }
+            Self::AudioStreamSet { protocol, .. }
+            | Self::AudioPlaybackToggle { protocol, .. }
             | Self::AudioFormat { protocol }
             | Self::AudioReady { protocol, .. }
             | Self::AudioRtcOffer { protocol, .. }

@@ -462,6 +462,107 @@ fn audio_offers_require_readiness_and_the_paired_certificate() {
 }
 
 #[test]
+fn phone_can_start_and_pause_its_stream_without_disconnect_or_restart() {
+    use handover_core::AudioStreamPhase;
+    fn receive_control(peer: &mut TlsPeer) -> serde_json::Value {
+        loop {
+            let message = recv(peer);
+            match message["type"].as_str() {
+                Some("notifications_request" | "media_request" | "contacts_request") => {}
+                Some("ping") => send(peer, serde_json::json!({"type":"pong","protocol":1})),
+                _ => return message,
+            }
+        }
+    }
+    let harness = harness();
+    let identity = test_identity();
+
+    let mut unpaired = connect(harness.port, &identity);
+    send(
+        &mut unpaired,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":true}),
+    );
+    recv_err(&mut unpaired);
+    assert!(harness.backend.audio_streams().is_empty());
+
+    let mut control = connect(harness.port, &identity);
+    pair_client(&harness, &identity, &mut control);
+    // A paired phone still has to advertise audio readiness.
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":true}),
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    while receive_control(&mut control)["type"] != "pong" {}
+    assert!(harness.backend.audio_streams().is_empty());
+
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_ready","protocol":1}),
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":true}),
+    );
+    let offer = receive_control(&mut control);
+    assert_eq!(offer["type"], "audio_offer");
+    let first_id = offer["stream_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Starting
+    );
+
+    // Repeated Start must not replace an offer already being negotiated.
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":true}),
+    );
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    assert_eq!(receive_control(&mut control)["type"], "pong");
+
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":false}),
+    );
+    let stop = receive_control(&mut control);
+    assert_eq!(stop["type"], "audio_stop");
+    assert_eq!(stop["stream_id"], first_id);
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Idle
+    );
+
+    // The same authenticated connection can start a fresh stream.
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":true}),
+    );
+    let offer = receive_control(&mut control);
+    assert_eq!(offer["type"], "audio_offer");
+    assert_ne!(offer["stream_id"], first_id);
+    send(
+        &mut control,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":false}),
+    );
+    assert_eq!(receive_control(&mut control)["type"], "audio_stop");
+    send(
+        &mut control,
+        serde_json::json!({"type":"ping","protocol":1}),
+    );
+    assert_eq!(receive_control(&mut control)["type"], "pong");
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        AudioStreamPhase::Idle
+    );
+}
+
+#[test]
 #[ignore = "requires parec and a live local PulseAudio or PipeWire output"]
 fn audio_stream_captures_pcm_over_a_separate_authenticated_socket() {
     use handover_core::AudioStreamPhase;

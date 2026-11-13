@@ -77,6 +77,11 @@ class NativeTransport(internal val context: Context) {
             HandoverForegroundService.audioStopped(id)
             send(JSONObject().put("type", "audio_stop").put("protocol", 1).put("stream_id", id))
         })
+    internal fun setLaptopAudioStreaming(enabled: Boolean): Boolean {
+        if (connectionState() != "connected" || serverFingerprint == null) return false
+        return enqueue { writeNow(JSONObject().put("type", "audio_stream_set")
+            .put("protocol", 1).put("enabled", enabled)) }
+    }
     internal fun toggleLaptopPlayback(id: String): Boolean {
         if (connectionState() != "connected" || serverFingerprint == null || !isTransferId(id)) return false
         return enqueue { writeNow(JSONObject().put("type", "audio_playback_toggle")

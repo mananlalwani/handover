@@ -140,6 +140,8 @@ class HandoverForegroundService : Service() {
             activeTransport?.presentationControl(action, deltaX, deltaY)
         }
         fun volume(action: String) { activeTransport?.volumeControl(action) }
+        fun setLaptopAudioStreaming(enabled: Boolean): Boolean =
+            activeTransport?.setLaptopAudioStreaming(enabled) == true
         fun toggleLaptopPlayback(): Boolean {
             val id = activeService?.laptopAudioId ?: return false
             return activeTransport?.toggleLaptopPlayback(id) == true

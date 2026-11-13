@@ -16,7 +16,13 @@ handoverctl audio stop "Phone"
 
 The phone uses Android's current media output and media volume. Its Handover
 notification has a Stop audio action. In the phone app, open **Laptop audio**
-and tap **Pause / resume** to toggle the laptop player without ending the stream.
+and use **Start stream** or **Pause stream** to start or stop delivery to this phone.
+Pausing the stream leaves the laptop player running. Laptop audio outputs are
+restored after the last stream stops. Starting again creates a new stream. Repeated start requests leave an
+already starting or running stream intact. These controls require the updated
+desktop daemon and keep the paired connection active.
+
+Tap **Pause / resume** to toggle the laptop player without ending the stream.
 This button requires the updated desktop daemon and `playerctl`, and works with
 players that expose MPRIS controls. With `playerctld` running, it targets the most
 recently active player; otherwise it uses the first available local player.
