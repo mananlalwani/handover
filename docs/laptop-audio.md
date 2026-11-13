@@ -15,7 +15,16 @@ handoverctl audio stop "Phone"
 ```
 
 The phone uses Android's current media output and media volume. Its Handover
-notification has a Stop audio action. Playback stops on audio focus loss,
+notification has a Stop audio action. In the phone app, open **Laptop audio**
+and tap **Pause / resume** to toggle the laptop player without ending the stream.
+This button requires the updated desktop daemon and `playerctl`, and works with
+players that expose MPRIS controls. With `playerctld` running, it targets the most
+recently active player; otherwise it uses the first available local player.
+Handover's phone-player proxy is excluded. The app reports that a request was
+queued, not that playback changed. No Android media session or notification
+playback buttons are added.
+
+Playback stops on audio focus loss,
 disconnect, unpairing, or a stream error. Start again after reconnecting.
 
 Handover creates a silent virtual output and moves app audio into it while

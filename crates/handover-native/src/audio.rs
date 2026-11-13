@@ -160,6 +160,27 @@ impl NativeBackend {
         Ok(())
     }
 
+    /// Whether an opaque stream ID still identifies this peer's playing receiver.
+    pub fn audio_stream_is_playing(&self, peer: &str, id: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .audio
+            .get(peer)
+            .is_some_and(|audio| {
+                !id.is_empty() && audio.id == id && audio.phase == AudioStreamPhase::Streaming
+            })
+    }
+
+    pub(crate) fn audio_playback_toggle(&self, peer: &str, id: &str, event: &Event) {
+        if self.audio_stream_is_playing(peer, id) {
+            event(StateEvent::DesktopPlaybackToggle {
+                device_id: DeviceId::new(format!("native:{peer}")),
+                stream_id: id.to_owned(),
+            });
+        }
+    }
+
     pub(crate) fn audio_playing(&self, peer: &str, id: &str, event: &Event) {
         let status = {
             let mut inner = self.inner.lock().unwrap();
@@ -376,5 +397,58 @@ impl NativeBackend {
         let _ = child.wait();
         let _ = producer.join();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_toggle_requires_the_current_stream_on_the_requesting_peer() {
+        let directory = tempfile::tempdir().unwrap();
+        let backend = NativeBackend::open(directory.path().to_path_buf()).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let event: Event = Arc::new(move |event| captured.lock().unwrap().push(event));
+        backend.audio_ready("phone", true, &event);
+        events.lock().unwrap().clear();
+        backend.audio_playback_toggle("phone", "", &event);
+        {
+            let mut inner = backend.inner.lock().unwrap();
+            let audio = inner.audio.get_mut("phone").unwrap();
+            audio.id = "current".into();
+            audio.phase = AudioStreamPhase::Starting;
+        }
+        backend.audio_playback_toggle("phone", "current", &event);
+        backend
+            .inner
+            .lock()
+            .unwrap()
+            .audio
+            .get_mut("phone")
+            .unwrap()
+            .phase = AudioStreamPhase::Streaming;
+        backend.audio_playback_toggle("another-phone", "current", &event);
+        backend.audio_playback_toggle("phone", "stale", &event);
+        assert!(events.lock().unwrap().is_empty());
+        backend.audio_playback_toggle("phone", "current", &event);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![StateEvent::DesktopPlaybackToggle {
+                device_id: DeviceId::new("native:phone"),
+                stream_id: "current".into(),
+            }]
+        );
+        backend
+            .inner
+            .lock()
+            .unwrap()
+            .audio
+            .get_mut("phone")
+            .unwrap()
+            .phase = AudioStreamPhase::Idle;
+        backend.audio_playback_toggle("phone", "current", &event);
+        assert_eq!(events.lock().unwrap().len(), 1);
     }
 }

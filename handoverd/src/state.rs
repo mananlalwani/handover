@@ -65,10 +65,12 @@ impl StateStore {
             }
             // Presentation commands are transient control messages. The daemon
             // executes them but does not retain them in the authoritative snapshot.
-            StateEvent::Presentation(_) => ApplyOutcome {
-                changed: false,
-                changes: Vec::new(),
-            },
+            StateEvent::DesktopPlaybackToggle { .. } | StateEvent::Presentation(_) => {
+                ApplyOutcome {
+                    changed: false,
+                    changes: Vec::new(),
+                }
+            }
             StateEvent::Volume(_) => ApplyOutcome {
                 changed: false,
                 changes: Vec::new(),

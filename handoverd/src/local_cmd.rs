@@ -27,6 +27,10 @@ pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 /// processing when a helper misbehaves, so effects run here instead.
 pub(crate) enum Effect {
     Presentation(PresentationCommand),
+    DesktopPlaybackToggle {
+        device_id: handover_core::DeviceId,
+        stream_id: String,
+    },
     Volume(VolumeCommand),
     RemoteInput(RemoteInputCommand),
     ClipboardText(ClipboardText),
@@ -110,6 +114,39 @@ fn worker() {
             }
         };
         match effect {
+            Effect::DesktopPlaybackToggle {
+                device_id,
+                stream_id,
+            } => {
+                let current = device_id
+                    .as_str()
+                    .strip_prefix("native:")
+                    .zip(crate::native_backend())
+                    .is_some_and(|(peer, backend)| {
+                        backend.audio_stream_is_playing(peer, &stream_id)
+                    });
+                if !current {
+                    continue;
+                }
+                // Prefer playerctld's most recently active player. Never send the
+                // command through Handover's proxy back to a phone.
+                let result = status_timeout(
+                    Command::new("playerctl")
+                        .args([
+                            "--ignore-player=handover",
+                            "--player=playerctld,%any",
+                            "play-pause",
+                        ])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null()),
+                );
+                if !result.is_ok_and(|status| status.success()) {
+                    tracing::warn!(
+                        "desktop playback toggle failed; check playerctl and local player support"
+                    );
+                }
+            }
             Effect::Presentation(command) => crate::presentation::execute(&command),
             Effect::Volume(command) => crate::volume::execute(&command),
             Effect::RemoteInput(command) => crate::remote_input::execute(&command),

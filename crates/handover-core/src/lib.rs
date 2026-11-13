@@ -503,6 +503,11 @@ impl NotificationCommand {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StateEvent {
     AudioStream(AudioStreamStatus),
+    /// Toggle playback of a local desktop player, without stopping audio delivery.
+    DesktopPlaybackToggle {
+        device_id: DeviceId,
+        stream_id: String,
+    },
     Device(DeviceEvent),
     Notification(NotificationEvent),
     Media(MediaEvent),

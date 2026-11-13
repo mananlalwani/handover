@@ -1268,6 +1268,13 @@ impl NativeBackend {
                     last_received = Instant::now();
                     self.audio_rtc_answer(&id, &stream_id, sdp);
                 }
+                Ok(Message::AudioPlaybackToggle {
+                    protocol: WIRE_VERSION,
+                    stream_id,
+                }) => {
+                    last_received = Instant::now();
+                    self.audio_playback_toggle(&id, &stream_id, event);
+                }
                 Ok(Message::AudioPlaying { stream_id, .. }) => {
                     last_received = Instant::now();
                     self.audio_playing(&id, &stream_id, event);

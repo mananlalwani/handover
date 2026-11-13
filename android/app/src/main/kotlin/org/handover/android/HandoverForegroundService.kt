@@ -140,6 +140,10 @@ class HandoverForegroundService : Service() {
             activeTransport?.presentationControl(action, deltaX, deltaY)
         }
         fun volume(action: String) { activeTransport?.volumeControl(action) }
+        fun toggleLaptopPlayback(): Boolean {
+            val id = activeService?.laptopAudioId ?: return false
+            return activeTransport?.toggleLaptopPlayback(id) == true
+        }
         fun remoteInput(action: String, deltaX: Int = 0, deltaY: Int = 0,
                         button: Int = 0, text: String? = null) {
             activeTransport?.remoteInput(action, deltaX, deltaY, button, text)

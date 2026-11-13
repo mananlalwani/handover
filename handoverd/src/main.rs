@@ -265,6 +265,16 @@ fn apply_backend_event(
     if let StateEvent::Presentation(command) = &event {
         local_cmd::submit(local_cmd::Effect::Presentation(command.clone()));
     }
+    if let StateEvent::DesktopPlaybackToggle {
+        device_id,
+        stream_id,
+    } = &event
+    {
+        local_cmd::submit(local_cmd::Effect::DesktopPlaybackToggle {
+            device_id: device_id.clone(),
+            stream_id: stream_id.clone(),
+        });
+    }
     if let StateEvent::Volume(command) = &event {
         local_cmd::submit(local_cmd::Effect::Volume(command.clone()));
     }

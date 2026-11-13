@@ -314,10 +314,12 @@ pub(crate) fn message_from_event(event: StateEvent) -> ServerMessage {
             ServerMessage::new(ServerPayload::ShareResult { result })
         }
         StateEvent::Filesystem(result) => ServerMessage::new(ServerPayload::Filesystem { result }),
-        StateEvent::Presentation(_) => ServerMessage::protocol_error(
-            ErrorCode::BackendRejected,
-            "presentation commands are not broadcast to desktop clients",
-        ),
+        StateEvent::DesktopPlaybackToggle { .. } | StateEvent::Presentation(_) => {
+            ServerMessage::protocol_error(
+                ErrorCode::BackendRejected,
+                "desktop control commands are not broadcast to desktop clients",
+            )
+        }
         StateEvent::Volume(_) => ServerMessage::protocol_error(
             ErrorCode::BackendRejected,
             "volume commands are not broadcast to desktop clients",

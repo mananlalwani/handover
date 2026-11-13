@@ -715,6 +715,19 @@ class MainActivity : android.app.Activity() {
         )
         val remoteInputPage = buildRemoteInputPage()
         val remotePage = buildRemoteDesktopPage()
+        val laptopAudioPage = featurePage(
+            "Laptop audio", "Pause or resume the laptop player while keeping the audio stream connected.",
+            panel(sectionTitle("Playback"), primary(Button(this).apply {
+                text = "Pause / resume"
+                setOnClickListener {
+                    val queued = HandoverForegroundService.toggleLaptopPlayback()
+                    android.widget.Toast.makeText(this@MainActivity,
+                        if (queued) "Playback request queued for laptop"
+                        else "Connect to your laptop and start audio streaming first",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                }
+            })),
+        )
         val volumePage = featurePage(
             "System volume", "Control the default Linux audio output.",
             panel(sectionTitle("Volume"), LinearLayout(this).apply {
@@ -816,6 +829,7 @@ class MainActivity : android.app.Activity() {
                 menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
                 menuButton("Remote input", "Control the Linux pointer and keyboard") { showPage(remoteInputPage) },
                 menuButton("Remote desktop", "Browse files and run configured commands") { showPage(remotePage) },
+                menuButton("Laptop audio", "Pause or resume playback on Linux") { showPage(laptopAudioPage) },
                 menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
                 menuButton("Contacts", "Send an on-demand contacts snapshot") { showPage(contactsPage) },
                 menuButton("Updates", "Check GitHub or install a verified APK") { showPage(updatesPage) },
