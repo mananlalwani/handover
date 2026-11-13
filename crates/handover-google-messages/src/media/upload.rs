@@ -97,7 +97,7 @@ fn prepare(path: &Path, root: &Path) -> Result<Prepared, MediaError> {
     if bytes.len() != size.len() as usize {
         return Err(MediaError::InvalidFile);
     }
-    let (mime, kind) = identify(&bytes);
+    let (mime, kind) = identify(&bytes, &name);
     let mut key = Zeroizing::new([0; 32]);
     OsRng
         .try_fill_bytes(key.as_mut())
@@ -113,7 +113,7 @@ fn prepare(path: &Path, root: &Path) -> Result<Prepared, MediaError> {
     })
 }
 
-fn identify(bytes: &[u8]) -> (&'static str, i32) {
+fn identify(bytes: &[u8], name: &str) -> (&'static str, i32) {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         ("image/png", 3)
     } else if bytes.starts_with(b"\xff\xd8\xff") {
@@ -126,6 +126,18 @@ fn identify(bytes: &[u8]) -> (&'static str, i32) {
         ("application/pdf", 25)
     } else if bytes.starts_with(b"PK\x03\x04") {
         ("application/zip", 35)
+    } else if std::str::from_utf8(bytes).is_ok() {
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match extension.as_str() {
+            "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => ("text/x-c++src", 0),
+            "c" | "h" => ("text/x-csrc", 0),
+            "txt" | "md" | "csv" | "log" => ("text/plain", 0),
+            _ => ("application/octet-stream", 0),
+        }
     } else {
         ("application/octet-stream", 0)
     }
@@ -314,6 +326,34 @@ mod tests {
         assert_eq!(file.kind, 3);
         assert_eq!(file.size, 15);
         assert!(!file.ciphertext.is_empty());
+    }
+
+    #[test]
+    fn prepare_classifies_cc_source_and_preserves_name_and_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.cc");
+        let source = "#include <string>\nint main() { return 0; }\n".as_bytes();
+        std::fs::write(&path, source).unwrap();
+
+        let file = prepare(&path, directory.path()).unwrap();
+        assert_eq!(file.name.as_str(), "example.cc");
+        assert_eq!(file.mime, "text/x-c++src");
+        assert_eq!(file.kind, 0);
+        assert_eq!(file.size, source.len());
+        let plaintext = crate::media::decrypt(&file.ciphertext, &file.key).unwrap();
+        assert_eq!(&*plaintext, source);
+    }
+
+    #[test]
+    fn identify_keeps_unknown_and_non_utf8_files_binary() {
+        assert_eq!(
+            identify(b"opaque data", "attachment.dat"),
+            ("application/octet-stream", 0)
+        );
+        assert_eq!(
+            identify(b"\xff\xfe", "broken.cc"),
+            ("application/octet-stream", 0)
+        );
     }
 
     #[test]

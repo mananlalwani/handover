@@ -398,6 +398,7 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
             }
         }
         Method::MessagesSaveAttachmentDraft {
+            queued_files,
             conversation_id,
             file_url,
             mime,
@@ -407,7 +408,7 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
             } else {
                 match workspace
-                    .save_attachment_draft(conversation_id, file_url, mime, revision)
+                    .save_attachment_queue(conversation_id, file_url, mime, queued_files, revision)
                     .await
                 {
                     Ok(draft) => {

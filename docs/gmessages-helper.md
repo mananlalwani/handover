@@ -360,3 +360,13 @@ Late provider evidence can resolve an unknown operation. No journal entry trigge
 a resend. Check the conversation before explicitly sending again. Confirmed sent,
 delivered, displayed, and failed outcomes survive restart; logout removes the
 account's operation records.
+
+The normalized `messages.save_attachment_draft` request accepts optional
+`queued_files`, a bounded list of `{file_url, mime}` entries after the existing
+first file. Its reply retains `attachment` for the first file and adds
+`queued_attachments` for the remainder. The daemon saves the complete queue
+atomically under the existing revision and private storage limits, with at most
+ten files per conversation. Older single-file callers omit these fields.
+Each send still uses the existing single-file command. The client advances the
+saved queue after acceptance and stops on failed or unknown outcomes. A new app
+session restores the draft without automatically sending it.

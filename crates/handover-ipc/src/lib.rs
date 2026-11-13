@@ -262,6 +262,8 @@ pub enum Method {
     #[serde(rename = "messages.save_attachment_draft")]
     MessagesSaveAttachmentDraft {
         conversation_id: ConversationId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        queued_files: Vec<handover_core::messaging::AttachmentDraftSource>,
         file_url: Option<String>,
         mime: Option<String>,
         revision: u64,
@@ -1793,7 +1795,41 @@ impl Client {
         mime: Option<String>,
         revision: u64,
     ) -> Result<handover_core::MessageAttachmentDraft, IpcError> {
+        self.save_attachment_queue(
+            conversation_id,
+            file_url
+                .into_iter()
+                .map(|file_url| handover_core::messaging::AttachmentDraftSource {
+                    file_url,
+                    mime: mime.clone(),
+                })
+                .collect(),
+            revision,
+        )
+        .await
+    }
+
+    pub async fn save_attachment_queue(
+        &mut self,
+        conversation_id: ConversationId,
+        mut files: Vec<handover_core::messaging::AttachmentDraftSource>,
+        revision: u64,
+    ) -> Result<handover_core::MessageAttachmentDraft, IpcError> {
+        let expected = files.len();
+        if expected > 10 {
+            return Err(IpcError::UnexpectedResponse(
+                "attachment queue exceeds 10 files".into(),
+            ));
+        }
+        let first = if files.is_empty() {
+            None
+        } else {
+            Some(files.remove(0))
+        };
+        let file_url = first.as_ref().map(|file| file.file_url.clone());
+        let mime = first.and_then(|file| file.mime);
         self.send(Method::MessagesSaveAttachmentDraft {
+            queued_files: files,
             conversation_id,
             file_url,
             mime,
@@ -1801,7 +1837,12 @@ impl Client {
         })
         .await?;
         match self.receive().await?.payload {
-            ServerPayload::MessageAttachmentDraft { draft } => Ok(draft),
+            ServerPayload::MessageAttachmentDraft { draft }
+                if usize::from(draft.attachment.is_some()) + draft.queued_attachments.len()
+                    == expected =>
+            {
+                Ok(draft)
+            }
             payload => Err(unexpected(payload)),
         }
     }

@@ -13,6 +13,11 @@ pub enum Request {
     SaveDraft(MessageDraft),
     AttachmentDraft(ConversationId),
     SaveAttachmentDraft(ConversationId, Option<String>, Option<String>, u64),
+    SaveAttachmentQueue(
+        ConversationId,
+        Vec<handover_core::messaging::AttachmentDraftSource>,
+        u64,
+    ),
     Search {
         query: String,
         account: Option<MessagingAccountId>,
@@ -197,6 +202,9 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                     .save_attachment_draft(id, url, mime, revision)
                     .await?,
             ),
+            Request::SaveAttachmentQueue(id, files, revision) => {
+                Reply::AttachmentDraft(client.save_attachment_queue(id, files, revision).await?)
+            }
             Request::SaveDraft(draft) => Reply::Draft(client.save_message_draft(draft).await?),
             Request::Search {
                 query,

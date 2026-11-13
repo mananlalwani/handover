@@ -48,10 +48,13 @@ only when the daemon reports updated messages. Hover a bubble for its timestamp.
 longer gaps. The composer grows for multiline drafts.
 
 The composer supports text, replies, and attachments where the conversation
-advertises those capabilities. Choose a file with the attachment button or drag
-one into the conversation. Review its preview, add a caption, and press Send.
-Removing the attachment keeps the caption. Each message can contain one file,
-up to 50 MiB; file attachments cannot be combined with quoted replies.
+advertises those capabilities. Choose files with the attachment button, drag files
+into the conversation, or paste copied images and files. Repeated image paste adds
+to the same draft, up to ten files. Removing attachments keeps the caption. Send
+submits one message per file, with the caption on the first. Each file can be up
+to 50 MiB; attachments cannot be combined with quoted replies. A rejected or
+uncertain submission stops the batch, leaving remaining files in the draft.
+Files are not retried automatically.
 The daemon saves a private copy of each selected file alongside the draft.
 Saved selections and captions survive app and daemon restarts, including after
 the original file moves or is deleted. Send waits for the attachment-save reply.
@@ -66,7 +69,8 @@ available for workflows the native app does not yet expose.
 | Ctrl+K | Search all saved messages |
 | Ctrl+F | Find within the current conversation |
 | Enter / Shift+Enter in Find | Next / previous match |
-| Ctrl+Enter | Send the current draft |
+| Enter or Ctrl+Enter | Send the current draft |
+| Shift+Enter in the composer | Insert a new line |
 | Alt+Up or Alt+Down | Move between conversations |
 
 Drafts autosave through the daemon. The app restores the selected conversation

@@ -280,12 +280,21 @@ pub struct Attachment {
     pub staged_path: Option<String>,
 }
 
+/// One local file selected for an attachment draft.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AttachmentDraftSource {
+    pub file_url: String,
+    pub mime: Option<String>,
+}
+
 /// Local unsent attachment selection for one conversation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MessageAttachmentDraft {
     pub conversation_id: ConversationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<Attachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_attachments: Vec<Attachment>,
     pub revision: u64,
 }
 

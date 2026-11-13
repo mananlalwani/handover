@@ -76,6 +76,7 @@ impl Workspace {
         })
         .await?
     }
+    #[cfg(test)]
     pub(crate) async fn save_attachment_draft(
         self: &Arc<Self>,
         id: ConversationId,
@@ -83,7 +84,30 @@ impl Workspace {
         mime: Option<String>,
         revision: u64,
     ) -> Result<MessageAttachmentDraft, WorkspaceError> {
+        self.save_attachment_queue(id, file_url, mime, Vec::new(), revision)
+            .await
+    }
+    pub(crate) async fn save_attachment_queue(
+        self: &Arc<Self>,
+        id: ConversationId,
+        file_url: Option<String>,
+        mime: Option<String>,
+        queued: Vec<handover_core::messaging::AttachmentDraftSource>,
+        revision: u64,
+    ) -> Result<MessageAttachmentDraft, WorkspaceError> {
         validate_conversation_id(&id)?;
+        if queued.len() >= 10 || (file_url.is_none() && !queued.is_empty()) {
+            return Err(WorkspaceError::Invalid(
+                "attachment queue exceeds limits".into(),
+            ));
+        }
+        if queued.iter().any(|file| {
+            file.mime
+                .as_ref()
+                .is_some_and(|mime| mime.len() > 256 || mime.chars().any(char::is_control))
+        }) {
+            return Err(WorkspaceError::Invalid("invalid MIME type".into()));
+        }
         if mime
             .as_ref()
             .is_some_and(|mime| mime.len() > 256 || mime.chars().any(char::is_control))
@@ -92,7 +116,7 @@ impl Workspace {
         }
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
-            this.save_attachment_blocking(id, file_url, mime, revision)
+            this.save_attachment_blocking(id, file_url, mime, queued, revision)
         })
         .await
         .map_err(storage)?
@@ -102,6 +126,7 @@ impl Workspace {
         id: ConversationId,
         file_url: Option<String>,
         mime: Option<String>,
+        queued: Vec<handover_core::messaging::AttachmentDraftSource>,
         revision: u64,
     ) -> Result<MessageAttachmentDraft, WorkspaceError> {
         let root = self
@@ -135,8 +160,19 @@ impl Workspace {
             ));
         }
         clean(&root.path, &drafts).map_err(storage)?;
-        let mut directory = None;
-        let attachment = if let Some(file_url) = file_url {
+        let mut directories = Vec::new();
+        let mut attachments = Vec::new();
+        let files = file_url
+            .into_iter()
+            .map(|file_url| handover_core::messaging::AttachmentDraftSource {
+                file_url,
+                mime: mime.clone(),
+            })
+            .chain(queued);
+        let mut added_size = 0u64;
+        for source_file in files {
+            let file_url = source_file.file_url;
+            let mime = source_file.mime;
             let url = url::Url::parse(&file_url)
                 .map_err(|_| WorkspaceError::Invalid("invalid file URL".into()))?;
             if url.scheme() != "file" || url.query().is_some() || url.fragment().is_some() {
@@ -163,15 +199,17 @@ impl Workspace {
             }
             let old_size = current
                 .attachment
-                .as_ref()
-                .and_then(|part| part.size_bytes)
-                .unwrap_or(0);
-            let used = drafts
                 .iter()
-                .filter_map(|draft| draft.attachment.as_ref())
+                .chain(&current.queued_attachments)
                 .map(|part| part.size_bytes.unwrap_or(FILE_LIMIT))
                 .sum::<u64>();
-            if used.saturating_sub(old_size).saturating_add(metadata.len()) > TOTAL_LIMIT {
+            let used = drafts
+                .iter()
+                .flat_map(|draft| draft.attachment.iter().chain(&draft.queued_attachments))
+                .map(|part| part.size_bytes.unwrap_or(FILE_LIMIT))
+                .sum::<u64>();
+            added_size = added_size.saturating_add(metadata.len());
+            if used.saturating_sub(old_size).saturating_add(added_size) > TOTAL_LIMIT {
                 return Err(WorkspaceError::Invalid(
                     "attachment draft storage is full".into(),
                 ));
@@ -212,20 +250,24 @@ impl Workspace {
                 .to_str()
                 .ok_or_else(|| storage("draft path unavailable"))?
                 .to_owned();
-            directory = Some(staged);
-            Some(Attachment {
+            directories.push(staged);
+            attachments.push(Attachment {
                 local_id: handle,
                 mime,
                 name: Some(name),
                 size_bytes: Some(copied),
                 staged_path: Some(path),
-            })
-        } else {
+            });
+        }
+        let attachment = if attachments.is_empty() {
             None
+        } else {
+            Some(attachments.remove(0))
         };
         let mut saved = MessageAttachmentDraft {
             conversation_id: id,
             attachment,
+            queued_attachments: attachments,
             revision: 0,
         };
         match &mut *guard {
@@ -262,7 +304,7 @@ impl Workspace {
                 tx.commit().map_err(storage)?;
             }
         }
-        if let Some(directory) = directory {
+        for directory in directories {
             let _ = directory.keep();
         }
         clean(&root.path, &all(&mut guard).map_err(storage)?).map_err(storage)?;
@@ -279,6 +321,7 @@ fn empty(id: ConversationId) -> MessageAttachmentDraft {
     MessageAttachmentDraft {
         conversation_id: id,
         attachment: None,
+        queued_attachments: Vec::new(),
         revision: 0,
     }
 }
@@ -332,7 +375,7 @@ fn clean(root: &Path, drafts: &[MessageAttachmentDraft]) -> Result<(), Error> {
     }
     let kept = drafts
         .iter()
-        .filter_map(|draft| draft.attachment.as_ref())
+        .flat_map(|draft| draft.attachment.iter().chain(&draft.queued_attachments))
         .filter_map(|part| part.staged_path.as_ref())
         .map(PathBuf::from)
         .filter_map(|path| path.parent().map(Path::to_owned))
@@ -353,30 +396,35 @@ fn clean(root: &Path, drafts: &[MessageAttachmentDraft]) -> Result<(), Error> {
 }
 fn validate_saved(root: &Path, draft: &MessageAttachmentDraft) -> Result<(), Error> {
     validate_conversation_id(&draft.conversation_id)?;
-    let Some(part) = &draft.attachment else {
-        return Ok(());
-    };
-    let path = part
-        .staged_path
-        .as_ref()
-        .map(Path::new)
-        .ok_or("attachment draft path missing")?;
-    let directory = path.parent().ok_or("attachment draft directory missing")?;
-    if draft.revision == 0
-        || directory.parent() != Some(root)
-        || directory.file_name().and_then(|value| value.to_str()) != Some(part.local_id.as_str())
-        || !part.local_id.starts_with(".draft-")
-        || part.size_bytes.is_none_or(|size| size > FILE_LIMIT)
-        || part.name.as_ref().is_none_or(|name| {
-            handover_core::sanitize_file_name(name).as_ref() != Some(name)
-                || path.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
-        })
-        || part
-            .mime
-            .as_ref()
-            .is_some_and(|mime| mime.len() > 256 || mime.chars().any(char::is_control))
+    if draft.queued_attachments.len() >= 10
+        || (draft.attachment.is_none() && !draft.queued_attachments.is_empty())
     {
-        return Err("invalid saved attachment draft".into());
+        return Err("invalid saved attachment queue".into());
+    }
+    for part in draft.attachment.iter().chain(&draft.queued_attachments) {
+        let path = part
+            .staged_path
+            .as_ref()
+            .map(Path::new)
+            .ok_or("attachment draft path missing")?;
+        let directory = path.parent().ok_or("attachment draft directory missing")?;
+        if draft.revision == 0
+            || directory.parent() != Some(root)
+            || directory.file_name().and_then(|value| value.to_str())
+                != Some(part.local_id.as_str())
+            || !part.local_id.starts_with(".draft-")
+            || part.size_bytes.is_none_or(|size| size > FILE_LIMIT)
+            || part.name.as_ref().is_none_or(|name| {
+                handover_core::sanitize_file_name(name).as_ref() != Some(name)
+                    || path.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
+            })
+            || part
+                .mime
+                .as_ref()
+                .is_some_and(|mime| mime.len() > 256 || mime.chars().any(char::is_control))
+        {
+            return Err("invalid saved attachment draft".into());
+        }
     }
     Ok(())
 }
@@ -387,6 +435,72 @@ mod tests {
     fn id() -> ConversationId {
         ConversationId::new(handover_core::MessagingAccountId::new("fixture"), "thread")
     }
+    #[tokio::test]
+    async fn queued_files_survive_restart_and_failed_updates_preserve_the_batch() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("workspace.sqlite");
+        let a = directory.path().join("program.cc");
+        let b = directory.path().join("photo.png");
+        std::fs::write(&a, b"int main() { return 0; }\n").unwrap();
+        std::fs::write(&b, b"original image bytes").unwrap();
+        let uri = |path: &Path| url::Url::from_file_path(path).unwrap().to_string();
+        let workspace = Workspace::open(&database).unwrap();
+        let saved = workspace
+            .save_attachment_queue(
+                id(),
+                Some(uri(&a)),
+                Some("text/x-c++src".into()),
+                vec![handover_core::messaging::AttachmentDraftSource {
+                    file_url: uri(&b),
+                    mime: Some("image/png".into()),
+                }],
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            saved.attachment.as_ref().unwrap().name.as_deref(),
+            Some("program.cc")
+        );
+        assert_eq!(saved.queued_attachments.len(), 1);
+        let paths = saved
+            .attachment
+            .iter()
+            .chain(&saved.queued_attachments)
+            .map(|part| PathBuf::from(part.staged_path.as_ref().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            std::fs::read(&paths[0]).unwrap(),
+            std::fs::read(&a).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(&paths[1]).unwrap(),
+            std::fs::read(&b).unwrap()
+        );
+        let failed = workspace
+            .save_attachment_queue(
+                id(),
+                Some(uri(&a)),
+                None,
+                vec![handover_core::messaging::AttachmentDraftSource {
+                    file_url: uri(&directory.path().join("missing")),
+                    mime: None,
+                }],
+                saved.revision,
+            )
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(workspace.attachment_draft(id()).await.unwrap(), saved);
+        drop(workspace);
+        let workspace = Workspace::open(&database).unwrap();
+        assert_eq!(workspace.attachment_draft(id()).await.unwrap(), saved);
+        workspace
+            .save_attachment_draft(id(), None, None, saved.revision)
+            .await
+            .unwrap();
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
     #[tokio::test]
     async fn attachment_limits_preserve_saved_files_and_removal_reopens_a_slot() {
         let directory = tempfile::tempdir().unwrap();

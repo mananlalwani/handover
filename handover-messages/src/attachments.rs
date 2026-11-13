@@ -5,14 +5,40 @@ use std::fs;
 
 use handover_core::Attachment;
 
-/// A single file waiting to be sent in a conversation.
-///
-/// The composer keeps at most one of these per conversation because the
-/// normalized send-file command accepts one file and an optional caption.
+/// A file and the remaining files in its conversation's send queue.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PendingAttachment {
     pub uri: String,
     pub attachment: Attachment,
+    pub queued: Vec<PendingAttachment>,
+}
+
+impl PendingAttachment {
+    pub fn files(&self) -> impl Iterator<Item = &Self> {
+        std::iter::once(self).chain(&self.queued)
+    }
+    pub fn sources(&self) -> Vec<handover_core::messaging::AttachmentDraftSource> {
+        self.files()
+            .map(|file| handover_core::messaging::AttachmentDraftSource {
+                file_url: file.uri.clone(),
+                mime: file.attachment.mime.clone(),
+            })
+            .collect()
+    }
+    pub fn from_saved(attachment: Attachment, queued: Vec<Attachment>) -> Option<Self> {
+        let uri = gtk::gio::File::for_path(attachment.staged_path.as_ref()?)
+            .uri()
+            .to_string();
+        let queued = queued
+            .into_iter()
+            .map(|part| Self::from_saved(part, Vec::new()))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            uri,
+            attachment,
+            queued,
+        })
+    }
 }
 
 /// Composer file size limit, checked again by the daemon at send time.
@@ -43,6 +69,7 @@ pub fn from_file(file: &gtk::gio::File) -> Result<PendingAttachment, String> {
     let uri = file.uri().to_string();
 
     Ok(PendingAttachment {
+        queued: Vec::new(),
         uri: uri.clone(),
         attachment: Attachment {
             local_id: "composer-preview".into(),

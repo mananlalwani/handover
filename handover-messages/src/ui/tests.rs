@@ -524,19 +524,33 @@ fn fake_server(
                             );
                             return;
                         }
-                        let attachment = if let Some(file_url) = request["file_url"].as_str() {
+                        let mut sources = Vec::new();
+                        if let Some(file_url) = request["file_url"].as_str() {
+                            sources.push(json!({"file_url":file_url,"mime":request["mime"]}));
+                        }
+                        sources.extend(
+                            request["queued_files"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default(),
+                        );
+                        let mut parts = Vec::new();
+                        for (index, source_input) in sources.iter().enumerate() {
+                            let file_url = source_input["file_url"].as_str().unwrap();
                             let source = gtk::gio::File::for_uri(file_url)
                                 .path()
                                 .expect("fixture attachment URL is local");
                             let basename = source.file_name().expect("fixture file has a basename");
                             let directory = attachment_staging.join(format!(
-                                "{}-{}",
+                                "{}-{}-{}-{}",
                                 request["conversation_id"]["account_id"]
                                     .as_str()
                                     .unwrap_or("account"),
                                 request["conversation_id"]["local_id"]
                                     .as_str()
-                                    .unwrap_or("conversation")
+                                    .unwrap_or("conversation"),
+                                request["revision"].as_u64().unwrap_or(0),
+                                index
                             ));
                             std::fs::create_dir_all(&directory)
                                 .expect("create private attachment draft staging directory");
@@ -545,19 +559,22 @@ fn fake_server(
                                 .expect("copy fixture attachment into private staging");
                             let metadata = std::fs::metadata(&staged)
                                 .expect("read private staged attachment metadata");
-                            json!({
+                            parts.push(json!({
                                 "local_id":"fixture-attachment-draft",
-                                "mime":request["mime"],
+                                "mime":source_input["mime"],
                                 "name":basename.to_string_lossy(),
                                 "size_bytes":metadata.len(),
                                 "staged_path":staged.to_string_lossy()
-                            })
-                        } else {
+                            }));
+                        }
+                        let attachment = if parts.is_empty() {
                             Value::Null
+                        } else {
+                            parts.remove(0)
                         };
                         let draft = json!({
                             "conversation_id":conversation_id,
-                            "attachment":attachment,
+                            "attachment":attachment, "queued_attachments":parts,
                             "revision":current["revision"].as_u64().unwrap_or(0) + 1
                         });
                         saved.insert(key, draft.clone());
@@ -719,7 +736,23 @@ fn fake_server(
                             }),
                         ),
                     ),
-                    "messages.react" | "messages.unreact" | "messages.send_file" => send_json(
+                    "messages.send_file" => {
+                        if fail_send.swap(false, Ordering::SeqCst) {
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "error",
+                                    json!({"code":"send_outcome_unknown","message":"Fixture send outcome unknown"}),
+                                ),
+                            );
+                        } else {
+                            send_json(
+                                &mut stream,
+                                response("message_accepted", json!({"request_id":"op-fixture"})),
+                            );
+                        }
+                    }
+                    "messages.react" | "messages.unreact" => send_json(
                         &mut stream,
                         response("message_accepted", json!({"request_id":"op-fixture"})),
                     ),
@@ -2551,6 +2584,19 @@ fn native_window_round_trips_real_frontend_actions() {
             .any(|r| r["method"] == "messages.send_file"),
         "pasting an image never sends automatically"
     );
+    ui.compose.clipboard().set_texture(&clipboard_image);
+    ui.compose.emit_by_name::<()>("paste-clipboard", &[]);
+    pump_until(
+        || {
+            requests.lock().unwrap().iter().any(|request| {
+                request["method"] == "messages.save_attachment_draft"
+                    && request["queued_files"]
+                        .as_array()
+                        .is_some_and(|files| files.len() == 1)
+            }) && !ui.attachment_saving(&id())
+        },
+        "repeated image paste queues a second saved image",
+    );
     let remove_paste = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
@@ -2642,12 +2688,11 @@ fn native_window_round_trips_real_frontend_actions() {
         "fake daemon copy keeps the fixture basename"
     );
     drop(attachment_state);
-    let multiple_files =
-        gtk::gdk::FileList::from_array(&[staged_file.clone(), staged_file.clone()]);
+    let multiple_files = gtk::gdk::FileList::from_array(&vec![staged_file.clone(); 11]);
     let multiple_files_value = gtk::glib::BoxedValue(multiple_files.to_value()).to_value();
     assert!(
         !drop_target.emit_by_name::<bool>("drop", &[&multiple_files_value, &0.0f64, &0.0f64]),
-        "multiple file drop is rejected"
+        "oversized file batch is rejected"
     );
     assert!(
         ui.attachment_row.is_visible(),
@@ -2762,6 +2807,25 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "saved attachment draft restores after switching conversations",
     );
+    let saved_file = gio::File::for_uri(&ui.attachments.borrow().get(&id()).unwrap().uri);
+    let extra = gtk::gdk::FileList::from_array(&[saved_file.clone(), saved_file]);
+    ui.compose
+        .clipboard()
+        .set_content(Some(&gtk::gdk::ContentProvider::for_value(
+            &extra.to_value(),
+        )))
+        .unwrap();
+    ui.compose.emit_by_name::<()>("paste-clipboard", &[]);
+    pump_until(
+        || {
+            ui.attachment_state
+                .borrow()
+                .get(&id())
+                .is_some_and(|saved| saved.queued_attachments.len() == 2)
+                && !ui.attachment_saving(&id())
+        },
+        "multiple copied images join the existing saved draft",
+    );
     ui.send.emit_clicked();
     pump_until(
         || {
@@ -2779,6 +2843,83 @@ fn native_window_round_trips_real_frontend_actions() {
                     .is_some_and(|draft| draft.attachment.is_none() && draft.revision > 0)
         },
         "accepted attachment send retains caption in request then clears captured draft",
+    );
+    let media_sends = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["method"] == "messages.send_file")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        media_sends.len(),
+        3,
+        "every queued file is sent exactly once"
+    );
+    assert_eq!(media_sends[0]["caption"], "caption to keep");
+    assert!(
+        media_sends[1..]
+            .iter()
+            .all(|request| request["caption"].is_null()),
+        "caption is not duplicated on later files"
+    );
+    let retry_file = gio::File::for_uri(media_sends[0]["file_url"].as_str().unwrap());
+    assert!(ui.stage_files(id(), &[retry_file.clone(), retry_file]));
+    pump_until(
+        || !ui.attachment_saving(&id()),
+        "second batch saves before failure check",
+    );
+    let send_count = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r["method"] == "messages.send_file")
+        .count();
+    fail_send.store(true, Ordering::SeqCst);
+    ui.send.emit_clicked();
+    pump_until(
+        || {
+            ui.attachment_sends.borrow().is_empty()
+                && ui
+                    .model
+                    .borrow()
+                    .send_notices
+                    .get(&id())
+                    .is_some_and(|notice| notice.contains("unknown"))
+        },
+        "uncertain attachment send stops the batch",
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["method"] == "messages.send_file")
+            .count(),
+        send_count + 1
+    );
+    assert_eq!(
+        ui.attachment_state
+            .borrow()
+            .get(&id())
+            .unwrap()
+            .queued_attachments
+            .len(),
+        1,
+        "unsent files stay in the saved queue after uncertainty"
+    );
+    let clear_batch = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    clear_batch.emit_clicked();
+    pump_until(
+        || !ui.attachment_row.is_visible() && !ui.attachment_saving(&id()),
+        "failed batch clears only on explicit removal",
     );
     ui.compose.buffer().set_text("");
     pump_until(

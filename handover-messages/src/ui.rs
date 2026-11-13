@@ -66,7 +66,8 @@ pub struct Window {
     placeholder: gtk::Label,
     reply_row: gtk::Box,
     attachments: RefCell<BTreeMap<ConversationId, crate::attachments::PendingAttachment>>,
-    clipboard_files: RefCell<BTreeMap<ConversationId, tempfile::NamedTempFile>>,
+    clipboard_files: RefCell<BTreeMap<ConversationId, Vec<tempfile::NamedTempFile>>>,
+    attachment_sends: RefCell<BTreeMap<ConversationId, MessageDraft>>,
     paste_pending: Cell<bool>,
     attachment_row: gtk::Box,
     attachment_state: RefCell<BTreeMap<ConversationId, MessageAttachmentDraft>>,
@@ -477,6 +478,7 @@ impl Window {
             reply_row,
             attachments: RefCell::new(BTreeMap::new()),
             clipboard_files: RefCell::new(BTreeMap::new()),
+            attachment_sends: RefCell::new(BTreeMap::new()),
             paste_pending: Cell::new(false),
             attachment_row,
             attachment_state: RefCell::new(BTreeMap::new()),
@@ -785,13 +787,13 @@ impl Window {
                 return false;
             };
             let files = files.files();
-            if files.len() != 1 {
-                this.model.borrow_mut().notice = "Attach one file per message.".into();
+            if files.is_empty() || files.len() > 10 {
+                this.model.borrow_mut().notice = "Attach up to 10 files at a time.".into();
                 this.render_status();
                 return false;
             }
             let id = this.model.borrow().selected.clone();
-            id.is_some_and(|id| this.stage_file(id, &files[0]))
+            id.is_some_and(|id| this.stage_files(id, &files))
         });
         this.stack.add_controller(drop_target);
         let weak = Rc::downgrade(&this);
@@ -1079,6 +1081,7 @@ impl Window {
                 }
             }
             Event::Disconnected => {
+                self.attachment_sends.borrow_mut().clear();
                 self.recent_threads.borrow_mut().clear();
                 let mut model = self.model.borrow_mut();
                 model.connected = false;
@@ -1499,10 +1502,26 @@ impl Window {
                         attachments.remove(&sent.conversation_id);
                     }
                     drop(attachments);
-                    self.request(Request::SaveAttachmentDraft(
+                    let remaining = self
+                        .attachment_state
+                        .borrow()
+                        .get(&sent.conversation_id)
+                        .map(|saved| saved.queued_attachments.clone())
+                        .unwrap_or_default();
+                    let files = remaining
+                        .iter()
+                        .filter_map(|part| {
+                            part.staged_path.as_ref().map(|path| {
+                                handover_core::messaging::AttachmentDraftSource {
+                                    file_url: gio::File::for_path(path).uri().to_string(),
+                                    mime: part.mime.clone(),
+                                }
+                            })
+                        })
+                        .collect();
+                    self.request(Request::SaveAttachmentQueue(
                         sent.conversation_id.clone(),
-                        None,
-                        None,
+                        files,
                         *revision,
                     ));
                 }
@@ -1541,23 +1560,28 @@ impl Window {
                     .borrow_mut()
                     .insert(id.clone(), saved.clone());
                 if loading && dirty {
-                    self.attachment_errors.borrow_mut().insert(id, if old_revision == saved.revision {
+                    self.attachment_errors.borrow_mut().insert(id.clone(), if old_revision == saved.revision {
                         "Attachment was not saved. Retry saving it.".into()
                     } else { "Attachment changed in another window. Reload the saved attachment before continuing.".into() });
                 } else {
                     self.attachment_errors.borrow_mut().remove(&id);
-                    if let Some(attachment) = saved.attachment {
-                        if let Some(path) = attachment.staged_path.as_ref() {
-                            self.attachments.borrow_mut().insert(
-                                id,
-                                crate::attachments::PendingAttachment {
-                                    uri: gio::File::for_path(path).uri().to_string(),
-                                    attachment,
-                                },
-                            );
-                        }
+                    if let Some(attachment) = saved.attachment.clone().and_then(|part| {
+                        crate::attachments::PendingAttachment::from_saved(
+                            part,
+                            saved.queued_attachments.clone(),
+                        )
+                    }) {
+                        self.attachments.borrow_mut().insert(id.clone(), attachment);
                     } else {
                         self.attachments.borrow_mut().remove(&id);
+                    }
+                }
+                let batch_draft = self.attachment_sends.borrow().get(&id).cloned();
+                if !loading && let Some(draft) = batch_draft {
+                    if let Some(head) = self.attachments.borrow().get(&id).cloned() {
+                        self.request(Request::Attachment(draft, head.uri, saved.revision));
+                    } else {
+                        self.attachment_sends.borrow_mut().remove(&id);
                     }
                 }
                 if self.attachment_state.borrow().len() > 256 {
@@ -1651,7 +1675,9 @@ impl Window {
     fn failed(self: &Rc<Self>, request: Request, error: Failure) {
         let attachment_error = matches!(
             &request,
-            Request::AttachmentDraft(_) | Request::SaveAttachmentDraft(..)
+            Request::AttachmentDraft(_)
+                | Request::SaveAttachmentDraft(..)
+                | Request::SaveAttachmentQueue(..)
         );
         match request {
             Request::Read(_, message) => {
@@ -1690,7 +1716,10 @@ impl Window {
                     self.quotes.borrow_mut().entry(id).or_insert(None);
                 }
             }
-            Request::AttachmentDraft(id) | Request::SaveAttachmentDraft(id, ..) => {
+            Request::AttachmentDraft(id)
+            | Request::SaveAttachmentDraft(id, ..)
+            | Request::SaveAttachmentQueue(id, ..) => {
+                self.attachment_sends.borrow_mut().remove(&id);
                 if !self
                     .model
                     .borrow()
@@ -1734,6 +1763,7 @@ impl Window {
                 },
                 ..,
             ) => {
+                self.attachment_sends.borrow_mut().remove(&conversation_id);
                 let message = if error.uncertain {
                     "Send outcome unknown. Check the conversation before sending again.".into()
                 } else {
@@ -2304,6 +2334,14 @@ impl Window {
                 .get(&draft.conversation_id)
                 .cloned();
             if let Some(attachment) = attachment {
+                if !attachment.queued.is_empty() {
+                    let mut remaining = draft.clone();
+                    remaining.text.clear();
+                    remaining.reply_to = None;
+                    self.attachment_sends
+                        .borrow_mut()
+                        .insert(draft.conversation_id.clone(), remaining);
+                }
                 let revision = self
                     .attachment_state
                     .borrow()
@@ -3674,14 +3712,16 @@ impl Window {
     }
     fn attachment_saving(&self, id: &ConversationId) -> bool {
         self.pending.borrow().values().any(
-            |request| matches!(request, Request::SaveAttachmentDraft(target, ..) if target == id),
+            |request| matches!(request, Request::SaveAttachmentDraft(target, ..) | Request::SaveAttachmentQueue(target, ..) if target == id),
         )
     }
     fn any_attachment_saving(&self) -> bool {
-        self.pending
-            .borrow()
-            .values()
-            .any(|request| matches!(request, Request::SaveAttachmentDraft(..)))
+        self.pending.borrow().values().any(|request| {
+            matches!(
+                request,
+                Request::SaveAttachmentDraft(..) | Request::SaveAttachmentQueue(..)
+            )
+        })
     }
     fn unsaved_attachment(&self, id: &ConversationId) -> bool {
         self.attachments.borrow().get(id).is_some_and(|pending| {
@@ -3691,6 +3731,14 @@ impl Window {
                 .and_then(|state| state.attachment.as_ref())
                 .and_then(|part| part.staged_path.as_ref())
                 != pending.attachment.staged_path.as_ref()
+                || self.attachment_state.borrow().get(id).is_none_or(|saved| {
+                    saved.queued_attachments
+                        != pending
+                            .queued
+                            .iter()
+                            .map(|file| file.attachment.clone())
+                            .collect::<Vec<_>>()
+                })
         })
     }
     fn paste_image(self: &Rc<Self>, clipboard: gtk::gdk::Clipboard) {
@@ -3698,12 +3746,6 @@ impl Window {
             return;
         };
         if self.paste_pending.get() || !self.model.borrow().can(MessagingCapability::Media) {
-            return;
-        }
-        if self.attachments.borrow().contains_key(&id) {
-            self.model.borrow_mut().notice =
-                "Remove the current attachment before pasting another.".into();
-            self.render_status();
             return;
         }
         self.paste_pending.set(true);
@@ -3727,17 +3769,10 @@ impl Window {
                         .get::<gtk::gdk::FileList>()
                         .map_err(|_| "Unable to read copied image".to_owned())?
                         .files();
-                    if files.len() != 1 {
-                        return Err("Copy one image at a time.".to_owned());
+                    if files.is_empty() || files.len() > 10 {
+                        return Err("Paste up to 10 files at a time.".to_owned());
                     }
-                    let metadata = crate::attachments::from_file(&files[0])?;
-                    if !crate::media::is_image(&metadata.attachment) {
-                        return Err(
-                            "The copied file is not an image. Use Attach a file instead."
-                                .to_owned(),
-                        );
-                    }
-                    return Ok((files[0].clone(), None));
+                    return Ok((files, None));
                 }
                 let texture = clipboard
                     .read_texture_future()
@@ -3752,7 +3787,7 @@ impl Window {
                     .recv()
                     .await
                     .map_err(|_| "Unable to prepare clipboard image".to_owned())??;
-                Ok((gio::File::for_path(file.path()), Some(file)))
+                Ok((vec![gio::File::for_path(file.path())], Some(file)))
             }
             .await;
             let Some(this) = weak.upgrade() else {
@@ -3766,10 +3801,14 @@ impl Window {
             }
             match result {
                 Ok((image, temporary)) => {
-                    if this.stage_file(id.clone(), &image)
+                    if this.stage_files(id.clone(), &image)
                         && let Some(temporary) = temporary
                     {
-                        this.clipboard_files.borrow_mut().insert(id, temporary);
+                        this.clipboard_files
+                            .borrow_mut()
+                            .entry(id)
+                            .or_default()
+                            .push(temporary);
                     }
                 }
                 Err(error) => {
@@ -3785,46 +3824,64 @@ impl Window {
         };
         let dialog = gtk::FileDialog::builder().title("Attach a file").build();
         let weak = Rc::downgrade(self);
-        dialog.open(
+        dialog.open_multiple(
             Some(&self.window),
             None::<&gio::Cancellable>,
             move |result| {
-                if let (Some(this), Ok(file)) = (weak.upgrade(), result) {
-                    this.stage_file(id.clone(), &file);
+                if let (Some(this), Ok(files)) = (weak.upgrade(), result) {
+                    let files = (0..files.n_items())
+                        .filter_map(|index| files.item(index).and_downcast::<gio::File>())
+                        .collect::<Vec<_>>();
+                    this.stage_files(id.clone(), &files);
                 }
             },
         );
     }
+    #[cfg(test)]
     fn stage_file(self: &Rc<Self>, id: ConversationId, file: &gio::File) -> bool {
+        self.stage_files(id, std::slice::from_ref(file))
+    }
+    fn stage_files(self: &Rc<Self>, id: ConversationId, files: &[gio::File]) -> bool {
         let model = self.model.borrow();
         if model.selected.as_ref() != Some(&id) || !model.can(MessagingCapability::Media)
             || !self.attachment_state.borrow().contains_key(&id) || self.attachment_loading(&id) || self.attachment_saving(&id)
             || self.pending.borrow().values().any(|request| matches!(request, Request::Attachment(draft, ..) if draft.conversation_id == id)) { return false; }
-        let error = if model
+        let mut current = self.attachments.borrow().get(&id).cloned();
+        let count = current.as_ref().map_or(0, |head| head.files().count());
+        let result = if model
             .selected_draft()
             .is_some_and(|draft| draft.value.reply_to.is_some())
         {
-            Some("Cancel the reply before attaching a file.".into())
-        } else if self.attachments.borrow().contains_key(&id) {
-            Some("Remove the current attachment before choosing another.".into())
-        } else if self.attachments.borrow().len() >= 32 {
-            Some("Finish an attachment draft before adding another.".into())
+            Err("Cancel the reply before attaching files.".to_owned())
+        } else if files.is_empty() || count + files.len() > 10 {
+            Err("Attach up to 10 files per message batch.".to_owned())
+        } else if count == 0 && self.attachments.borrow().len() >= 32 {
+            Err("Finish an attachment draft before adding another.".to_owned())
         } else {
-            None
+            files
+                .iter()
+                .map(crate::attachments::from_file)
+                .collect::<Result<Vec<_>, _>>()
         };
         drop(model);
-        let result = error.map_or_else(|| crate::attachments::from_file(file), Err);
         match result {
-            Ok(attachment) => {
+            Ok(files) => {
+                for file in files {
+                    if let Some(head) = &mut current {
+                        head.queued.push(file);
+                    } else {
+                        current = Some(file);
+                    }
+                }
+                let attachment = current.expect("nonempty validated files");
                 let revision = self
                     .attachment_state
                     .borrow()
                     .get(&id)
                     .map_or(0, |state| state.revision);
-                self.request(Request::SaveAttachmentDraft(
+                self.request(Request::SaveAttachmentQueue(
                     id.clone(),
-                    Some(attachment.uri.clone()),
-                    attachment.attachment.mime.clone(),
+                    attachment.sources(),
                     revision,
                 ));
                 self.attachments.borrow_mut().insert(id.clone(), attachment);
@@ -3842,15 +3899,19 @@ impl Window {
         }
     }
     fn render_attachments(self: &Rc<Self>) {
-        self.clipboard_files.borrow_mut().retain(|id, file| {
-            self.attachments.borrow().get(id).is_some_and(|pending| {
-                pending
-                    .attachment
-                    .staged_path
-                    .as_deref()
-                    .map(std::path::Path::new)
-                    == Some(file.path())
-            })
+        self.clipboard_files.borrow_mut().retain(|id, files| {
+            files.retain(|file| {
+                self.attachments.borrow().get(id).is_some_and(|pending| {
+                    pending.files().any(|part| {
+                        part.attachment
+                            .staged_path
+                            .as_deref()
+                            .map(std::path::Path::new)
+                            == Some(file.path())
+                    })
+                })
+            });
+            !files.is_empty()
         });
         while let Some(child) = self.attachment_row.first_child() {
             self.attachment_row.remove(&child);
@@ -3893,6 +3954,31 @@ impl Window {
                 self.attachment_row
                     .append(&gtk::Image::from_icon_name("text-x-generic-symbolic"));
             }
+            if !pending.queued.is_empty() {
+                let queued = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                for file in &pending.queued {
+                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                    if crate::media::is_image(&file.attachment) {
+                        row.append(
+                            &self
+                                .media
+                                .composer_attachment(&file.attachment, &self.window),
+                        );
+                    }
+                    let name = gtk::Label::new(file.attachment.name.as_deref());
+                    name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                    name.set_max_width_chars(20);
+                    row.append(&name);
+                    queued.append(&row);
+                }
+                self.attachment_row.append(
+                    &gtk::ScrolledWindow::builder()
+                        .max_content_height(180)
+                        .propagate_natural_height(true)
+                        .child(&queued)
+                        .build(),
+                );
+            }
             let info = gtk::Box::new(gtk::Orientation::Vertical, 4);
             info.set_hexpand(true);
             let name = gtk::Label::new(pending.attachment.name.as_deref());
@@ -3902,6 +3988,9 @@ impl Window {
             let hint = gtk::Label::new(Some(
                 "Add a caption below. The attachment is kept with your saved draft.",
             ));
+            if !pending.queued.is_empty() {
+                hint.set_label(&format!("{} files saved in this draft. Send submits one message per file, with the caption on the first.", pending.files().count()));
+            }
             if !self.model.borrow().persistent {
                 hint.set_label("Attachment kept for this daemon session.");
             }
@@ -3921,10 +4010,9 @@ impl Window {
                             .map_or(0, |state| state.revision);
                         let pending = this.attachments.borrow().get(&target).cloned();
                         if let Some(pending) = pending {
-                            this.request(Request::SaveAttachmentDraft(
+                            this.request(Request::SaveAttachmentQueue(
                                 target.clone(),
-                                Some(pending.uri),
-                                pending.attachment.mime,
+                                pending.sources(),
                                 revision,
                             ));
                             this.render_attachments();
