@@ -219,12 +219,7 @@ impl Model {
     }
 
     pub fn message_status(&self, id: &MessageId) -> Option<&'static str> {
-        if let Some(operation) = self
-            .outgoing
-            .values()
-            .filter(|operation| operation.message_id.as_ref() == Some(id))
-            .max_by_key(|operation| operation.updated_at)
-        {
+        if let Some(operation) = self.message_operation(id) {
             return Some(match &operation.outcome {
                 OutgoingOutcome::Submitting => "Sending…",
                 OutgoingOutcome::Unknown => "Outcome unknown",
@@ -233,6 +228,44 @@ impl Model {
             });
         }
         self.statuses.get(id).map(status_label)
+    }
+    fn message_operation(&self, id: &MessageId) -> Option<&OutgoingOperation> {
+        self.outgoing
+            .values()
+            .filter(|operation| operation.message_id.as_ref() == Some(id))
+            .max_by_key(|operation| operation.updated_at)
+    }
+    pub fn message_failure(&self, id: &MessageId) -> Option<SendFailure> {
+        match self
+            .message_operation(id)
+            .map(|operation| &operation.outcome)
+        {
+            Some(OutgoingOutcome::Rejected) => Some(SendFailure::Rejected),
+            Some(OutgoingOutcome::Provider(MessageStatus::Failed(reason))) => Some(*reason),
+            Some(_) => None,
+            None => match self.statuses.get(id) {
+                Some(MessageStatus::Failed(reason)) => Some(*reason),
+                _ => None,
+            },
+        }
+    }
+    pub fn send_preview(&self, operation: &str) -> &'static str {
+        match self
+            .outgoing
+            .get(operation)
+            .map(|operation| &operation.outcome)
+        {
+            Some(
+                OutgoingOutcome::Submitting | OutgoingOutcome::Provider(MessageStatus::Accepted),
+            ) => "Sending",
+            Some(
+                OutgoingOutcome::Rejected | OutgoingOutcome::Provider(MessageStatus::Failed(_)),
+            ) => "Not sent",
+            Some(OutgoingOutcome::Provider(
+                MessageStatus::Sent | MessageStatus::Delivered | MessageStatus::Displayed,
+            )) => "Sent",
+            Some(OutgoingOutcome::Unknown) | None => "Check send",
+        }
     }
     pub fn clear_new_messages(&mut self) {
         self.new_messages.clear();
@@ -318,6 +351,8 @@ impl Model {
         }
     }
     pub fn draft_loaded(&mut self, remote: MessageDraft, replace: bool) {
+        let id = remote.conversation_id.clone();
+        let present = !remote.text.is_empty() || remote.reply_to.is_some();
         let draft = self
             .drafts
             .entry(remote.conversation_id.clone())
@@ -339,6 +374,11 @@ impl Model {
         }
         draft.saving = false;
         draft.loaded = true;
+        self.drafted.retain(|known| known != &id);
+        if present {
+            self.drafted.push(id);
+            self.drafted.sort();
+        }
     }
     pub fn draft_saved(&mut self, remote: MessageDraft) {
         if let Some(draft) = self.drafts.get_mut(&remote.conversation_id) {
@@ -351,6 +391,7 @@ impl Model {
             self.drafted.retain(|known| known != &id);
             if !remote.text.is_empty() || remote.reply_to.is_some() {
                 self.drafted.push(id);
+                self.drafted.sort();
             }
         }
     }
@@ -599,7 +640,31 @@ fn status_label(status: &MessageStatus) -> &'static str {
         MessageStatus::Sent => "Sent",
         MessageStatus::Delivered => "Delivered",
         MessageStatus::Displayed => "Read",
-        MessageStatus::Failed(_) => "Failed",
+        MessageStatus::Failed(reason) => failure_label(*reason),
+    }
+}
+
+pub fn failure_label(reason: SendFailure) -> &'static str {
+    match reason {
+        SendFailure::TooLarge => "Failed · File too large",
+        SendFailure::NoRoute => "Failed · No route",
+        SendFailure::Encryption => "Failed · Encryption error",
+        SendFailure::Rejected => "Failed · Rejected",
+        SendFailure::TimedOut => "Failed · Timed out",
+        SendFailure::Disconnected => "Failed · Disconnected",
+        SendFailure::Transport => "Failed",
+    }
+}
+
+pub fn failure_detail(reason: SendFailure) -> &'static str {
+    match reason {
+        SendFailure::TooLarge => "The service reported that an attachment exceeds its size limit.",
+        SendFailure::NoRoute => "The service reported that no sending route is available.",
+        SendFailure::Encryption => "The service couldn't encrypt this message.",
+        SendFailure::Rejected => "This send was rejected.",
+        SendFailure::TimedOut => "The service reported that sending timed out.",
+        SendFailure::Disconnected => "The service reported a disconnection while sending.",
+        SendFailure::Transport => "The service reported a send failure without further detail.",
     }
 }
 
@@ -662,6 +727,37 @@ mod tests {
             pending_operation: None,
         }
     }
+    #[test]
+    fn unknown_submission_does_not_offer_recovery_from_an_older_failed_status() {
+        let id = draft("", 0).conversation_id;
+        let message = MessageId::new(id.clone(), "message");
+        let mut model = Model::default();
+        model.statuses.insert(
+            message.clone(),
+            MessageStatus::Failed(SendFailure::TooLarge),
+        );
+        assert_eq!(model.message_failure(&message), Some(SendFailure::TooLarge));
+        model.outgoing.insert(
+            "send".into(),
+            OutgoingOperation {
+                id: "send".into(),
+                conversation_id: id,
+                kind: OutgoingOperationKind::Text,
+                created_at: 1,
+                updated_at: 2,
+                outcome: OutgoingOutcome::Unknown,
+                message_id: Some(message.clone()),
+            },
+        );
+        assert_eq!(model.message_failure(&message), None);
+        assert_eq!(model.send_preview("send"), "Check send");
+        model.outgoing.get_mut("send").unwrap().outcome =
+            OutgoingOutcome::Provider(MessageStatus::Failed(SendFailure::NoRoute));
+        assert_eq!(model.message_failure(&message), Some(SendFailure::NoRoute));
+        assert_eq!(model.send_preview("send"), "Not sent");
+        assert_eq!(model.send_preview("missing"), "Check send");
+    }
+
     #[test]
     fn acknowledgements_preserve_edits_made_while_saving_or_sending() {
         let mut model = Model::default();

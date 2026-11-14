@@ -3549,6 +3549,18 @@ fn native_window_round_trips_real_frontend_actions() {
         !ui.stage_file(id(), &staged_file),
         "a submitted text draft cannot acquire attachments through paste or drop"
     );
+    pump_until(
+        || {
+            ui.sidebar_previews.borrow().iter().any(|preview| {
+                preview.conversation == id()
+                    && preview
+                        .label
+                        .upgrade()
+                        .is_some_and(|label| label.text().starts_with("Sending ·"))
+            })
+        },
+        "sidebar identifies the bound sending draft",
+    );
     let original_writer = subscription_writer
         .lock()
         .unwrap()
@@ -3590,6 +3602,7 @@ fn native_window_round_trips_real_frontend_actions() {
     );
     *subscription_writer.lock().unwrap() = Some(original_writer);
     ui.window.present();
+    let sidebar_row_before_failure = ui.list.selected_row();
     let mut failed_text = outgoing.lock().unwrap().get("op-text-1").unwrap().clone();
     failed_text["outcome"] = json!({"provider":{"failed":"rejected"}});
     outgoing
@@ -3609,6 +3622,24 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "failed text offers explicit retry",
     );
+    pump_until(
+        || {
+            ui.sidebar_previews.borrow().iter().any(|preview| {
+                preview.conversation == id()
+                    && preview
+                        .label
+                        .upgrade()
+                        .is_some_and(|label| label.text().starts_with("Not sent ·"))
+            })
+        },
+        "sidebar identifies the failed bound draft",
+    );
+    assert_eq!(
+        ui.list.selected_row(),
+        sidebar_row_before_failure,
+        "send status changes preserve the conversation row and its avatar"
+    );
+
     assert_eq!(
         sent.lock().unwrap().len(),
         1,
@@ -3683,6 +3714,164 @@ fn native_window_round_trips_real_frontend_actions() {
         "provider sent evidence clears retained text",
     );
     assert!(!ui.outbox.is_visible());
+    pump_until(
+        || {
+            ui.sidebar_previews.borrow().iter().any(|preview| {
+                preview.conversation == id()
+                    && preview.label.upgrade().is_some_and(|label| {
+                        !label.text().starts_with("Draft") && !label.text().starts_with("Sending ·")
+                    })
+            })
+        },
+        "confirmed send clears the saved-draft sidebar badge",
+    );
+
+    // A historical failed text can be restored for review without sending or
+    // overwriting an unrelated draft, even after its original send binding is gone.
+    let mut historical = ui
+        .model
+        .borrow()
+        .messages
+        .iter()
+        .find(|message| message.id.local_id == "m2")
+        .unwrap()
+        .clone();
+    historical.id.local_id = "historical-failure".into();
+    historical.text = Some("Text from an earlier failed reply".into());
+    historical.reply_to = Some(MessageId::new(id(), "m1"));
+    historical.attachments.clear();
+    let historical_id = historical.id.clone();
+    ui.event(Event::State(Box::new(
+        handover_ipc::ServerPayload::MessageAdded {
+            message: historical,
+        },
+    )));
+    ui.event(Event::State(Box::new(
+        handover_ipc::ServerPayload::MessageStatus {
+            update: MessageStatusUpdate {
+                message_id: historical_id.clone(),
+                status: MessageStatus::Failed(SendFailure::NoRoute),
+            },
+        },
+    )));
+    let failed_status = find_widget(ui.thread.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "Failed · No route")
+    })
+    .expect("reported failure reason in timeline");
+    assert_eq!(
+        failed_status.tooltip_text().as_deref(),
+        Some(crate::model::failure_detail(SendFailure::NoRoute))
+    );
+    let failed_row = ancestor_with_class(&failed_status, "message-row").unwrap();
+    let failed_actions = find_widget(&failed_row, &|widget| {
+        widget
+            .downcast_ref::<gtk::MenuButton>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Message actions"))
+    })
+    .unwrap()
+    .downcast::<gtk::MenuButton>()
+    .unwrap();
+    let failed_menu = failed_actions.popover().unwrap();
+    let restore = find_widget(failed_menu.upcast_ref(), &|widget| {
+        widget.has_css_class("review-failed-message")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    let sent_before_review = sent.lock().unwrap().len();
+    ui.compose.buffer().set_text("Keep my current draft");
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty && !draft.saving)
+        },
+        "existing draft saves before review",
+    );
+    restore.emit_clicked();
+    assert_eq!(text(&ui.compose), "Keep my current draft");
+    assert_eq!(sent.lock().unwrap().len(), sent_before_review);
+    ui.compose.buffer().set_text("");
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty && !draft.saving)
+        },
+        "empty composer saves before review",
+    );
+    restore.emit_clicked();
+    pump_until(
+        || {
+            text(&ui.compose) == "Text from an earlier failed reply"
+                && ui.model.borrow().selected_draft().is_some_and(|draft| {
+                    !draft.dirty && draft.value.reply_to == Some(MessageId::new(id(), "m1"))
+                })
+        },
+        "failed reply restores into a saved review draft",
+    );
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        sent_before_review,
+        "review never submits a message"
+    );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        capture_fixture(
+            &ui.window,
+            path.with_file_name(format!(
+                "{}-review-restored.png",
+                path.file_stem().unwrap().to_string_lossy()
+            )),
+        );
+    }
+
+    assert!(
+        ui.model
+            .borrow()
+            .messages
+            .iter()
+            .any(|message| message.id == historical_id)
+    );
+    ui.compose.buffer().set_text("");
+    ui.set_reply(None);
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| !draft.dirty && !draft.saving)
+        },
+        "review draft cleared without sending",
+    );
+    ui.event(Event::State(Box::new(
+        handover_ipc::ServerPayload::OutgoingOperation {
+            operation: OutgoingOperation {
+                id: "historical-unknown".into(),
+                conversation_id: id(),
+                kind: OutgoingOperationKind::Text,
+                created_at: 1,
+                updated_at: 2,
+                outcome: OutgoingOutcome::Unknown,
+                message_id: Some(historical_id.clone()),
+            },
+        },
+    )));
+    ui.review_failed_message(&historical_id);
+    assert_eq!(
+        text(&ui.compose),
+        "",
+        "unknown outcome cannot be restored as a confirmed failure"
+    );
+    ui.event(Event::State(Box::new(
+        handover_ipc::ServerPayload::MessageRemoved {
+            message_id: historical_id,
+        },
+    )));
 
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),

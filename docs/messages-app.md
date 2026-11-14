@@ -148,6 +148,17 @@ Sent, Delivered, or Read. A late failure offers Retry or Keep editing. Reopening
 the app restores the pending bubble and never resubmits it. An unknown outcome
 offers Keep editing after you check the conversation, without an automatic retry.
 
+Failed messages show the reported reason when one is available. Hover the status
+for its description. A failed text already in the timeline has Edit and resend in
+its message menu. This restores the text and original reply target for review;
+it sends nothing and cannot replace another draft or attachment selection.
+Unknown outcomes do not offer this shortcut.
+
+Conversation previews distinguish saved drafts from bound sends with Sending,
+Not sent, or Check send. Send-status changes update preview text in place so the
+conversation row and contact picture stay intact.
+
+
 Attachment sends show indeterminate activity while submission is pending. The
 current backend does not report byte progress or cancel a submitted message.
 Remove files or Clear all before sending to cancel a selection.

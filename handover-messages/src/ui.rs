@@ -22,6 +22,7 @@ struct RowStamp {
     reactions: bool,
     quote: Option<String>,
     delivery: Option<&'static str>,
+    failure: Option<SendFailure>,
     find_query: String,
     unread: bool,
     sender: String,
@@ -1582,14 +1583,15 @@ impl Window {
                         .draft_loaded(draft, matches!(request, Request::ResolveDraftSend(..)));
                     self.save_drafts();
                 }
-                if self
-                    .model
-                    .borrow()
-                    .drafts
-                    .get(&id)
-                    .map(|draft| draft.value.text.as_str())
-                    .unwrap_or("")
-                    != previous_text
+                if matches!(request, Request::ResolveDraftSend(..))
+                    || self
+                        .model
+                        .borrow()
+                        .drafts
+                        .get(&id)
+                        .map(|draft| draft.value.text.as_str())
+                        .unwrap_or("")
+                        != previous_text
                 {
                     self.schedule_sidebar();
                 }
@@ -1788,6 +1790,7 @@ impl Window {
                         draft.loaded = false;
                     }
                     self.request(Request::Draft(sent.conversation_id));
+                    self.schedule_sidebar();
                 }
                 self.render_attachments();
                 if let Some(id) = id {
@@ -2614,6 +2617,34 @@ impl Window {
             }
         });
         content.append(&copy);
+        if message.sender.is_self
+            && !message.deleted
+            && message.attachments.is_empty()
+            && message
+                .text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+            && self.model.borrow().message_failure(&message.id).is_some()
+        {
+            let review = gtk::Button::with_label("Edit and resend");
+            review.add_css_class("flat");
+            review.add_css_class("review-failed-message");
+            review.set_tooltip_text(Some(
+                "Restore this text as a draft. Nothing is sent until you press Send.",
+            ));
+            let weak = Rc::downgrade(self);
+            let id = message.id.clone();
+            let popup = popover.downgrade();
+            review.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.review_failed_message(&id);
+                }
+                if let Some(popup) = popup.upgrade() {
+                    popup.popdown();
+                }
+            });
+            content.append(&review);
+        }
         if !message.deleted {
             for link in crate::message_text::links(message.text.as_deref().unwrap_or("")) {
                 let button = gtk::Button::with_label("Copy link");
@@ -3027,6 +3058,35 @@ impl Window {
         model.label(id)
     }
 
+    fn send_draft_preview(&self, model: &Model, id: &ConversationId) -> Option<String> {
+        let draft = model.drafts.get(id);
+        let operation = draft
+            .and_then(|draft| draft.value.pending_operation.clone())
+            .or_else(|| {
+                self.attachment_state
+                    .borrow()
+                    .get(id)
+                    .and_then(|draft| draft.pending_operation.clone())
+            });
+        let prefix = operation
+            .as_deref()
+            .map(|operation| model.send_preview(operation));
+        if let Some(text) = draft
+            .map(|draft| &draft.value.text)
+            .filter(|text| !text.is_empty())
+        {
+            Some(format!("{} · {text}", prefix.unwrap_or("Draft")))
+        } else if self.attachments.borrow().contains_key(id) {
+            Some(
+                prefix
+                    .map(|prefix| format!("{prefix} · Attachments"))
+                    .unwrap_or_else(|| "Attachment draft".into()),
+            )
+        } else {
+            None
+        }
+    }
+
     fn schedule_sidebar(self: &Rc<Self>) {
         if self.sidebar_timer.borrow().is_some() {
             return;
@@ -3096,14 +3156,8 @@ impl Window {
             if !query.is_empty() && !title.to_lowercase().contains(&query) {
                 continue;
             }
-            let draft = model
-                .drafts
-                .get(&conversation.id)
-                .filter(|draft| !draft.value.text.is_empty())
-                .map(|draft| draft.value.text.clone());
-            let preview = draft
-                .as_ref()
-                .map(|text| format!("Draft · {text}"))
+            let preview = self
+                .send_draft_preview(&model, &conversation.id)
                 .unwrap_or_else(|| {
                     if self.attachments.borrow().contains_key(&conversation.id) {
                         "Attachment draft".into()
@@ -3341,6 +3395,14 @@ impl Window {
         }
     }
     fn render_status(&self) {
+        {
+            let model = self.model.borrow();
+            for preview in self.sidebar_previews.borrow_mut().iter_mut() {
+                if let Some(text) = self.send_draft_preview(&model, &preview.conversation) {
+                    preview.text = text;
+                }
+            }
+        }
         self.render_typing();
         let model = self.model.borrow();
         if let Some(action) = self
@@ -3783,6 +3845,11 @@ impl Window {
                     .and_then(|visit| visit.first.as_ref())
                     == Some(&message.id),
                 sender: self.photos.borrow().label(&message.sender),
+                failure: if message.sender.is_self && !message.deleted {
+                    model.message_failure(&message.id)
+                } else {
+                    None
+                },
                 delivery: if message.sender.is_self && !message.deleted {
                     model.message_status(&message.id)
                 } else {
@@ -3808,7 +3875,7 @@ impl Window {
                     .get(&message.id)
                     .is_some_and(|previous| previous.delivery != stamp.delivery)
                 {
-                    update_status_slot(old, stamp.delivery);
+                    update_status_slot(old, stamp.delivery, stamp.failure);
                 }
                 self.thread.reorder_child_after(old, preceding.as_ref());
                 preceding = Some(old.clone());
@@ -4019,7 +4086,11 @@ impl Window {
                 label.set_xalign(1.0);
                 label.add_css_class("status-slot");
                 column.append(&label);
-                update_status_slot(label.upcast_ref(), model.message_status(&message.id));
+                update_status_slot(
+                    label.upcast_ref(),
+                    model.message_status(&message.id),
+                    model.message_failure(&message.id),
+                );
             }
             let reply = gtk::Button::from_icon_name("mail-reply-sender-symbolic");
             reply.set_tooltip_text(Some("Reply to this message"));
@@ -4790,6 +4861,8 @@ impl Window {
                 "Preparing message…"
             } else if saving {
                 "Saving…"
+            } else if let Some(OutgoingOutcome::Provider(MessageStatus::Failed(reason))) = outcome {
+                crate::model::failure_label(reason)
             } else if failed {
                 "Couldn't send. Your files and caption are kept."
             } else if review && outcome.is_none() {
@@ -4810,6 +4883,9 @@ impl Window {
             }
             let status = gtk::Label::new(Some(text));
             status.add_css_class("attachment-state");
+            if let Some(OutgoingOutcome::Provider(MessageStatus::Failed(reason))) = outcome {
+                status.set_tooltip_text(Some(crate::model::failure_detail(reason)));
+            }
             status.add_css_class("dim-label");
             status.set_xalign(0.0);
             status.set_wrap(true);
@@ -4925,7 +5001,7 @@ impl Window {
 
 use handover_ipc::ServerPayload;
 
-fn update_status_slot(widget: &gtk::Widget, status: Option<&str>) {
+fn update_status_slot(widget: &gtk::Widget, status: Option<&str>, failure: Option<SendFailure>) {
     if widget.has_css_class("status-slot")
         && let Some(label) = widget.downcast_ref::<gtk::Label>()
     {
@@ -4936,18 +5012,23 @@ fn update_status_slot(widget: &gtk::Widget, status: Option<&str>) {
         } else {
             label.remove_css_class("message-status");
         }
-        label.set_tooltip_text(Some(match status {
+        if failure.is_some() {
+            label.add_css_class("error");
+        } else {
+            label.remove_css_class("error");
+        }
+        label.set_tooltip_text(Some(if let Some(reason) = failure { crate::model::failure_detail(reason) } else { match status {
             Some("Accepted") => "The command was accepted. Delivery has not been confirmed.",
             Some("Outcome unknown") => {
                 "Check the conversation before sending again. Handover never resends automatically."
             }
             _ => "Reported message status",
-        }));
+        }}));
         return;
     }
     let mut child = widget.first_child();
     while let Some(widget) = child {
-        update_status_slot(&widget, status);
+        update_status_slot(&widget, status, failure);
         child = widget.next_sibling();
     }
 }
