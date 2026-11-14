@@ -178,9 +178,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             publishConnectivity()
             // Proactively share the current notification list; the server
             // also requests it, so a lost frame is recovered on request.
-            HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
-                syncNotifications(enabled, list)
-            }
+            HandoverNotificationService.requestSync(context)
             callObserver.refresh()
             // Same recovery for media sessions.
             MediaObserver.activePushSync()
@@ -251,9 +249,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
         }
         "notifications_request" -> {
             if (serverFingerprint == null) return
-            HandoverNotificationService.snapshotFor(context).let { (enabled, list) ->
-                syncNotifications(enabled, list)
-            }
+            HandoverNotificationService.requestSync(context)
         }
         "contacts_request" -> {
             if (serverFingerprint == null) return

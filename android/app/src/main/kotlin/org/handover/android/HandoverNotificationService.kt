@@ -9,6 +9,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -56,7 +58,9 @@ class HandoverNotificationService : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         val key = sbn.key ?: return
-        if (isValidKey(key)) transport?.retractNotification(key)
+        if (isValidKey(key) && NotificationForwarding(this).isAllowed(sbn.packageName)) {
+            transport?.retractNotification(key)
+        }
     }
 
     /** Push the full current list; called on connect and on transport request. */
@@ -122,6 +126,21 @@ class HandoverNotificationService : NotificationListenerService() {
         fun truncateTo(value: String, max: Int): String =
             if (value.length <= max) value else value.substring(0, max)
 
+        /** Serialize refreshes with listener callbacks so an old snapshot cannot undo a choice. */
+        fun requestSync(context: Context) {
+            val app = context.applicationContext
+            val sync = Runnable {
+                val (enabled, list) = snapshotFor(app)
+                transport?.syncNotifications(enabled, list)
+            }
+            if (Looper.myLooper() == Looper.getMainLooper()) sync.run()
+            else Handler(Looper.getMainLooper()).post(sync)
+        }
+
+        internal fun activePackages(): Set<String> =
+            runCatching { instance?.activeNotifications?.map { it.packageName }?.toSet() }
+                .getOrNull().orEmpty()
+
         /** Current permission state plus the active notification list. */
         fun snapshotFor(context: Context): Pair<Boolean, List<WireNotification>> {
             if (!isEnabled(context)) return false to emptyList()
@@ -140,6 +159,9 @@ class HandoverNotificationService : NotificationListenerService() {
         fun snapshot(context: Context, sbn: StatusBarNotification): WireNotification? {
             val key = sbn.key ?: return null
             if (!isValidKey(key)) return null
+            val settings = NotificationForwarding(context)
+            settings.remember(sbn.packageName)
+            if (!settings.isAllowed(sbn.packageName)) return null
             val app = truncateTo(appName(context, sbn), MAX_APP)
             val extras = sbn.notification.extras
             val title = truncateTo(
@@ -178,9 +200,14 @@ class HandoverNotificationService : NotificationListenerService() {
             }.getOrDefault(sbn.packageName)
         }
 
+        private fun activeForwarded(svc: HandoverNotificationService, key: String): StatusBarNotification? =
+            runCatching { svc.activeNotifications }.getOrNull()
+                ?.firstOrNull { it.key == key && NotificationForwarding(svc).isAllowed(it.packageName) }
+
         fun dismiss(key: String): Boolean {
             if (!isValidKey(key)) return false
             val svc = instance ?: return false
+            if (activeForwarded(svc, key) == null) return false
             return runCatching {
                 svc.cancelNotification(key)
                 true
@@ -193,8 +220,7 @@ class HandoverNotificationService : NotificationListenerService() {
             }
             val svc = instance ?: return false
             val index = actionId.toIntOrNull() ?: return false
-            val sbn = runCatching { svc.activeNotifications }.getOrNull()
-                ?.firstOrNull { it.key == key } ?: return false
+            val sbn = activeForwarded(svc, key) ?: return false
             val actions = sbn.notification.actions ?: return false
             if (index !in actions.indices) return false
             // Only advertise actions the platform reported; the index id maps
@@ -208,8 +234,7 @@ class HandoverNotificationService : NotificationListenerService() {
         fun reply(key: String, text: String): Boolean {
             if (!isValidKey(key) || text.isBlank() || text.length > MAX_REPLY_TEXT) return false
             val svc = instance ?: return false
-            val sbn = runCatching { svc.activeNotifications }.getOrNull()
-                ?.firstOrNull { it.key == key } ?: return false
+            val sbn = activeForwarded(svc, key) ?: return false
             val action = sbn.notification.actions?.firstOrNull { candidate ->
                 candidate.remoteInputs?.any { it.allowFreeFormInput } == true
             } ?: return false

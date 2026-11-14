@@ -846,7 +846,11 @@ class MainActivity : android.app.Activity() {
         val permissionsPage = featurePage(
             "Permissions", "Enable only the capabilities you want Handover to provide.",
             panel(sectionTitle("Current access"), capabilitiesStatus),
-            panel(sectionTitle("Notifications"), notificationAccess, appNotificationAccess),
+            panel(sectionTitle("Notifications"), notificationAccess, appNotificationAccess,
+                secondary(Button(this).apply {
+                    text = "Choose apps to forward"
+                    setOnClickListener { openNotificationForwarding() }
+                })),
             panel(sectionTitle("Calls"), callAccess),
             panel(sectionTitle("Device actions"), deviceAdminAccess),
             panel(sectionTitle("Connectivity & background"), localNetworkAccess,
@@ -1100,6 +1104,7 @@ class MainActivity : android.app.Activity() {
             listOf(
                 menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
                 menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
+                menuButton("Notifications", "Choose which apps notify your laptop") { openNotificationForwarding() },
                 menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
                 menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
                 menuButton("Remote input", "Control the Linux pointer and keyboard") { showPage(remoteInputPage) },

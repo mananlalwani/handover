@@ -148,6 +148,20 @@ and the confirmation symbol. `--browser /path/to/browser` selects an executable;
 Android notification access, media control, call control, and background access
 are optional permissions. Enable only the capabilities in use.
 
+In the Android app, open **Notifications** to choose which apps can forward
+notifications to your laptop. Search by app name or package name, then turn off
+apps such as a battery monitor. The list includes launcher apps, active
+notification senders, and remembered senders. If an app is missing, let it post a
+notification and reopen the page. New apps are allowed by default.
+
+Choices are saved on the phone and apply to live updates, reconnects, and full
+notification syncs. Turning an app off removes its current forwarded entries
+from the laptop without dismissing them on the phone. With the phone offline,
+the laptop catches up on reconnect. Turning it back on shares its active
+notifications again. These controls affect Android notification forwarding;
+Google Messages received directly by the Linux helper use the conversation's
+desktop mute setting instead.
+
 Native clipboard transfer is explicit rather than a background mirror. On the
 phone, use "Send current clipboard to Linux". From Linux, use:
 
