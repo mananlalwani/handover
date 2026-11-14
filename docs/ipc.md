@@ -276,3 +276,23 @@ without saved messages are omitted. Duplicate conversation IDs are collapsed.
 Unknown accounts and invalid IDs reject the batch. The response can span frames;
 collect until `done: true` under the normal aggregate limits. It does not fetch
 provider history, mark conversations read, or claim that saved history is complete.
+
+## Recent transfer activity
+
+`transfers.list` returns `transfer_activity` with `activities`, or bounded
+`transfer_activity_chunk` frames with `activities` and a terminal `done: true`.
+Use the normal aggregate and line limits. The daemon retains at most 128 records
+for its current session, newest first. Records contain a daemon-local `sequence`,
+`observed_at_ms`, and an `event` tagged by `kind`: `received` with normalized
+`share`, `progress` with normalized `progress`, or `result` with normalized
+`result`. Progress and results coalesce by device and transfer ID. A late
+progress event cannot replace a retained terminal result.
+
+Activity records represent observations. They do not fabricate a result from
+command acceptance or socket byte progress. Accepted shares without later
+observations may be absent. Clients read after subscribing to share events,
+refetch after relevant events and replacement snapshots, and coalesce concurrent
+refresh requests. `Client::subscribe_control_center` enables share and media
+events without messaging history. Forgetting a device clears its activity;
+daemon restart clears the full list. Received files are never deleted by this
+metadata cleanup.

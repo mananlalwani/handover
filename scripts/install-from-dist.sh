@@ -31,6 +31,7 @@ fi
 install -Dm755 "$ROOT/bin/handoverd" "$PREFIX/bin/handoverd"
 install -Dm755 "$ROOT/bin/handover-desktop" "$PREFIX/bin/handover-desktop"
 install -Dm755 "$ROOT/bin/handover-messages" "$PREFIX/bin/handover-messages"
+install -Dm755 "$ROOT/bin/handover-control" "$PREFIX/bin/handover-control"
 install -Dm755 "$ROOT/bin/handoverctl" "$PREFIX/bin/handoverctl"
 install -Dm755 "$ROOT/bin/handover-google-messages-helper" \
 	"$PREFIX/bin/handover-google-messages-helper"

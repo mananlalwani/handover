@@ -1,0 +1,14 @@
+window.control { font-family: Inter, sans-serif; }
+.device-rail { background: alpha(currentColor, .035); border-right: 1px solid alpha(currentColor, .12); padding: 18px 12px; }
+.brand { font-size: 22px; font-weight: 700; padding: 2px 8px 16px; }
+.section-caption { font-size: 11px; font-weight: 700; opacity: .6; padding: 16px 8px 6px; }
+.device-rail list { background: transparent; }
+.device-rail row { border-radius: 9px; padding: 10px; margin: 2px 0; }
+.page-header { padding: 16px 24px; border-bottom: 1px solid alpha(currentColor, .10); }
+.page-title { font-size: 23px; font-weight: 650; }
+.card { box-shadow: none; background: alpha(currentColor, .035); border: 1px solid alpha(currentColor, .10); border-radius: 14px; padding: 18px; }
+.card-title { font-size: 17px; font-weight: 650; }
+.card-subtitle { opacity: .65; font-size: 12px; }
+.body-copy { line-height: 1.4; }
+.status-strip { padding: 10px 24px; border-top: 1px solid alpha(currentColor, .10); font-size: 12px; }
+.pair-code { font-family: monospace; font-size: 30px; font-weight: 700; letter-spacing: 5px; padding: 12px; }

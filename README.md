@@ -6,7 +6,7 @@ and exposes calls and contacts. The Android app also provides presentation,
 pointer, keyboard, and Linux volume controls.
 
 `handoverd` runs in the background. Use `handoverctl` from the terminal or the
-native `handover-messages` app or included Quickshell reference client. The Android app connects directly to the
+native control center and `handover-messages` app, or the included Quickshell reference client. The Android app connects directly to the
 native Linux backend.
 
 Handover is pre-1.0. Some features need Android permissions or depend on the
@@ -98,6 +98,14 @@ under `Handover/YYYY-MM-DD_HH-MM-SS/`, using the PC's local date and time. Origi
 filenames are preserved; simultaneous transfers get a numbered folder suffix.
 Check Handover's transfer history for results.
 Plain text without a web link is not supported by this action.
+
+### Native control center
+
+Open **Handover** from your launcher or run `handover-control`. It brings device
+status and pairing, notifications, file/link sharing, recent transfer activity,
+synced contacts, and phone media controls into one native app. It uses the same
+daemon as Messages. See the [control center guide](docs/control-center.md).
+`handover-gui` prefers this app; `handover-gui --qml` opens the reference client.
 
 ### Native Messages app
 

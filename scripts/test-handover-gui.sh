@@ -105,3 +105,21 @@ if ! cmp -s "$expected" "$TMP_DIR/args"; then
 fi
 
 echo "handover-gui launcher tests passed"
+
+# A matching native control center owns ordinary launches; reference and send paths remain explicit.
+cat > "$BIN_DIR/handover-control" <<'EOF'
+#!/bin/sh
+printf '%s' native > "$HANDOVER_GUI_ARGS"
+EOF
+chmod +x "$BIN_DIR/handover-control"
+run_gui
+if test "$(cat "$TMP_DIR/args")" != native; then
+    echo "normal launch did not prefer the native control center" >&2
+    exit 1
+fi
+run_gui --qml
+printf '%s\n' --path "$EMPTY_DATA_HOME/handover/quickshell/example.qml" > "$expected"
+cmp "$expected" "$TMP_DIR/args"
+run_gui --send
+printf '%s\n' --path "$EMPTY_DATA_HOME/handover/quickshell/send.qml" > "$expected"
+cmp "$expected" "$TMP_DIR/args"

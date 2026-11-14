@@ -73,6 +73,8 @@ pub enum Method {
     AudioSubscribe,
     #[serde(rename = "hello")]
     Hello,
+    #[serde(rename = "transfers.list")]
+    TransfersList,
     #[serde(rename = "devices.list")]
     DevicesList,
     #[serde(rename = "native.peers")]
@@ -503,6 +505,13 @@ impl ServerMessage {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerPayload {
+    TransferActivity {
+        activities: Vec<handover_core::TransferActivity>,
+    },
+    TransferActivityChunk {
+        activities: Vec<handover_core::TransferActivity>,
+        done: bool,
+    },
     AudioControls {
         snapshot: handover_core::AudioControlsSnapshot,
     },
@@ -1012,6 +1021,25 @@ impl Client {
             } => Ok(supported_protocols),
             payload => Err(unexpected(payload)),
         }
+    }
+
+    pub async fn transfer_activity(
+        &mut self,
+    ) -> Result<Vec<handover_core::TransferActivity>, IpcError> {
+        self.send(Method::TransfersList).await?;
+        let values = self
+            .collect_list(|payload| match payload {
+                ServerPayload::TransferActivity { activities } => Some((activities, true)),
+                ServerPayload::TransferActivityChunk { activities, done } => {
+                    Some((activities, done))
+                }
+                _ => None,
+            })
+            .await?;
+        if values.len() > 128 {
+            return Err(IpcError::SnapshotTooLarge);
+        }
+        Ok(values)
     }
 
     pub async fn devices(&mut self) -> Result<Vec<Device>, IpcError> {
@@ -1563,6 +1591,11 @@ impl Client {
     /// Subscribe to device, notification, and media state without message history.
     pub async fn subscribe_media(self) -> Result<Subscription, IpcError> {
         self.subscribe_to(false, true, false).await
+    }
+
+    /// Device continuity state and share events, without messaging history.
+    pub async fn subscribe_control_center(self) -> Result<Subscription, IpcError> {
+        self.subscribe_to(true, true, false).await
     }
 
     async fn subscribe_to(

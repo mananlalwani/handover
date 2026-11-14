@@ -111,3 +111,47 @@ async fn large_media_response_chunks_at_preferred_size_and_reconstructs() {
     }
     assert_eq!(actual, expected);
 }
+
+#[tokio::test]
+async fn transfer_activity_reopens_through_ipc_and_chunks_large_received_metadata() {
+    use handover_core::{ReceivedShare, SharedResource, TransferActivityEvent};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("daemon.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let mut store = StateStore::default();
+    for index in 0..128 {
+        store.apply(StateEvent::ShareReceived(ReceivedShare {
+            device_id: DeviceId::new("fixture"),
+            resource: SharedResource::Url {
+                url: format!("https://example.test/{index}/{}", "a".repeat(12_000)),
+            },
+        }));
+    }
+    let expected = store.transfer_activity.snapshot();
+    assert_eq!(expected.len(), 128);
+    assert!(matches!(
+        expected[0].event,
+        TransferActivityEvent::Received { .. }
+    ));
+    let state = Arc::new(RwLock::new(store));
+    let (events, _) = broadcast::channel(EVENT_CAPACITY);
+    let handler = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (socket, _) = listener.accept().await.unwrap();
+            handle_client(socket, state.clone(), events.clone(), None)
+                .await
+                .unwrap();
+        }
+    });
+    // Two disposable clients reconstruct the same daemon-owned history.
+    for _ in 0..2 {
+        let mut client = handover_ipc::Client::connect_to(path.clone())
+            .await
+            .unwrap();
+        assert_eq!(client.transfer_activity().await.unwrap(), expected);
+    }
+    timeout(Duration::from_secs(3), handler)
+        .await
+        .unwrap()
+        .unwrap();
+}

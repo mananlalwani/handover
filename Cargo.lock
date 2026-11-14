@@ -1551,6 +1551,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "handover-control"
+version = "0.4.1"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "handover-core",
+ "handover-ipc",
+ "libadwaita",
+ "tokio",
+]
+
+[[package]]
 name = "handover-core"
 version = "0.4.1"
 dependencies = [

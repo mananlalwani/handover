@@ -1,0 +1,16 @@
+[package]
+name = "handover-control"
+version = "0.4.1"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native Linux control center for Handover"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_4"] }
+async-channel = "2.5"
+handover-core.workspace = true
+handover-ipc.workspace = true
+tokio.workspace = true
+

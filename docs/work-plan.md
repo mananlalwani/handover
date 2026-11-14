@@ -230,6 +230,19 @@ creation still depends on the missing first-party protocol evidence in item 4.
 AUR publication and additional distribution formats follow reproducible package
 and upgrade checks; they do not block the app implementation.
 
+## 7. Native control center
+
+The native Linux control center now brings device status, code-comparison pairing,
+notification actions, file and link sharing, reviewed clipboard text, synced
+contacts, and phone media controls into one daemon client. Ordinary
+`handover-gui` launches prefer the new app; explicit QML and send-picker entry
+points remain available. See the [control center guide](control-center.md).
+
+Recent transfer observations are retained by the daemon for its current session,
+with a maximum of 128 records. Clients reconstruct this list through public IPC.
+It is not a durable transfer archive. Contacts photos, calling controls, and
+additional device actions remain follow-up interface work.
+
 ## Limits to keep explicit
 
 Android background clipboard restrictions, multicast discovery across networks,

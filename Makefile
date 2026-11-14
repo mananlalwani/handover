@@ -38,6 +38,7 @@ install-files:
 	install -Dm755 target/release/handoverd $(BIN_DIR)/handoverd
 	install -Dm755 target/release/handover-desktop $(BIN_DIR)/handover-desktop
 	install -Dm755 target/release/handover-messages $(BIN_DIR)/handover-messages
+	install -Dm755 target/release/handover-control $(BIN_DIR)/handover-control
 	install -Dm755 target/release/handoverctl $(BIN_DIR)/handoverctl
 	install -Dm755 target/release/handover-google-messages-helper $(BIN_DIR)/handover-google-messages-helper
 	install -Dm755 target/release/handover-google-messages-auth-probe $(BIN_DIR)/handover-google-messages-auth-probe
@@ -75,7 +76,7 @@ install-files:
 	@if test "$(GOOGLE_MESSAGES_SETUP)" = 1; then $(MAKE) install-google-messages-setup; fi
 
 install-user:
-	cargo build --release --locked -p handoverd -p handover-desktop -p handover-messages -p handoverctl -p handover-google-messages
+	cargo build --release --locked -p handoverd -p handover-desktop -p handover-messages -p handover-control -p handoverctl -p handover-google-messages
 	$(MAKE) install-files
 	systemctl --user daemon-reload
 	systemctl --user reenable handoverd.service
@@ -96,6 +97,7 @@ uninstall-user:
 	rm -f $(PREFIX)/bin/handoverd $(PREFIX)/bin/handoverctl
 	rm -f $(BIN_DIR)/handover-desktop
 	rm -f $(BIN_DIR)/handover-messages
+	rm -f $(BIN_DIR)/handover-control
 	rm -f $(PREFIX)/bin/handover-google-messages-helper
 	rm -f $(PREFIX)/bin/handover-google-messages-auth-probe
 	rm -f $(BIN_DIR)/handover-google-messages-setup

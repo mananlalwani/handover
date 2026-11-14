@@ -1,5 +1,8 @@
 //! Backend-independent domain types used across Handover.
 
+mod transfer_activity;
+pub use transfer_activity::{TransferActivity, TransferActivityEvent};
+
 use std::collections::BTreeSet;
 use std::fmt;
 

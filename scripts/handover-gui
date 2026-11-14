@@ -9,6 +9,13 @@ if test -f "$script_dir/handover-gui.data-home"; then
 	IFS= read -r configured_data_home < "$script_dir/handover-gui.data-home" || :
 fi
 
+# Keep explicit QML and send-picker entry points available.
+if test "${1-}" = --qml; then
+    shift
+elif test "$#" -eq 0 && test -x "$script_dir/handover-control"; then
+    exec "$script_dir/handover-control"
+fi
+
 qml_path=
 send_mode=0
 share_resource=

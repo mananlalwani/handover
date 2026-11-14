@@ -1346,6 +1346,8 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::MessageAttachmentDraft { .. }
         | ServerPayload::MessageDraft { .. }
         | ServerPayload::ConversationSettings { .. }
+        | ServerPayload::TransferActivity { .. }
+        | ServerPayload::TransferActivityChunk { .. }
         | ServerPayload::ConversationSettingsUpdated { .. } => {}
     }
 }

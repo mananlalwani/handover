@@ -300,6 +300,26 @@ where
         Method::Hello => ServerPayload::Hello {
             supported_protocols: vec![PROTOCOL_VERSION],
         },
+        Method::TransfersList => {
+            let activities = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .transfer_activity
+                .snapshot();
+            protocol::write_list_response(
+                writer,
+                activities,
+                |activities| ServerPayload::TransferActivity {
+                    activities: activities.to_vec(),
+                },
+                |activities, done| ServerPayload::TransferActivityChunk {
+                    activities: activities.to_vec(),
+                    done,
+                },
+            )
+            .await?;
+            return Ok(true);
+        }
         Method::DevicesList => ServerPayload::Devices {
             devices: snapshot(state).devices,
         },

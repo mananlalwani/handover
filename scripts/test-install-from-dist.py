@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = tomllib.loads((ROOT / "handoverd/Cargo.toml").read_text())["package"]["version"]
-RUST_BINARIES = ("handoverd", "handover-desktop", "handover-messages", "handoverctl",
+RUST_BINARIES = ("handoverd", "handover-desktop", "handover-messages", "handover-control", "handoverctl",
                  "handover-google-messages-helper", "handover-google-messages-auth-probe")
 
 

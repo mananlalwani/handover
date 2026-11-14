@@ -16,6 +16,7 @@ mod remote_input;
 mod screensaver;
 mod send_staging;
 mod state;
+mod transfer_activity;
 mod volume;
 
 use std::collections::BTreeSet;

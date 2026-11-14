@@ -19,6 +19,7 @@ pub(crate) struct StateStore {
     calls: BTreeMap<DeviceId, CallState>,
     contacts: BTreeMap<DeviceId, Vec<Contact>>,
     messaging: MessagingStore,
+    pub(crate) transfer_activity: crate::transfer_activity::ActivityLog,
 }
 
 impl StateStore {
@@ -46,18 +47,36 @@ impl StateStore {
                 changed: true,
                 changes: vec![StateChange::DeviceCommandResult(result)],
             },
-            StateEvent::ShareReceived(share) => ApplyOutcome {
-                changed: true,
-                changes: vec![StateChange::ShareReceived(share)],
-            },
-            StateEvent::ShareProgress(progress) => ApplyOutcome {
-                changed: true,
-                changes: vec![StateChange::ShareProgress(progress)],
-            },
-            StateEvent::ShareResult(result) => ApplyOutcome {
-                changed: true,
-                changes: vec![StateChange::ShareResult(result)],
-            },
+            StateEvent::ShareReceived(share) => {
+                self.transfer_activity
+                    .record(handover_core::TransferActivityEvent::Received {
+                        share: share.clone(),
+                    });
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::ShareReceived(share)],
+                }
+            }
+            StateEvent::ShareProgress(progress) => {
+                self.transfer_activity
+                    .record(handover_core::TransferActivityEvent::Progress {
+                        progress: progress.clone(),
+                    });
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::ShareProgress(progress)],
+                }
+            }
+            StateEvent::ShareResult(result) => {
+                self.transfer_activity
+                    .record(handover_core::TransferActivityEvent::Result {
+                        result: result.clone(),
+                    });
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::ShareResult(result)],
+                }
+            }
             StateEvent::Messaging(event) => {
                 let outcome = self.messaging.apply(event);
                 ApplyOutcome {
@@ -235,6 +254,13 @@ impl StateStore {
     }
 
     fn apply_device(&mut self, event: DeviceEvent) -> ApplyOutcome {
+        match &event {
+            DeviceEvent::Removed(id) => self.transfer_activity.remove_device(id),
+            DeviceEvent::Updated(device) if !device.paired => {
+                self.transfer_activity.remove_device(&device.id)
+            }
+            _ => {}
+        }
         match event {
             DeviceEvent::Added(device) | DeviceEvent::Updated(device) => self.upsert_device(device),
             DeviceEvent::Removed(id) => self.remove_device(id),
@@ -973,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn incoming_share_is_transient_and_does_not_enter_snapshot() {
+    fn incoming_share_stays_out_of_device_snapshot_and_enters_transfer_activity() {
         let mut store = StateStore::default();
         let share = ReceivedShare {
             device_id: DeviceId::new("phone-a"),
@@ -991,10 +1017,13 @@ mod tests {
         ));
         assert!(store.snapshot().devices.is_empty());
         assert!(store.snapshot().notifications.is_empty());
+        assert!(
+            matches!(&store.transfer_activity.snapshot()[0].event, handover_core::TransferActivityEvent::Received {share:actual} if actual==&share)
+        );
     }
 
     #[test]
-    fn share_result_is_transient_and_does_not_enter_snapshot() {
+    fn share_result_stays_out_of_device_snapshot_and_enters_transfer_activity() {
         let mut store = StateStore::default();
         let result = handover_core::ShareResult {
             device_id: DeviceId::new("native:peer"),
@@ -1008,5 +1037,8 @@ mod tests {
             matches!(outcome.changes.as_slice(), [StateChange::ShareResult(actual)] if actual == &result)
         );
         assert!(store.snapshot().devices.is_empty());
+        assert!(
+            matches!(&store.transfer_activity.snapshot()[0].event, handover_core::TransferActivityEvent::Result {result:actual} if actual==&result)
+        );
     }
 }

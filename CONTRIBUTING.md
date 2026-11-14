@@ -67,17 +67,20 @@ lock/unlock notifications, persistence across service restart, deletion, and
 invalid or duplicate records. It neither uses the desktop keyring nor contacts
 Google. Run this launcher rather than invoking the ignored test on a desktop bus.
 
-Validate the native Messages app without a phone or desktop account:
+Validate the native Messages app and control center without a phone or desktop account:
 
 ```sh
 python3 scripts/test-handover-messages.py
+python3 scripts/test-handover-control.py
 ```
 
 This requires `Xvfb` and `dbus-daemon`. It starts a private display, session bus,
 state directories, and fake daemon. It exercises real GTK widgets and IPC,
 including draft restore, search navigation, reconnects, lost send replies, and
 single-instance application routing. The setup dialog uses a fake setup helper.
-Run this launcher rather than invoking the ignored GUI test on your desktop.
+The control center runner covers pairing comparison, notification actions,
+sharing, contact copy, and reconnect behavior with fictional devices.
+Run these launchers rather than invoking the ignored GUI tests on your desktop.
 For visual checks, add `--screenshot /tmp/messages.png`, optionally with
 `--dark` or `--width 760`. PNG capture needs ImageMagick `import` and contains
 only the synthetic conversation on the private display.
