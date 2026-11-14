@@ -397,6 +397,67 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 }
             }
         }
+        Method::MessagesAttachmentSend {
+            conversation_id,
+            operation_id,
+            caption,
+            revision,
+            resolve,
+        } => {
+            use handover_core::{MessageStatus, OutgoingOperationKind, OutgoingOutcome};
+            let operation = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .messaging()
+                .outgoing(&operation_id)
+                .cloned();
+            let valid = known(&conversation_id)
+                && operation.as_ref().is_none_or(|operation| {
+                    operation.conversation_id == conversation_id
+                        && operation.kind == OutgoingOperationKind::Media
+                });
+            let resolution = if resolve {
+                match operation.as_ref().map(|operation| &operation.outcome) {
+                    Some(OutgoingOutcome::Provider(
+                        MessageStatus::Sent | MessageStatus::Delivered | MessageStatus::Displayed,
+                    )) => Some(Some(true)),
+                    None
+                    | Some(
+                        OutgoingOutcome::Unknown
+                        | OutgoingOutcome::Rejected
+                        | OutgoingOutcome::Provider(MessageStatus::Failed(_)),
+                    ) => Some(Some(false)),
+                    _ => None,
+                }
+            } else if operation.is_some() {
+                Some(None)
+            } else {
+                None
+            };
+            if let Some(resolution) = resolution.filter(|_| valid) {
+                match workspace
+                    .attachment_send(conversation_id, operation_id, caption, revision, resolution)
+                    .await
+                {
+                    Ok(draft) => {
+                        ServerMessage::new(ServerPayload::MessageAttachmentDraft { draft })
+                    }
+                    Err(crate::messaging_workspace::WorkspaceError::Conflict) => error(
+                        ErrorCode::DraftConflict,
+                        "Attachment draft changed; reload it before continuing",
+                    ),
+                    Err(_) => error(
+                        ErrorCode::BackendUnavailable,
+                        "Unable to save attachment send state",
+                    ),
+                }
+            } else {
+                error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "Attachment send is not ready to resolve",
+                )
+            }
+        }
         Method::MessagesSaveAttachmentDraft {
             queued_files,
             conversation_id,

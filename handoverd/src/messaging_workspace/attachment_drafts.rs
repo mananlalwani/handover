@@ -135,6 +135,9 @@ impl Workspace {
             .ok_or_else(|| storage("draft file storage unavailable"))?;
         let mut guard = self.store.lock().map_err(storage)?;
         let current = load(&mut guard, &id).map_err(storage)?;
+        if current.pending_operation.is_some() {
+            return Err(WorkspaceError::Conflict);
+        }
         if current.revision != revision {
             return Err(WorkspaceError::Conflict);
         }
@@ -268,47 +271,68 @@ impl Workspace {
             conversation_id: id,
             attachment,
             queued_attachments: attachments,
+            pending_operation: None,
+            pending_caption: None,
             revision: 0,
         };
-        match &mut *guard {
-            Store::Memory(state) => {
-                state.revision = state
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| storage("revision exhausted"))?;
-                saved.revision = state.revision;
-                state
-                    .attachments
-                    .insert(saved.conversation_id.clone(), saved.clone());
-            }
-            Store::Database(db) => {
-                let tx = db.transaction().map_err(storage)?;
-                let value: i64 = tx
-                    .query_row(
-                        "SELECT value FROM workspace_meta WHERE key='revision'",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(storage)?;
-                let value = value
-                    .checked_add(1)
-                    .ok_or_else(|| storage("revision exhausted"))?;
-                saved.revision = value as u64;
-                tx.execute(
-                    "UPDATE workspace_meta SET value=?1 WHERE key='revision'",
-                    [value],
-                )
-                .map_err(storage)?;
-                let payload = serde_json::to_string(&saved).map_err(storage)?;
-                tx.execute("INSERT INTO attachment_drafts VALUES(?1,?2,?3,?4) ON CONFLICT(account,thread) DO UPDATE SET payload=excluded.payload,revision=excluded.revision",params![saved.conversation_id.account_id.as_str(),saved.conversation_id.local_id,payload,value]).map_err(storage)?;
-                tx.commit().map_err(storage)?;
-            }
-        }
+        store_draft(&mut guard, &mut saved)?;
         for directory in directories {
             let _ = directory.keep();
         }
         clean(&root.path, &all(&mut guard).map_err(storage)?).map_err(storage)?;
         Ok(saved)
+    }
+    pub(crate) async fn attachment_send(
+        self: &Arc<Self>,
+        id: ConversationId,
+        operation_id: String,
+        caption: String,
+        revision: u64,
+        resolution: Option<bool>,
+    ) -> Result<MessageAttachmentDraft, WorkspaceError> {
+        validate_conversation_id(&id)?;
+        if operation_id.is_empty()
+            || operation_id.len() > 256
+            || operation_id.chars().any(char::is_control)
+            || caption.chars().count() > handover_core::MAX_TEXT_CHARS
+            || caption.contains('\0')
+        {
+            return Err(WorkspaceError::Invalid(
+                "invalid attachment operation".into(),
+            ));
+        }
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = this.store.lock().map_err(storage)?;
+            let mut saved = load(&mut guard, &id).map_err(storage)?;
+            if saved.revision != revision {
+                return Err(WorkspaceError::Conflict);
+            }
+            if let Some(sent) = resolution {
+                if saved.pending_operation.as_deref() != Some(operation_id.as_str()) {
+                    return Err(WorkspaceError::Conflict);
+                }
+                saved.pending_operation = None;
+                saved.pending_caption = None;
+                if sent {
+                    saved.attachment = None;
+                    saved.queued_attachments.clear();
+                }
+            } else {
+                if saved.attachment.is_none() || saved.pending_operation.is_some() {
+                    return Err(WorkspaceError::Conflict);
+                }
+                saved.pending_operation = Some(operation_id);
+                saved.pending_caption = Some(caption);
+            }
+            store_draft(&mut guard, &mut saved)?;
+            if let Some(root) = this.files.as_ref() {
+                clean(&root.path, &all(&mut guard).map_err(storage)?).map_err(storage)?;
+            }
+            Ok(saved)
+        })
+        .await
+        .map_err(storage)?
     }
     pub(super) fn clean_attachment_files(&self) -> Result<(), Error> {
         let Some(root) = self.files.as_ref() else {
@@ -317,11 +341,53 @@ impl Workspace {
         self.with_read(|store, _| clean(&root.path, &all(store)?))
     }
 }
+fn store_draft(
+    store: &mut Store,
+    saved: &mut MessageAttachmentDraft,
+) -> Result<(), WorkspaceError> {
+    match store {
+        Store::Memory(state) => {
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| storage("revision exhausted"))?;
+            saved.revision = state.revision;
+            state
+                .attachments
+                .insert(saved.conversation_id.clone(), saved.clone());
+        }
+        Store::Database(db) => {
+            let tx = db.transaction().map_err(storage)?;
+            let value: i64 = tx
+                .query_row(
+                    "SELECT value FROM workspace_meta WHERE key='revision'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage)?;
+            let value = value
+                .checked_add(1)
+                .ok_or_else(|| storage("revision exhausted"))?;
+            saved.revision = value as u64;
+            tx.execute(
+                "UPDATE workspace_meta SET value=?1 WHERE key='revision'",
+                [value],
+            )
+            .map_err(storage)?;
+            let payload = serde_json::to_string(&saved).map_err(storage)?;
+            tx.execute("INSERT INTO attachment_drafts VALUES(?1,?2,?3,?4) ON CONFLICT(account,thread) DO UPDATE SET payload=excluded.payload,revision=excluded.revision",params![saved.conversation_id.account_id.as_str(),saved.conversation_id.local_id,payload,value]).map_err(storage)?;
+            tx.commit().map_err(storage)?;
+        }
+    }
+    Ok(())
+}
 fn empty(id: ConversationId) -> MessageAttachmentDraft {
     MessageAttachmentDraft {
         conversation_id: id,
         attachment: None,
         queued_attachments: Vec::new(),
+        pending_operation: None,
+        pending_caption: None,
         revision: 0,
     }
 }
@@ -396,6 +462,18 @@ fn clean(root: &Path, drafts: &[MessageAttachmentDraft]) -> Result<(), Error> {
 }
 fn validate_saved(root: &Path, draft: &MessageAttachmentDraft) -> Result<(), Error> {
     validate_conversation_id(&draft.conversation_id)?;
+    if draft.pending_operation.is_some() != draft.pending_caption.is_some()
+        || draft
+            .pending_operation
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+        || draft.pending_caption.as_ref().is_some_and(|caption| {
+            caption.chars().count() > handover_core::MAX_TEXT_CHARS || caption.contains('\0')
+        })
+        || (draft.pending_operation.is_some() && draft.attachment.is_none())
+    {
+        return Err("invalid attachment send binding".into());
+    }
     if draft.queued_attachments.len() >= 10
         || (draft.attachment.is_none() && !draft.queued_attachments.is_empty())
     {
@@ -435,6 +513,86 @@ mod tests {
     fn id() -> ConversationId {
         ConversationId::new(handover_core::MessagingAccountId::new("fixture"), "thread")
     }
+    #[tokio::test]
+    async fn attachment_send_binding_survives_restart_and_resolution_keeps_failed_drafts() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("workspace.sqlite");
+        let source = directory.path().join("original.cc");
+        std::fs::write(&source, b"int main() {}\n").unwrap();
+        let uri = url::Url::from_file_path(&source).unwrap().to_string();
+        let workspace = Workspace::open(&database).unwrap();
+        let saved = workspace
+            .save_attachment_draft(id(), Some(uri.clone()), Some("text/x-c++src".into()), 0)
+            .await
+            .unwrap();
+        let bound = workspace
+            .attachment_send(
+                id(),
+                "send-test".into(),
+                "original caption".into(),
+                saved.revision,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound.pending_operation.as_deref(), Some("send-test"));
+        assert!(
+            workspace
+                .save_attachment_draft(id(), None, None, bound.revision)
+                .await
+                .is_err()
+        );
+        drop(workspace);
+        let workspace = Workspace::open(&database).unwrap();
+        assert_eq!(workspace.attachment_draft(id()).await.unwrap(), bound);
+        assert!(
+            workspace
+                .attachment_send(
+                    id(),
+                    "wrong-send".into(),
+                    String::new(),
+                    bound.revision,
+                    Some(true)
+                )
+                .await
+                .is_err()
+        );
+        let kept = workspace
+            .attachment_send(
+                id(),
+                "send-test".into(),
+                String::new(),
+                bound.revision,
+                Some(false),
+            )
+            .await
+            .unwrap();
+        assert!(kept.pending_operation.is_none());
+        assert_eq!(kept.attachment, bound.attachment);
+        let second = workspace
+            .attachment_send(
+                id(),
+                "send-again".into(),
+                "caption".into(),
+                kept.revision,
+                None,
+            )
+            .await
+            .unwrap();
+        let sent = workspace
+            .attachment_send(
+                id(),
+                "send-again".into(),
+                String::new(),
+                second.revision,
+                Some(true),
+            )
+            .await
+            .unwrap();
+        assert!(sent.attachment.is_none());
+        assert!(sent.pending_caption.is_none());
+    }
+
     #[tokio::test]
     async fn queued_files_survive_restart_and_failed_updates_preserve_the_batch() {
         let directory = tempfile::tempdir().unwrap();

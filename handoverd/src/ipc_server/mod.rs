@@ -803,6 +803,7 @@ where
         | Method::MessagesSelect { .. }
         | Method::MessagesDraft { .. }
         | Method::MessagesSaveDraft { .. }
+        | Method::MessagesAttachmentSend { .. }
         | Method::MessagesAttachmentDraft { .. }
         | Method::MessagesSaveAttachmentDraft { .. }) => {
             return local_messages::handle(method, writer, state, messaging).await;

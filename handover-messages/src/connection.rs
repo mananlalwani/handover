@@ -12,7 +12,7 @@ pub enum Request {
     Draft(ConversationId),
     SaveDraft(MessageDraft),
     AttachmentDraft(ConversationId),
-    SaveAttachmentDraft(ConversationId, Option<String>, Option<String>, u64),
+    AttachmentSend(ConversationId, String, String, u64, bool),
     SaveAttachmentQueue(
         ConversationId,
         Vec<handover_core::messaging::AttachmentDraftSource>,
@@ -197,13 +197,15 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
             Request::AttachmentDraft(id) => {
                 Reply::AttachmentDraft(client.attachment_draft(id).await?)
             }
-            Request::SaveAttachmentDraft(id, url, mime, revision) => Reply::AttachmentDraft(
-                client
-                    .save_attachment_draft(id, url, mime, revision)
-                    .await?,
-            ),
             Request::SaveAttachmentQueue(id, files, revision) => {
                 Reply::AttachmentDraft(client.save_attachment_queue(id, files, revision).await?)
+            }
+            Request::AttachmentSend(id, operation, caption, revision, resolve) => {
+                Reply::AttachmentDraft(
+                    client
+                        .attachment_send(id, operation, caption, revision, resolve)
+                        .await?,
+                )
             }
             Request::SaveDraft(draft) => Reply::Draft(client.save_message_draft(draft).await?),
             Request::Search {

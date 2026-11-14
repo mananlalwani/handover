@@ -1,3 +1,4 @@
+mod attachment_tiles;
 mod attachments;
 mod connection;
 mod contact_photos;

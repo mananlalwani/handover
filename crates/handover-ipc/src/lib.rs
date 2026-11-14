@@ -279,6 +279,15 @@ pub enum Method {
         mime: Option<String>,
         revision: u64,
     },
+    #[serde(rename = "messages.attachment_send")]
+    MessagesAttachmentSend {
+        conversation_id: ConversationId,
+        operation_id: String,
+        caption: String,
+        revision: u64,
+        #[serde(default)]
+        resolve: bool,
+    },
     #[serde(rename = "messages.typing_states")]
     MessagesTypingStates,
     #[serde(rename = "messages.read_states")]
@@ -1865,6 +1874,28 @@ impl Client {
             revision,
         )
         .await
+    }
+
+    pub async fn attachment_send(
+        &mut self,
+        conversation_id: ConversationId,
+        operation_id: String,
+        caption: String,
+        revision: u64,
+        resolve: bool,
+    ) -> Result<handover_core::MessageAttachmentDraft, IpcError> {
+        self.send(Method::MessagesAttachmentSend {
+            conversation_id,
+            operation_id,
+            caption,
+            revision,
+            resolve,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageAttachmentDraft { draft } => Ok(draft),
+            payload => Err(unexpected(payload)),
+        }
     }
 
     pub async fn save_attachment_queue(

@@ -70,6 +70,7 @@ pub struct Window {
     paste_pending: Cell<bool>,
     attachment_row: gtk::Box,
     attachment_state: RefCell<BTreeMap<ConversationId, MessageAttachmentDraft>>,
+    attachment_binding: RefCell<BTreeMap<ConversationId, (String, String)>>,
     attachment_errors: RefCell<BTreeMap<ConversationId, String>>,
     quotes: RefCell<BTreeMap<MessageId, Option<Message>>>,
     reaction_error: RefCell<Option<(MessageId, String)>>,
@@ -372,7 +373,7 @@ impl Window {
         reply_row.append(&reply);
         reply_row.append(&cancel_reply);
         composer_area.append(&reply_row);
-        let attachment_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let attachment_row = gtk::Box::new(gtk::Orientation::Vertical, 8);
         attachment_row.add_css_class("attachment-preview");
         composer_area.append(&attachment_row);
         let composer = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -480,6 +481,7 @@ impl Window {
             paste_pending: Cell::new(false),
             attachment_row,
             attachment_state: RefCell::new(BTreeMap::new()),
+            attachment_binding: RefCell::new(BTreeMap::new()),
             attachment_errors: RefCell::new(BTreeMap::new()),
             quotes: RefCell::new(BTreeMap::new()),
             reaction_error: RefCell::new(None),
@@ -797,7 +799,7 @@ impl Window {
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
             if let Some(this) = weak.upgrade() {
-                if this.any_attachment_saving() {
+                if this.paste_pending.get() || this.any_attachment_saving() {
                     this.closing.set(true);
                     this.save_drafts();
                     return glib::Propagation::Stop;
@@ -1242,11 +1244,30 @@ impl Window {
                     self.attachment_state
                         .borrow_mut()
                         .retain(|id, _| &id.account_id != account_id);
+                    self.attachment_binding
+                        .borrow_mut()
+                        .retain(|id, _| &id.account_id != account_id);
                     self.attachment_errors
                         .borrow_mut()
                         .retain(|id, _| &id.account_id != account_id);
                 }
+                let attachment_status_changed = matches!(
+                    payload.as_ref(),
+                    ServerPayload::OutgoingOperation { .. }
+                        | ServerPayload::OutgoingOperations { .. }
+                        | ServerPayload::OutgoingOperationRemoved { .. }
+                        | ServerPayload::Snapshot { .. }
+                        | ServerPayload::AccountRemoved { .. }
+                );
+                let account_removed =
+                    matches!(payload.as_ref(), ServerPayload::AccountRemoved { .. });
                 self.model.borrow_mut().state(*payload);
+                if attachment_status_changed {
+                    self.reconcile_attachment_sends();
+                    if thread_changed || snapshots || account_removed {
+                        self.render_attachments();
+                    }
+                }
                 if sidebar_changed {
                     self.schedule_sidebar();
                 }
@@ -1490,24 +1511,19 @@ impl Window {
                     Request::Attachment(draft, ..) => Some(draft.conversation_id.clone()),
                     _ => None,
                 };
-                if let Request::Attachment(sent, uris, revision) = &request {
-                    let mut attachments = self.attachments.borrow_mut();
-                    if attachments.get(&sent.conversation_id).is_some_and(|item| {
-                        item.files()
-                            .map(|file| file.uri.clone())
-                            .collect::<Vec<_>>()
-                            == *uris
-                    }) {
-                        attachments.remove(&sent.conversation_id);
-                    }
-                    drop(attachments);
-                    self.request(Request::SaveAttachmentQueue(
+                if let Request::Attachment(sent, _, revision) = &request {
+                    self.attachment_binding.borrow_mut().insert(
                         sent.conversation_id.clone(),
-                        Vec::new(),
+                        (operation.clone(), sent.text.clone()),
+                    );
+                    self.request(Request::AttachmentSend(
+                        sent.conversation_id.clone(),
+                        operation.clone(),
+                        sent.text.clone(),
                         *revision,
+                        false,
                     ));
-                }
-                if let Request::Send(sent) | Request::Attachment(sent, ..) = request {
+                } else if let Request::Send(sent) = request {
                     self.model.borrow_mut().accepted(&sent);
                     self.save_drafts();
                 }
@@ -1532,6 +1548,7 @@ impl Window {
                     return;
                 }
                 let dirty = self.unsaved_attachment(&id);
+                let previous = self.attachment_state.borrow().get(&id).cloned();
                 let old_revision = self
                     .attachment_state
                     .borrow()
@@ -1556,6 +1573,36 @@ impl Window {
                         self.attachments.borrow_mut().insert(id.clone(), attachment);
                     } else {
                         self.attachments.borrow_mut().remove(&id);
+                    }
+                }
+                if let Request::AttachmentSend(_, _, _, _, resolve) = &request {
+                    self.attachment_binding.borrow_mut().remove(&id);
+                    if *resolve {
+                        if let Some(caption) = previous.and_then(|state| state.pending_caption) {
+                            if saved.attachment.is_none() {
+                                self.model.borrow_mut().accepted(&MessageDraft {
+                                    conversation_id: id.clone(),
+                                    text: caption,
+                                    reply_to: None,
+                                    revision: 0,
+                                });
+                            } else if self
+                                .model
+                                .borrow()
+                                .drafts
+                                .get(&id)
+                                .is_some_and(|draft| draft.value.text.is_empty())
+                            {
+                                self.model.borrow_mut().edit(id.clone(), caption, None);
+                            }
+                            self.save_drafts();
+                        }
+                        if saved.attachment.is_some() {
+                            self.model.borrow_mut().last_sent.remove(&id);
+                            self.model.borrow_mut().notice =
+                                "Draft restored. Edit it before sending again.".into();
+                        }
+                        self.model.borrow_mut().send_notices.remove(&id);
                     }
                 }
                 if self.attachment_state.borrow().len() > 256 {
@@ -1644,13 +1691,14 @@ impl Window {
                 }
             }
         }
+        self.reconcile_attachment_sends();
     }
 
     fn failed(self: &Rc<Self>, request: Request, error: Failure) {
         let attachment_error = matches!(
             &request,
             Request::AttachmentDraft(_)
-                | Request::SaveAttachmentDraft(..)
+                | Request::AttachmentSend(..)
                 | Request::SaveAttachmentQueue(..)
         );
         match request {
@@ -1691,7 +1739,7 @@ impl Window {
                 }
             }
             Request::AttachmentDraft(id)
-            | Request::SaveAttachmentDraft(id, ..)
+            | Request::AttachmentSend(id, ..)
             | Request::SaveAttachmentQueue(id, ..) => {
                 if !self
                     .model
@@ -2898,8 +2946,13 @@ impl Window {
             _ => false,
         });
         let draft = model.selected_draft();
+        let attachment_busy = model
+            .selected
+            .as_ref()
+            .is_some_and(|id| self.attachment_busy(id));
         let editable = draft.is_some_and(|draft| draft.loaded);
         self.compose.set_sensitive(editable);
+        self.compose.set_editable(!pending && !attachment_busy);
         self.placeholder
             .set_visible(draft.is_none_or(|draft| draft.value.text.is_empty()));
         self.reply_row
@@ -2915,6 +2968,8 @@ impl Window {
             } else {
                 model.can(MessagingCapability::Text)
             }) && !pending
+                && !attachment_busy
+                && !self.paste_pending.get()
                 && model.selected.as_ref().is_some_and(|id| {
                     self.attachment_state.borrow().contains_key(id)
                         && !self.attachment_loading(id)
@@ -2934,7 +2989,13 @@ impl Window {
         self.attach.set_sensitive(
             model.can(MessagingCapability::Media)
                 && !pending
-                && !has_attachment
+                && !attachment_busy
+                && model.selected.as_ref().is_none_or(|id| {
+                    self.attachments
+                        .borrow()
+                        .get(id)
+                        .is_none_or(|head| head.files().count() < 10)
+                })
                 && model.selected.as_ref().is_some_and(|id| {
                     self.attachment_state.borrow().contains_key(id)
                         && !self.attachment_loading(id)
@@ -2979,18 +3040,20 @@ impl Window {
         let reaction_notice = reaction_error
             .as_ref()
             .filter(|(id, _)| Some(&id.conversation_id) == model.selected.as_ref());
-        let status = if let Some((_, notice)) = reaction_notice {
+        let status = if self.paste_pending.get() {
+            "Preparing pasted attachment…".to_owned()
+        } else if let Some((_, notice)) = reaction_notice {
             notice.clone()
         } else if let Some(notice) = send_notice {
             notice.clone()
+        } else if !model.notice.is_empty() {
+            model.notice.clone()
         } else if let Some(sent) = sent {
             model
                 .outgoing
                 .get(sent)
                 .map(|operation| outcome_label(&operation.outcome).to_owned())
                 .unwrap_or_else(|| "Accepted; delivery is not confirmed".into())
-        } else if !model.notice.is_empty() {
-            model.notice.clone()
         } else {
             model
                 .outcome()
@@ -3680,14 +3743,14 @@ impl Window {
     }
     fn attachment_saving(&self, id: &ConversationId) -> bool {
         self.pending.borrow().values().any(
-            |request| matches!(request, Request::SaveAttachmentDraft(target, ..) | Request::SaveAttachmentQueue(target, ..) if target == id),
+            |request| matches!(request, Request::SaveAttachmentQueue(target, ..) | Request::AttachmentSend(target, ..) if target == id),
         )
     }
     fn any_attachment_saving(&self) -> bool {
         self.pending.borrow().values().any(|request| {
             matches!(
                 request,
-                Request::SaveAttachmentDraft(..) | Request::SaveAttachmentQueue(..)
+                Request::SaveAttachmentQueue(..) | Request::AttachmentSend(..)
             )
         })
     }
@@ -3717,6 +3780,7 @@ impl Window {
             return;
         }
         self.paste_pending.set(true);
+        self.render_status();
         let epoch = self.history_epoch.get();
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
@@ -3765,6 +3829,10 @@ impl Window {
             if this.model.borrow().selected.as_ref() != Some(&id)
                 || this.history_epoch.get() != epoch
             {
+                this.render_status();
+                if this.closing.get() {
+                    this.window.close();
+                }
                 return;
             }
             match result {
@@ -3783,6 +3851,10 @@ impl Window {
                     this.model.borrow_mut().notice = error;
                     this.render_status();
                 }
+            }
+            this.render_status();
+            if this.closing.get() {
+                this.window.close();
             }
         });
     }
@@ -3812,7 +3884,7 @@ impl Window {
     fn stage_files(self: &Rc<Self>, id: ConversationId, files: &[gio::File]) -> bool {
         let model = self.model.borrow();
         if model.selected.as_ref() != Some(&id) || !model.can(MessagingCapability::Media)
-            || !self.attachment_state.borrow().contains_key(&id) || self.attachment_loading(&id) || self.attachment_saving(&id)
+            || !self.attachment_state.borrow().contains_key(&id) || self.attachment_loading(&id) || self.attachment_saving(&id) || self.attachment_busy(&id)
             || self.pending.borrow().values().any(|request| matches!(request, Request::Attachment(draft, ..) if draft.conversation_id == id)) { return false; }
         let mut current = self.attachments.borrow().get(&id).cloned();
         let count = current.as_ref().map_or(0, |head| head.files().count());
@@ -3866,6 +3938,95 @@ impl Window {
             }
         }
     }
+    fn attachment_busy(&self, id: &ConversationId) -> bool {
+        self.attachment_binding.borrow().contains_key(id)
+            || self
+                .attachment_state
+                .borrow()
+                .get(id)
+                .is_some_and(|saved| saved.pending_operation.is_some())
+    }
+    fn reconcile_attachment_sends(&self) {
+        let ready = self
+            .attachment_state
+            .borrow()
+            .values()
+            .filter_map(|saved| {
+                let operation = saved.pending_operation.as_ref()?;
+                let model = self.model.borrow();
+                let outcome = &model.outgoing.get(operation)?.outcome;
+                if matches!(
+                    outcome,
+                    OutgoingOutcome::Provider(
+                        MessageStatus::Sent | MessageStatus::Delivered | MessageStatus::Displayed
+                    )
+                ) && model
+                    .drafts
+                    .get(&saved.conversation_id)
+                    .is_some_and(|draft| draft.loaded)
+                    && !self.attachment_saving(&saved.conversation_id)
+                {
+                    Some((
+                        saved.conversation_id.clone(),
+                        operation.clone(),
+                        saved.revision,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for (id, operation, revision) in ready {
+            self.request(Request::AttachmentSend(
+                id,
+                operation,
+                String::new(),
+                revision,
+                true,
+            ));
+        }
+    }
+    fn remove_attachment(self: &Rc<Self>, id: ConversationId, index: Option<usize>, revision: u64) {
+        if self.attachment_busy(&id) || self.attachment_saving(&id)
+            || self.attachment_state.borrow().get(&id).is_none_or(|saved| saved.revision != revision)
+            || self.pending.borrow().values().any(|request| matches!(request, Request::Attachment(draft, ..) if draft.conversation_id == id)) { return; }
+        let Some(current) = self.attachments.borrow().get(&id).cloned() else {
+            return;
+        };
+        let mut files = current
+            .files()
+            .cloned()
+            .map(|mut file| {
+                file.queued.clear();
+                file
+            })
+            .collect::<Vec<_>>();
+        if let Some(index) = index {
+            if index >= files.len() {
+                return;
+            }
+            files.remove(index);
+        } else {
+            files.clear();
+        }
+        let sources = files
+            .iter()
+            .map(|file| handover_core::AttachmentDraftSource {
+                file_url: file.uri.clone(),
+                mime: file.attachment.mime.clone(),
+            })
+            .collect();
+        self.request(Request::SaveAttachmentQueue(id.clone(), sources, revision));
+        if files.is_empty() {
+            self.attachments.borrow_mut().remove(&id);
+        } else {
+            let mut head = files.remove(0);
+            head.queued = files;
+            self.attachments.borrow_mut().insert(id, head);
+        }
+        self.render_attachments();
+        self.render_status();
+    }
     fn render_attachments(self: &Rc<Self>) {
         self.clipboard_files.borrow_mut().retain(|id, files| {
             files.retain(|file| {
@@ -3906,127 +4067,170 @@ impl Window {
             reload.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
                     this.attachments.borrow_mut().remove(&id);
+                    this.attachment_binding.borrow_mut().remove(&id);
                     this.request(Request::AttachmentDraft(id.clone()));
                 }
             });
             self.attachment_row.append(&reload);
         }
         if let (Some(id), Some(pending)) = (selected, attachment) {
-            if crate::media::is_image(&pending.attachment) {
-                self.attachment_row.append(
-                    &self
-                        .media
-                        .composer_attachment(&pending.attachment, &self.window),
-                );
-            } else {
-                self.attachment_row
-                    .append(&gtk::Image::from_icon_name("text-x-generic-symbolic"));
-            }
-            if !pending.queued.is_empty() {
-                let queued = gtk::Box::new(gtk::Orientation::Vertical, 4);
-                for file in &pending.queued {
-                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                    if crate::media::is_image(&file.attachment) {
-                        row.append(
-                            &self
-                                .media
-                                .composer_attachment(&file.attachment, &self.window),
-                        );
-                    }
-                    let name = gtk::Label::new(file.attachment.name.as_deref());
-                    name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-                    name.set_max_width_chars(20);
-                    row.append(&name);
-                    queued.append(&row);
+            let state = self.attachment_state.borrow().get(&id).cloned();
+            let revision = state.as_ref().map_or(0, |saved| saved.revision);
+            let saving = self.attachment_saving(&id);
+            let sending = self.pending.borrow().values().any(|request| matches!(request, Request::Attachment(draft, ..) if draft.conversation_id == id));
+            let busy = self.attachment_busy(&id);
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let count = pending.files().count();
+            let label = gtk::Label::new(Some(&format!(
+                "{count} {}",
+                if count == 1 {
+                    "attachment"
+                } else {
+                    "attachments"
                 }
-                self.attachment_row.append(
-                    &gtk::ScrolledWindow::builder()
-                        .max_content_height(180)
-                        .propagate_natural_height(true)
-                        .child(&queued)
-                        .build(),
-                );
-            }
-            let info = gtk::Box::new(gtk::Orientation::Vertical, 4);
-            info.set_hexpand(true);
-            let name = gtk::Label::new(pending.attachment.name.as_deref());
-            name.set_xalign(0.0);
-            name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-            info.append(&name);
-            let hint = gtk::Label::new(Some(
-                "Add a caption below. The attachment is kept with your saved draft.",
-            ));
-            if !pending.queued.is_empty() {
-                hint.set_label(&format!(
-                    "{} files attached to this message.",
-                    pending.files().count()
-                ));
-            }
-            if !self.model.borrow().persistent {
-                hint.set_label("Attachment kept for this daemon session.");
-            }
-            if self.attachment_saving(&id) {
-                hint.set_label("Saving attachment…");
+            )));
+            label.set_hexpand(true);
+            label.set_xalign(0.0);
+            header.append(&label);
+            let clear = gtk::Button::with_label("Clear all");
+            clear.add_css_class("flat");
+            clear.add_css_class("attachment-clear");
+            clear.set_tooltip_text(Some("Clear all attachments"));
+            clear.set_sensitive(!saving && !sending && !busy);
+            let weak = Rc::downgrade(self);
+            let target = id.clone();
+            clear.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.remove_attachment(target.clone(), None, revision);
+                }
+            });
+            header.append(&clear);
+            self.attachment_row.append(&header);
+            let files = pending
+                .files()
+                .map(|file| file.attachment.clone())
+                .collect::<Vec<_>>();
+            let weak = Rc::downgrade(self);
+            let target = id.clone();
+            let grid = crate::attachment_tiles::selection(
+                &files,
+                &self.media,
+                &self.window,
+                !saving && !sending && !busy,
+                move |index| {
+                    if let Some(this) = weak.upgrade() {
+                        this.remove_attachment(target.clone(), Some(index), revision);
+                    }
+                },
+            );
+            self.attachment_row.append(&grid);
+            let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let local = self.attachment_binding.borrow().get(&id).cloned();
+            let operation_id = state
+                .as_ref()
+                .and_then(|state| state.pending_operation.clone())
+                .or_else(|| local.map(|(operation, _)| operation));
+            let outcome = operation_id.as_ref().and_then(|operation| {
+                self.model
+                    .borrow()
+                    .outgoing
+                    .get(operation)
+                    .map(|operation| operation.outcome.clone())
+            });
+            let unresolved = matches!(
+                outcome,
+                Some(
+                    OutgoingOutcome::Submitting
+                        | OutgoingOutcome::Provider(MessageStatus::Accepted)
+                )
+            );
+            let failed = matches!(
+                outcome,
+                Some(
+                    OutgoingOutcome::Rejected | OutgoingOutcome::Provider(MessageStatus::Failed(_))
+                )
+            );
+            let review = busy
+                && (!unresolved
+                    && !matches!(
+                        outcome,
+                        Some(OutgoingOutcome::Provider(
+                            MessageStatus::Sent
+                                | MessageStatus::Delivered
+                                | MessageStatus::Displayed
+                        ))
+                    ));
+            let text = if sending {
+                "Preparing message…"
+            } else if saving {
+                "Saving…"
+            } else if failed {
+                "Couldn't send. Your files and caption are kept."
+            } else if review && outcome.is_none() {
+                "Send status unavailable. Check the conversation before sending again."
+            } else if review {
+                "Send outcome unknown. Check the conversation before sending again."
+            } else if busy {
+                "Sending attachments…"
             } else if self.unsaved_attachment(&id) {
-                hint.set_label("Attachment has not been saved.");
+                "Changes haven't been saved."
+            } else {
+                "Add a caption or more files below."
+            };
+            if sending || saving || unresolved {
+                let spinner = gtk::Spinner::new();
+                spinner.start();
+                footer.append(&spinner);
+            }
+            let status = gtk::Label::new(Some(text));
+            status.add_css_class("attachment-state");
+            status.add_css_class("dim-label");
+            status.set_xalign(0.0);
+            status.set_wrap(true);
+            status.set_hexpand(true);
+            footer.append(&status);
+            if review
+                && !saving
+                && let Some(operation) = operation_id
+            {
+                let edit = gtk::Button::with_label("Keep editing");
+                edit.set_sensitive(self.model.borrow().connected);
+                let weak = Rc::downgrade(self);
+                let target = id.clone();
+                edit.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.request(Request::AttachmentSend(
+                            target.clone(),
+                            operation.clone(),
+                            String::new(),
+                            revision,
+                            true,
+                        ));
+                        this.render_attachments();
+                        this.render_status();
+                    }
+                });
+                footer.append(&edit);
+            }
+            if self.unsaved_attachment(&id) && !saving && !busy {
                 let retry = gtk::Button::with_label("Retry saving attachment");
                 let weak = Rc::downgrade(self);
                 let target = id.clone();
+                let sources = pending.sources();
                 retry.connect_clicked(move |_| {
                     if let Some(this) = weak.upgrade() {
-                        let revision = this
-                            .attachment_state
-                            .borrow()
-                            .get(&target)
-                            .map_or(0, |state| state.revision);
-                        let pending = this.attachments.borrow().get(&target).cloned();
-                        if let Some(pending) = pending {
-                            this.request(Request::SaveAttachmentQueue(
-                                target.clone(),
-                                pending.sources(),
-                                revision,
-                            ));
-                            this.render_attachments();
-                        }
-                    }
-                });
-                info.append(&retry);
-            }
-            hint.add_css_class("dim-label");
-            hint.set_xalign(0.0);
-            hint.set_wrap(true);
-            info.append(&hint);
-            self.attachment_row.append(&info);
-            let remove = gtk::Button::from_icon_name("window-close-symbolic");
-            remove.set_tooltip_text(Some("Remove attachment"));
-            remove.add_css_class("flat");
-            remove.set_sensitive(!self.attachment_saving(&id) && !self.pending.borrow().values().any(|request| matches!(request, Request::Attachment(draft, ..) if draft.conversation_id == id)));
-            let weak = Rc::downgrade(self);
-            remove.connect_clicked(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    let revision = this
-                        .attachment_state
-                        .borrow()
-                        .get(&id)
-                        .map_or(0, |state| state.revision);
-                    if this.unsaved_attachment(&id) && !this.attachment_saving(&id) {
-                        this.attachments.borrow_mut().remove(&id);
-                        this.attachment_errors.borrow_mut().remove(&id);
-                        this.request(Request::AttachmentDraft(id.clone()));
-                        this.render_attachments();
-                    } else {
-                        this.request(Request::SaveAttachmentDraft(
-                            id.clone(),
-                            None,
-                            None,
+                        this.request(Request::SaveAttachmentQueue(
+                            target.clone(),
+                            sources.clone(),
                             revision,
                         ));
                         this.render_attachments();
+                        this.render_status();
                     }
-                    this.render_status();
-                }
-            });
-            self.attachment_row.append(&remove);
+                });
+                footer.append(&retry);
+            }
+            self.attachment_row.append(&footer);
             self.media.schedule(&self.window);
         }
     }

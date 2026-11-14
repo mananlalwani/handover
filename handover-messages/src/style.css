@@ -102,3 +102,13 @@
 
 .inline-media { border-radius: 10px; padding: 6px; background: alpha(currentColor, 0.04); }
 .search-bar { padding: 8px 12px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+
+.handover-messages .attachment-selection { min-width: 0; border: none; background: transparent; }
+.handover-messages .attachment-grid { padding: 2px; }
+.handover-messages .attachment-grid > flowboxchild { padding: 0; min-width: 0; }
+.handover-messages .attachment-tile { min-width: 0; border-radius: 10px; background: alpha(@window_fg_color, 0.045); }
+.handover-messages .attachment-name { font-size: 0.82em; font-weight: 500; }
+.handover-messages .file-preview { min-width: 0; padding: 10px 25px 10px 10px; border-radius: 10px; }
+.handover-messages .attachment-remove { min-width: 21px; min-height: 21px; margin: 4px; padding: 0; border-radius: 50%; background: alpha(@window_bg_color, 0.88); box-shadow: 0 1px 3px alpha(#000000, 0.18); }
+.handover-messages .attachment-remove image { -gtk-icon-size: 10px; }
+.handover-messages .attachment-remove:hover { background: @window_bg_color; }

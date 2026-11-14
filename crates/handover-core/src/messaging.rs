@@ -296,6 +296,10 @@ pub struct MessageAttachmentDraft {
     pub attachment: Option<Attachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_attachments: Vec<Attachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_caption: Option<String>,
     pub revision: u64,
 }
 

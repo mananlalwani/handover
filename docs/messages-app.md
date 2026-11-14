@@ -54,8 +54,13 @@ to the same draft, up to ten files. Removing attachments keeps the caption. Send
 submits the files and caption together as one message. Each file can be up to
 50 MiB; attachments cannot be combined with quoted replies. Every file is uploaded
 before the message is submitted. A failed upload does not send a partial group.
-An immediate rejection or unknown command reply keeps the draft for review.
-Command acceptance clears the draft; later send status is shown separately.
+A compact thumbnail grid keeps the selection visible, with a remove button for
+each file. More files can be added until the ten-file limit. Clipboard image
+preparation temporarily disables Send so the caption cannot be sent on its own.
+The files and caption remain saved while the send is pending. Only a reported
+Sent, Delivered, or Read status clears the selection. A failure or unknown outcome
+keeps it locked for review; Keep editing restores the draft without resending.
+The saved send association survives normal app and daemon restarts.
 Submissions are not retried or split into separate messages automatically.
 The daemon saves a private copy of each selected file alongside the draft.
 Saved selections and captions survive app and daemon restarts, including after

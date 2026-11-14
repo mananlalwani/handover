@@ -2467,6 +2467,75 @@ mod messaging_live_tests {
             .unwrap();
         assert_eq!(operation.kind, handover_core::OutgoingOperationKind::Media);
         assert_eq!(operation.message_id.as_ref(), Some(&combined.id));
+        let sources = urls
+            .iter()
+            .map(|file_url| handover_core::AttachmentDraftSource {
+                file_url: file_url.clone(),
+                mime: None,
+            })
+            .collect();
+        let saved = client
+            .save_attachment_queue(rcs.id.clone(), sources, 0)
+            .await
+            .unwrap();
+        assert!(
+            client
+                .attachment_send(
+                    rcs.id.clone(),
+                    request_id.clone(),
+                    "caption".into(),
+                    saved.revision,
+                    false
+                )
+                .await
+                .is_err(),
+            "a text operation cannot bind a media draft"
+        );
+        let bound = client
+            .attachment_send(
+                rcs.id.clone(),
+                group_operation.clone(),
+                "one grouped caption".into(),
+                saved.revision,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            bound.pending_operation.as_deref(),
+            Some(group_operation.as_str())
+        );
+        assert!(
+            client
+                .attachment_send(
+                    rcs.id.clone(),
+                    group_operation.clone(),
+                    String::new(),
+                    bound.revision,
+                    true
+                )
+                .await
+                .is_err(),
+            "command acceptance is not evidence of a sent message"
+        );
+        for _ in 0..10 {
+            client
+                .messaging_sync(rcs.id.account_id.clone())
+                .await
+                .unwrap();
+        }
+        let cleared = client
+            .attachment_send(
+                rcs.id.clone(),
+                group_operation.clone(),
+                String::new(),
+                bound.revision,
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(cleared.attachment.is_none());
+        assert!(cleared.pending_operation.is_none());
         let count_before = operations.len();
         let missing_url = url::Url::from_file_path(attachment_dir.path().join("missing"))
             .unwrap()

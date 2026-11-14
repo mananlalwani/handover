@@ -366,6 +366,7 @@ struct FixtureState {
     sent: Arc<Mutex<Vec<String>>>,
     drafts: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
     attachment_drafts: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
+    outgoing: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 
 fn fake_server(
@@ -384,6 +385,7 @@ fn fake_server(
         sent,
         drafts,
         attachment_drafts,
+        outgoing,
     } = state;
     let staged_path = staged_path.to_string_lossy().into_owned();
     let listener = UnixListener::bind(path).unwrap();
@@ -398,6 +400,7 @@ fn fake_server(
             let sent = sent.clone();
             let drafts = drafts.clone();
             let attachment_drafts = attachment_drafts.clone();
+            let outgoing = outgoing.clone();
             let staged_path = staged_path.clone();
             let attachment_staging = attachment_staging.clone();
             let photo_base64 = photo_base64.clone();
@@ -424,6 +427,12 @@ fn fake_server(
                                 json!({"devices": [], "notifications": [], "media_sessions": [], "calls": [], "messaging_accounts": [account], "conversations": all_conversations, "typing_states": [], "read_states": [{"conversation_id":{"account_id":ACCOUNT,"local_id":"family-chat"},"last_read_message_id":null,"unread":false}]}),
                             ),
                         );
+                        for operation in outgoing.lock().unwrap().values() {
+                            send_json(
+                                &mut stream,
+                                response("outgoing_operation", json!({"operation":operation})),
+                            );
+                        }
                         *subscription_writer.lock().unwrap() = stream.try_clone().ok();
                         // Keep the subscription open until UI exits. The client uses it only for events.
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(150)));
@@ -507,6 +516,57 @@ fn fake_server(
                             .get(&key)
                             .cloned()
                             .unwrap_or_else(|| json!({"conversation_id":conversation_id,"attachment":null,"revision":0}));
+                        send_json(
+                            &mut stream,
+                            response("message_attachment_draft", json!({"draft":draft})),
+                        );
+                    }
+                    "messages.attachment_send" => {
+                        let key = request["conversation_id"].to_string();
+                        let mut saved = attachment_drafts.lock().unwrap();
+                        let mut draft = saved.get(&key).unwrap().clone();
+                        if draft["revision"] != request["revision"] {
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "error",
+                                    json!({"code":"draft_conflict","message":"Draft changed"}),
+                                ),
+                            );
+                            return;
+                        }
+                        if request["resolve"].as_bool().unwrap_or(false) {
+                            let operation = outgoing
+                                .lock()
+                                .unwrap()
+                                .get(request["operation_id"].as_str().unwrap())
+                                .unwrap()
+                                .clone();
+                            if operation["outcome"]["provider"] == "sent" {
+                                draft["attachment"] = Value::Null;
+                                draft["queued_attachments"] = json!([]);
+                            } else if operation["outcome"] == "unknown"
+                                || operation["outcome"] == "rejected"
+                                || operation["outcome"]["provider"].is_object()
+                            {
+                            } else {
+                                send_json(
+                                    &mut stream,
+                                    response(
+                                        "error",
+                                        json!({"code":"invalid_messaging_command","message":"Send unresolved"}),
+                                    ),
+                                );
+                                return;
+                            }
+                            draft["pending_operation"] = Value::Null;
+                            draft["pending_caption"] = Value::Null;
+                        } else {
+                            draft["pending_operation"] = request["operation_id"].clone();
+                            draft["pending_caption"] = request["caption"].clone();
+                        }
+                        draft["revision"] = json!(draft["revision"].as_u64().unwrap() + 1);
+                        saved.insert(key, draft.clone());
                         send_json(
                             &mut stream,
                             response("message_attachment_draft", json!({"draft":draft})),
@@ -753,10 +813,30 @@ fn fake_server(
                                 ),
                             );
                         } else {
+                            let operation_id = format!(
+                                "op-fixture-{}",
+                                requests
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .filter(|request| is_media_send(request))
+                                    .count()
+                            );
+                            let operation = json!({"id":operation_id,"conversation_id":request["conversation_id"],"kind":"media","created_at":1,"updated_at":1,"outcome":{"provider":"accepted"},"message_id":null});
+                            outgoing
+                                .lock()
+                                .unwrap()
+                                .insert(operation_id.clone(), operation.clone());
                             send_json(
                                 &mut stream,
-                                response("message_accepted", json!({"request_id":"op-fixture"})),
+                                response("message_accepted", json!({"request_id":operation_id})),
                             );
+                            if let Some(writer) = subscription_writer.lock().unwrap().as_mut() {
+                                send_json(
+                                    writer,
+                                    response("outgoing_operation", json!({"operation":operation})),
+                                );
+                            }
                         }
                     }
                     "messages.react" | "messages.unreact" => send_json(
@@ -951,6 +1031,7 @@ fn native_window_round_trips_real_frontend_actions() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let drafts = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let attachment_drafts = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let outgoing = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     gtk::init().expect("GTK display");
     adw::init().expect("libadwaita initialization");
     let (staged_path, photo_base64) = make_media_fixtures(&root);
@@ -968,6 +1049,7 @@ fn native_window_round_trips_real_frontend_actions() {
             sent: sent.clone(),
             drafts,
             attachment_drafts,
+            outgoing: outgoing.clone(),
         },
         staged_path.clone(),
         photo_base64,
@@ -2560,6 +2642,10 @@ fn native_window_round_trips_real_frontend_actions() {
     let clipboard_image = gtk::gdk::Texture::from_file(&staged_file).unwrap();
     ui.compose.clipboard().set_texture(&clipboard_image);
     ui.compose.emit_by_name::<()>("paste-clipboard", &[]);
+    assert!(
+        !ui.send.is_sensitive(),
+        "send waits for clipboard image preparation"
+    );
     pump_until(
         || ui.attachment_row.is_visible() && !ui.attachment_saving(&id()),
         "pasting a clipboard image stages a saved attachment",
@@ -2600,10 +2686,39 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "repeated image paste queues a second saved image",
     );
+    pump_until(
+        || !ui.attachment_saving(&id()),
+        "second image is saved before individual removal",
+    );
+    assert!(
+        ui.attach.is_sensitive(),
+        "file picker stays available with existing attachments"
+    );
+    let remove_one = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget.has_css_class("attachment-remove")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    remove_one.emit_clicked();
+    pump_until(
+        || {
+            !ui.attachment_saving(&id())
+                && ui
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .is_some_and(|state| {
+                        state.attachment.is_some() && state.queued_attachments.is_empty()
+                    })
+        },
+        "individual removal preserves the other attachment",
+    );
+    assert_eq!(text(&ui.compose), "caption to keep");
     let remove_paste = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Clear all attachments"))
     })
     .unwrap()
     .downcast::<gtk::Button>()
@@ -2641,7 +2756,7 @@ fn native_window_round_trips_real_frontend_actions() {
     let remove_file_paste = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Clear all attachments"))
     })
     .unwrap()
     .downcast::<gtk::Button>()
@@ -2705,7 +2820,7 @@ fn native_window_round_trips_real_frontend_actions() {
     let remove_attachment = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Clear all attachments"))
     })
     .unwrap()
     .downcast::<gtk::Button>()
@@ -2807,7 +2922,9 @@ fn native_window_round_trips_real_frontend_actions() {
         "saved attachment draft restores after switching conversations",
     );
     let saved_file = gio::File::for_uri(&ui.attachments.borrow().get(&id()).unwrap().uri);
-    let extra = gtk::gdk::FileList::from_array(&[saved_file.clone(), saved_file]);
+    let code_path = root.join("example.cc");
+    std::fs::write(&code_path, b"int main() { return 0; }\n").unwrap();
+    let extra = gtk::gdk::FileList::from_array(&[saved_file, gio::File::for_path(&code_path)]);
     ui.compose
         .clipboard()
         .set_content(Some(&gtk::gdk::ContentProvider::for_value(
@@ -2823,9 +2940,171 @@ fn native_window_round_trips_real_frontend_actions() {
                 .is_some_and(|saved| saved.queued_attachments.len() == 2)
                 && !ui.attachment_saving(&id())
         },
-        "multiple copied images join the existing saved draft",
+        "multiple copied files join the existing saved draft",
+    );
+    assert!(
+        find_widget(ui.attachment_row.upcast_ref(), &|widget| widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(
+                |label| label.has_css_class("attachment-name") && label.text() == "example.cc"
+            ))
+        .is_some(),
+        "original source filename is visible in the compact file tile"
     );
     ui.send.emit_clicked();
+    pump_until(
+        || {
+            !ui.attachment_saving(&id())
+                && ui
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .is_some_and(|state| state.pending_operation.is_some())
+        },
+        "accepted attachment send is saved without clearing the draft",
+    );
+    assert_eq!(text(&ui.compose), "caption to keep");
+    assert!(ui.attachment_row.is_visible());
+    assert!(!ui.send.is_sensitive());
+    assert!(!ui.compose.is_editable());
+    let pending_op = ui
+        .attachment_state
+        .borrow()
+        .get(&id())
+        .unwrap()
+        .pending_operation
+        .clone()
+        .unwrap();
+    let active_writer = subscription_writer
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .try_clone()
+        .unwrap();
+    let pending_window = Window::new(&app);
+    pending_window.window.present();
+    pump_until(
+        || pending_window.model.borrow().connected,
+        "replacement window connects during send",
+    );
+    pending_window.open(id(), None);
+    pump_until(
+        || {
+            pending_window
+                .attachment_state
+                .borrow()
+                .get(&id())
+                .is_some_and(|state| {
+                    state.pending_operation.as_deref() == Some(pending_op.as_str())
+                })
+                && !pending_window.send.is_sensitive()
+        },
+        "replacement window restores a pending send without resubmission",
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| is_media_send(request))
+            .count(),
+        1
+    );
+    pending_window.window.close();
+    drop(pending_window);
+    pump_until(
+        || subscription_writer.lock().unwrap().is_none(),
+        "pending replacement window closes normally",
+    );
+    *subscription_writer.lock().unwrap() = Some(active_writer);
+    ui.window.present();
+    let mut failed = outgoing.lock().unwrap().get(&pending_op).unwrap().clone();
+    failed["outcome"] = json!({"provider":{"failed":"rejected"}});
+    failed["updated_at"] = json!(2);
+    outgoing
+        .lock()
+        .unwrap()
+        .insert(pending_op.clone(), failed.clone());
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("outgoing_operation", json!({"operation":failed})),
+    );
+    pump_until(
+        || {
+            find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+                widget
+                    .downcast_ref::<gtk::Button>()
+                    .is_some_and(|button| button.label().as_deref() == Some("Keep editing"))
+            })
+            .is_some()
+        },
+        "late send failure keeps the saved selection recoverable",
+    );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        capture_fixture(
+            &ui.window,
+            path.with_file_name(format!(
+                "{}-composer-failed.png",
+                path.file_stem().unwrap().to_string_lossy()
+            )),
+        );
+    }
+    let keep_editing = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.label().as_deref() == Some("Keep editing"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    keep_editing.emit_clicked();
+    pump_until(
+        || ui.send.is_sensitive() && !ui.attachment_busy(&id()),
+        "explicit review restores editing without retrying",
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| is_media_send(request))
+            .count(),
+        1
+    );
+    assert_eq!(text(&ui.compose), "caption to keep");
+    ui.send.emit_clicked();
+    pump_until(
+        || {
+            !ui.attachment_saving(&id())
+                && ui
+                    .attachment_state
+                    .borrow()
+                    .get(&id())
+                    .is_some_and(|state| state.pending_operation.is_some())
+        },
+        "explicit second send is tracked",
+    );
+    let operation_id = ui
+        .attachment_state
+        .borrow()
+        .get(&id())
+        .unwrap()
+        .pending_operation
+        .clone()
+        .unwrap();
+    let mut confirmed = outgoing.lock().unwrap().get(&operation_id).unwrap().clone();
+    confirmed["outcome"] = json!({"provider":"sent"});
+    confirmed["updated_at"] = json!(3);
+    outgoing
+        .lock()
+        .unwrap()
+        .insert(operation_id, confirmed.clone());
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("outgoing_operation", json!({"operation":confirmed})),
+    );
     pump_until(
         || {
             !ui.attachment_row.is_visible()
@@ -2852,8 +3131,8 @@ fn native_window_round_trips_real_frontend_actions() {
         .collect::<Vec<_>>();
     assert_eq!(
         media_sends.len(),
-        1,
-        "all attachments use a single send request"
+        2,
+        "only an explicit retry adds a second grouped send request"
     );
     assert_eq!(media_sends[0]["caption"], "caption to keep");
     assert_eq!(media_sends[0]["method"], "messages.send_files");
@@ -2904,7 +3183,7 @@ fn native_window_round_trips_real_frontend_actions() {
     let clear_batch = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Remove attachment"))
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Clear all attachments"))
     })
     .unwrap()
     .downcast::<gtk::Button>()

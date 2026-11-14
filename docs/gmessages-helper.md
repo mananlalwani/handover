@@ -372,6 +372,17 @@ outgoing media operation. The helper command `send_media_batch` takes the staged
 paths. It uploads every original before constructing one content object with a
 media part per file and a single caption. Upload failure sends no phone message;
 a submitted message with an uncertain outcome is never replayed or split. Existing
-single-file methods and commands remain supported. Acceptance clears the saved
-selection without claiming delivery. A new app session restores an unsent draft
-without automatically sending it.
+single-file methods and commands remain supported. A new app session restores an
+unsent draft without automatically sending it.
+
+`messages.attachment_send` binds the saved attachment revision to a normalized
+media operation ID and its captured caption. The reply adds optional
+`pending_operation` and `pending_caption` to the attachment draft. This metadata
+contains no backend identifiers. While bound, ordinary attachment saves fail
+with a revision conflict. With `resolve: true`, the daemon checks the operation's
+scope and outcome. Sent, Delivered, or Displayed clears the selection; Failed,
+Rejected, Unknown, or an expired operation record clears only the binding and
+keeps the files. Submitting and Accepted cannot resolve a binding. The client
+resolves successful sends automatically, and failed or unknown sends only after
+an explicit Keep editing action. Text edits made elsewhere remain protected by
+the existing draft comparison and revision handling.
