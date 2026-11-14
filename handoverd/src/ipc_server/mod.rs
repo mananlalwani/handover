@@ -875,6 +875,22 @@ where
             )
             .await;
         }
+        Method::MessagesSendFiles {
+            conversation_id,
+            file_urls,
+            caption,
+        } => {
+            return handle_send_files(
+                conversation_id,
+                file_urls,
+                caption,
+                writer,
+                state,
+                messaging,
+                events,
+            )
+            .await;
+        }
         Method::MessagesSendFile {
             conversation_id,
             file_url,

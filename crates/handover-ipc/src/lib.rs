@@ -297,6 +297,13 @@ pub enum Method {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caption: Option<String>,
     },
+    #[serde(rename = "messages.send_files")]
+    MessagesSendFiles {
+        conversation_id: ConversationId,
+        file_urls: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+    },
     #[serde(rename = "messages.react")]
     MessagesReact {
         message_id: MessageId,
@@ -2048,6 +2055,21 @@ impl Client {
         self.expect_message_accepted().await
     }
 
+    pub async fn send_message_files(
+        &mut self,
+        conversation_id: ConversationId,
+        file_urls: Vec<String>,
+        caption: Option<String>,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesSendFiles {
+            conversation_id,
+            file_urls,
+            caption,
+        })
+        .await?;
+        self.expect_message_accepted().await
+    }
+
     pub async fn react_to_message(
         &mut self,
         message_id: MessageId,
@@ -2825,6 +2847,32 @@ mod tests {
         let json = serde_json::to_string(&outgoing).expect("serializes");
         assert_eq!(json, r#"{"protocol":1,"method":"messages.outgoing"}"#);
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), outgoing);
+    }
+
+    #[test]
+    fn messaging_send_files_wire_shape_and_single_file_compatibility() {
+        let conversation = ConversationId::new(MessagingAccountId::new("loopback"), "thread-1");
+        let files = Request::new(Method::MessagesSendFiles {
+            conversation_id: conversation.clone(),
+            file_urls: vec!["file:///first".into(), "file:///second".into()],
+            caption: Some("caption".into()),
+        });
+        let encoded = serde_json::to_string(&files).expect("serializes");
+        assert_eq!(
+            encoded,
+            r#"{"protocol":1,"method":"messages.send_files","conversation_id":{"account_id":"loopback","local_id":"thread-1"},"file_urls":["file:///first","file:///second"],"caption":"caption"}"#
+        );
+        assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), files);
+
+        let single = Request::new(Method::MessagesSendFile {
+            conversation_id: conversation,
+            file_url: "file:///first".into(),
+            caption: None,
+        });
+        assert_eq!(
+            serde_json::to_string(&single).expect("serializes"),
+            r#"{"protocol":1,"method":"messages.send_file","conversation_id":{"account_id":"loopback","local_id":"thread-1"},"file_url":"file:///first"}"#
+        );
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub enum LiveCommand {
     SendMedia {
         request_id: String,
         conversation: String,
-        path: Zeroizing<String>,
+        paths: Vec<Zeroizing<String>>,
         caption: Option<Zeroizing<String>>,
         accepted: oneshot::Receiver<()>,
     },
@@ -559,7 +559,7 @@ impl RecoveredSession {
                         LiveCommand::SendMedia {
                             request_id,
                             conversation,
-                            path,
+                            paths,
                             caption,
                             accepted,
                         } => (
@@ -567,7 +567,7 @@ impl RecoveredSession {
                             conversation,
                             None,
                             None,
-                            Some((path, caption)),
+                            Some((paths, caption)),
                             accepted,
                         ),
                         _ => unreachable!(),
@@ -596,7 +596,7 @@ impl RecoveredSession {
                     let payload = if let Some(text) = text {
                         crate::send::request(&conversation, &text, &temporary, reply_to.as_deref())?
                     } else {
-                        let (path, caption) = media.ok_or(ProbeError::NativeError)?;
+                        let (paths, caption) = media.ok_or(ProbeError::NativeError)?;
                         let caption = caption.as_deref().map(String::as_str);
                         if crate::send::validate_media(&conversation, caption).is_err() {
                             publish(
@@ -613,36 +613,49 @@ impl RecoveredSession {
                         }
                         // Uploading alone cannot send a phone message. Failures
                         // here have a known outcome and are never retried.
-                        let upload = tokio::time::timeout(
-                            Duration::from_secs(60),
-                            crate::media::upload_staged(&self.pairing.registration, path),
-                        );
-                        tokio::pin!(upload);
-                        let uploaded = loop {
-                            tokio::select! {
-                                result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
-                                _ = &mut expiry => return Err(ProbeError::SessionExpired),
-                                result = &mut upload => break result.unwrap_or(Err(crate::media::MediaError::Network)),
-                                push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                        let mut uploads = Vec::new();
+                        let mut failure = None;
+                        for path in paths {
+                            let upload = tokio::time::timeout(
+                                Duration::from_secs(60),
+                                crate::media::upload_staged(&self.pairing.registration, path),
+                            );
+                            tokio::pin!(upload);
+                            let uploaded = loop {
+                                tokio::select! {
+                                    result = &mut receive => { result?; return Err(ProbeError::ReceiveFailed); }
+                                    _ = &mut expiry => return Err(ProbeError::SessionExpired),
+                                    result = &mut upload => break result.unwrap_or(Err(crate::media::MediaError::Network)),
+                                    push = push_rx.recv() => self.apply_live_push(&short, endpoint, &events, &mut state, push.ok_or(ProbeError::ReceiveFailed)?).await?,
+                                }
+                            };
+                            match uploaded {
+                                Ok(uploaded) => uploads.push(uploaded),
+                                Err(error) => {
+                                    failure = Some(error);
+                                    break;
+                                }
                             }
-                        };
-                        let uploaded = match uploaded {
-                            Ok(uploaded) => uploaded,
-                            Err(error) => {
-                                publish(
-                                    &events,
-                                    LiveEvent::SendResult {
-                                        request_id,
-                                        conversation,
-                                        message: None,
-                                        status: media_failure(error),
-                                    },
-                                )
-                                .await?;
-                                continue;
-                            }
-                        };
-                        crate::send::media_request(&conversation, &uploaded, caption, &temporary)?
+                        }
+                        if let Some(error) = failure {
+                            publish(
+                                &events,
+                                LiveEvent::SendResult {
+                                    request_id,
+                                    conversation,
+                                    message: None,
+                                    status: media_failure(error),
+                                },
+                            )
+                            .await?;
+                            continue;
+                        }
+                        crate::send::media_batch_request(
+                            &conversation,
+                            &uploads,
+                            caption,
+                            &temporary,
+                        )?
                     };
                     let send = tokio::time::timeout(
                         Duration::from_secs(60),

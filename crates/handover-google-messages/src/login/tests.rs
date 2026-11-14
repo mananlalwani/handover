@@ -1794,7 +1794,9 @@ async fn live_session_shares_receive_with_history_and_requires_push_publication_
                 .send(LiveCommand::SendMedia {
                     request_id: "media-invalid".into(),
                     conversation: "thread-0".into(),
-                    path: zeroize::Zeroizing::new("/nonexistent-handover-test/fixture.png".into()),
+                    paths: vec![zeroize::Zeroizing::new(
+                        "/nonexistent-handover-test/fixture.png".into(),
+                    )],
                     caption: None,
                     accepted: media_gate,
                 })

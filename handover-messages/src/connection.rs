@@ -31,7 +31,7 @@ pub enum Request {
     React(MessageId, String, bool),
     Previews(Vec<ConversationId>),
     Send(MessageDraft),
-    Attachment(MessageDraft, String, u64),
+    Attachment(MessageDraft, Vec<String>, u64),
     Read(ConversationId, Option<MessageId>),
 }
 
@@ -252,13 +252,17 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                         .await?
                 }
             }),
-            Request::Attachment(draft, url, _) => {
+            Request::Attachment(draft, urls, _) => {
                 let caption = (!draft.text.trim().is_empty()).then_some(draft.text);
-                Reply::Sent(
+                Reply::Sent(if urls.len() == 1 {
                     client
-                        .send_message_file(draft.conversation_id, url, caption)
-                        .await?,
-                )
+                        .send_message_file(draft.conversation_id, urls[0].clone(), caption)
+                        .await?
+                } else {
+                    client
+                        .send_message_files(draft.conversation_id, urls, caption)
+                        .await?
+                })
             }
             Request::Read(id, message) => {
                 client.mark_conversation_read(id, message).await?;

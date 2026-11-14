@@ -32,6 +32,7 @@ pub const MAX_REACTIONS_PER_MESSAGE: usize = 32;
 pub const MAX_REACTORS_PER_REACTION: usize = 256;
 pub const MAX_EMOJI_CHARS: usize = 16;
 pub const MAX_PAGE_LIMIT: u32 = 100;
+const MAX_FILES_PER_SEND: usize = 10;
 
 /// A stable identifier for one messaging endpoint (for example one linked
 /// Google Messages session). Namespaced by the owning backend, e.g.
@@ -490,6 +491,12 @@ pub enum MessagingCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caption: Option<String>,
     },
+    SendAttachments {
+        conversation_id: ConversationId,
+        file_urls: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+    },
     React {
         message_id: MessageId,
         emoji: String,
@@ -537,6 +544,9 @@ impl MessagingCommand {
                 conversation_id, ..
             }
             | Self::SendMedia {
+                conversation_id, ..
+            }
+            | Self::SendAttachments {
                 conversation_id, ..
             }
             | Self::MarkRead {
@@ -730,6 +740,24 @@ pub fn validate_command(
             let conversation = conversation.ok_or(ValidationError::UnknownConversation)?;
             require_conversation_match(&conversation.id, conversation_id)?;
             require_capability(conversation, MessagingCapability::Media)?;
+            if let Some(caption) = caption
+                && caption.chars().count() > MAX_TEXT_CHARS
+            {
+                return Err(ValidationError::TextTooLong(caption.chars().count()));
+            }
+            Ok(())
+        }
+        MessagingCommand::SendAttachments {
+            conversation_id,
+            file_urls,
+            caption,
+        } => {
+            let conversation = conversation.ok_or(ValidationError::UnknownConversation)?;
+            require_conversation_match(&conversation.id, conversation_id)?;
+            require_capability(conversation, MessagingCapability::Media)?;
+            if file_urls.is_empty() || file_urls.len() > MAX_FILES_PER_SEND {
+                return Err(ValidationError::InvalidId("attachment count".into()));
+            }
             if let Some(caption) = caption
                 && caption.chars().count() > MAX_TEXT_CHARS
             {
@@ -945,6 +973,54 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn media_conversation() -> Conversation {
+        Conversation {
+            id: ConversationId::new(MessagingAccountId::new("loopback"), "thread-1"),
+            kind: ConversationKind::Direct,
+            transport: TransportKind::Unknown,
+            title: None,
+            participants: vec![],
+            latest_message_id: None,
+            last_activity_at: None,
+            unread_count: None,
+            cursor: None,
+            capabilities: [MessagingCapability::Media].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn send_attachments_validates_file_count_and_preserves_values() {
+        let conversation = media_conversation();
+        let command = |file_urls| MessagingCommand::SendAttachments {
+            conversation_id: conversation.id.clone(),
+            file_urls,
+            caption: Some("caption".into()),
+        };
+
+        assert!(matches!(
+            validate_command(&command(vec![]), Some(&conversation), None),
+            Err(ValidationError::InvalidId(_))
+        ));
+        assert!(matches!(
+            validate_command(
+                &command((0..11).map(|i| format!("file:///{i}")).collect()),
+                Some(&conversation),
+                None
+            ),
+            Err(ValidationError::InvalidId(_))
+        ));
+
+        let valid = command(vec!["file:///first".into(), "file:///second".into()]);
+        validate_command(&valid, Some(&conversation), None).expect("two files are valid");
+        let encoded = serde_json::to_string(&valid).expect("serializes");
+        assert!(encoded.contains(r#""file_urls":["file:///first","file:///second"]"#));
+        assert!(encoded.contains(r#""caption":"caption""#));
+        assert_eq!(
+            serde_json::from_str::<MessagingCommand>(&encoded).unwrap(),
+            valid
+        );
+    }
 
     #[test]
     fn account_ids_match_the_adapter_gate() {

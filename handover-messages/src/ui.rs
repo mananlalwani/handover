@@ -67,7 +67,6 @@ pub struct Window {
     reply_row: gtk::Box,
     attachments: RefCell<BTreeMap<ConversationId, crate::attachments::PendingAttachment>>,
     clipboard_files: RefCell<BTreeMap<ConversationId, Vec<tempfile::NamedTempFile>>>,
-    attachment_sends: RefCell<BTreeMap<ConversationId, MessageDraft>>,
     paste_pending: Cell<bool>,
     attachment_row: gtk::Box,
     attachment_state: RefCell<BTreeMap<ConversationId, MessageAttachmentDraft>>,
@@ -478,7 +477,6 @@ impl Window {
             reply_row,
             attachments: RefCell::new(BTreeMap::new()),
             clipboard_files: RefCell::new(BTreeMap::new()),
-            attachment_sends: RefCell::new(BTreeMap::new()),
             paste_pending: Cell::new(false),
             attachment_row,
             attachment_state: RefCell::new(BTreeMap::new()),
@@ -1081,7 +1079,6 @@ impl Window {
                 }
             }
             Event::Disconnected => {
-                self.attachment_sends.borrow_mut().clear();
                 self.recent_threads.borrow_mut().clear();
                 let mut model = self.model.borrow_mut();
                 model.connected = false;
@@ -1493,35 +1490,20 @@ impl Window {
                     Request::Attachment(draft, ..) => Some(draft.conversation_id.clone()),
                     _ => None,
                 };
-                if let Request::Attachment(sent, uri, revision) = &request {
+                if let Request::Attachment(sent, uris, revision) = &request {
                     let mut attachments = self.attachments.borrow_mut();
-                    if attachments
-                        .get(&sent.conversation_id)
-                        .is_some_and(|item| &item.uri == uri)
-                    {
+                    if attachments.get(&sent.conversation_id).is_some_and(|item| {
+                        item.files()
+                            .map(|file| file.uri.clone())
+                            .collect::<Vec<_>>()
+                            == *uris
+                    }) {
                         attachments.remove(&sent.conversation_id);
                     }
                     drop(attachments);
-                    let remaining = self
-                        .attachment_state
-                        .borrow()
-                        .get(&sent.conversation_id)
-                        .map(|saved| saved.queued_attachments.clone())
-                        .unwrap_or_default();
-                    let files = remaining
-                        .iter()
-                        .filter_map(|part| {
-                            part.staged_path.as_ref().map(|path| {
-                                handover_core::messaging::AttachmentDraftSource {
-                                    file_url: gio::File::for_path(path).uri().to_string(),
-                                    mime: part.mime.clone(),
-                                }
-                            })
-                        })
-                        .collect();
                     self.request(Request::SaveAttachmentQueue(
                         sent.conversation_id.clone(),
-                        files,
+                        Vec::new(),
                         *revision,
                     ));
                 }
@@ -1574,14 +1556,6 @@ impl Window {
                         self.attachments.borrow_mut().insert(id.clone(), attachment);
                     } else {
                         self.attachments.borrow_mut().remove(&id);
-                    }
-                }
-                let batch_draft = self.attachment_sends.borrow().get(&id).cloned();
-                if !loading && let Some(draft) = batch_draft {
-                    if let Some(head) = self.attachments.borrow().get(&id).cloned() {
-                        self.request(Request::Attachment(draft, head.uri, saved.revision));
-                    } else {
-                        self.attachment_sends.borrow_mut().remove(&id);
                     }
                 }
                 if self.attachment_state.borrow().len() > 256 {
@@ -1719,7 +1693,6 @@ impl Window {
             Request::AttachmentDraft(id)
             | Request::SaveAttachmentDraft(id, ..)
             | Request::SaveAttachmentQueue(id, ..) => {
-                self.attachment_sends.borrow_mut().remove(&id);
                 if !self
                     .model
                     .borrow()
@@ -1763,7 +1736,6 @@ impl Window {
                 },
                 ..,
             ) => {
-                self.attachment_sends.borrow_mut().remove(&conversation_id);
                 let message = if error.uncertain {
                     "Send outcome unknown. Check the conversation before sending again.".into()
                 } else {
@@ -2334,20 +2306,16 @@ impl Window {
                 .get(&draft.conversation_id)
                 .cloned();
             if let Some(attachment) = attachment {
-                if !attachment.queued.is_empty() {
-                    let mut remaining = draft.clone();
-                    remaining.text.clear();
-                    remaining.reply_to = None;
-                    self.attachment_sends
-                        .borrow_mut()
-                        .insert(draft.conversation_id.clone(), remaining);
-                }
                 let revision = self
                     .attachment_state
                     .borrow()
                     .get(&draft.conversation_id)
                     .map_or(0, |state| state.revision);
-                self.request(Request::Attachment(draft, attachment.uri, revision));
+                self.request(Request::Attachment(
+                    draft,
+                    attachment.files().map(|file| file.uri.clone()).collect(),
+                    revision,
+                ));
             } else {
                 self.request(Request::Send(draft));
             }
@@ -3989,7 +3957,10 @@ impl Window {
                 "Add a caption below. The attachment is kept with your saved draft.",
             ));
             if !pending.queued.is_empty() {
-                hint.set_label(&format!("{} files saved in this draft. Send submits one message per file, with the caption on the first.", pending.files().count()));
+                hint.set_label(&format!(
+                    "{} files attached to this message.",
+                    pending.files().count()
+                ));
             }
             if !self.model.borrow().persistent {
                 hint.set_label("Attachment kept for this daemon session.");

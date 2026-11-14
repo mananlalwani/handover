@@ -342,6 +342,13 @@ fn send_json(stream: &mut UnixStream, value: Value) {
     let _ = stream.flush();
 }
 
+fn is_media_send(request: &serde_json::Value) -> bool {
+    matches!(
+        request["method"].as_str(),
+        Some("messages.send_file" | "messages.send_files")
+    )
+}
+
 fn response(kind: &str, fields: Value) -> Value {
     let mut value = json!({"protocol": 1, "type": kind});
     if let (Some(dst), Some(src)) = (value.as_object_mut(), fields.as_object()) {
@@ -736,7 +743,7 @@ fn fake_server(
                             }),
                         ),
                     ),
-                    "messages.send_file" => {
+                    "messages.send_file" | "messages.send_files" => {
                         if fail_send.swap(false, Ordering::SeqCst) {
                             send_json(
                                 &mut stream,
@@ -2577,11 +2584,7 @@ fn native_window_round_trips_real_frontend_actions() {
             .starts_with(b"\x89PNG\r\n\x1a\n")
     );
     assert!(
-        !requests
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|r| r["method"] == "messages.send_file"),
+        !requests.lock().unwrap().iter().any(is_media_send),
         "pasting an image never sends automatically"
     );
     ui.compose.clipboard().set_texture(&clipboard_image);
@@ -2658,11 +2661,7 @@ fn native_window_round_trips_real_frontend_actions() {
         "staged attachment preview appears",
     );
     assert!(
-        !requests
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|request| request["method"] == "messages.send_file"),
+        !requests.lock().unwrap().iter().any(is_media_send),
         "staging an attachment does not send it"
     );
     pump_until(
@@ -2832,7 +2831,7 @@ fn native_window_round_trips_real_frontend_actions() {
             !ui.attachment_row.is_visible()
                 && text(&ui.compose).is_empty()
                 && requests.lock().unwrap().iter().any(|request| {
-                    request["method"] == "messages.send_file"
+                    is_media_send(request)
                         && request["conversation_id"]["local_id"] == "thread-1"
                         && request["caption"] == "caption to keep"
                 })
@@ -2848,22 +2847,18 @@ fn native_window_round_trips_real_frontend_actions() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|request| request["method"] == "messages.send_file")
+        .filter(|request| is_media_send(request))
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(
         media_sends.len(),
-        3,
-        "every queued file is sent exactly once"
+        1,
+        "all attachments use a single send request"
     );
     assert_eq!(media_sends[0]["caption"], "caption to keep");
-    assert!(
-        media_sends[1..]
-            .iter()
-            .all(|request| request["caption"].is_null()),
-        "caption is not duplicated on later files"
-    );
-    let retry_file = gio::File::for_uri(media_sends[0]["file_url"].as_str().unwrap());
+    assert_eq!(media_sends[0]["method"], "messages.send_files");
+    assert_eq!(media_sends[0]["file_urls"].as_array().unwrap().len(), 3);
+    let retry_file = gio::File::for_uri(media_sends[0]["file_urls"][0].as_str().unwrap());
     assert!(ui.stage_files(id(), &[retry_file.clone(), retry_file]));
     pump_until(
         || !ui.attachment_saving(&id()),
@@ -2873,19 +2868,17 @@ fn native_window_round_trips_real_frontend_actions() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|r| r["method"] == "messages.send_file")
+        .filter(|r| is_media_send(r))
         .count();
     fail_send.store(true, Ordering::SeqCst);
     ui.send.emit_clicked();
     pump_until(
         || {
-            ui.attachment_sends.borrow().is_empty()
-                && ui
-                    .model
-                    .borrow()
-                    .send_notices
-                    .get(&id())
-                    .is_some_and(|notice| notice.contains("unknown"))
+            ui.model
+                .borrow()
+                .send_notices
+                .get(&id())
+                .is_some_and(|notice| notice.contains("unknown"))
         },
         "uncertain attachment send stops the batch",
     );
@@ -2894,7 +2887,7 @@ fn native_window_round_trips_real_frontend_actions() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r["method"] == "messages.send_file")
+            .filter(|r| is_media_send(r))
             .count(),
         send_count + 1
     );

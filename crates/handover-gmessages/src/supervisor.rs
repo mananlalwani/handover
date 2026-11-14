@@ -302,7 +302,8 @@ pub fn redact_command(command: &HelperCommand) -> String {
         HelperCommand::SendText { request_id, .. } => {
             format!("send_text request_id={request_id}")
         }
-        HelperCommand::SendMedia { request_id, .. } => {
+        HelperCommand::SendMedia { request_id, .. }
+        | HelperCommand::SendMediaBatch { request_id, .. } => {
             format!("send_media request_id={request_id}")
         }
         HelperCommand::React { request_id, .. } => format!("react request_id={request_id}"),
@@ -401,6 +402,13 @@ mod tests {
                 account: "account".into(),
                 conversation: "conversation".into(),
                 path: "/private/path".into(),
+                caption: Some("private-caption".into()),
+            },
+            HelperCommand::SendMediaBatch {
+                request_id: "request".into(),
+                account: "account".into(),
+                conversation: "conversation".into(),
+                paths: vec!["/private/path".into(), "/private/path-two".into()],
                 caption: Some("private-caption".into()),
             },
             HelperCommand::React {

@@ -51,10 +51,12 @@ The composer supports text, replies, and attachments where the conversation
 advertises those capabilities. Choose files with the attachment button, drag files
 into the conversation, or paste copied images and files. Repeated image paste adds
 to the same draft, up to ten files. Removing attachments keeps the caption. Send
-submits one message per file, with the caption on the first. Each file can be up
-to 50 MiB; attachments cannot be combined with quoted replies. A rejected or
-uncertain submission stops the batch, leaving remaining files in the draft.
-Files are not retried automatically.
+submits the files and caption together as one message. Each file can be up to
+50 MiB; attachments cannot be combined with quoted replies. Every file is uploaded
+before the message is submitted. A failed upload does not send a partial group.
+An immediate rejection or unknown command reply keeps the draft for review.
+Command acceptance clears the draft; later send status is shown separately.
+Submissions are not retried or split into separate messages automatically.
 The daemon saves a private copy of each selected file alongside the draft.
 Saved selections and captions survive app and daemon restarts, including after
 the original file moves or is deleted. Send waits for the attachment-save reply.

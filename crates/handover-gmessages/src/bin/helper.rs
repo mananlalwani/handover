@@ -130,6 +130,22 @@ trait Relay {
         conversation: &str,
         path: &str,
         caption: Option<&str>,
+    ) -> Vec<HelperEvent> {
+        self.send_media_batch(
+            request_id,
+            account,
+            conversation,
+            &[path.to_owned()],
+            caption,
+        )
+    }
+    fn send_media_batch(
+        &mut self,
+        request_id: &str,
+        account: &str,
+        conversation: &str,
+        paths: &[String],
+        caption: Option<&str>,
     ) -> Vec<HelperEvent>;
     fn react(
         &mut self,
@@ -706,29 +722,43 @@ impl Relay for LoopbackRelay {
         ]
     }
 
-    fn send_media(
+    fn send_media_batch(
         &mut self,
         request_id: &str,
         account: &str,
         conversation: &str,
-        path: &str,
+        paths: &[String],
         caption: Option<&str>,
     ) -> Vec<HelperEvent> {
-        let metadata = std::fs::metadata(path);
-        let size = metadata.map(|metadata| metadata.len()).unwrap_or(0);
-        if size == 0 {
-            return vec![Self::result(request_id, false, Some("unreadable file"))];
+        if paths.is_empty() || paths.len() > 10 {
+            return vec![Self::result(request_id, false, Some("invalid file count"))];
         }
-        let staged_path = self._media_staging.as_ref().and_then(|directory| {
-            stage_upload(PathBuf::from(path).as_path(), directory.path()).ok()
-        });
-        let Some(staged_path) = staged_path else {
-            return vec![Self::result(
-                request_id,
-                false,
-                Some("unable to stage file"),
-            )];
-        };
+        let mut attachments = Vec::new();
+        for path in paths {
+            let size = std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            let staged = self._media_staging.as_ref().and_then(|directory| {
+                stage_upload(PathBuf::from(path).as_path(), directory.path()).ok()
+            });
+            let Some(staged) = staged.filter(|_| size > 0) else {
+                return vec![Self::result(
+                    request_id,
+                    false,
+                    Some("unable to stage file"),
+                )];
+            };
+            attachments.push(WireAttachment {
+                local_id: format!("attachment-{}", attachments.len()),
+                mime: Some("application/octet-stream".into()),
+                name: PathBuf::from(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned),
+                size_bytes: Some(size),
+                staged_path: Some(staged.to_string_lossy().into_owned()),
+            });
+        }
         let Some(stored) = self.account_mut(account) else {
             return vec![Self::result(request_id, false, Some("unknown account"))];
         };
@@ -749,24 +779,16 @@ impl Relay for LoopbackRelay {
         }
         thread.counter += 1;
         let local_id = format!("out-{}", thread.counter);
-        let name = PathBuf::from(path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("attachment")
-            .to_string();
+        for (index, attachment) in attachments.iter_mut().enumerate() {
+            attachment.local_id = format!("{local_id}-a{}", index + 1);
+        }
         thread.messages.push_back(WireMessage {
             local_id: local_id.clone(),
             sender: "self".into(),
             transport: Some(WireTransport::Sms),
             sent_at: Some(1_758_000_100_000_000 + thread.counter as i64),
             text: caption.map(str::to_string),
-            attachments: vec![WireAttachment {
-                local_id: format!("{local_id}-a1"),
-                mime: Some("application/octet-stream".into()),
-                name: Some(name),
-                size_bytes: Some(size),
-                staged_path: Some(staged_path.to_string_lossy().into_owned()),
-            }],
+            attachments,
             reply_preview: None,
             reply_to: None,
             reactions: vec![],
@@ -1246,6 +1268,19 @@ impl LoopbackHelper {
                 &account,
                 &conversation,
                 &path,
+                caption.as_deref(),
+            ),
+            HelperCommand::SendMediaBatch {
+                request_id,
+                account,
+                conversation,
+                paths,
+                caption,
+            } => self.relay.send_media_batch(
+                &request_id,
+                &account,
+                &conversation,
+                &paths,
                 caption.as_deref(),
             ),
             HelperCommand::React {

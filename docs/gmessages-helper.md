@@ -34,7 +34,7 @@ supervision only. Google protocol implementations belong in the native client.
 
 Daemon → helper: `hello`, `login` (base64 bundle on the pipe, never argv),
 `logout`, `list_conversations`, `fetch_history`, `fetch_message`, `send_text`, `send_media`,
-`react`, `mark_read`, `typing` (start only; there is no stop),
+`send_media_batch`, `react`, `mark_read`, `typing` (start only; there is no stop),
 `delete_message`, `open_conversation`, `sync`, `shutdown`.
 
 Helper → daemon: `hello`, `account`, `account_removed`, `pairing` (opaque
@@ -367,6 +367,11 @@ first file. Its reply retains `attachment` for the first file and adds
 `queued_attachments` for the remainder. The daemon saves the complete queue
 atomically under the existing revision and private storage limits, with at most
 ten files per conversation. Older single-file callers omit these fields.
-Each send still uses the existing single-file command. The client advances the
-saved queue after acceptance and stops on failed or unknown outcomes. A new app
-session restores the draft without automatically sending it.
+`messages.send_files` submits the selected URLs and optional caption as one
+outgoing media operation. The helper command `send_media_batch` takes the staged
+paths. It uploads every original before constructing one content object with a
+media part per file and a single caption. Upload failure sends no phone message;
+a submitted message with an uncertain outcome is never replayed or split. Existing
+single-file methods and commands remain supported. Acceptance clears the saved
+selection without claiming delivery. A new app session restores an unsent draft
+without automatically sending it.

@@ -104,6 +104,14 @@ pub enum HelperCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caption: Option<String>,
     },
+    SendMediaBatch {
+        request_id: String,
+        account: String,
+        conversation: String,
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+    },
     React {
         request_id: String,
         account: String,

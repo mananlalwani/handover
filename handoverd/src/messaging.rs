@@ -325,6 +325,9 @@ impl MessagingStore {
             | MessagingCommand::SendMedia {
                 conversation_id, ..
             }
+            | MessagingCommand::SendAttachments {
+                conversation_id, ..
+            }
             | MessagingCommand::MarkRead {
                 conversation_id, ..
             }

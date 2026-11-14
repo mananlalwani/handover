@@ -57,26 +57,46 @@ pub(crate) fn validate_media(conversation: &str, caption: Option<&str>) -> Resul
     }
     Ok(())
 }
+#[cfg(test)]
 pub(crate) fn media_request(
     conversation: &str,
     uploaded: &crate::media::Uploaded,
     caption: Option<&str>,
     temporary: &str,
 ) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
+    media_batch_request(
+        conversation,
+        std::slice::from_ref(uploaded),
+        caption,
+        temporary,
+    )
+}
+pub(crate) fn media_batch_request(
+    conversation: &str,
+    uploaded: &[crate::media::Uploaded],
+    caption: Option<&str>,
+    temporary: &str,
+) -> Result<Zeroizing<Vec<u8>>, ProbeError> {
     validate_media(conversation, caption)?;
+    if uploaded.is_empty() || uploaded.len() > 10 {
+        return Err(invalid());
+    }
     identifier(temporary)?;
     let caption = caption.filter(|value| !value.is_empty());
-    let mut parts = vec![Part {
-        text: None,
-        media: Some(Media {
-            kind: uploaded.kind,
-            blob: uploaded.blob.to_string(),
-            name: uploaded.name.to_string(),
-            size: uploaded.size as i64,
-            key: uploaded.key.to_vec(),
-            mime: uploaded.mime.into(),
-        }),
-    }];
+    let mut parts = uploaded
+        .iter()
+        .map(|uploaded| Part {
+            text: None,
+            media: Some(Media {
+                kind: uploaded.kind,
+                blob: uploaded.blob.to_string(),
+                name: uploaded.name.to_string(),
+                size: uploaded.size as i64,
+                key: uploaded.key.to_vec(),
+                mime: uploaded.mime.into(),
+            }),
+        })
+        .collect::<Vec<_>>();
     if let Some(value) = caption {
         parts.push(Part {
             text: Some(Text {
@@ -368,6 +388,36 @@ mod tests {
         );
         assert!(!capability(&[]).unwrap());
         assert!(capability(&[8, 1]).unwrap());
+    }
+
+    #[test]
+    fn multi_media_is_one_content_with_distinct_originals_and_one_caption() {
+        let uploads = (0..3)
+            .map(|i| crate::media::Uploaded {
+                blob: Zeroizing::new(format!("blob-{i}")),
+                key: Zeroizing::new([i; 32]),
+                name: Zeroizing::new(format!("original-{i}.png")),
+                mime: "image/png",
+                kind: 3,
+                size: 100 + usize::from(i),
+            })
+            .collect::<Vec<_>>();
+        let encoded = media_batch_request("thread", &uploads, Some("caption"), "one-temp").unwrap();
+        let request = Request::decode(encoded.as_slice()).unwrap();
+        let content = request.message.as_ref().unwrap();
+        assert_eq!(request.temporary, "one-temp");
+        assert_eq!(content.id, "one-temp");
+        assert_eq!(content.parts.len(), 4);
+        for (i, part) in content.parts[..3].iter().enumerate() {
+            let media = part.media.as_ref().unwrap();
+            assert_eq!(media.name, format!("original-{i}.png"));
+            assert_eq!(media.blob, format!("blob-{i}"));
+            assert_eq!(media.key, vec![i as u8; 32]);
+            assert_eq!(media.size, (100 + i) as i64);
+            assert!(part.text.is_none());
+        }
+        assert_eq!(content.parts[3].text.as_ref().unwrap().value, "caption");
+        assert!(media_batch_request("thread", &[], None, "one-temp").is_err());
     }
 
     #[test]

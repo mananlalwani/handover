@@ -181,6 +181,89 @@ where
     .await
 }
 
+pub(crate) async fn handle_send_files<W>(
+    conversation_id: ConversationId,
+    file_urls: Vec<String>,
+    caption: Option<String>,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+    events: &broadcast::Sender<StateEvent>,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    if file_urls.is_empty() || file_urls.len() > 10 {
+        write_json_line(
+            writer,
+            &ServerMessage::protocol_error(
+                ErrorCode::InvalidMessagingCommand,
+                "attach between one and ten files",
+            ),
+        )
+        .await?;
+        return Ok(true);
+    }
+    let mut paths = Vec::new();
+    for file_url in &file_urls {
+        let path = match validate_file_url(file_url)
+            .await
+            .ok()
+            .and_then(|url| Url::parse(&url).ok())
+            .and_then(|url| url.to_file_path().ok())
+        {
+            Some(path) => path,
+            None => {
+                write_json_line(
+                    writer,
+                    &ServerMessage::protocol_error(
+                        ErrorCode::InvalidMessagingCommand,
+                        "invalid attachment",
+                    ),
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
+        let staged = path
+            .to_str()
+            .and_then(|path| handover_gmessages::staging::stage_send_copy(path).ok());
+        let Some(staged) = staged.and_then(|path| path.to_str().map(str::to_owned)) else {
+            write_json_line(
+                writer,
+                &ServerMessage::protocol_error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "attachment is not usable",
+                ),
+            )
+            .await?;
+            return Ok(true);
+        };
+        paths.push(staged);
+    }
+    let account = conversation_id.account_id.as_str().to_owned();
+    let conversation = conversation_id.local_id.clone();
+    request_send(
+        MessagingCommand::SendAttachments {
+            conversation_id,
+            file_urls,
+            caption: caption.clone(),
+        },
+        move |request_id| handover_gmessages::contract::HelperCommand::SendMediaBatch {
+            request_id,
+            account,
+            conversation,
+            paths,
+            caption,
+        },
+        writer,
+        state,
+        messaging,
+        events,
+    )
+    .await
+}
+
 pub(crate) async fn handle_react<W>(
     message_id: MessageId,
     emoji: String,
@@ -892,7 +975,10 @@ where
             return Ok(true);
         }
     };
-    let kind = if matches!(command, MessagingCommand::SendMedia { .. }) {
+    let kind = if matches!(
+        command,
+        MessagingCommand::SendMedia { .. } | MessagingCommand::SendAttachments { .. }
+    ) {
         OutgoingOperationKind::Media
     } else {
         OutgoingOperationKind::Text
@@ -2331,6 +2417,75 @@ mod messaging_live_tests {
             .expect("helper returned a confined staged path");
         assert!(staged_path.contains("/handover/gmessages/imported/"));
         assert_ne!(staged_path, attachment_path.to_str().unwrap());
+
+        let group_a = attachment_dir.path().join("group-a.png");
+        let group_b = attachment_dir.path().join("program.cc");
+        tokio::fs::write(&group_a, b"original first file")
+            .await
+            .unwrap();
+        tokio::fs::write(&group_b, b"int main() { return 0; }\n")
+            .await
+            .unwrap();
+        let urls = [&group_a, &group_b]
+            .iter()
+            .map(|path| url::Url::from_file_path(path).unwrap().to_string())
+            .collect::<Vec<_>>();
+        let group_operation = client
+            .send_message_files(
+                rcs.id.clone(),
+                urls.clone(),
+                Some("one grouped caption".into()),
+            )
+            .await
+            .expect("one multi-file submission");
+        wait_for_attachment(&mut subscription, "group-a.png").await;
+        let (grouped_history, _) = client
+            .messaging_history(rcs.id.clone(), Some(10), None)
+            .await
+            .unwrap();
+        let grouped = grouped_history
+            .iter()
+            .filter(|message| message.text.as_deref() == Some("one grouped caption"))
+            .collect::<Vec<_>>();
+        assert_eq!(grouped.len(), 1, "one message holds the whole group");
+        let combined = grouped[0];
+        assert_eq!(combined.attachments.len(), 2);
+        assert_eq!(combined.attachments[0].name.as_deref(), Some("group-a.png"));
+        assert_eq!(combined.attachments[1].name.as_deref(), Some("program.cc"));
+        for (attachment, original) in combined.attachments.iter().zip([&group_a, &group_b]) {
+            assert_eq!(
+                tokio::fs::read(attachment.staged_path.as_ref().unwrap())
+                    .await
+                    .unwrap(),
+                tokio::fs::read(original).await.unwrap()
+            );
+        }
+        let operations = client.messaging_outgoing().await.unwrap();
+        let operation = operations
+            .iter()
+            .find(|operation| operation.id == group_operation)
+            .unwrap();
+        assert_eq!(operation.kind, handover_core::OutgoingOperationKind::Media);
+        assert_eq!(operation.message_id.as_ref(), Some(&combined.id));
+        let count_before = operations.len();
+        let missing_url = url::Url::from_file_path(attachment_dir.path().join("missing"))
+            .unwrap()
+            .to_string();
+        assert!(
+            client
+                .send_message_files(
+                    rcs.id.clone(),
+                    vec![urls[0].clone(), missing_url],
+                    Some("must not submit".into())
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            client.messaging_outgoing().await.unwrap().len(),
+            count_before,
+            "invalid group creates no send operation"
+        );
 
         // Reactions add and remove.
         client

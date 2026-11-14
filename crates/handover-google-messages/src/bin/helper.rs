@@ -761,7 +761,7 @@ struct MediaSend {
     request_id: String,
     account: String,
     conversation: String,
-    path: Zeroizing<String>,
+    paths: Vec<Zeroizing<String>>,
     caption: Option<Zeroizing<String>>,
 }
 fn queue_mark_read(
@@ -867,7 +867,7 @@ async fn queue_media<W: AsyncWrite + Unpin>(
         request_id,
         account,
         conversation,
-        path,
+        paths,
         caption,
     } = send;
     let allowed = helper.online.contains(&account)
@@ -875,9 +875,11 @@ async fn queue_media<W: AsyncWrite + Unpin>(
         && !request_id.is_empty()
         && request_id.len() <= MAX_ID_LEN
         && !request_id.chars().any(char::is_control)
-        && !path.is_empty()
-        && path.len() <= 4096
-        && !path.chars().any(char::is_control)
+        && !paths.is_empty()
+        && paths.len() <= 10
+        && paths.iter().all(|path| {
+            !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+        })
         && caption
             .as_ref()
             .is_none_or(|value| value.chars().count() <= MAX_TEXT_CHARS && !value.contains('\0'))
@@ -893,7 +895,7 @@ async fn queue_media<W: AsyncWrite + Unpin>(
                 .try_send(LiveCommand::SendMedia {
                     request_id: request_id.clone(),
                     conversation: conversation.clone(),
-                    path,
+                    paths,
                     caption,
                     accepted: gate,
                 })
@@ -1142,7 +1144,7 @@ where
                 if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(control) = serde_json::from_slice::<Control>(&line) {
                     // Route by metadata without allocating a second copy of
                     // login credentials, text, or media paths.
-                    if matches!(control.kind.as_str(), "send_text" | "send_media") && control.account.as_ref().is_some_and(|account| mutating.contains(account)) {
+                    if matches!(control.kind.as_str(), "send_text" | "send_media" | "send_media_batch") && control.account.as_ref().is_some_and(|account| mutating.contains(account)) {
                         if let Some(request_id) = control.request_id {
                             publish(writer, HelperEvent::CommandResult { request_id, ok: false, error: Some(UNAVAILABLE.into()) }).await?;
                         }
@@ -1237,7 +1239,9 @@ where
                         let queued = !mutating.contains(&account) && queue_mark_read(helper, &workers, &account, conversation, message);
                         if !queued { publish(writer, HelperEvent::Error { message: "native mark-read unavailable".into(), fetch_id: None }).await?; }
                     } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendMedia { request_id, account, conversation, path, caption }) = serde_json::from_slice::<HelperCommand>(&line) {
-                        queue_media(helper, &workers, &mut sends, writer, MediaSend { request_id, account, conversation, path: Zeroizing::new(path), caption: caption.map(Zeroizing::new) }).await?;
+                        queue_media(helper, &workers, &mut sends, writer, MediaSend { request_id, account, conversation, paths: vec![Zeroizing::new(path)], caption: caption.map(Zeroizing::new) }).await?;
+                    } else if line.len() <= MAX_HELPER_LINE_BYTES && let Ok(HelperCommand::SendMediaBatch { request_id, account, conversation, paths, caption }) = serde_json::from_slice::<HelperCommand>(&line) {
+                        queue_media(helper, &workers, &mut sends, writer, MediaSend { request_id, account, conversation, paths: paths.into_iter().map(Zeroizing::new).collect(), caption: caption.map(Zeroizing::new) }).await?;
                     } else {
                     let logout_account = (line.len() <= MAX_HELPER_LINE_BYTES)
                         .then(|| serde_json::from_slice::<HelperCommand>(&line).ok())
@@ -1721,6 +1725,7 @@ impl NativeHelper {
             }
             HelperCommand::SendText { request_id, .. }
             | HelperCommand::SendMedia { request_id, .. }
+            | HelperCommand::SendMediaBatch { request_id, .. }
             | HelperCommand::React { request_id, .. }
             | HelperCommand::DeleteMessage { request_id, .. }
             | HelperCommand::OpenConversation { request_id, .. } => {
@@ -2327,7 +2332,16 @@ mod tests {
             Conversation, ConversationId, ConversationKind, MessagingAccountId,
             MessagingCapability, Participant, TransportKind,
         };
-        for case in ["accepted", "offline", "unsupported", "busy", "full"] {
+        for case in [
+            "accepted",
+            "batch",
+            "empty",
+            "too-many",
+            "offline",
+            "unsupported",
+            "busy",
+            "full",
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let mut helper = helper_with_store(directory.path());
             helper.online.insert("work".into());
@@ -2393,7 +2407,17 @@ mod tests {
                     request_id: "media-test".into(),
                     account: "work".into(),
                     conversation: "thread".into(),
-                    path: Zeroizing::new("/tmp/staged.jpg".into()),
+                    paths: match case {
+                        "empty" => Vec::new(),
+                        "batch" => vec![
+                            Zeroizing::new("/tmp/staged.jpg".into()),
+                            Zeroizing::new("/tmp/second.png".into()),
+                        ],
+                        "too-many" => (0..11)
+                            .map(|_| Zeroizing::new("/tmp/staged.jpg".into()))
+                            .collect(),
+                        _ => vec![Zeroizing::new("/tmp/staged.jpg".into())],
+                    },
                     caption: Some(Zeroizing::new("caption".into())),
                 },
             )
@@ -2401,20 +2425,21 @@ mod tests {
             .unwrap();
             let event: HelperEvent = serde_json::from_slice(&output).unwrap();
             assert!(
-                matches!(event, HelperEvent::CommandResult { ok, .. } if ok == (case == "accepted")),
+                matches!(event, HelperEvent::CommandResult { ok, .. } if ok == (case == "accepted" || case == "batch")),
                 "case {case}"
             );
-            if case == "accepted" {
+            if case == "accepted" || case == "batch" {
                 let LiveCommand::SendMedia {
                     accepted,
-                    path,
+                    paths,
                     caption,
                     ..
                 } = incoming.recv().await.unwrap()
                 else {
                     panic!("queued media");
                 };
-                assert_eq!(&*path, "/tmp/staged.jpg");
+                assert_eq!(&*paths[0], "/tmp/staged.jpg");
+                assert_eq!(paths.len(), if case == "batch" { 2 } else { 1 });
                 assert_eq!(caption.as_deref().map(|value| &**value), Some("caption"));
                 accepted.await.unwrap();
                 assert_eq!(
