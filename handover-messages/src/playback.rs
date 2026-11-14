@@ -17,10 +17,12 @@ struct Loaded {
     owner: Weak<Slot>,
     stream: gtk::MediaFile,
     controls: Option<gtk::MediaControls>,
-    video: Option<gtk::Video>,
+    video: Option<gtk::Picture>,
     source: RefCell<Option<fs::File>>,
     content: glib::WeakRef<gtk::Box>,
     start: glib::WeakRef<gtk::Button>,
+    status: glib::WeakRef<gtk::Label>,
+    spinner: glib::WeakRef<gtk::Spinner>,
 }
 impl Loaded {
     fn stop(&self) {
@@ -31,12 +33,20 @@ impl Loaded {
             controls.set_media_stream(None::<&gtk::MediaStream>);
         }
         if let Some(video) = &self.video {
-            video.set_media_stream(None::<&gtk::MediaStream>);
+            video.set_paintable(None::<&gtk::gdk::Paintable>);
         }
         // Clearing closes the backend and stops playback. Do not enqueue a
         // separate pause immediately before destroying its player.
         self.stream.clear();
         self.source.borrow_mut().take();
+        if let Some(status) = self.status.upgrade() {
+            status.set_label("Stopped");
+        }
+        if let Some(spinner) = self.spinner.upgrade() {
+            spinner.stop();
+            spinner.set_visible(false);
+        }
+
         if let Some(content) = self.content.upgrade() {
             while let Some(child) = content.first_child() {
                 content.remove(&child);
@@ -86,6 +96,7 @@ fn make_room() {
 pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk::Widget {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
     root.add_css_class("inline-media");
+    root.set_width_request(240);
     let video_kind = AttachmentKind::of_mime(attachment.mime.as_deref()) == AttachmentKind::Video;
     root.add_css_class(if video_kind {
         "video-attachment"
@@ -102,17 +113,29 @@ pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk:
     title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     root.append(&title);
     let Some(path) = playback_path(attachment) else {
+        let unavailable = gtk::Box::new(gtk::Orientation::Vertical, 4);
         show_fallback(
-            &root,
+            &unavailable,
             attachment,
             None,
             "This media file is not available locally.",
         );
+        root.append(&unavailable);
         return root.upcast();
     };
     let start = gtk::Button::with_label("Play media");
     start.set_tooltip_text(Some("Load and play this attachment"));
     root.append(&start);
+    let activity = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let spinner = gtk::Spinner::new();
+    spinner.set_visible(false);
+    let status = gtk::Label::new(None);
+    status.set_xalign(0.0);
+    status.add_css_class("playback-state");
+    status.add_css_class("caption");
+    activity.append(&spinner);
+    activity.append(&status);
+    root.append(&activity);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
     root.append(&content);
     let failure = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -123,6 +146,8 @@ pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk:
     let content_weak = content.downgrade();
     let failure_weak = failure.downgrade();
     let part = attachment.clone();
+    let spinner_weak = spinner.downgrade();
+    let status_weak = status.downgrade();
     start.connect_clicked(move |start| {
         let previous = current.borrow_mut().take();
         drop(previous);
@@ -133,11 +158,18 @@ pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk:
             return;
         };
         failure.set_visible(false);
+        let Some(spinner) = spinner_weak.upgrade() else {
+            return;
+        };
+        let Some(status) = status_weak.upgrade() else {
+            return;
+        };
+        status.set_visible(true);
         let Some(source) = open_media(&path) else {
             show_fallback(
                 &failure,
                 &part,
-                Some(&gio::File::for_path(&path)),
+                None,
                 "This media file is not available locally.",
             );
             return;
@@ -156,30 +188,139 @@ pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk:
         }
         #[cfg(test)]
         stream.set_muted(true);
-        let (controls, video) = if video_kind {
-            let video = gtk::Video::for_media_stream(Some(&stream));
-            video.set_size_request(240, 160);
-            video.set_autoplay(false);
-            content.append(&video);
-            (None, Some(video))
+        let video = if video_kind {
+            let picture = gtk::Picture::for_paintable(&stream);
+            picture.set_content_fit(gtk::ContentFit::Contain);
+            picture.set_size_request(240, 160);
+            picture.add_css_class("video-surface");
+            content.append(&picture);
+            Some(picture)
         } else {
-            let controls = gtk::MediaControls::new(Some(&stream));
-            content.append(&controls);
-            (Some(controls), None)
+            None
         };
+        let controls = gtk::MediaControls::new(Some(&stream));
+        controls.add_css_class("playback-controls");
+        content.append(&controls);
+        let transport = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let back = gtk::Button::from_icon_name("media-seek-backward-symbolic");
+        back.set_tooltip_text(Some("Back 10 seconds"));
+        back.add_css_class("seek-back");
+        let forward = gtk::Button::from_icon_name("media-seek-forward-symbolic");
+        forward.set_tooltip_text(Some("Forward 10 seconds"));
+        forward.add_css_class("seek-forward");
+        let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        stop.set_tooltip_text(Some("Stop and unload media"));
+        stop.add_css_class("stop-playback");
+        for button in [&back, &forward, &stop] {
+            button.add_css_class("flat");
+            transport.append(button);
+        }
+        content.append(&transport);
+        for (button, delta) in [(&back, -10_000_000i64), (&forward, 10_000_000i64)] {
+            let weak = stream.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(stream) = weak.upgrade() {
+                    seek_by(&stream, delta);
+                }
+            });
+        }
+        let update: Rc<dyn Fn(&gtk::MediaFile)> = {
+            let status = status.downgrade();
+            let spinner = spinner.downgrade();
+            let back = back.downgrade();
+            let forward = forward.downgrade();
+            Rc::new(move |stream| {
+                if stream.file().is_none() {
+                    return;
+                }
+                let busy = !stream.is_prepared() || stream.is_seeking();
+                if let Some(spinner) = spinner.upgrade() {
+                    spinner.set_spinning(busy && stream.error().is_none());
+                    spinner.set_visible(busy && stream.error().is_none());
+                }
+                let seekable = stream.is_prepared()
+                    && stream.is_seekable()
+                    && stream.duration() > 0
+                    && !stream.is_seeking();
+                for button in [&back, &forward] {
+                    if let Some(button) = button.upgrade() {
+                        button.set_sensitive(seekable);
+                    }
+                }
+                if let Some(status) = status.upgrade() {
+                    let text = if stream.error().is_some() {
+                        "Unable to play this media".into()
+                    } else if !stream.is_prepared() {
+                        "Loading media…".into()
+                    } else if stream.is_seeking() {
+                        "Seeking…".into()
+                    } else {
+                        let state = if stream.is_ended() {
+                            "Finished"
+                        } else if stream.is_playing() {
+                            "Playing"
+                        } else {
+                            "Paused"
+                        };
+                        let position = time_label(stream.timestamp());
+                        if stream.duration() > 0 {
+                            format!("{state} · {position} / {}", time_label(stream.duration()))
+                        } else {
+                            format!("{state} · {position}")
+                        }
+                    };
+                    status.set_label(&text);
+                }
+            })
+        };
+        update(&stream);
+        stream.connect_notify_local(None, move |stream, _| update(stream));
         let loaded = Rc::new(Loaded {
             owner: Rc::downgrade(&current),
             stream: stream.clone(),
-            controls,
+            controls: Some(controls.clone()),
             video,
             source: RefCell::new(Some(source)),
             content: content.downgrade(),
             start: start.downgrade(),
+            status: status.downgrade(),
+            spinner: spinner.downgrade(),
         });
         PLAYERS.with(|players| players.borrow_mut().push(Rc::downgrade(&loaded)));
+        let weak = Rc::downgrade(&loaded);
+        stop.connect_clicked(move |_| {
+            if let Some(player) = weak.upgrade() {
+                player.stop();
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(&loaded);
+        keys.connect_key_pressed(move |_, key, _, _| {
+            let Some(player) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let stream = &player.stream;
+            match key {
+                gtk::gdk::Key::space if stream.is_prepared() => {
+                    if stream.is_playing() {
+                        stream.pause();
+                    } else {
+                        stream.play();
+                    }
+                }
+                gtk::gdk::Key::Left => seek_by(stream, -5_000_000),
+                gtk::gdk::Key::Right => seek_by(stream, 5_000_000),
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
+        });
+        controls.add_controller(keys);
         *current.borrow_mut() = Some(loaded);
         let button = start.downgrade();
         stream.connect_prepared_notify(move |stream| {
+            if stream.file().is_none() {
+                return;
+            }
             if let Some(button) = button.upgrade() {
                 button.set_visible(!stream.is_prepared());
             }
@@ -188,8 +329,19 @@ pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk:
         let button = start.downgrade();
         let part = part.clone();
         let file = gio::File::for_path(&path);
+        let current_player = Rc::downgrade(&current);
+        let error_status = status.downgrade();
         stream.connect_error_notify(move |stream| {
-            if stream.error().is_some() {
+            if stream.error().is_some() && stream.file().is_some() {
+                if let Some(slot) = current_player.upgrade() {
+                    let player = slot.borrow_mut().take();
+                    if let Some(player) = player {
+                        player.stop();
+                    }
+                }
+                if let Some(status) = error_status.upgrade() {
+                    status.set_visible(false);
+                }
                 if let Some(failure) = failure.upgrade() {
                     show_fallback(
                         &failure,
@@ -233,6 +385,33 @@ pub fn widget(attachment: &Attachment, _parent: &adw::ApplicationWindow) -> gtk:
         }
     });
     root.upcast()
+}
+
+fn seek_by(stream: &impl IsA<gtk::MediaStream>, delta: i64) {
+    let stream = stream.as_ref();
+    if stream.is_prepared() && stream.is_seekable() && stream.duration() > 0 && !stream.is_seeking()
+    {
+        stream.seek(
+            stream
+                .timestamp()
+                .saturating_add(delta)
+                .clamp(0, stream.duration()),
+        );
+    }
+}
+
+fn time_label(microseconds: i64) -> String {
+    let seconds = microseconds.max(0) / 1_000_000;
+    if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
 }
 
 fn open_media(path: &std::path::Path) -> Option<std::fs::File> {

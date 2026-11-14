@@ -798,7 +798,9 @@ fn fake_server(
                                     "text":"The entrance is on Water Street.",
                                     "attachments":[
                                         {"local_id":"map-image","mime":null,"name":"route.heic","size_bytes":null,"staged_path":staged_path},
-                                        {"local_id":"market-photo","mime":"image/heic","name":"market-photo.heic","size_bytes":null,"staged_path":staged_path}
+                                        {"local_id":"market-photo","mime":"image/heic","name":"market-photo.heic","size_bytes":null,"staged_path":staged_path},
+                                        {"local_id":"unavailable-code","mime":"text/x-c++src","name":"notes.cc","size_bytes":12,"staged_path":null},
+                                        {"local_id":"unavailable-video","mime":"video/mp4","name":"missing-clip.mp4","size_bytes":null,"staged_path":null}
                                     ],
                                     "reply_to":null,"reactions":[],"deleted":false
                                 }],
@@ -1446,6 +1448,50 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap();
     zoom.emit_clicked();
     assert!(canvas.zoomed_size().0 > 0);
+    let viewer_keys = (0..viewer.observe_controllers().n_items())
+        .filter_map(|index| viewer.observe_controllers().item(index))
+        .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+        .unwrap();
+    assert!(viewer_keys.emit_by_name::<bool>(
+        "key-pressed",
+        &[
+            &gtk::gdk::Key::plus,
+            &0u32,
+            &gtk::gdk::ModifierType::empty()
+        ]
+    ));
+    wait_for_layout(&viewer);
+    let viewport = ancestor_with_class(canvas.upcast_ref(), "image-canvas")
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let scroll = {
+        let mut parent = Some(viewport);
+        loop {
+            let widget = parent.expect("image scrolled viewport");
+            if let Ok(scroll) = widget.clone().downcast::<gtk::ScrolledWindow>() {
+                break scroll;
+            }
+            parent = widget.parent();
+        }
+    };
+    let previous_x = scroll.hadjustment().value();
+    assert!(viewer_keys.emit_by_name::<bool>(
+        "key-pressed",
+        &[
+            &gtk::gdk::Key::Right,
+            &0u32,
+            &gtk::gdk::ModifierType::SHIFT_MASK
+        ]
+    ));
+    assert!(
+        scroll.hadjustment().value() > previous_x,
+        "Shift+arrow pans a zoomed image without changing gallery item"
+    );
+    assert_eq!(viewer.title().as_deref(), Some("route.heic"));
+
     let fit = find_widget(viewer.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Button>()
@@ -1456,6 +1502,76 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap();
     fit.emit_clicked();
     assert_eq!(canvas.zoomed_size(), (0, 0));
+    // Real X11 events exercise gesture arbitration and modifier handling on the
+    // runner's private Xvfb display, rather than emitting gestures without input.
+    let located = Command::new("xdotool")
+        .args(["search", "--onlyvisible", "--name", "^route[.]heic$"])
+        .output()
+        .unwrap();
+    assert!(located.status.success());
+    let xid = String::from_utf8(located.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    let pointer = |args: &[&str]| {
+        assert!(
+            Command::new("xdotool")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    pointer(&[
+        "mousemove",
+        "--window",
+        &xid,
+        "320",
+        "260",
+        "keydown",
+        "ctrl",
+        "click",
+        "--repeat",
+        "4",
+        "--delay",
+        "40",
+        "4",
+        "keyup",
+        "ctrl",
+    ]);
+    pump_until(
+        || canvas.zoomed_size().0 > 0,
+        "real Ctrl+wheel zooms the viewer",
+    );
+    wait_for_layout(&viewer);
+    let pan_before = scroll.hadjustment().value();
+    pointer(&[
+        "mousemove",
+        "--window",
+        &xid,
+        "420",
+        "300",
+        "mousedown",
+        "1",
+        "mousemove",
+        "--window",
+        &xid,
+        "360",
+        "300",
+        "mouseup",
+        "1",
+    ]);
+    pump_until(
+        || scroll.hadjustment().value() > pan_before + 20.0,
+        "real mouse drag pans the zoomed image",
+    );
+    pointer(&["click", "--repeat", "2", "--delay", "80", "1"]);
+    pump_until(
+        || canvas.zoomed_size() == (0, 0),
+        "real double click restores Fit without being swallowed by drag",
+    );
     if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
         let path = PathBuf::from(path);
         let name = format!("{}-viewer.png", path.file_stem().unwrap().to_string_lossy());
@@ -1566,29 +1682,33 @@ fn native_window_round_trips_real_frontend_actions() {
         .downcast::<gtk::Button>()
         .unwrap();
         start.emit_clicked();
-        let stream = if kind == "audio-attachment" {
-            find_widget(&player_widget, &|widget| {
-                widget.downcast_ref::<gtk::MediaControls>().is_some()
-            })
-            .unwrap()
-            .downcast::<gtk::MediaControls>()
-            .unwrap()
-            .media_stream()
-            .unwrap()
-        } else {
-            find_widget(&player_widget, &|widget| {
-                widget.downcast_ref::<gtk::Video>().is_some()
-            })
-            .unwrap()
-            .downcast::<gtk::Video>()
-            .unwrap()
-            .media_stream()
-            .unwrap()
-        };
+        let stream = find_widget(&player_widget, &|widget| {
+            widget.downcast_ref::<gtk::MediaControls>().is_some()
+        })
+        .unwrap()
+        .downcast::<gtk::MediaControls>()
+        .unwrap()
+        .media_stream()
+        .unwrap();
         assert!(stream.is_muted(), "synthetic fixture playback stays silent");
         pump_until(
-            || stream.is_prepared() || stream.error().is_some(),
-            "Play prepares the generated media",
+            || {
+                stream.is_prepared()
+                    || stream.error().is_some()
+                    || stream
+                        .downcast_ref::<gtk::MediaFile>()
+                        .is_some_and(|file| file.file().is_none())
+            },
+            &format!("Play prepares the generated {kind}"),
+        );
+        assert!(
+            stream
+                .downcast_ref::<gtk::MediaFile>()
+                .unwrap()
+                .file()
+                .is_some(),
+            "{kind} unloaded during preparation; widget mapped={}",
+            player_widget.is_mapped()
         );
         assert!(
             stream.error().is_none(),
@@ -1600,6 +1720,45 @@ fn native_window_round_trips_real_frontend_actions() {
             "Play advances the media timestamp",
         );
         assert!(stream.timestamp() > 0);
+        pump_until(
+            || stream.duration() > 0 && stream.is_seekable(),
+            "local media reports a seekable duration",
+        );
+        assert!(
+            find_widget(&player_widget, &|widget| widget
+                .downcast_ref::<gtk::Label>()
+                .is_some_and(
+                    |label| label.has_css_class("playback-state") && label.text().contains(" / ")
+                ))
+            .is_some()
+        );
+        stream.pause();
+        let forward = find_widget(&player_widget, &|widget| {
+            widget.has_css_class("seek-forward")
+        })
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+        forward.emit_clicked();
+        pump_until(
+            || !stream.is_seeking() && stream.timestamp() >= stream.duration() - 200_000,
+            "forward seek clamps to the local file's duration",
+        );
+        let back = find_widget(&player_widget, &|widget| widget.has_css_class("seek-back"))
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        pump_until(
+            || back.is_sensitive(),
+            "backward seek is available after seeking completes",
+        );
+        back.emit_clicked();
+        pump_until(
+            || !stream.is_seeking() && stream.timestamp() < 500_000,
+            "backward seek returns a short file to its start",
+        );
+        stream.play();
+
         send_json(
             subscription_writer.lock().unwrap().as_mut().unwrap(),
             response(
@@ -1636,7 +1795,85 @@ fn native_window_round_trips_real_frontend_actions() {
             "unmapping unloads playback",
         );
         row.set_visible(true);
+        let reload = find_widget(&player_widget, &|widget| {
+            widget.tooltip_text().as_deref() == Some("Load and play this attachment")
+        })
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+        reload.emit_clicked();
+        let reloaded_stream = find_widget(&player_widget, &|widget| {
+            widget.downcast_ref::<gtk::MediaControls>().is_some()
+        })
+        .unwrap()
+        .downcast::<gtk::MediaControls>()
+        .unwrap()
+        .media_stream()
+        .unwrap();
+        pump_until(
+            || reloaded_stream.is_prepared(),
+            "stopped media can be loaded again",
+        );
+        find_widget(&player_widget, &|widget| {
+            widget.has_css_class("stop-playback")
+        })
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+        assert!(
+            reloaded_stream
+                .downcast_ref::<gtk::MediaFile>()
+                .unwrap()
+                .file()
+                .is_none(),
+            "Stop releases the decoder and its pinned source"
+        );
+        assert!(reload.is_visible() && reload.is_sensitive());
     }
+    let damaged_path = root.join("damaged-audio.wav");
+    std::fs::write(&damaged_path, b"Not a valid media stream").unwrap();
+    let damaged_part = Attachment {
+        local_id: "damaged-audio".into(),
+        mime: Some("audio/wav".into()),
+        name: Some("damaged-audio.wav".into()),
+        size_bytes: None,
+        staged_path: Some(damaged_path.to_string_lossy().into_owned()),
+    };
+    let damaged_widget = crate::playback::widget(&damaged_part, &ui.window);
+    let damaged_window = gtk::Window::builder()
+        .application(&app)
+        .transient_for(&ui.window)
+        .child(&damaged_widget)
+        .build();
+    damaged_window.present();
+    let damaged_start = find_widget(&damaged_widget, &|widget| {
+        widget.tooltip_text().as_deref() == Some("Load and play this attachment")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    damaged_start.emit_clicked();
+    pump_until(
+        || {
+            find_widget(&damaged_widget, &|widget| {
+                widget
+                    .downcast_ref::<gtk::Label>()
+                    .is_some_and(|label| label.text().contains("could not be played"))
+            })
+            .is_some()
+        },
+        "damaged media reports a playback error",
+    );
+    assert!(damaged_start.is_visible() && damaged_start.is_sensitive());
+    assert!(
+        find_widget(&damaged_widget, &|widget| widget
+            .downcast_ref::<gtk::MediaControls>()
+            .is_some())
+        .is_none(),
+        "decoder failure releases the player controls"
+    );
+    damaged_window.close();
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
         response(
@@ -2733,7 +2970,73 @@ fn native_window_round_trips_real_frontend_actions() {
         "gallery navigation changes the displayed filename",
     );
     gallery_viewer.close();
-    browser.close();
+    pump_until(
+        || {
+            find_widget(browser.upcast_ref(), &|widget| {
+                widget
+                    .downcast_ref::<gtk::Label>()
+                    .is_some_and(|label| label.text().starts_with("Saved page 1"))
+            })
+            .is_some()
+        },
+        "saved media page finishes loading",
+    );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        capture_fixture(
+            &browser,
+            path.with_file_name(format!(
+                "{}-browser.png",
+                path.file_stem().unwrap().to_string_lossy()
+            )),
+        );
+    }
+
+    for (name, expected) in [("Files", "notes.cc"), ("Video", "missing-clip.mp4")] {
+        find_widget(browser.upcast_ref(), &|widget| {
+            widget
+                .downcast_ref::<gtk::ToggleButton>()
+                .is_some_and(|button| button.label().as_deref() == Some(name))
+        })
+        .unwrap()
+        .downcast::<gtk::ToggleButton>()
+        .unwrap()
+        .set_active(true);
+        assert!(
+            find_widget(browser.upcast_ref(), &|widget| widget
+                .downcast_ref::<gtk::Label>()
+                .is_some_and(|label| label.text() == expected))
+            .is_some(),
+            "{name} filter must show {expected}"
+        );
+        assert!(
+            find_widget(browser.upcast_ref(), &|widget| widget
+                .has_css_class("image-attachment"))
+            .is_none(),
+            "category filter hides unrelated photos"
+        );
+    }
+    let previous_view = ui.model.borrow().selected.clone();
+    find_widget(browser.upcast_ref(), &|widget| {
+        widget.has_css_class("media-message-link")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap()
+    .emit_clicked();
+    pump_until(
+        || {
+            !browser.is_visible()
+                && ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "m5"))
+        },
+        "media item jumps to its saved original message",
+    );
+    assert!(ui.context_back.is_visible());
+    ui.return_to_conversation();
+    pump_until(
+        || ui.model.borrow().selected == previous_view && !ui.context_back.is_visible(),
+        "return from media context restores the conversation",
+    );
 
     let staged_file = gio::File::for_path(&staged_path);
     ui.compose.buffer().set_text("caption to keep");

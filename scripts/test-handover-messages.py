@@ -47,7 +47,7 @@ def main():
     args = parser.parse_args()
     if args.screenshot and not shutil.which("import"):
         raise SystemExit("ImageMagick import is required for --screenshot")
-    for tool in ("cargo", "dbus-daemon", "Xvfb", "ffmpeg"):
+    for tool in ("cargo", "dbus-daemon", "Xvfb", "ffmpeg", "xdotool"):
         if not shutil.which(tool):
             raise SystemExit(f"Required tool is missing: {tool}")
     built = subprocess.run(

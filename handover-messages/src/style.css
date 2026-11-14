@@ -128,3 +128,9 @@
 .handover-messages .send-activity { padding: 8px 30px; }
 .handover-messages .send-state { font-size: 0.85em; opacity: 0.8; }
 .handover-messages .submitted-message { opacity: 0.85; }
+
+.handover-media-browser .viewer-toolbar { min-height: 32px; padding: 10px 14px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.handover-media-browser .media-filters button:checked { color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
+.handover-media-browser .media-message-link { padding: 3px 0; min-height: 22px; font-size: 12px; font-weight: 500; color: @accent_color; }
+.handover-image-viewer .viewer-zoom-level { font-size: 12px; color: alpha(white, 0.75); }
+.video-surface { background: #111316; }

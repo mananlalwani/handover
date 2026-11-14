@@ -188,9 +188,11 @@ Multiple images in one message use a compact two-column grid. A three-photo
 message has a wider lead photo. Larger groups show four tiles and an explicit
 remaining-photo count. The viewer contains every image from that message, in
 order, rather than continuing into another message's images.
-Click an image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
-choose Fit to see the whole image. Escape closes the viewer. Open externally
-uses your system viewer when needed. Previous and Next, or the left and right
+Click an image to open the in-app viewer. Ctrl+scroll or pinch to zoom; drag a
+zoomed image to pan. Double-click toggles between Fit and a closer view. The zoom
+indicator is relative to the fitted image. Use plus and minus to zoom, F or Ctrl+0
+to fit, and Shift+arrow keys to pan. Ctrl+S saves a copy; Ctrl+O opens it externally.
+Escape closes the viewer. Open externally uses your system viewer when needed. Previous and Next, or the left and right
 arrow keys, move between images in the opened gallery. The app uses installed
 raster-image loaders, including JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, HEIC/HEIF,
 AVIF, and JPEG XL. It detects the format from file contents before using the
@@ -219,12 +221,19 @@ without a local file show that they are unavailable locally.
 Open Photos and files in the conversation header to browse saved attachments,
 including those outside the current chat view. Newer media and Older media page
 through saved messages with attachments. This lists the daemon's local archive;
-it does not fetch a complete provider media library. Missing local files remain
-unavailable. Deleted messages are omitted.
+it does not fetch a complete provider media library. Filters select photos,
+video, audio, or files on the displayed saved page. Each item has Show in
+conversation to open its original saved message. Back to conversation or Alt+Left
+returns from that context. Missing local files remain unavailable, with their
+filenames and original-message links intact. Deleted messages are omitted.
 
 Audio and video attachments have inline Play controls. Media loads only after
 Play, and uses the system GTK media backend and installed codecs. Duration and
-seek controls use decoder reports. At most four media files stay loaded;
+seek controls use decoder reports. Both audio and video keep their playback
+controls visible. Loading, seeking, playing, paused, and finished states come from
+the decoder. Back and Forward move ten seconds within the reported duration;
+unsupported seeking stays disabled. Stop unloads the file and makes Play
+available again. At most four media files stay loaded;
 opening another unloads the oldest player. Removing or hiding a player's row
 pauses and unloads it. Delivery-status changes preserve the player. Unsupported
 formats show an external-player action. Playback does not start automatically.
@@ -298,6 +307,9 @@ from daemon snapshots after reconnecting. Neither it nor the notification bridge
 replays queued sends across a disconnect.
 
 ## Validation limits
+
+The native GUI runner requires Xvfb, ffmpeg, and xdotool. Mouse and keyboard
+checks run on its private display.
 
 Automated tests use a private display, session bus, and daemon fixture. They
 cover real widgets, socket framing, persistence, and reconnect handling. These

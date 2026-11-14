@@ -5,6 +5,7 @@ mod contact_photos;
 mod conversation_find;
 mod file_actions;
 mod image_canvas;
+mod image_navigation;
 mod media;
 mod media_browser;
 mod message_text;

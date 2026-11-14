@@ -2606,12 +2606,42 @@ mod messaging_live_tests {
                 .is_err(),
             "command acceptance is not evidence of a sent message"
         );
+        let mut send_events = events.subscribe();
         for _ in 0..10 {
             client
                 .messaging_sync(rcs.id.account_id.clone())
                 .await
                 .unwrap();
         }
+        // Sync acceptance can precede publication of the helper's status events.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let confirmed = state
+                    .read()
+                    .unwrap()
+                    .messaging()
+                    .outgoing(&group_operation)
+                    .is_some_and(|operation| {
+                        matches!(
+                            operation.outcome,
+                            handover_core::OutgoingOutcome::Provider(
+                                handover_core::MessageStatus::Sent
+                                    | handover_core::MessageStatus::Delivered
+                                    | handover_core::MessageStatus::Displayed
+                            )
+                        )
+                    });
+                if confirmed {
+                    break;
+                }
+                match send_events.recv().await {
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("send event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("grouped attachment send status reaches the daemon");
         let cleared = client
             .attachment_send(
                 rcs.id.clone(),

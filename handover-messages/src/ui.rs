@@ -889,6 +889,17 @@ impl Window {
                             &model.messages,
                             id,
                             path,
+                            {
+                                let weak = Rc::downgrade(&this);
+                                Rc::new(move |target| {
+                                    if let Some(this) = weak.upgrade() {
+                                        this.find.close();
+                                        this.search.set_text("");
+                                        this.search_changed();
+                                        this.open_search_result(target);
+                                    }
+                                })
+                            },
                         );
                         *this.media_browser.borrow_mut() = Some(browser.downgrade());
                     }

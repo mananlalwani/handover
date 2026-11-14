@@ -1,13 +1,36 @@
 //! Paginated photos and files from the daemon's saved conversation history.
 use adw::prelude::*;
 use gtk::{gio, glib};
-use handover_core::{Attachment, ConversationId, Message};
+use handover_core::{Attachment, AttachmentKind, ConversationId, Message, MessageId};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
 };
 
+#[derive(Clone, Copy, PartialEq)]
+enum Filter {
+    All,
+    Photos,
+    Video,
+    Audio,
+    Files,
+}
+impl Filter {
+    fn accepts(self, attachment: &Attachment) -> bool {
+        let kind = AttachmentKind::of_mime(attachment.mime.as_deref());
+        match self {
+            Self::All => true,
+            Self::Photos => crate::media::is_image(attachment),
+            Self::Video => kind == AttachmentKind::Video,
+            Self::Audio => kind == AttachmentKind::Audio,
+            Self::Files => {
+                !crate::media::is_image(attachment)
+                    && !matches!(kind, AttachmentKind::Audio | AttachmentKind::Video)
+            }
+        }
+    }
+}
 struct Browser {
     window: glib::WeakRef<gtk::Window>,
     parent: glib::WeakRef<adw::ApplicationWindow>,
@@ -15,6 +38,9 @@ struct Browser {
     id: ConversationId,
     path: PathBuf,
     content: gtk::Box,
+    scroll: gtk::ScrolledWindow,
+    filter: Cell<Filter>,
+    on_message: Rc<dyn Fn(MessageId)>,
     status: gtk::Label,
     previous: gtk::Button,
     next: gtk::Button,
@@ -32,6 +58,7 @@ pub fn open(
     messages: &[Message],
     id: ConversationId,
     path: PathBuf,
+    on_message: Rc<dyn Fn(MessageId)>,
 ) -> gtk::Window {
     let window = gtk::Window::builder()
         .application(&parent.application().unwrap())
@@ -55,6 +82,28 @@ pub fn open(
     let handle = gtk::WindowHandle::new();
     handle.set_child(Some(&toolbar));
     root.append(&handle);
+    let filters = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    filters.add_css_class("media-filters");
+    filters.set_halign(gtk::Align::Center);
+    filters.set_margin_top(8);
+    let mut buttons = Vec::new();
+    for (label, filter) in [
+        ("All", Filter::All),
+        ("Photos", Filter::Photos),
+        ("Video", Filter::Video),
+        ("Audio", Filter::Audio),
+        ("Files", Filter::Files),
+    ] {
+        let button = gtk::ToggleButton::with_label(label);
+        button.add_css_class("flat");
+        if let Some((first, _)) = buttons.first() {
+            button.set_group(Some(first));
+        }
+        button.set_active(filter == Filter::All);
+        filters.append(&button);
+        buttons.push((button, filter));
+    }
+    root.append(&filters);
     let status = gtk::Label::new(Some("Loading saved photos and files…"));
     status.set_wrap(true);
     status.set_margin_top(12);
@@ -95,6 +144,9 @@ pub fn open(
         id,
         path,
         content,
+        scroll,
+        filter: Cell::new(Filter::All),
+        on_message,
         status,
         previous,
         next,
@@ -114,6 +166,18 @@ pub fn open(
         ),
     });
     browser.render();
+    for (button, filter) in buttons {
+        let weak = Rc::downgrade(&browser);
+        button.connect_toggled(move |button| {
+            if button.is_active()
+                && let Some(browser) = weak.upgrade()
+            {
+                browser.filter.set(filter);
+                browser.render();
+                browser.scroll.vadjustment().set_value(0.0);
+            }
+        });
+    }
     for (button, direction) in [
         (&browser.previous, -1i32),
         (&browser.next, 1),
@@ -207,8 +271,11 @@ impl Browser {
                     this.offset.set(offset);
                     *this.messages.borrow_mut() = messages;
                     this.render();
-                    this.status
-                        .set_label("Saved on this computer. History may be incomplete.");
+                    this.scroll.vadjustment().set_value(0.0);
+                    this.status.set_label(&format!(
+                        "Saved page {} · History may be incomplete.",
+                        offset / 16 + 1
+                    ));
                     this.previous.set_sensitive(offset > 0);
                     this.next.set_sensitive(more && offset <= 9984);
                 }
@@ -221,6 +288,35 @@ impl Browser {
             }
         });
     }
+    fn message_link(&self, message: &Message) -> gtk::Widget {
+        let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        if let Some(date) = message
+            .sent_at
+            .and_then(|time| glib::DateTime::from_unix_local(time / 1_000_000).ok())
+            .and_then(|date| date.format("%b %e · %H:%M").ok())
+        {
+            let date = gtk::Label::new(Some(&date));
+            date.add_css_class("caption");
+            date.add_css_class("dim-label");
+            date.set_xalign(0.0);
+            row.append(&date);
+        }
+        let button = gtk::Button::with_label("Show in conversation");
+        button.add_css_class("flat");
+        button.add_css_class("media-message-link");
+        button.set_halign(gtk::Align::Start);
+        let id = message.id.clone();
+        let open = self.on_message.clone();
+        let window = self.window.clone();
+        button.connect_clicked(move |_| {
+            if let Some(window) = window.upgrade() {
+                window.close();
+            }
+            open(id.clone());
+        });
+        row.append(&button);
+        row.upcast()
+    }
     fn render(&self) {
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
@@ -231,20 +327,22 @@ impl Browser {
         let messages = self.messages.borrow();
         let mut photos = Vec::new();
         let mut files = Vec::new();
-        for attachment in messages
-            .iter()
-            .filter(|m| !m.deleted)
-            .take(16)
-            .flat_map(|m| m.attachments.iter().take(16))
-        {
-            if crate::media::is_image(attachment) {
-                photos.push(attachment.clone());
-            } else {
-                files.push(attachment.clone());
+        for message in messages.iter().filter(|message| !message.deleted).take(16) {
+            for attachment in message
+                .attachments
+                .iter()
+                .take(16)
+                .filter(|attachment| self.filter.get().accepts(attachment))
+            {
+                if crate::media::is_image(attachment) {
+                    photos.push((attachment, message));
+                } else {
+                    files.push((attachment, message));
+                }
             }
         }
         if photos.is_empty() && files.is_empty() {
-            let empty = gtk::Label::new(Some("No saved photos or files in this page"));
+            let empty = gtk::Label::new(Some("No matching saved media on this page"));
             empty.add_css_class("empty-state");
             self.content.append(&empty);
         }
@@ -256,29 +354,47 @@ impl Browser {
             let grid = gtk::FlowBox::new();
             grid.set_selection_mode(gtk::SelectionMode::None);
             grid.set_homogeneous(true);
-            grid.set_row_spacing(10);
-            grid.set_column_spacing(10);
+            grid.set_row_spacing(12);
+            grid.set_column_spacing(12);
             grid.set_max_children_per_line(4);
-            grid.set_min_children_per_line(2);
-            let photos = Rc::new(photos);
-            for (index, attachment) in photos.iter().enumerate() {
+            grid.set_min_children_per_line(1);
+            let gallery = Rc::new(
+                photos
+                    .iter()
+                    .map(|(attachment, _)| (*attachment).clone())
+                    .collect::<Vec<_>>(),
+            );
+            for (index, (attachment, message)) in photos.iter().enumerate() {
                 let tile =
                     self.media
-                        .attachment_gallery(attachment, &parent, photos.clone(), index);
-                grid.insert(&tile, -1);
+                        .attachment_gallery(attachment, &parent, gallery.clone(), index);
+                let item = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                item.add_css_class("media-browser-item");
+                item.append(&tile);
+                item.append(&self.message_link(message));
+                grid.insert(&item, -1);
             }
             self.content.append(&grid);
         }
         if !files.is_empty() {
-            let heading = gtk::Label::new(Some("Files"));
-            heading.set_xalign(0.0);
-            heading.add_css_class("heading");
-            self.content.append(&heading);
-            for attachment in &files {
-                let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                row.append(&file_row(attachment));
-                row.append(&crate::file_actions::save_button(&parent, attachment));
-                self.content.append(&row);
+            for (attachment, message) in files {
+                let item = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                item.add_css_class("media-browser-item");
+                if matches!(
+                    AttachmentKind::of_mime(attachment.mime.as_deref()),
+                    AttachmentKind::Audio | AttachmentKind::Video
+                ) {
+                    item.append(&crate::playback::widget(attachment, &parent));
+                } else {
+                    item.append(&file_row(attachment));
+                }
+                let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                let location = self.message_link(message);
+                location.set_hexpand(true);
+                actions.append(&location);
+                actions.append(&crate::file_actions::save_button(&parent, attachment));
+                item.append(&actions);
+                self.content.append(&item);
             }
         }
         if let Some(window) = self.window.upgrade() {

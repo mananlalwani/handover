@@ -541,7 +541,14 @@ impl Media {
         bar.append(&title);
         bar.append(&save);
         bar.append(&external);
+        let zoom_level = gtk::Label::new(Some("Fit"));
+        zoom_level.add_css_class("viewer-zoom-level");
+        zoom_level.set_width_chars(5);
+        zoom_level.set_tooltip_text(Some(
+            "Zoom relative to the fitted image. Ctrl+scroll or pinch to zoom; drag to pan.",
+        ));
         bar.append(&minus);
+        bar.append(&zoom_level);
         bar.append(&plus);
         bar.append(&fit);
         bar.append(&close);
@@ -561,7 +568,7 @@ impl Media {
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
         body.append(&scroll);
         window.set_child(Some(&body));
-        let zoom = Rc::new(Cell::new(1.0_f64));
+        let navigation = crate::image_navigation::Navigation::new(&picture, &scroll, &zoom_level);
         let update: Rc<dyn Fn()> = {
             let this = self.clone();
             let gallery = gallery.clone();
@@ -569,13 +576,12 @@ impl Media {
             let title = title.clone();
             let picture = picture.clone();
             let status = status.clone();
-            let scroll = scroll.clone();
             let external = external.clone();
             let save = save.clone();
             let previous = previous.downgrade();
             let next = next.downgrade();
             let window = window.downgrade();
-            let zoom = zoom.clone();
+            let navigation = navigation.clone();
             Rc::new(move || {
                 let item = &gallery[index.get()];
                 let name = item.name.as_deref().unwrap_or("Image");
@@ -588,9 +594,7 @@ impl Media {
                 if let Some(window) = window.upgrade() {
                     window.set_title(Some(name));
                 }
-                zoom.set(1.0);
-                picture.fit();
-                scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
+                navigation.fit();
                 if let Some(previous) = previous.upgrade() {
                     previous.set_sensitive(index.get() > 0);
                 }
@@ -639,25 +643,12 @@ impl Media {
             });
         }
         for (button, factor) in [(&plus, 1.35), (&minus, 1.0 / 1.35), (&fit, 0.0)] {
-            let picture = picture.clone();
-            let scroll = scroll.clone();
-            let zoom = zoom.clone();
+            let navigation = navigation.clone();
             button.connect_clicked(move |_| {
-                if picture.texture().is_none() {
-                    return;
-                }
-                let value = if factor == 0.0 {
-                    1.0
+                if factor == 0.0 {
+                    navigation.fit();
                 } else {
-                    (zoom.get() * factor).clamp(0.25, 8.0)
-                };
-                zoom.set(value);
-                if value == 1.0 {
-                    picture.fit();
-                    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
-                } else {
-                    picture.zoom(scroll.width(), scroll.height(), value);
-                    scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+                    navigation.multiply(factor);
                 }
             });
         }
@@ -669,7 +660,40 @@ impl Media {
         });
         let keys = gtk::EventControllerKey::new();
         let weak = window.downgrade();
-        keys.connect_key_pressed(move |_, key, _, _| {
+        keys.connect_key_pressed(move |_, key, _, state| {
+            if state.contains(gdk::ModifierType::CONTROL_MASK) && key == gdk::Key::s {
+                save.emit_clicked();
+                return glib::Propagation::Stop;
+            }
+            if state.contains(gdk::ModifierType::CONTROL_MASK) && key == gdk::Key::o {
+                external.emit_clicked();
+                return glib::Propagation::Stop;
+            }
+            if matches!(key, gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add) {
+                navigation.multiply(1.35);
+                return glib::Propagation::Stop;
+            }
+            if matches!(key, gdk::Key::minus | gdk::Key::KP_Subtract) {
+                navigation.multiply(1.0 / 1.35);
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::f || key == gdk::Key::_0 {
+                navigation.fit();
+                return glib::Propagation::Stop;
+            }
+            if state.contains(gdk::ModifierType::SHIFT_MASK) {
+                let delta = match key {
+                    gdk::Key::Left => Some((-80.0, 0.0)),
+                    gdk::Key::Right => Some((80.0, 0.0)),
+                    gdk::Key::Up => Some((0.0, -80.0)),
+                    gdk::Key::Down => Some((0.0, 80.0)),
+                    _ => None,
+                };
+                if let Some((x, y)) = delta {
+                    navigation.pan(x, y);
+                    return glib::Propagation::Stop;
+                }
+            }
             if key == gdk::Key::Left {
                 previous.emit_clicked();
                 return glib::Propagation::Stop;
