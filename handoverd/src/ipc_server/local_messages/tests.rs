@@ -430,6 +430,7 @@ async fn workspace_draft_revision_cas_and_clear_are_enforced_over_ipc() {
             text: text.into(),
             reply_to: None,
             revision,
+            pending_operation: None,
         },
     };
     let first = call(&state, save("first", 0)).await;
@@ -458,6 +459,7 @@ async fn workspace_draft_revision_cas_and_clear_are_enforced_over_ipc() {
                 text: "reply".into(),
                 reply_to: Some(MessageId::new(other_conversation, "foreign-message")),
                 revision,
+                pending_operation: None,
             },
         },
     )

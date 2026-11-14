@@ -19,6 +19,7 @@ impl Draft {
                 text: String::new(),
                 reply_to: None,
                 revision: 0,
+                pending_operation: None,
             },
             loaded: false,
             dirty: false,
@@ -296,6 +297,13 @@ impl Model {
         self.selected.as_ref().and_then(|id| self.drafts.get(id))
     }
     pub fn edit(&mut self, id: ConversationId, text: String, reply_to: Option<MessageId>) {
+        if self
+            .drafts
+            .get(&id)
+            .is_some_and(|draft| draft.value.pending_operation.is_some())
+        {
+            return;
+        }
         let draft = self
             .drafts
             .entry(id.clone())
@@ -329,6 +337,7 @@ impl Model {
             draft.conflict = false;
             draft.error.clear();
         }
+        draft.saving = false;
         draft.loaded = true;
     }
     pub fn draft_saved(&mut self, remote: MessageDraft) {
@@ -650,6 +659,7 @@ mod tests {
             text: text.into(),
             reply_to: None,
             revision,
+            pending_operation: None,
         }
     }
     #[test]

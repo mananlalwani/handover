@@ -382,6 +382,57 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
                 }
             }
         }
+        Method::MessagesResolveDraftSend { draft } => {
+            use handover_core::{MessageStatus, OutgoingOperationKind, OutgoingOutcome};
+            let operation = draft.pending_operation.as_ref().and_then(|id| {
+                state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .messaging()
+                    .outgoing(id)
+                    .cloned()
+            });
+            let valid = known(&draft.conversation_id)
+                && draft.pending_operation.is_some()
+                && operation.as_ref().is_none_or(|operation| {
+                    operation.conversation_id == draft.conversation_id
+                        && operation.kind == OutgoingOperationKind::Text
+                });
+            let resolution = match operation.as_ref().map(|operation| &operation.outcome) {
+                Some(OutgoingOutcome::Provider(
+                    MessageStatus::Sent | MessageStatus::Delivered | MessageStatus::Displayed,
+                )) => Some(true),
+                None
+                | Some(
+                    OutgoingOutcome::Unknown
+                    | OutgoingOutcome::Rejected
+                    | OutgoingOutcome::Provider(MessageStatus::Failed(_)),
+                ) => Some(false),
+                _ => None,
+            };
+            if let Some(sent) = resolution.filter(|_| valid) {
+                let operation = draft
+                    .pending_operation
+                    .clone()
+                    .expect("validated pending operation");
+                match workspace.draft_send(draft, operation, Some(sent)).await {
+                    Ok(draft) => ServerMessage::new(ServerPayload::MessageDraft { draft }),
+                    Err(crate::messaging_workspace::WorkspaceError::Conflict) => error(
+                        ErrorCode::DraftConflict,
+                        "Draft changed; reload it before continuing",
+                    ),
+                    Err(_) => error(
+                        ErrorCode::BackendUnavailable,
+                        "Unable to save send recovery",
+                    ),
+                }
+            } else {
+                error(
+                    ErrorCode::InvalidMessagingCommand,
+                    "Send is still in progress",
+                )
+            }
+        }
         Method::MessagesAttachmentDraft { conversation_id } => {
             if !known(&conversation_id) {
                 error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")

@@ -104,6 +104,9 @@ pub struct MessageDraft {
     pub text: String,
     pub reply_to: Option<MessageId>,
     pub revision: u64,
+    /// Daemon-owned submission binding. A bound draft must not be submitted again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_operation: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -144,6 +147,9 @@ pub fn validate_messaging_location(location: &MessagingLocation) -> Result<(), V
 }
 
 pub fn validate_message_draft(draft: &MessageDraft) -> Result<(), ValidationError> {
+    if let Some(operation) = &draft.pending_operation {
+        check_id(operation, "draft operation")?;
+    }
     validate_messaging_location(&MessagingLocation {
         conversation_id: draft.conversation_id.clone(),
         message_id: draft.reply_to.clone(),

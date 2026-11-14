@@ -89,7 +89,7 @@ fn mock_daemon(path: std::path::PathBuf) -> DaemonFixture {
                         let mut discard = String::new();
                         let _ = reader.read_line(&mut discard);
                     }
-                    Some("messages.send") => {
+                    Some("messages.submit_draft") => {
                         sends_for_server.lock().unwrap().push(request.to_string());
                     }
                     _ => {}
@@ -143,6 +143,7 @@ fn send_queued_while_disconnected_fails_before_reconnect_and_is_not_replayed() {
                 text: "offline message".into(),
                 reply_to: None,
                 revision: 0,
+                pending_operation: None,
             }),
         })
         .unwrap();

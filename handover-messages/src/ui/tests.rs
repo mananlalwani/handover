@@ -846,17 +846,59 @@ fn fake_server(
                         &mut stream,
                         response("message_accepted", json!({"request_id":"op-fixture"})),
                     ),
-                    "messages.send" => {
-                        let text = request["text"].as_str().unwrap_or("").to_owned();
+                    "messages.submit_draft" => {
+                        let mut draft = request["draft"].clone();
+                        let key = draft["conversation_id"].to_string();
+                        let operation_id = format!("op-text-{}", sent.lock().unwrap().len() + 1);
+                        let text = draft["text"].as_str().unwrap_or("").to_owned();
                         sent.lock().unwrap().push(text);
-                        if fail_send.swap(false, Ordering::SeqCst) {
+                        draft["revision"] = json!(draft["revision"].as_u64().unwrap_or(0) + 1);
+                        draft["pending_operation"] = json!(operation_id);
+                        drafts.lock().unwrap().insert(key, draft.clone());
+                        let uncertain = fail_send.swap(false, Ordering::SeqCst);
+                        let operation = json!({"id":operation_id,"conversation_id":draft["conversation_id"],"kind":"text","created_at":1,"updated_at":1,"outcome":if uncertain { json!("unknown") } else { json!({"provider":"accepted"}) },"message_id":null});
+                        outgoing
+                            .lock()
+                            .unwrap()
+                            .insert(operation_id.clone(), operation.clone());
+                        if uncertain {
                             disconnect_subscription.store(true, Ordering::SeqCst);
                         } else {
                             send_json(
                                 &mut stream,
-                                response("message_accepted", json!({"request_id":"op-1"})),
+                                response("message_accepted", json!({"request_id":operation_id})),
                             );
+                            if let Some(writer) = subscription_writer.lock().unwrap().as_mut() {
+                                send_json(
+                                    writer,
+                                    response("outgoing_operation", json!({"operation":operation})),
+                                );
+                            }
                         }
+                    }
+                    "messages.resolve_draft_send" => {
+                        let mut draft = request["draft"].clone();
+                        let operation = outgoing
+                            .lock()
+                            .unwrap()
+                            .get(draft["pending_operation"].as_str().unwrap())
+                            .unwrap()
+                            .clone();
+                        assert_ne!(operation["outcome"], json!({"provider":"accepted"}));
+                        draft["pending_operation"] = Value::Null;
+                        draft["revision"] = json!(draft["revision"].as_u64().unwrap() + 1);
+                        if operation["outcome"]["provider"] == "sent" {
+                            draft["text"] = json!("");
+                            draft["reply_to"] = Value::Null;
+                        }
+                        drafts
+                            .lock()
+                            .unwrap()
+                            .insert(draft["conversation_id"].to_string(), draft.clone());
+                        send_json(
+                            &mut stream,
+                            response("message_draft", json!({"draft":draft})),
+                        );
                     }
                     "messages.read" => send_json(
                         &mut stream,
@@ -1634,6 +1676,7 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap()
     .downcast::<gtk::MenuButton>()
     .unwrap();
+    wait_for_layout(&ui.window);
     let row_size = (map_row.width(), map_row.height());
     map_actions.popup();
     let map_menu = map_actions.popover().expect("map message actions menu");
@@ -3140,30 +3183,14 @@ fn native_window_round_trips_real_frontend_actions() {
             )),
         );
     }
-    let keep_editing = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
-        widget
-            .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.label().as_deref() == Some("Keep editing"))
+    assert_eq!(text(&ui.compose), "caption to keep");
+    let retry = find_widget(ui.attachment_row.upcast_ref(), &|widget| {
+        widget.has_css_class("retry-attachment-send")
     })
     .unwrap()
     .downcast::<gtk::Button>()
     .unwrap();
-    keep_editing.emit_clicked();
-    pump_until(
-        || ui.send.is_sensitive() && !ui.attachment_busy(&id()),
-        "explicit review restores editing without retrying",
-    );
-    assert_eq!(
-        requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|request| is_media_send(request))
-            .count(),
-        1
-    );
-    assert_eq!(text(&ui.compose), "caption to keep");
-    ui.send.emit_clicked();
+    retry.emit_clicked();
     pump_until(
         || {
             !ui.attachment_saving(&id())
@@ -3171,9 +3198,14 @@ fn native_window_round_trips_real_frontend_actions() {
                     .attachment_state
                     .borrow()
                     .get(&id())
-                    .is_some_and(|state| state.pending_operation.is_some())
+                    .is_some_and(|state| {
+                        state
+                            .pending_operation
+                            .as_ref()
+                            .is_some_and(|operation| operation != &pending_op)
+                    })
         },
-        "explicit second send is tracked",
+        "explicit attachment retry submits the saved group once",
     );
     let operation_id = ui
         .attachment_state
@@ -3499,10 +3531,158 @@ fn native_window_round_trips_real_frontend_actions() {
         "Enter sends and does not insert a newline"
     );
     pump_until(
-        || sent.lock().unwrap().len() == 1 && text(&ui.compose).is_empty(),
-        "accepted send clears captured draft",
+        || {
+            sent.lock().unwrap().len() == 1
+                && ui.model.borrow().selected_draft().is_some_and(|draft| {
+                    draft.loaded && draft.value.pending_operation.as_deref() == Some("op-text-1")
+                })
+        },
+        "accepted text is durably bound before clearing the composer",
+    );
+    assert_eq!(
+        ui.model.borrow().selected_draft().unwrap().value.text,
+        "accepted text"
+    );
+    assert!(!ui.send.is_sensitive());
+    assert!(ui.outbox.is_visible());
+    assert!(
+        !ui.stage_file(id(), &staged_file),
+        "a submitted text draft cannot acquire attachments through paste or drop"
+    );
+    let original_writer = subscription_writer
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .try_clone()
+        .unwrap();
+    let recovered_text_window = Window::new(&app);
+    recovered_text_window.window.present();
+    pump_until(
+        || recovered_text_window.model.borrow().connected,
+        "text recovery window connects",
+    );
+    recovered_text_window.open(id(), None);
+    pump_until(
+        || {
+            recovered_text_window
+                .model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| {
+                    draft.loaded && draft.value.pending_operation.as_deref() == Some("op-text-1")
+                })
+        },
+        "replacement window restores the bound text send",
+    );
+    assert!(recovered_text_window.outbox.is_visible());
+    assert!(!recovered_text_window.send.is_sensitive());
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "reopening never resubmits text"
+    );
+    recovered_text_window.window.close();
+    drop(recovered_text_window);
+    pump_until(
+        || subscription_writer.lock().unwrap().is_none(),
+        "text recovery window closes normally",
+    );
+    *subscription_writer.lock().unwrap() = Some(original_writer);
+    ui.window.present();
+    let mut failed_text = outgoing.lock().unwrap().get("op-text-1").unwrap().clone();
+    failed_text["outcome"] = json!({"provider":{"failed":"rejected"}});
+    outgoing
+        .lock()
+        .unwrap()
+        .insert("op-text-1".into(), failed_text.clone());
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("outgoing_operation", json!({"operation":failed_text})),
+    );
+    pump_until(
+        || {
+            find_widget(ui.outbox.upcast_ref(), &|widget| {
+                widget.has_css_class("retry-send")
+            })
+            .is_some()
+        },
+        "failed text offers explicit retry",
+    );
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "failure never resubmits automatically"
+    );
+    if let Some(path) = std::env::var_os("HANDOVER_MESSAGES_TEST_SCREENSHOT") {
+        let path = PathBuf::from(path);
+        capture_fixture(
+            &ui.window,
+            path.with_file_name(format!(
+                "{}-text-failed.png",
+                path.file_stem().unwrap().to_string_lossy()
+            )),
+        );
+    }
+
+    let stale_draft = ui.model.borrow().selected_draft().unwrap().value.clone();
+    let stale_read = ui.sequence.get() + 1;
+    ui.sequence.set(stale_read);
+    ui.pending
+        .borrow_mut()
+        .insert(stale_read, Request::Draft(id()));
+    find_widget(ui.outbox.upcast_ref(), &|widget| {
+        widget.has_css_class("retry-send")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap()
+    .emit_clicked();
+    pump_until(
+        || {
+            sent.lock().unwrap().len() == 2
+                && ui.model.borrow().selected_draft().is_some_and(|draft| {
+                    draft.loaded && draft.value.pending_operation.as_deref() == Some("op-text-2")
+                })
+        },
+        "explicit retry submits the retained text once",
     );
     assert_eq!(sent.lock().unwrap()[0], "accepted text");
+    assert_eq!(sent.lock().unwrap()[1], "accepted text");
+    ui.event(Event::Reply(stale_read, Ok(Reply::Draft(stale_draft))));
+    assert_eq!(
+        ui.model
+            .borrow()
+            .selected_draft()
+            .unwrap()
+            .value
+            .pending_operation
+            .as_deref(),
+        Some("op-text-2"),
+        "a delayed read cannot restore a previous submission binding"
+    );
+
+    let mut confirmed = outgoing.lock().unwrap().get("op-text-2").unwrap().clone();
+    confirmed["outcome"] = json!({"provider":"sent"});
+    outgoing
+        .lock()
+        .unwrap()
+        .insert("op-text-2".into(), confirmed.clone());
+    send_json(
+        subscription_writer.lock().unwrap().as_mut().unwrap(),
+        response("outgoing_operation", json!({"operation":confirmed})),
+    );
+    pump_until(
+        || {
+            ui.model.borrow().selected_draft().is_some_and(|draft| {
+                draft.loaded
+                    && draft.value.pending_operation.is_none()
+                    && draft.value.text.is_empty()
+            })
+        },
+        "provider sent evidence clears retained text",
+    );
+    assert!(!ui.outbox.is_visible());
 
     send_json(
         subscription_writer.lock().unwrap().as_mut().unwrap(),
@@ -3521,7 +3701,7 @@ fn native_window_round_trips_real_frontend_actions() {
     ui.send.emit_clicked();
     pump_until(
         || {
-            sent.lock().unwrap().len() == 2
+            sent.lock().unwrap().len() == 3
                 && ui
                     .model
                     .borrow()
@@ -3531,16 +3711,19 @@ fn native_window_round_trips_real_frontend_actions() {
         },
         "uncertain send failure",
     );
-    assert_eq!(text(&ui.compose), "uncertain text");
+    assert_eq!(
+        ui.model.borrow().selected_draft().unwrap().value.text,
+        "uncertain text"
+    );
     let count = sent.lock().unwrap().len();
     pump_until(
         || subscriptions.load(Ordering::SeqCst) > previous_subscriptions,
         "IPC subscription reconnect after uncertain send",
     );
     assert_eq!(
-        text(&ui.compose),
+        ui.model.borrow().selected_draft().unwrap().value.text,
         "uncertain text",
-        "reconnect preserves the unsent editor text"
+        "reconnect preserves the submitted text"
     );
     pump_until(
         || ui.typing_indicator.text().is_empty(),
@@ -3551,6 +3734,40 @@ fn native_window_round_trips_real_frontend_actions() {
         count,
         "reconnect must not replay an uncertain send"
     );
+    pump_until(
+        || {
+            find_widget(ui.outbox.upcast_ref(), &|widget| {
+                widget.has_css_class("edit-send") && widget.is_sensitive()
+            })
+            .is_some()
+        },
+        "unknown text offers manual review",
+    );
+    assert!(
+        find_widget(ui.outbox.upcast_ref(), &|widget| widget
+            .has_css_class("retry-send"))
+        .is_none(),
+        "unknown sends have no direct retry"
+    );
+    let edit_unknown = find_widget(ui.outbox.upcast_ref(), &|widget| {
+        widget.has_css_class("edit-send")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    edit_unknown.emit_clicked();
+    pump_until(
+        || {
+            text(&ui.compose) == "uncertain text"
+                && ui
+                    .model
+                    .borrow()
+                    .selected_draft()
+                    .is_some_and(|draft| draft.value.pending_operation.is_none())
+        },
+        "manual review restores unknown text without submitting",
+    );
+    assert_eq!(sent.lock().unwrap().len(), count);
 
     // This uses the runner's fake helper on PATH. It never launches a real browser or account flow.
     ui.connect_account();

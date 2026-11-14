@@ -1,3 +1,4 @@
+mod send_activity;
 use crate::{
     connection::{self, Command, Event, Failure, Reply, Request},
     model::{Model, outcome_label},
@@ -62,6 +63,7 @@ pub struct Window {
     commands: tokio::sync::mpsc::Sender<Command>,
     pending: RefCell<BTreeMap<u64, Request>>,
     sequence: Cell<u64>,
+    draft_mutations: RefCell<BTreeMap<ConversationId, u64>>,
     search: gtk::SearchEntry,
     find: Rc<crate::conversation_find::Find>,
     accounts: gtk::DropDown,
@@ -90,6 +92,7 @@ pub struct Window {
     quotes: RefCell<BTreeMap<MessageId, Option<Message>>>,
     reaction_error: RefCell<Option<(MessageId, String)>>,
     thread: gtk::Box,
+    outbox: gtk::Box,
     scroll: gtk::ScrolledWindow,
     stack: gtk::Stack,
     compose: gtk::TextView,
@@ -359,6 +362,9 @@ impl Window {
         let clamp = adw::Clamp::new();
         clamp.set_maximum_size(840);
         clamp.set_tightening_threshold(600);
+        let outbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        outbox.add_css_class("send-activity");
+        outbox.set_visible(false);
         clamp.set_child(Some(&thread));
         clamp.set_vexpand(true);
         let scroll = gtk::ScrolledWindow::builder()
@@ -404,6 +410,11 @@ impl Window {
         unread_button.set_visible(false);
         viewport.add_overlay(&unread_button);
         body.append(&viewport);
+        let activity_clamp = adw::Clamp::new();
+        activity_clamp.set_maximum_size(840);
+        activity_clamp.set_tightening_threshold(600);
+        activity_clamp.set_child(Some(&outbox));
+        body.append(&activity_clamp);
         let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
         composer_area.add_css_class("composer-area");
         let composer_typing = gtk::Label::new(None);
@@ -518,6 +529,7 @@ impl Window {
             commands,
             pending: RefCell::new(BTreeMap::new()),
             sequence: Cell::new(0),
+            draft_mutations: RefCell::new(BTreeMap::new()),
             search,
             find,
             accounts,
@@ -546,6 +558,7 @@ impl Window {
             quotes: RefCell::new(BTreeMap::new()),
             reaction_error: RefCell::new(None),
             thread,
+            outbox,
             scroll,
             stack,
             compose,
@@ -1023,6 +1036,12 @@ impl Window {
     }
 
     fn request(&self, request: Request) -> bool {
+        if let Request::Draft(id) = &request
+            && self.pending.borrow().values().any(|request| matches!(request, Request::Send(draft) | Request::ResolveDraftSend(draft, _) if &draft.conversation_id == id)) {
+            // The mutation's reply refreshes this draft. A concurrent read could
+            // return its previous binding after the mutation has completed.
+            return false;
+        }
         if matches!(request, Request::Select(_))
             && self
                 .pending
@@ -1059,6 +1078,13 @@ impl Window {
         }
         if matches!(request, Request::Contacts) {
             self.contacts_request.set(Some(id));
+        }
+        if let Request::Send(draft) | Request::ResolveDraftSend(draft, _) = &request {
+            let mut mutations = self.draft_mutations.borrow_mut();
+            mutations.insert(draft.conversation_id.clone(), id);
+            while mutations.len() > 512 {
+                mutations.pop_first();
+            }
         }
         self.pending.borrow_mut().insert(id, request);
         true
@@ -1172,6 +1198,7 @@ impl Window {
         if cached_visible {
             self.to_end();
         }
+        self.render_send_activity();
         self.render_editor();
         self.render_attachments();
         self.render_status();
@@ -1423,6 +1450,15 @@ impl Window {
                 let Some(request) = self.pending.borrow_mut().remove(&id) else {
                     return;
                 };
+                if let Request::Draft(conversation) = &request
+                    && self
+                        .draft_mutations
+                        .borrow()
+                        .get(conversation)
+                        .is_some_and(|mutation| id < *mutation)
+                {
+                    return;
+                }
                 if matches!(
                     request,
                     Request::History(..)
@@ -1450,6 +1486,8 @@ impl Window {
             }
         }
         self.warm_previews();
+        self.reconcile_text_sends();
+        self.render_send_activity();
         self.render_editor();
         self.render_status();
         if self.closing.get() {
@@ -1518,6 +1556,16 @@ impl Window {
             }
             Reply::Draft(draft) => {
                 let id = draft.conversation_id.clone();
+                if matches!(request, Request::ResolveDraftSend(..)) {
+                    let mut model = self.model.borrow_mut();
+                    model.send_notices.remove(&id);
+                    model.notice = if draft.text.is_empty() {
+                        String::new()
+                    } else {
+                        model.last_sent.remove(&id);
+                        "Draft restored. Review it before sending again.".into()
+                    };
+                }
                 let previous_text = self
                     .model
                     .borrow()
@@ -1529,7 +1577,9 @@ impl Window {
                     self.model.borrow_mut().draft_saved(draft);
                     self.save_drafts();
                 } else {
-                    self.model.borrow_mut().draft_loaded(draft, false);
+                    self.model
+                        .borrow_mut()
+                        .draft_loaded(draft, matches!(request, Request::ResolveDraftSend(..)));
                     self.save_drafts();
                 }
                 if self
@@ -1542,6 +1592,12 @@ impl Window {
                     != previous_text
                 {
                     self.schedule_sidebar();
+                }
+                if matches!(request, Request::ResolveDraftSend(_, true))
+                    && self.model.borrow().selected.as_ref() == Some(&id)
+                {
+                    self.render_status();
+                    self.send_text();
                 }
             }
             Reply::Search(hits, more) => {
@@ -1718,10 +1774,20 @@ impl Window {
                         sent.text.clone(),
                         *revision,
                         false,
+                        false,
                     ));
                 } else if let Request::Send(sent) = request {
-                    self.model.borrow_mut().accepted(&sent);
-                    self.save_drafts();
+                    if let Some(draft) = self
+                        .model
+                        .borrow_mut()
+                        .drafts
+                        .get_mut(&sent.conversation_id)
+                    {
+                        draft.value.pending_operation = Some(operation.clone());
+                        draft.dirty = false;
+                        draft.loaded = false;
+                    }
+                    self.request(Request::Draft(sent.conversation_id));
                 }
                 self.render_attachments();
                 if let Some(id) = id {
@@ -1771,7 +1837,7 @@ impl Window {
                         self.attachments.borrow_mut().remove(&id);
                     }
                 }
-                if let Request::AttachmentSend(_, _, _, _, resolve) = &request {
+                if let Request::AttachmentSend(_, _, _, _, resolve, _) = &request {
                     self.attachment_binding.borrow_mut().remove(&id);
                     if *resolve {
                         if let Some(caption) = previous.and_then(|state| state.pending_caption) {
@@ -1781,6 +1847,7 @@ impl Window {
                                     text: caption,
                                     reply_to: None,
                                     revision: 0,
+                                    pending_operation: None,
                                 });
                             } else if self
                                 .model
@@ -1815,6 +1882,12 @@ impl Window {
                         .contains_key(&saved.conversation_id)
                 {
                     self.schedule_sidebar();
+                }
+                if matches!(request, Request::AttachmentSend(_, _, _, _, true, true))
+                    && self.model.borrow().selected.as_ref() == Some(&id)
+                {
+                    self.render_status();
+                    self.send_text();
                 }
             }
             Reply::Quote(id, message) => {
@@ -1955,6 +2028,21 @@ impl Window {
                     .insert(id, error.message);
             }
             Request::Previews(_) | Request::Contacts => {}
+            Request::ResolveDraftSend(sent, _) => {
+                if let Some(draft) = self
+                    .model
+                    .borrow_mut()
+                    .drafts
+                    .get_mut(&sent.conversation_id)
+                {
+                    draft.error = error.message;
+                }
+                if error.code.is_none()
+                    || error.code == Some(handover_ipc::ErrorCode::DraftConflict)
+                {
+                    self.request(Request::Draft(sent.conversation_id));
+                }
+            }
             Request::SaveDraft(sent) => {
                 if let Some(draft) = self
                     .model
@@ -1989,6 +2077,7 @@ impl Window {
                 } else {
                     error.message
                 };
+                self.request(Request::Draft(conversation_id.clone()));
                 let mut model = self.model.borrow_mut();
                 model
                     .send_notices
@@ -2742,6 +2831,8 @@ impl Window {
                         && !draft.saving
                         && !draft.conflict
                         && draft.error.is_empty()
+                        && draft.value.pending_operation.is_none()
+                        && !self.pending.borrow().values().any(|request| matches!(request, Request::Send(sent) if sent.conversation_id == draft.value.conversation_id))
                 })
                 .map(|draft| draft.value.clone())
                 .collect::<Vec<_>>()
@@ -2757,7 +2848,7 @@ impl Window {
             }
         }
     }
-    fn send_text(&self) {
+    fn send_text(self: &Rc<Self>) {
         if !self.send.is_sensitive() {
             return;
         }
@@ -2792,6 +2883,8 @@ impl Window {
             } else {
                 self.request(Request::Send(draft));
             }
+            self.render_send_activity();
+            self.render_editor();
             self.render_status();
         }
     }
@@ -3190,8 +3283,10 @@ impl Window {
     fn render_editor(&self) {
         self.updating.set(true);
         let model = self.model.borrow();
+        let submitting = self.pending.borrow().values().any(|request| matches!(request, Request::Send(draft) if Some(&draft.conversation_id) == model.selected.as_ref()));
         let text = model
             .selected_draft()
+            .filter(|draft| draft.value.pending_operation.is_none() && !submitting)
             .map_or("", |draft| draft.value.text.as_str());
         let buffer = self.compose.buffer();
         if buffer
@@ -3203,6 +3298,7 @@ impl Window {
         }
         let quote = model
             .selected_draft()
+            .filter(|draft| draft.value.pending_operation.is_none())
             .and_then(|draft| draft.value.reply_to.as_ref());
         self.reply.set_label(
             &quote
@@ -3382,11 +3478,15 @@ impl Window {
             .is_some_and(|id| self.attachment_busy(id));
         let editable = draft.is_some_and(|draft| draft.loaded);
         self.compose.set_sensitive(editable);
-        self.compose.set_editable(!pending && !attachment_busy);
-        self.placeholder
-            .set_visible(draft.is_none_or(|draft| draft.value.text.is_empty()));
-        self.reply_row
-            .set_visible(draft.is_some_and(|draft| draft.value.reply_to.is_some()));
+        let text_busy = draft.is_some_and(|draft| draft.value.pending_operation.is_some());
+        self.compose
+            .set_editable(!pending && !attachment_busy && !text_busy);
+        self.placeholder.set_visible(draft.is_none_or(|draft| {
+            draft.value.text.is_empty() || draft.value.pending_operation.is_some()
+        }));
+        self.reply_row.set_visible(draft.is_some_and(|draft| {
+            draft.value.reply_to.is_some() && draft.value.pending_operation.is_none()
+        }));
         let has_attachment = model
             .selected
             .as_ref()
@@ -3411,6 +3511,8 @@ impl Window {
                     (has_attachment || !draft.value.text.trim().is_empty())
                         && (!has_attachment || draft.value.reply_to.is_none())
                         && !draft.conflict
+                        && !draft.saving
+                        && draft.value.pending_operation.is_none()
                         && validate_message_draft(&draft.value).is_ok()
                         && (draft.value.reply_to.is_none()
                             || model.can(MessagingCapability::Replies))
@@ -3420,6 +3522,7 @@ impl Window {
             model.can(MessagingCapability::Media)
                 && !pending
                 && !attachment_busy
+                && !text_busy
                 && model.selected.as_ref().is_none_or(|id| {
                     self.attachments
                         .borrow()
@@ -3479,6 +3582,8 @@ impl Window {
             notice.clone()
         } else if !model.notice.is_empty() {
             model.notice.clone()
+        } else if draft.is_some_and(|draft| draft.value.pending_operation.is_some()) {
+            String::new()
         } else if let Some(sent) = sent {
             model
                 .outgoing
@@ -4402,6 +4507,8 @@ impl Window {
     fn stage_files(self: &Rc<Self>, id: ConversationId, files: &[gio::File]) -> bool {
         let model = self.model.borrow();
         if model.selected.as_ref() != Some(&id) || !model.can(MessagingCapability::Media)
+            || model.selected_draft().is_some_and(|draft| draft.value.pending_operation.is_some())
+            || self.pending.borrow().values().any(|request| matches!(request, Request::Send(draft) if draft.conversation_id == id))
             || !self.attachment_state.borrow().contains_key(&id) || self.attachment_loading(&id) || self.attachment_saving(&id) || self.attachment_busy(&id)
             || self.pending.borrow().values().any(|request| matches!(request, Request::Attachment(draft, ..) if draft.conversation_id == id)) { return false; }
         let mut current = self.attachments.borrow().get(&id).cloned();
@@ -4501,6 +4608,7 @@ impl Window {
                 String::new(),
                 revision,
                 true,
+                false,
             ));
         }
     }
@@ -4689,7 +4797,7 @@ impl Window {
             } else if review {
                 "Send outcome unknown. Check the conversation before sending again."
             } else if busy {
-                "Sending attachments…"
+                "Waiting for send confirmation…"
             } else if self.unsaved_attachment(&id) {
                 "Changes haven't been saved."
             } else {
@@ -4723,12 +4831,39 @@ impl Window {
                             String::new(),
                             revision,
                             true,
+                            false,
                         ));
                         this.render_attachments();
                         this.render_status();
                     }
                 });
                 footer.append(&edit);
+            }
+            if failed
+                && !saving
+                && let Some(operation) = state
+                    .as_ref()
+                    .and_then(|state| state.pending_operation.clone())
+            {
+                let retry = gtk::Button::with_label("Retry");
+                retry.add_css_class("retry-attachment-send");
+                retry.set_sensitive(self.model.borrow().connected);
+                let weak = Rc::downgrade(self);
+                let target = id.clone();
+                retry.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.request(Request::AttachmentSend(
+                            target.clone(),
+                            operation.clone(),
+                            String::new(),
+                            revision,
+                            true,
+                            true,
+                        ));
+                        this.render_attachments();
+                    }
+                });
+                footer.append(&retry);
             }
             if self.unsaved_attachment(&id) && !saving && !busy {
                 let retry = gtk::Button::with_label("Retry saving attachment");

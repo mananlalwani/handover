@@ -803,6 +803,7 @@ where
         | Method::MessagesSelect { .. }
         | Method::MessagesDraft { .. }
         | Method::MessagesSaveDraft { .. }
+        | Method::MessagesResolveDraftSend { .. }
         | Method::MessagesAttachmentSend { .. }
         | Method::MessagesAttachmentDraft { .. }
         | Method::MessagesSaveAttachmentDraft { .. }) => {
@@ -860,6 +861,9 @@ where
         Method::MessagesReadStates => ServerPayload::ReadStates {
             states: messaging_snapshot(state).read,
         },
+        Method::MessagesSubmitDraft { draft } => {
+            return messaging::handle_submit_draft(draft, writer, state, messaging, events).await;
+        }
         Method::MessagesSend {
             conversation_id,
             text,

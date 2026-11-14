@@ -14,6 +14,7 @@ use std::{
 use thiserror::Error;
 
 mod attachment_drafts;
+mod draft_sends;
 
 const MAX_DRAFTS: usize = 128;
 const MAX_DRAFT_BYTES: usize = 64 * 1024;
@@ -105,6 +106,15 @@ impl Workspace {
              CREATE TABLE IF NOT EXISTS attachment_drafts(account TEXT NOT NULL,thread TEXT NOT NULL,
                 payload TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(account,thread));",
         )?;
+        let has_pending = db
+            .prepare("PRAGMA table_info(drafts)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "pending_operation");
+        if !has_pending {
+            db.execute("ALTER TABLE drafts ADD COLUMN pending_operation TEXT", [])?;
+        }
         let workspace = Arc::new(Self {
             store: Mutex::new(Store::Database(db)),
             persistent: true,
@@ -161,6 +171,9 @@ impl Workspace {
         draft: MessageDraft,
     ) -> Result<MessageDraft, WorkspaceError> {
         validate_draft(&draft)?;
+        if draft.pending_operation.is_some() {
+            return Err(WorkspaceError::Conflict);
+        }
         let this = self.clone();
         tokio::task::spawn_blocking(move || this.save_blocking(draft))
             .await
@@ -211,7 +224,12 @@ impl Workspace {
                     .drafts
                     .get(&draft.conversation_id)
                     .map_or(0, |value| value.revision);
-                if existing != draft.revision {
+                if state
+                    .drafts
+                    .get(&draft.conversation_id)
+                    .is_some_and(|draft| draft.pending_operation.is_some())
+                    || existing != draft.revision
+                {
                     return Err(WorkspaceError::Conflict);
                 }
                 if draft.text.is_empty() && draft.reply_to.is_none() {
@@ -239,7 +257,7 @@ impl Workspace {
             Store::Database(db) => {
                 let tx = db.transaction().map_err(storage)?;
                 let current = load_draft_tx(&tx, &draft.conversation_id).map_err(storage)?;
-                if current.revision != draft.revision {
+                if current.pending_operation.is_some() || current.revision != draft.revision {
                     return Err(WorkspaceError::Conflict);
                 }
                 if draft.text.is_empty() && draft.reply_to.is_none() {
@@ -279,7 +297,7 @@ impl Workspace {
                     revision: revision as u64,
                     ..draft
                 };
-                tx.execute("INSERT INTO drafts VALUES(?1,?2,?3,?4,?5) ON CONFLICT(account,thread) DO UPDATE SET text=excluded.text,reply_to=excluded.reply_to,revision=excluded.revision", params![saved.conversation_id.account_id.as_str(), saved.conversation_id.local_id, saved.text, saved.reply_to.as_ref().map(|id| id.local_id.as_str()), revision]).map_err(storage)?;
+                tx.execute("INSERT INTO drafts(account,thread,text,reply_to,revision) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(account,thread) DO UPDATE SET text=excluded.text,reply_to=excluded.reply_to,revision=excluded.revision", params![saved.conversation_id.account_id.as_str(), saved.conversation_id.local_id, saved.text, saved.reply_to.as_ref().map(|id| id.local_id.as_str()), revision]).map_err(storage)?;
                 tx.commit().map_err(storage)?;
                 Ok(saved)
             }
@@ -310,6 +328,7 @@ fn empty_draft(id: ConversationId) -> MessageDraft {
         text: String::new(),
         reply_to: None,
         revision: 0,
+        pending_operation: None,
     }
 }
 
@@ -414,7 +433,7 @@ fn load_draft_tx(
 fn load_draft_query(db: &Connection, id: &ConversationId) -> Result<MessageDraft, Error> {
     Ok(db
         .query_row(
-            "SELECT text,reply_to,revision FROM drafts WHERE account=?1 AND thread=?2",
+            "SELECT text,reply_to,revision,pending_operation FROM drafts WHERE account=?1 AND thread=?2",
             params![id.account_id.as_str(), id.local_id],
             |row| {
                 let text: String = row.get(0)?;
@@ -425,6 +444,7 @@ fn load_draft_query(db: &Connection, id: &ConversationId) -> Result<MessageDraft
                     text,
                     reply_to: reply.map(|local_id| MessageId::new(id.clone(), local_id)),
                     revision: revision as u64,
+                    pending_operation: row.get(3)?,
                 })
             },
         )
@@ -446,6 +466,7 @@ mod tests {
             text: text.into(),
             reply_to: None,
             revision,
+            pending_operation: None,
         }
     }
 

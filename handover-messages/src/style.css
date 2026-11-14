@@ -124,3 +124,7 @@
 .handover-messages .unread-divider separator { background: alpha(@accent_bg_color, 0.3); min-height: 1px; }
 .handover-messages .message-context-bar { padding: 5px 10px; border-bottom: 1px solid alpha(currentColor, 0.08); }
 .handover-messages .message-context-bar label { font-size: 12px; }
+
+.handover-messages .send-activity { padding: 8px 30px; }
+.handover-messages .send-state { font-size: 0.85em; opacity: 0.8; }
+.handover-messages .submitted-message { opacity: 0.85; }

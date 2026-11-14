@@ -97,6 +97,7 @@ fn messaging_workspace_identifiers_must_stay_in_their_conversation() {
         text: "reply draft".into(),
         reply_to: Some(MessageId::new(other_conversation, "message-1")),
         revision: 0,
+        pending_operation: None,
     };
     assert!(validate_message_draft(&draft).is_err());
 }
@@ -108,6 +109,7 @@ fn message_drafts_enforce_text_bounds_and_control_characters() {
         text: "x".repeat(MAX_TEXT_CHARS),
         reply_to: None,
         revision: 0,
+        pending_operation: None,
     };
     assert!(validate_message_draft(&draft).is_ok());
 

@@ -268,6 +268,10 @@ pub enum Method {
     MessagesDraft { conversation_id: ConversationId },
     #[serde(rename = "messages.save_draft")]
     MessagesSaveDraft { draft: handover_core::MessageDraft },
+    #[serde(rename = "messages.submit_draft")]
+    MessagesSubmitDraft { draft: handover_core::MessageDraft },
+    #[serde(rename = "messages.resolve_draft_send")]
+    MessagesResolveDraftSend { draft: handover_core::MessageDraft },
     #[serde(rename = "messages.attachment_draft")]
     MessagesAttachmentDraft { conversation_id: ConversationId },
     #[serde(rename = "messages.save_attachment_draft")]
@@ -2038,6 +2042,27 @@ impl Client {
             ServerPayload::AccountAccepted {
                 account_id: accepted,
             } if accepted == account_id => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    /// Submit and durably bind a text draft before forwarding it to the backend.
+    pub async fn submit_message_draft(
+        &mut self,
+        draft: handover_core::MessageDraft,
+    ) -> Result<String, IpcError> {
+        self.send(Method::MessagesSubmitDraft { draft }).await?;
+        self.expect_message_accepted().await
+    }
+
+    pub async fn resolve_draft_send(
+        &mut self,
+        draft: handover_core::MessageDraft,
+    ) -> Result<handover_core::MessageDraft, IpcError> {
+        self.send(Method::MessagesResolveDraftSend { draft })
+            .await?;
+        match self.receive().await?.payload {
+            ServerPayload::MessageDraft { draft } => Ok(draft),
             payload => Err(unexpected(payload)),
         }
     }

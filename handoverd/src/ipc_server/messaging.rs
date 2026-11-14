@@ -48,6 +48,39 @@ pub(crate) async fn handle_setup_end<W: AsyncWrite + Unpin>(
     Ok(true)
 }
 
+pub(crate) async fn handle_submit_draft<W: AsyncWrite + Unpin>(
+    draft: handover_core::MessageDraft,
+    writer: &mut W,
+    state: &Arc<RwLock<StateStore>>,
+    messaging: &Option<MessagingHub>,
+    events: &broadcast::Sender<StateEvent>,
+) -> Result<bool, IpcError> {
+    let account = draft.conversation_id.account_id.as_str().to_string();
+    let conversation = draft.conversation_id.local_id.clone();
+    let text = draft.text.clone();
+    let reply_to = draft.reply_to.clone();
+    request_send(
+        MessagingCommand::SendText {
+            conversation_id: draft.conversation_id.clone(),
+            text: text.clone(),
+            reply_to: reply_to.clone(),
+        },
+        move |request_id| handover_gmessages::contract::HelperCommand::SendText {
+            request_id,
+            account,
+            conversation,
+            text,
+            reply_to: reply_to.map(|id| id.local_id),
+        },
+        writer,
+        state,
+        messaging,
+        events,
+        Some(draft),
+    )
+    .await
+}
+
 pub(crate) async fn handle_messaging_send<W>(
     conversation_id: ConversationId,
     text: String,
@@ -79,6 +112,7 @@ where
         state,
         messaging,
         events,
+        None,
     )
     .await
 }
@@ -177,6 +211,7 @@ where
         state,
         messaging,
         events,
+        None,
     )
     .await
 }
@@ -260,6 +295,7 @@ where
         state,
         messaging,
         events,
+        None,
     )
     .await
 }
@@ -952,6 +988,7 @@ async fn request_send<W>(
     state: &Arc<RwLock<StateStore>>,
     messaging: &Option<MessagingHub>,
     events: &broadcast::Sender<StateEvent>,
+    draft: Option<handover_core::MessageDraft>,
 ) -> Result<bool, IpcError>
 where
     W: AsyncWrite + Unpin,
@@ -998,6 +1035,33 @@ where
             return Ok(true);
         }
     };
+    if let Some(draft) = draft {
+        let workspace = state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .message_workspace
+            .clone();
+        if let Err(error) = workspace.draft_send(draft, id.clone(), None).await {
+            let (code, message) = match error {
+                crate::messaging_workspace::WorkspaceError::Conflict => (
+                    ErrorCode::DraftConflict,
+                    "Draft changed or is already submitted; reload it before continuing",
+                ),
+                crate::messaging_workspace::WorkspaceError::Invalid(_) => (
+                    ErrorCode::InvalidMessagingCommand,
+                    "Draft exceeds its limits or has invalid scope",
+                ),
+                _ => (
+                    ErrorCode::BackendUnavailable,
+                    "Draft could not be retained; send was not submitted",
+                ),
+            };
+            crate::outgoing::update(state, events, &id, OutgoingOutcome::Rejected, None);
+            let _ = crate::outgoing::persist(state).await;
+            write_json_line(writer, &command_error(code, message, &conversation_id)).await?;
+            return Ok(true);
+        }
+    }
     match hub.request_with_id(id.clone(), build).await {
         Ok(_) => {
             crate::outgoing::update(
@@ -2315,10 +2379,31 @@ mod messaging_live_tests {
         ));
 
         // Send text: accepted now, displayed later, never assumed.
+        let submit = handover_core::MessageDraft {
+            conversation_id: rcs.id.clone(),
+            text: "hello from the live test".into(),
+            reply_to: None,
+            revision: 0,
+            pending_operation: None,
+        };
         let request_id = client
-            .send_message_text(rcs.id.clone(), "hello from the live test".into())
+            .submit_message_draft(submit.clone())
             .await
             .expect("send accepted");
+        let bound_text = client.message_draft(rcs.id.clone()).await.unwrap();
+        assert_eq!(
+            bound_text.pending_operation.as_deref(),
+            Some(request_id.as_str())
+        );
+        assert_eq!(bound_text.text, submit.text);
+        assert!(
+            client.resolve_draft_send(bound_text.clone()).await.is_err(),
+            "acceptance alone cannot clear a text draft"
+        );
+        assert!(
+            client.submit_message_draft(submit).await.is_err(),
+            "a bound draft cannot be submitted twice"
+        );
         assert!(request_id.starts_with("send-"));
         // Drain the attested pipeline one stage per sync.
         for _ in 0..3 {
@@ -2328,6 +2413,9 @@ mod messaging_live_tests {
                 .expect("sync");
         }
         let displayed = wait_for_status(&mut subscription, "displayed").await;
+        let cleared = client.resolve_draft_send(bound_text).await.unwrap();
+        assert!(cleared.text.is_empty());
+        assert!(cleared.pending_operation.is_none());
         assert!(displayed.starts_with("gmessages:test:thread-rcs:out-"));
         let operations = client
             .messaging_outgoing()

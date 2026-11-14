@@ -195,6 +195,8 @@ accounts cannot access search results, context, or drafts.
 | `messages.select` | `location`, or null to clear | `messaging_workspace` with `workspace` |
 | `messages.draft` | `conversation_id` | `message_draft` with `draft` |
 | `messages.save_draft` | `draft` | `message_draft` with saved `draft` |
+| `messages.submit_draft` | `draft` | `message_accepted` with durable operation `request_id` |
+| `messages.resolve_draft_send` | bound `draft` | `message_draft` after clearing a confirmed sent draft or restoring it for review |
 
 Search reads saved history. Queries have at most 256 characters and 16 literal
 prefix terms. Each page contains at most 25 hits; offset is limited to 10,000.
@@ -218,17 +220,34 @@ the file before acknowledging the revision. Omit `file_url` to remove the saved
 selection. Removal retains a revision record, so stale initial writes cannot
 restore a cleared attachment. Revision conflicts use `draft_conflict`. Loading
 never sends a message, and saving does not imply a send was accepted. Clients
-clear only the captured attachment revision after file-send acceptance. Text and
+clear only the captured attachment revision after reported Sent, Delivered, or
+Displayed evidence. Text and
 attachment revisions are separate, so saving a caption does not overwrite a
 file selection. Workspace draft conversation IDs include attachment-only drafts.
 
 A workspace contains `location`, `draft_conversations`, and `persistent`. A
 location contains `conversation_id` and optional `message_id` in that same
 conversation. A draft contains `conversation_id`, `text`, optional `reply_to`,
-and `revision`. Save using the revision returned by the last load or save. An
+`revision`, and optional daemon-owned `pending_operation`. Save using the revision returned by the last load or save. An
 empty draft with no reply removes the row and returns revision 0. A conflicting
 revision returns `draft_conflict`; clients must reconcile rather than retrying
 the stale mutation. Nonempty drafts have monotonically assigned revisions.
+
+`messages.submit_draft` validates the text/reply command, records an outgoing
+operation, and binds the submitted draft in private workspace storage before
+forwarding the command. The submitted revision must match the current draft.
+A bound draft rejects saves and further draft submissions, including stale
+submissions from another window. Loading the draft restores the association
+without replaying it. The ordinary `messages.send` API remains available for
+clients that manage their own drafts.
+
+`messages.resolve_draft_send` requires the complete current bound draft. A
+reported Sent, Delivered, or Displayed outcome removes its captured text and
+reply. Rejected or failed sends release the binding and retain the text/reply
+for an explicit retry. Unknown or missing operations release it only for manual
+review; clients must never retry those automatically. Submitting and Accepted
+operations cannot be resolved. Resolution itself does not send a message.
+
 
 The Rust subscription object now retains the initial snapshot's
 `messaging_accounts`, `conversations`, `typing_states`, and `read_states` for

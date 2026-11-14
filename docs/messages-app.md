@@ -59,7 +59,8 @@ each file. More files can be added until the ten-file limit. Clipboard image
 preparation temporarily disables Send so the caption cannot be sent on its own.
 The files and caption remain saved while the send is pending. Only a reported
 Sent, Delivered, or Read status clears the selection. A failure or unknown outcome
-keeps it locked for review; Keep editing restores the draft without resending.
+keeps it locked for review. Retry submits the retained files and caption after a
+confirmed failure. Keep editing restores the draft without resending.
 The saved send association survives normal app and daemon restarts.
 Submissions are not retried or split into separate messages automatically.
 The daemon saves a private copy of each selected file alongside the draft.
@@ -140,6 +141,16 @@ A send acknowledgement means the daemon accepted the command. Delivery labels
 use later provider evidence. If the connection drops before the acknowledgement,
 the app retains the draft and warns that the outcome is unknown. It does not
 resend automatically. Check the conversation before sending again.
+
+Text sends keep a private saved draft bound to the daemon's send record before
+submission. A pending bubble stays above the composer until the backend reports
+Sent, Delivered, or Read. A late failure offers Retry or Keep editing. Reopening
+the app restores the pending bubble and never resubmits it. An unknown outcome
+offers Keep editing after you check the conversation, without an automatic retry.
+
+Attachment sends show indeterminate activity while submission is pending. The
+current backend does not report byte progress or cancel a submitted message.
+Remove files or Clear all before sending to cancel a selection.
 
 ## Search, links, and saving files
 

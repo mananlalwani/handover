@@ -11,8 +11,9 @@ pub enum Request {
     Select(Option<MessagingLocation>),
     Draft(ConversationId),
     SaveDraft(MessageDraft),
+    ResolveDraftSend(MessageDraft, bool),
     AttachmentDraft(ConversationId),
-    AttachmentSend(ConversationId, String, String, u64, bool),
+    AttachmentSend(ConversationId, String, String, u64, bool, bool),
     SaveAttachmentQueue(
         ConversationId,
         Vec<handover_core::messaging::AttachmentDraftSource>,
@@ -201,12 +202,15 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
             Request::SaveAttachmentQueue(id, files, revision) => {
                 Reply::AttachmentDraft(client.save_attachment_queue(id, files, revision).await?)
             }
-            Request::AttachmentSend(id, operation, caption, revision, resolve) => {
+            Request::AttachmentSend(id, operation, caption, revision, resolve, _) => {
                 Reply::AttachmentDraft(
                     client
                         .attachment_send(id, operation, caption, revision, resolve)
                         .await?,
                 )
+            }
+            Request::ResolveDraftSend(draft, _) => {
+                Reply::Draft(client.resolve_draft_send(draft).await?)
             }
             Request::SaveDraft(draft) => Reply::Draft(client.save_message_draft(draft).await?),
             Request::Search {
@@ -247,14 +251,7 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                 Reply::Accepted
             }
             Request::Previews(ids) => Reply::Previews(client.message_previews(ids).await?),
-            Request::Send(draft) => Reply::Sent(match draft.reply_to {
-                Some(id) => client.send_message_reply(id, draft.text).await?,
-                None => {
-                    client
-                        .send_message_text(draft.conversation_id, draft.text)
-                        .await?
-                }
-            }),
+            Request::Send(draft) => Reply::Sent(client.submit_message_draft(draft).await?),
             Request::Attachment(draft, urls, _) => {
                 let caption = (!draft.text.trim().is_empty()).then_some(draft.text);
                 Reply::Sent(if urls.len() == 1 {
