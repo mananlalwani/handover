@@ -1122,10 +1122,15 @@ Singleton {
             notifications = message.notifications || [];
             break;
         case "audio_streams":
-            audioStreams = message.streams || [];
+            audioStreams = (message.streams || []).map(incoming => {
+                const previous = audioStreams.find(status => status.device_id === incoming.device_id);
+                return previous && Number(previous.revision || 0) > Number(incoming.revision || 0) ? previous : incoming;
+            });
             break;
         case "audio_stream_updated":
-            audioStreams = audioStreams.filter(s => s.device_id !== message.status.device_id).concat([message.status]);
+            const previousAudio = audioStreams.find(s => s.device_id === message.status.device_id);
+            if (!previousAudio || Number(message.status.revision || 0) >= Number(previousAudio.revision || 0))
+                audioStreams = audioStreams.filter(s => s.device_id !== message.status.device_id).concat([message.status]);
             break;
         case "media":
             mediaSessions = message.media_sessions || [];

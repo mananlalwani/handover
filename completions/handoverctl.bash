@@ -76,6 +76,9 @@ _handoverctl() {
             handoverctl__subcmd__audio,help)
                 cmd="handoverctl__subcmd__audio__subcmd__help"
                 ;;
+            handoverctl__subcmd__audio,profile)
+                cmd="handoverctl__subcmd__audio__subcmd__profile"
+                ;;
             handoverctl__subcmd__audio,start)
                 cmd="handoverctl__subcmd__audio__subcmd__start"
                 ;;
@@ -87,6 +90,9 @@ _handoverctl() {
                 ;;
             handoverctl__subcmd__audio__subcmd__help,help)
                 cmd="handoverctl__subcmd__audio__subcmd__help__subcmd__help"
+                ;;
+            handoverctl__subcmd__audio__subcmd__help,profile)
+                cmd="handoverctl__subcmd__audio__subcmd__help__subcmd__profile"
                 ;;
             handoverctl__subcmd__audio__subcmd__help,start)
                 cmd="handoverctl__subcmd__audio__subcmd__help__subcmd__start"
@@ -231,6 +237,9 @@ _handoverctl() {
                 ;;
             handoverctl__subcmd__help,send-url)
                 cmd="handoverctl__subcmd__help__subcmd__send__subcmd__url"
+                ;;
+            handoverctl__subcmd__help__subcmd__audio,profile)
+                cmd="handoverctl__subcmd__help__subcmd__audio__subcmd__profile"
                 ;;
             handoverctl__subcmd__help__subcmd__audio,start)
                 cmd="handoverctl__subcmd__help__subcmd__audio__subcmd__start"
@@ -598,7 +607,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__audio)
-            opts="-h --help start stop status help"
+            opts="-h --help start stop status profile help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -612,7 +621,7 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__audio__subcmd__help)
-            opts="start stop status help"
+            opts="start stop status profile help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -626,6 +635,20 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__audio__subcmd__help__subcmd__help)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__audio__subcmd__help__subcmd__profile)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -670,6 +693,20 @@ _handoverctl() {
         handoverctl__subcmd__audio__subcmd__help__subcmd__stop)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__audio__subcmd__profile)
+            opts="-h --help balanced music low-delay"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -1214,8 +1251,22 @@ _handoverctl() {
             return 0
             ;;
         handoverctl__subcmd__help__subcmd__audio)
-            opts="start stop status"
+            opts="start stop status profile"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        handoverctl__subcmd__help__subcmd__audio__subcmd__profile)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi

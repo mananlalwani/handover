@@ -16,6 +16,11 @@ import org.webrtc.MediaConstraints
 import org.webrtc.MediaStreamTrack
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.SystemClock
+import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Receives a one-way laptop audio WebRTC offer. Signaling remains on NativeTransport. */
@@ -24,14 +29,23 @@ internal class LaptopRealtimeAudio(
     private val sendAnswer: (id: String, sdp: String) -> Unit,
     private val playing: (id: String) -> Unit,
     private val stopped: (id: String) -> Unit,
+    private val stateChanged: (id: String, state: String) -> Unit,
+    private val diagnostics: (id: String, value: JSONObject) -> Unit,
 ) {
     private val appContext = context.applicationContext
     private var active: Session? = null
 
-    private inner class Session(val id: String) {
+    private inner class Session(val id: String, val profile: String) {
         val executor = Executors.newSingleThreadExecutor { task ->
             Thread(task, "handover-webrtc-$id").apply { isDaemon = true }
         }
+        val observations = Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, "handover-audio-stats").apply { isDaemon = true }
+        }
+        val stats = LaptopAudioDiagnostics()
+        val statsInFlight = AtomicBoolean(false)
+        @Volatile var disconnectedAt = 0L
+        @Volatile var outputStoppedAt = 0L
         val closed = AtomicBoolean(false)
         val answered = AtomicBoolean(false)
         val peerConnected = AtomicBoolean(false)
@@ -43,7 +57,7 @@ internal class LaptopRealtimeAudio(
         var peer: PeerConnection? = null
         var wifiLock: WifiManager.WifiLock? = null
         var focusRequest: AudioFocusRequest? = null
-        var focusHeld = false
+        @Volatile var focusHeld = false
 
         fun current(): Boolean = !closed.get() && synchronized(this@LaptopRealtimeAudio) { active === this }
 
@@ -52,6 +66,7 @@ internal class LaptopRealtimeAudio(
             synchronized(this@LaptopRealtimeAudio) {
                 if (active === this) active = null
             }
+            observations.shutdownNow()
             val cleanup = Runnable { dispose() }
             try {
                 executor.execute(cleanup)
@@ -75,7 +90,7 @@ internal class LaptopRealtimeAudio(
             runCatching { audioModule?.release() }
             audioModule = null
             val manager = appContext.getSystemService(AudioManager::class.java)
-            runCatching { if (focusHeld && Build.VERSION.SDK_INT >= 26) focusRequest?.let(manager::abandonAudioFocusRequest) }
+            runCatching { if (Build.VERSION.SDK_INT >= 26) focusRequest?.let(manager::abandonAudioFocusRequest) }
             focusHeld = false
             runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
             wifiLock = null
@@ -85,7 +100,10 @@ internal class LaptopRealtimeAudio(
             if (!current()) return
             if (offerSdp.isBlank() || offerSdp.length > MAX_SDP_CHARS) return finish()
             try {
-                acquireResources() ?: return finish()
+                if (!acquireResources()) {
+                    stateChanged(id, "focus_unavailable")
+                    return finish()
+                }
                 check(current())
                 synchronized(factoryLock) {
                     if (!factoryInitialized) {
@@ -110,12 +128,17 @@ internal class LaptopRealtimeAudio(
                     .setAudioTrackStateCallback(object : JavaAudioDeviceModule.AudioTrackStateCallback {
                         override fun onWebRtcAudioTrackStart() {
                             audioTrackStarted.set(true)
+                            outputStoppedAt = 0L
                             maybeReportPlaying()
                         }
 
                         override fun onWebRtcAudioTrackStop() {
-                            // A playout stop can be transient during route changes;
-                            // report terminal stop only when this session is disposed.
+                            audioTrackStarted.set(false)
+                            reportedPlaying.set(false)
+                            if (current() && focusHeld) {
+                                if (outputStoppedAt == 0L) outputStoppedAt = SystemClock.elapsedRealtime()
+                                stateChanged(id, "output_suspended")
+                            }
                         }
                     })
                     .createAudioDeviceModule()
@@ -128,8 +151,7 @@ internal class LaptopRealtimeAudio(
                 val observer = object : PeerConnection.Observer {
                     override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
                     override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
-                        if (state == PeerConnection.IceConnectionState.FAILED ||
-                            state == PeerConnection.IceConnectionState.CLOSED) finish()
+                        if (state == PeerConnection.IceConnectionState.FAILED) fail("connection failed")
                     }
                     override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
                     override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
@@ -146,18 +168,26 @@ internal class LaptopRealtimeAudio(
                     override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
                         if (state == PeerConnection.PeerConnectionState.CONNECTED) {
                             peerConnected.set(true)
+                            disconnectedAt = 0L
                             maybeReportPlaying()
                         } else if (state == PeerConnection.PeerConnectionState.DISCONNECTED) {
                             peerConnected.set(false)
+                            reportedPlaying.set(false)
+                            if (disconnectedAt == 0L) disconnectedAt = SystemClock.elapsedRealtime()
+                            if (current()) stateChanged(id, "reconnecting")
                         }
-                        if (state == PeerConnection.PeerConnectionState.FAILED ||
-                            state == PeerConnection.PeerConnectionState.CLOSED) finish()
+                        if (state == PeerConnection.PeerConnectionState.FAILED) fail("connection failed")
                     }
                     override fun onSelectedCandidatePairChanged(event: org.webrtc.CandidatePairChangeEvent) = Unit
                 }
-                val createdPeer = createdFactory.createPeerConnection(PeerConnection.RTCConfiguration(emptyList()), observer)
+                val rtcConfig = PeerConnection.RTCConfiguration(emptyList()).apply {
+                    audioJitterBufferFastAccelerate = profile == "low_delay"
+                }
+                val createdPeer = createdFactory.createPeerConnection(rtcConfig, observer)
                     ?: error("PeerConnection unavailable")
                 peer = createdPeer
+                createdPeer.setAudioPlayout(focusHeld)
+                observations.scheduleWithFixedDelay({ observe() }, 2, 2, TimeUnit.SECONDS)
                 createdPeer.setRemoteDescription(object : SdpObserver {
                     override fun onCreateSuccess(description: SessionDescription) = Unit
                     override fun onSetSuccess() {
@@ -188,6 +218,7 @@ internal class LaptopRealtimeAudio(
                 }, SessionDescription(SessionDescription.Type.OFFER, offerSdp))
             } catch (error: Exception) {
                 Log.w(TAG, "WebRTC audio setup failed: ${error.javaClass.simpleName}")
+                if (current()) stateChanged(id, "failed")
                 finish()
             }
         }
@@ -206,10 +237,23 @@ internal class LaptopRealtimeAudio(
             if (Build.VERSION.SDK_INT >= 26) {
                 val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(MEDIA_ATTRIBUTES)
-                    .setOnAudioFocusChangeListener { change -> if (change != AudioManager.AUDIOFOCUS_GAIN) finish() }
+                    .setAcceptsDelayedFocusGain(true)
+                    .setWillPauseWhenDucked(true)
+                    .setOnAudioFocusChangeListener { change ->
+                        if (!current()) return@setOnAudioFocusChangeListener
+                        focusHeld = change == AudioManager.AUDIOFOCUS_GAIN
+                        runCatching { peer?.setAudioPlayout(focusHeld) }
+                        if (focusHeld) maybeReportPlaying() else {
+                            reportedPlaying.set(false)
+                            stateChanged(id, "suspended")
+                        }
+                    }
                     .build()
                 focusRequest = request
-                focusHeld = manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                val result = manager.requestAudioFocus(request)
+                focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                if (!focusHeld) stateChanged(id, "suspended")
+                return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED || result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED
             } else {
                 @Suppress("DEPRECATION")
                 focusHeld = manager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
@@ -224,24 +268,71 @@ internal class LaptopRealtimeAudio(
         }
 
         private fun maybeReportPlaying() {
-            if (current() && peerConnected.get() && audioTrackStarted.get() &&
+            if (current() && focusHeld && peerConnected.get() && audioTrackStarted.get() &&
                 reportedPlaying.compareAndSet(false, true)) {
                 runCatching { playing(id) }
             }
         }
 
+        fun resumeAfterCall() {
+            if (!current() || focusHeld || Build.VERSION.SDK_INT < 26) return
+            val request = focusRequest ?: return
+            val manager = appContext.getSystemService(AudioManager::class.java)
+            val result = manager.requestAudioFocus(request)
+            if (!current()) return
+            focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            runCatching { peer?.setAudioPlayout(focusHeld) }
+            if (focusHeld) maybeReportPlaying()
+        }
+
+        private fun observe() {
+            if (!current()) return
+            if (disconnectedAt != 0L && SystemClock.elapsedRealtime() - disconnectedAt >= 6_000) {
+                fail("connection recovery timed out")
+                return
+            }
+            if (outputStoppedAt != 0L && focusHeld && SystemClock.elapsedRealtime() - outputStoppedAt >= 6_000) {
+                fail("audio output recovery timed out")
+                return
+            }
+            if (!peerConnected.get() || !statsInFlight.compareAndSet(false, true)) return
+            val connection = peer ?: run { statsInFlight.set(false); return }
+            runCatching {
+                connection.getStats { report ->
+                    try {
+                        if (!current()) return@getStats
+                        val connectivity = appContext.getSystemService(ConnectivityManager::class.java)
+                        val vpn = connectivity.allNetworks.filter { network ->
+                            connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                        }.flatMap { connectivity.getLinkProperties(it)?.linkAddresses.orEmpty() }
+                            .mapNotNull { it.address.hostAddress?.lowercase() }.toSet()
+                        val values = report.statsMap.mapValues { (_, value) -> LaptopAudioDiagnostics.Stat(value.type, value.members) }
+                        diagnostics(id, stats.sample(values, report.timestampUs, vpn))
+                    } catch (_: Exception) {
+                        // A missing observation must not end audio playback.
+                    } finally { statsInFlight.set(false) }
+                }
+            }.onFailure { statsInFlight.set(false) }
+        }
+
         private fun fail(reason: String) {
             Log.w(TAG, "WebRTC audio ended: $reason")
+            if (current()) stateChanged(id, "failed")
             finish()
         }
     }
 
-    @Synchronized fun acceptOffer(id: String, sdp: String) {
+    @Synchronized fun acceptOffer(id: String, sdp: String, profile: String = "balanced") {
         if (!NativeTransport.isTransferId(id)) return
         active?.finish()
-        val session = Session(id)
+        val session = Session(id, profile)
         active = session
         session.executor.execute { session.start(sdp) }
+    }
+
+    fun resumeAfterCall() {
+        val session = synchronized(this) { active }
+        session?.resumeAfterCall()
     }
 
     @Synchronized fun stop(id: String? = null) {

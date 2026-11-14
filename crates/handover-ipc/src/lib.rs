@@ -54,6 +54,11 @@ impl Request {
 pub enum Method {
     #[serde(rename = "audio.start")]
     AudioStart { device_id: DeviceId },
+    #[serde(rename = "audio.profile")]
+    AudioProfile {
+        device_id: DeviceId,
+        profile: handover_core::AudioProfile,
+    },
     #[serde(rename = "audio.stop")]
     AudioStop { device_id: DeviceId },
     #[serde(rename = "audio.list")]
@@ -1040,6 +1045,19 @@ impl Client {
         self.send(Method::AudioList).await?;
         match self.receive().await?.payload {
             ServerPayload::AudioStreams { streams } => Ok(streams),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn audio_profile(
+        &mut self,
+        device_id: DeviceId,
+        profile: handover_core::AudioProfile,
+    ) -> Result<(), IpcError> {
+        self.send(Method::AudioProfile { device_id, profile })
+            .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
             payload => Err(unexpected(payload)),
         }
     }

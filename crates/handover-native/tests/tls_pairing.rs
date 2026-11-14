@@ -563,6 +563,108 @@ fn phone_can_start_and_pause_its_stream_without_disconnect_or_restart() {
 }
 
 #[test]
+fn managed_audio_reports_confirmed_state_and_cancels_recovery_after_manual_pause() {
+    fn receive(peer: &mut TlsPeer, kind: &str) -> serde_json::Value {
+        loop {
+            let message = recv(peer);
+            if message["type"] == kind {
+                return message;
+            }
+            if message["type"] == "ping" {
+                send(peer, serde_json::json!({"type":"pong","protocol":1}));
+            }
+        }
+    }
+    let harness = harness();
+    let identity = test_identity();
+    let mut peer = connect(harness.port, &identity);
+    pair_client(&harness, &identity, &mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_ready","protocol":1,"managed":true}),
+    );
+    let status = receive(&mut peer, "audio_status");
+    assert_eq!(status["status"]["state"], "idle");
+    assert_eq!(status["status"]["enabled"], false);
+    let request = "11111111111111111111111111111111";
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":true,"request_id":request}),
+    );
+    let offer = receive(&mut peer, "audio_offer");
+    let stream = offer["stream_id"].as_str().unwrap();
+    let result = receive(&mut peer, "audio_stream_result");
+    assert_eq!(result["request_id"], request);
+    assert_eq!(result["accepted"], true);
+    // An accepted start is not a claim that audio is playing.
+    assert_eq!(
+        harness.backend.audio_streams()[0].state,
+        handover_core::AudioStreamPhase::Starting
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_receiver_state","protocol":1,"stream_id":stream,"state":"suspended"}),
+    );
+    assert_eq!(
+        receive(&mut peer, "audio_status")["status"]["state"],
+        "suspended"
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_diagnostics","protocol":1,"stream_id":"stale","diagnostics":{"route":"unknown","round_trip_ms":45}}),
+    );
+    send(&mut peer, serde_json::json!({"type":"ping","protocol":1}));
+    receive(&mut peer, "pong");
+    assert!(harness.backend.audio_streams()[0].diagnostics.is_none());
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_diagnostics","protocol":1,"stream_id":stream,"diagnostics":{"route":"vpn","transport":"udp","round_trip_ms":45,"packets_received":10}}),
+    );
+    let status = receive(&mut peer, "audio_status");
+    assert_eq!(
+        status["status"]["diagnostics"]["receiver"]["round_trip_ms"],
+        45
+    );
+    assert!(
+        status["status"]["diagnostics"]["receiver"]["updated_at_ms"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_receiver_state","protocol":1,"stream_id":stream,"state":"failed"}),
+    );
+    let status = receive(&mut peer, "audio_status");
+    assert_eq!(status["status"]["state"], "reconnecting");
+    assert_eq!(status["status"]["enabled"], true);
+    assert_eq!(status["status"]["retry_attempt"], 1);
+    let stop = "22222222222222222222222222222222";
+    send(
+        &mut peer,
+        serde_json::json!({"type":"audio_stream_set","protocol":1,"enabled":false,"request_id":stop}),
+    );
+    let status = receive(&mut peer, "audio_status");
+    assert_eq!(status["status"]["state"], "idle");
+    assert_eq!(status["status"]["enabled"], false);
+    let result = receive(&mut peer, "audio_stream_result");
+    assert_eq!(result["request_id"], stop);
+    assert_eq!(result["accepted"], true);
+    std::thread::sleep(Duration::from_millis(1100));
+    send(&mut peer, serde_json::json!({"type":"ping","protocol":1}));
+    loop {
+        let message = recv(&mut peer);
+        assert_ne!(
+            message["type"], "audio_offer",
+            "a manual pause must cancel the pending recovery"
+        );
+        if message["type"] == "pong" {
+            break;
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires parec and a live local PulseAudio or PipeWire output"]
 fn audio_stream_captures_pcm_over_a_separate_authenticated_socket() {
     use handover_core::AudioStreamPhase;

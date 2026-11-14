@@ -52,6 +52,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
+            [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Set the stream quality/latency preset for one device')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -70,10 +71,16 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
+        'handoverctl;audio;profile' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
         'handoverctl;audio;help' {
             [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
+            [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Set the stream quality/latency preset for one device')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -84,6 +91,9 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;audio;help;status' {
+            break
+        }
+        'handoverctl;audio;help;profile' {
             break
         }
         'handoverctl;audio;help;help' {
@@ -676,6 +686,7 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
+            [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Set the stream quality/latency preset for one device')
             break
         }
         'handoverctl;help;audio;start' {
@@ -685,6 +696,9 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help;audio;status' {
+            break
+        }
+        'handoverctl;help;audio;profile' {
             break
         }
         'handoverctl;help;devices' {

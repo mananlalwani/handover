@@ -528,22 +528,8 @@ pub enum StateEvent {
     Contacts(ContactsEvent),
 }
 
-/// Playback reported by the receiving device. Streaming means its audio
-/// output started, not that sound reached the listener.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct AudioStreamStatus {
-    pub device_id: DeviceId,
-    pub state: AudioStreamPhase,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AudioStreamPhase {
-    Idle,
-    Starting,
-    Streaming,
-    Failed,
-}
+mod audio;
+pub use audio::*;
 
 /// A media player identity scoped to its source device.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

@@ -48,6 +48,7 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand start 'Route all laptop app audio to the phone and silence laptop outputs'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
+            cand profile 'Set the stream quality/latency preset for one device'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'handoverctl;audio;start'= {
@@ -62,10 +63,15 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand -h 'Print help'
             cand --help 'Print help'
         }
+        &'handoverctl;audio;profile'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
+        }
         &'handoverctl;audio;help'= {
             cand start 'Route all laptop app audio to the phone and silence laptop outputs'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
+            cand profile 'Set the stream quality/latency preset for one device'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'handoverctl;audio;help;start'= {
@@ -73,6 +79,8 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;audio;help;stop'= {
         }
         &'handoverctl;audio;help;status'= {
+        }
+        &'handoverctl;audio;help;profile'= {
         }
         &'handoverctl;audio;help;help'= {
         }
@@ -549,12 +557,15 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand start 'Route all laptop app audio to the phone and silence laptop outputs'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
+            cand profile 'Set the stream quality/latency preset for one device'
         }
         &'handoverctl;help;audio;start'= {
         }
         &'handoverctl;help;audio;stop'= {
         }
         &'handoverctl;help;audio;status'= {
+        }
+        &'handoverctl;help;audio;profile'= {
         }
         &'handoverctl;help;devices'= {
         }

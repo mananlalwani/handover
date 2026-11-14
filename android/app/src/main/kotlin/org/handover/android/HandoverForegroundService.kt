@@ -49,7 +49,7 @@ class HandoverForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = when (intent?.action) {
-        ACTION_STOP_AUDIO -> transport.stopLaptopAudio().let { START_STICKY }
+        ACTION_STOP_AUDIO -> transport.setLaptopAudioStreaming(false).let { START_STICKY }
         ACTION_PAIR -> transport.approvePair(intent.getStringExtra(EXTRA_CODE).orEmpty()).let { START_STICKY }
         ACTION_REVOKE -> transport.revoke().let { START_STICKY }
         ACTION_CONNECT -> transport.connectTo(intent.getStringExtra(EXTRA_ADDRESS).orEmpty()).let { START_STICKY }
@@ -101,7 +101,11 @@ class HandoverForegroundService : Service() {
     }
 
     private fun notification(): Notification = Notification.Builder(this, CHANNEL_ID)
-        .setContentTitle(if (laptopAudioId != null) "Playing laptop audio" else "Handover is ready")
+        .setContentTitle(if (laptopAudioId == null) "Handover is ready" else when (activeTransport?.laptopAudioStatus()?.optString("state")) {
+            "suspended" -> "Laptop audio interrupted"
+            "reconnecting" -> "Reconnecting laptop audio"
+            else -> "Playing laptop audio"
+        })
         .setContentText(if (laptopAudioId != null) "Using the phone media output" else "Waiting for a trusted desktop connection")
         .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
         .setOngoing(true)
@@ -140,6 +144,13 @@ class HandoverForegroundService : Service() {
             activeTransport?.presentationControl(action, deltaX, deltaY)
         }
         fun volume(action: String) { activeTransport?.volumeControl(action) }
+        fun laptopAudioStatus(): org.json.JSONObject? = activeTransport?.laptopAudioStatus()
+        fun setLaptopAudioProfile(profile: String): Boolean = activeTransport?.setLaptopAudioProfile(profile) == true
+        internal fun audioStatusChanged() {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                activeService?.let { it.updateAudioNotification(it.laptopAudioId) }
+            }
+        }
         fun setLaptopAudioStreaming(enabled: Boolean): Boolean =
             activeTransport?.setLaptopAudioStreaming(enabled) == true
         fun toggleLaptopPlayback(): Boolean {

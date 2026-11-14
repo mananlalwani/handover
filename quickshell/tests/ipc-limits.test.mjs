@@ -330,3 +330,17 @@ test('an excessive query response closes only that request and discards its part
     assert.deepEqual(Array.from(c.contacts, item => item.id), ['retained']);
     assert.deepEqual(reconnects, []);
 });
+
+test('late audio updates and list replies cannot roll back a newer stream state', () => {
+    const { c } = service();
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_stream_updated',
+        status: { device_id: 'phone', state: 'streaming', enabled: true, revision: 10 } }));
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_stream_updated',
+        status: { device_id: 'phone', state: 'starting', enabled: true, revision: 9 } }));
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_streams',
+        streams: [{ device_id: 'phone', state: 'starting', enabled: true, revision: 8 }] }));
+    assert.equal(c.audioStreams[0].state, 'streaming');
+    assert.equal(c.audioStreams[0].revision, 10);
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_streams', streams: [] }));
+    assert.equal(c.audioStreams.length, 0, 'an authoritative removal must still clear the view');
+});

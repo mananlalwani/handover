@@ -104,9 +104,36 @@ pub(crate) struct WireFileEntry {
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Message {
+    AudioStatus {
+        protocol: u32,
+        status: handover_core::AudioStreamStatus,
+    },
+    AudioProfileSet {
+        protocol: u32,
+        profile: handover_core::AudioProfile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+    AudioStreamResult {
+        protocol: u32,
+        request_id: String,
+        accepted: bool,
+    },
+    AudioReceiverState {
+        protocol: u32,
+        stream_id: String,
+        state: AudioReceiverState,
+    },
+    AudioDiagnostics {
+        protocol: u32,
+        stream_id: String,
+        diagnostics: handover_core::AudioReceiverDiagnostics,
+    },
     AudioStreamSet {
         protocol: u32,
         enabled: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     AudioPlaybackToggle {
         protocol: u32,
@@ -119,11 +146,17 @@ pub(crate) enum Message {
         protocol: u32,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         realtime: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        managed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pause_request: Option<String>,
     },
     AudioRtcOffer {
         protocol: u32,
         stream_id: String,
         sdp: String,
+        #[serde(default)]
+        profile: handover_core::AudioProfile,
     },
     AudioRtcAnswer {
         protocol: u32,
@@ -526,7 +559,12 @@ fn is_true(value: &bool) -> bool {
 impl Message {
     pub(crate) fn version(&self) -> u32 {
         match self {
-            Self::AudioStreamSet { protocol, .. }
+            Self::AudioStatus { protocol, .. }
+            | Self::AudioStreamResult { protocol, .. }
+            | Self::AudioProfileSet { protocol, .. }
+            | Self::AudioReceiverState { protocol, .. }
+            | Self::AudioDiagnostics { protocol, .. }
+            | Self::AudioStreamSet { protocol, .. }
             | Self::AudioPlaybackToggle { protocol, .. }
             | Self::AudioFormat { protocol }
             | Self::AudioReady { protocol, .. }
@@ -592,4 +630,16 @@ impl Message {
             | Self::Pong { protocol } => *protocol,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AudioReceiverState {
+    Suspended,
+    Playing,
+    Reconnecting,
+    Disconnected,
+    Failed,
+    FocusUnavailable,
+    OutputSuspended,
 }

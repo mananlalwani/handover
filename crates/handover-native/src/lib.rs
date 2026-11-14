@@ -177,11 +177,10 @@ impl Drop for Session<'_> {
             }
             let mut pending_events = Vec::new();
             inner.active.remove(&self.peer.id);
-            if let Some(audio) = inner.audio.remove(&self.peer.id) {
-                audio.cancel();
-                pending_events.push(StateEvent::AudioStream(
-                    audio.status(&self.peer.id, handover_core::AudioStreamPhase::Idle),
-                ));
+            if let Some(audio) = inner.audio.get_mut(&self.peer.id) {
+                audio.disconnected();
+                let status = audio.current_status(&self.peer.id);
+                pending_events.push(StateEvent::AudioStream(status));
             }
             let abandoned = inner.outbox.remove(&self.peer.id).unwrap_or_default();
             for message in &abandoned {

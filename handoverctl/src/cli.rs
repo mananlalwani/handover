@@ -536,4 +536,21 @@ pub enum AudioCommand {
     Stop { device: String },
     /// Show receivers and their reported playback state.
     Status,
+    /// Set the stream quality/latency preset for one device.
+    Profile {
+        /// Device name (when unique) or device ID.
+        #[arg(value_name = "DEVICE")]
+        device: String,
+        /// One of: balanced, music, low-delay.
+        #[arg(value_enum, value_name = "PROFILE")]
+        profile: AudioProfileArg,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum AudioProfileArg {
+    Balanced,
+    Music,
+    #[value(name = "low-delay")]
+    LowDelay,
 }

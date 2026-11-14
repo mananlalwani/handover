@@ -95,9 +95,24 @@ Prints current normalized call state for one device: call phase and
 available controls. Prints a notice when no call state is attested for
 the device.
 
+## audio
+
+```
+handoverctl audio start DEVICE
+handoverctl audio stop DEVICE
+handoverctl audio profile DEVICE balanced|music|low-delay
+handoverctl audio status
+```
+
+Start, stop, and profile commands report acceptance. `status` prints the
+daemon's stream state, enabled intent, profile, revision, reconnect count,
+failure, and available sender or receiver measurements. Missing receiver
+metrics are shown as unmeasured. RTT and jitter-buffer values describe the
+network path; they do not measure end-to-end audio or Bluetooth output delay.
+
 ## Full command list
 
-Top level: `devices`, `native`, `notifications`, `contacts`, `media`,
+Top level: `devices`, `audio`, `native`, `notifications`, `contacts`, `media`,
 `monitor`, `send-url`, `notify`, `clipboard`, `send-file`, `screensaver`,
 `clipboard-mirror`, `clipboard-history`, `cancel-share`, `custom`,
 `calls`, `messages`.
@@ -108,6 +123,8 @@ Native: `peers`, `pending`, `pair`, `unpair`, `ping`, `ring`, `lock`,
 Contacts: `list`, `sync`.
 
 Media: `play`, `pause`, `play-pause`, `next`, `previous`.
+
+Audio: `start`, `stop`, `profile`, `status`.
 
 Clipboard history: `list`, `save`, `pin`, `unpin`, `copy`, `clear`.
 

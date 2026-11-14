@@ -39,6 +39,33 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
         return
     }
     when (message.optString("type")) {
+        "audio_stream_result" -> {
+            if (serverFingerprint == null) return
+            val request = message.optString("request_id")
+            val accepted = message.optBoolean("accepted", false)
+            if (request == preferences.getString("audio_pause_request", null) && accepted) {
+                preferences.edit().remove("audio_pause_request").apply()
+            }
+            if (request == lastAudioRequestId) {
+                audioRequestNotice = if (accepted) "Laptop accepted the request; stream state is shown separately."
+                    else "Laptop rejected the request. Check the connection and audio support."
+                broadcast(NativeTransport.ACTION_AUDIO_STATUS, JSONObject())
+            }
+        }
+        "audio_status" -> {
+            if (serverFingerprint == null) return
+            val status = message.optJSONObject("status") ?: return
+            if (status.optLong("revision", -1) < 0) return
+            val previous = confirmedAudioStatus?.optLong("revision", -1) ?: -1
+            if (status.optLong("revision") < previous) return
+            managedAudioServer = true
+            confirmedAudioStatus = JSONObject(status.toString())
+            if (!status.optBoolean("enabled", false)) {
+                stopLaptopAudio()
+            }
+            HandoverForegroundService.audioStatusChanged()
+            broadcast(NativeTransport.ACTION_AUDIO_STATUS, status)
+        }
         "audio_offer" -> {
             if (serverFingerprint != null && serverId != null) {
                 realtimeAudio.stop()
@@ -47,9 +74,9 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
         }
         "audio_rtc_offer" -> {
             val id = message.optString("stream_id")
-            if (serverFingerprint != null && serverId != null && isTransferId(id)) {
+            if (serverFingerprint != null && serverId != null && isTransferId(id) && (!managedAudioServer || preferences.getString("audio_pause_request", null) == null)) {
                 stopLaptopAudio()
-                realtimeAudio.acceptOffer(id, message.optString("sdp"))
+                realtimeAudio.acceptOffer(id, message.optString("sdp"), message.optString("profile", "balanced"))
             }
         }
         "audio_stop" -> stopLaptopAudio(message.optString("stream_id"))
@@ -124,7 +151,8 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             serverFingerprint = fingerprint
             preferences.edit().remove(PENDING_CODE_KEY).apply()
             broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
-            send(JSONObject().put("type", "audio_ready").put("protocol", 1).put("realtime", true))
+            send(JSONObject().put("type", "audio_ready").put("protocol", 1).put("realtime", true).put("managed", true)
+                .put("pause_request", preferences.getString("audio_pause_request", null)))
             sendBattery()
             publishConnectivity()
             // Proactively share the current notification list; the server

@@ -57,6 +57,7 @@ mod tests {
         let status = handover_core::AudioStreamStatus {
             device_id: DeviceId::new("phone"),
             state: handover_core::AudioStreamPhase::Streaming,
+            ..handover_core::AudioStreamStatus::idle(DeviceId::new("phone"))
         };
         events
             .send(StateEvent::AudioStream(status.clone()))

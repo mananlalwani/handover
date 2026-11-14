@@ -40,6 +40,8 @@ class MainActivity : android.app.Activity() {
     private lateinit var mediaStatus: TextView
     private lateinit var awakeStatus: TextView
     private lateinit var awakeSwitch: Switch
+    private lateinit var laptopAudioStatus: TextView
+    private val laptopAudioProfileButtons = mutableMapOf<String, Button>()
     private lateinit var transferStatus: LinearLayout
     internal lateinit var capabilitiesStatus: TextView
     internal lateinit var remoteResult: TextView
@@ -103,6 +105,7 @@ class MainActivity : android.app.Activity() {
             }
         }
         refreshTransferHistory()
+        if (::laptopAudioStatus.isInitialized) refreshLaptopAudioStatus()
         val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         val localNetwork = if (android.os.Build.VERSION.SDK_INT < 37 ||
             checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") == PackageManager.PERMISSION_GRANTED
@@ -137,6 +140,65 @@ class MainActivity : android.app.Activity() {
             )
         }
         refreshPermissionButtons()
+    }
+
+    private fun refreshLaptopAudioStatus() {
+        val audio = HandoverForegroundService.laptopAudioStatus()
+        if (audio == null) {
+            laptopAudioStatus.text = "Status unavailable. Connect to your laptop to read stream state.\n\nAudible delay, including Bluetooth, is not measured."
+            laptopAudioProfileButtons.values.forEach { it.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(238, 240, 246)) }
+            return
+        }
+        val state = audio.optString("state").takeIf { it.isNotBlank() } ?: "unavailable"
+        val profile = audio.optString("profile").takeIf { it.isNotBlank() } ?: "unavailable"
+        val enabled = if (audio.has("enabled") && !audio.isNull("enabled")) audio.optBoolean("enabled").toString() else "unavailable"
+        val failure = audio.optString("failure").takeIf { !audio.isNull("failure") && it.isNotBlank() }
+        val retry = if (audio.has("retry_attempt") && !audio.isNull("retry_attempt")) audio.optInt("retry_attempt").toString() else "unavailable"
+        val diagnostics = audio.optJSONObject("diagnostics")
+        val sender = diagnostics?.optJSONObject("sender")
+        val receiver = diagnostics?.optJSONObject("receiver")
+        fun metric(obj: org.json.JSONObject?, key: String, suffix: String = ""): String =
+            if (obj == null || !obj.has(key) || obj.isNull(key)) "unavailable" else "${obj.get(key)}$suffix"
+        fun age(obj: org.json.JSONObject?): String {
+            if (obj == null || !obj.has("updated_at_ms") || obj.isNull("updated_at_ms")) return "unavailable"
+            val elapsed = (System.currentTimeMillis() - obj.optLong("updated_at_ms")).coerceAtLeast(0L)
+            return when {
+                elapsed < 1_000 -> "just now"
+                elapsed < 60_000 -> "${elapsed / 1_000}s ago"
+                else -> "${elapsed / 60_000}m ago"
+            }
+        }
+        laptopAudioStatus.text = buildString {
+            append("Confirmed by laptop\n")
+            val requestNotice = audio.optString("request_notice")
+            if (requestNotice.isNotBlank()) append("$requestNotice\n\n")
+            append("State: ${state.replace('_', ' ')}\nRequested streaming: $enabled\nConfirmed preset: $profile\nReconnect attempts: $retry")
+            if (failure != null) append("\nReason: " + when (failure) {
+                "disconnected" -> "The connection was interrupted."
+                "connection_failed" -> "The audio connection failed."
+                "capture_failed" -> "The laptop could not capture audio. Check its audio service."
+                "startup_timeout" -> "The phone did not start audio in time."
+                "audio_focus" -> "Another app or call is using phone audio."
+                "receiver_failed" -> "The phone audio output stopped or failed."
+                "retries_exhausted" -> "Automatic retries stopped. Tap Start stream to try again."
+                else -> failure.replace('_', ' ')
+            })
+            append("\n\nSender diagnostics (sample ${age(sender)})\n")
+            append("Encoder bitrate: ${metric(sender, "encoder_bitrate_bps", " bps")}\n")
+            append("Packet duration: ${metric(sender, "packet_duration_ms", " ms")}\n")
+            append("Capture drops: ${metric(sender, "capture_dropped_packets")}")
+            append("\n\nReceiver diagnostics (sample ${age(receiver)})\n")
+            append("Route: ${metric(receiver, "route")}\nTransport: ${metric(receiver, "transport")}\n")
+            append("Round trip: ${metric(receiver, "round_trip_ms", " ms")}\nJitter: ${metric(receiver, "jitter_ms", " ms")}\n")
+            append("Average jitter buffer: ${metric(receiver, "jitter_buffer_ms", " ms")}\nBitrate: ${metric(receiver, "bitrate_bps", " bps")}\n")
+            append("Packets received: ${metric(receiver, "packets_received")}\nPackets lost: ${metric(receiver, "packets_lost")}")
+            append("\n\nAudible delay, including Bluetooth, is not measured.")
+        }
+        laptopAudioProfileButtons.forEach { (key, button) ->
+            button.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                if (key == profile) Color.rgb(205, 218, 255) else Color.rgb(238, 240, 246),
+            )
+        }
     }
 
     private fun refreshTransferHistory() {
@@ -251,6 +313,10 @@ class MainActivity : android.app.Activity() {
                 refreshStatus()
                 return
             }
+            if (intent.action == NativeTransport.ACTION_AUDIO_STATUS) {
+                refreshLaptopAudioStatus()
+                return
+            }
             if (intent.action == HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED) {
                 android.widget.Toast.makeText(this@MainActivity,
                     "Share could not be queued. Check the connection, link, file name, and 100 MiB limit.",
@@ -362,6 +428,7 @@ class MainActivity : android.app.Activity() {
             addAction(TestNotificationReceiver.ACTION_TEST_REPLY_RECEIVED)
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
             addAction(NativeTransport.ACTION_TRANSFER_RESULT)
+            addAction(NativeTransport.ACTION_AUDIO_STATUS)
             addAction(HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED)
             addAction(NativeTransport.ACTION_REMOTE_RESULT)
         }
@@ -717,6 +784,12 @@ class MainActivity : android.app.Activity() {
         val remotePage = buildRemoteDesktopPage()
         val laptopAudioPage = featurePage(
             "Laptop audio", "Control the audio stream and the laptop player separately.",
+            panel(sectionTitle("Laptop status"), TextView(this).apply {
+                laptopAudioStatus = this
+                textSize = 14f
+                setTextColor(Color.rgb(70, 77, 94))
+                text = "Reading laptop audio status…"
+            }),
             panel(sectionTitle("Stream to this phone"), TextView(this).apply {
                 text = "Pausing the stream leaves the laptop player running. Laptop audio output returns when the last stream stops."
                 textSize = 14f
@@ -734,6 +807,26 @@ class MainActivity : android.app.Activity() {
                                 android.widget.Toast.LENGTH_SHORT).show()
                         }
                     }), LinearLayout.LayoutParams(0, -2, 1f))
+                }
+            }),
+            panel(sectionTitle("Streaming preset"), TextView(this).apply {
+                text = "Choose a preset. The confirmed preset changes after the laptop reports it."
+                textSize = 14f
+                setTextColor(Color.rgb(70, 77, 94))
+            }, LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                listOf("Music" to "music", "Balanced" to "balanced", "Low delay" to "low_delay").forEach { (label, value) ->
+                    val button = secondary(Button(this@MainActivity).apply {
+                        text = label
+                        setOnClickListener {
+                            val queued = HandoverForegroundService.setLaptopAudioProfile(value)
+                            android.widget.Toast.makeText(this@MainActivity,
+                                if (queued) "Preset request queued for laptop" else "Connect to your laptop first",
+                                android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    })
+                    laptopAudioProfileButtons[value] = button
+                    addView(button, LinearLayout.LayoutParams(0, -2, 1f))
                 }
             }),
             panel(sectionTitle("Playback"), primary(Button(this).apply {

@@ -63,8 +63,19 @@ import org.handover.android.DeviceIdentityStore.Companion.fingerprint
 /** Native Handover transport. Frames are 4-byte big-endian length + UTF-8 JSON, max 64 KiB. */
 class NativeTransport(internal val context: Context) {
     internal val callObserver = CallObserver(context) { frame ->
+        handleAudioCallPhase(frame.optString("phase"))
         if (serverFingerprint != null) send(frame)
     }
+    private var previousAudioCallPhase = "unknown"
+    private fun handleAudioCallPhase(phase: String) {
+        val callEnded = phase == "idle" && previousAudioCallPhase in listOf("ringing", "off_hook")
+        previousAudioCallPhase = phase
+        if (callEnded) realtimeAudio.resumeAfterCall()
+    }
+    @Volatile internal var managedAudioServer = false
+    @Volatile internal var confirmedAudioStatus: JSONObject? = null
+    @Volatile internal var lastAudioRequestId: String? = null
+    @Volatile internal var audioRequestNotice = ""
     internal val laptopAudio = LaptopAudioReceiver(this)
     internal val realtimeAudio = LaptopRealtimeAudio(context,
         sendAnswer = { id, sdp -> send(JSONObject().put("type", "audio_rtc_answer")
@@ -75,13 +86,46 @@ class NativeTransport(internal val context: Context) {
         },
         stopped = { id ->
             HandoverForegroundService.audioStopped(id)
-            send(JSONObject().put("type", "audio_stop").put("protocol", 1).put("stream_id", id))
+            if (!managedAudioServer) send(JSONObject().put("type", "audio_stop").put("protocol", 1).put("stream_id", id))
+        },
+        stateChanged = { id, state ->
+            if (managedAudioServer) send(JSONObject().put("type", "audio_receiver_state").put("protocol", 1)
+                .put("stream_id", id).put("state", state))
+        },
+        diagnostics = { id, value ->
+            if (managedAudioServer) send(JSONObject().put("type", "audio_diagnostics").put("protocol", 1)
+                .put("stream_id", id).put("diagnostics", value))
         })
     internal fun setLaptopAudioStreaming(enabled: Boolean): Boolean {
+        if (!enabled) {
+            // One durable pending stop, including when the control link is down.
+            val request = UUID.randomUUID().toString().replace("-", "")
+            lastAudioRequestId = request
+            audioRequestNotice = "Stop requested; waiting for laptop confirmation."
+            preferences.edit().putString("audio_pause_request", request).commit()
+            stopLaptopAudio()
+            if (connectionState() == "connected" && serverFingerprint != null) {
+                enqueue { writeNow(JSONObject().put("type", "audio_stream_set").put("protocol", 1).put("enabled", false).put("request_id", request)) }
+            }
+            return true
+        }
         if (connectionState() != "connected" || serverFingerprint == null) return false
+        preferences.edit().remove("audio_pause_request").apply()
+        val request = UUID.randomUUID().toString().replace("-", "")
+        lastAudioRequestId = request
+        audioRequestNotice = "Start requested; waiting for laptop confirmation."
         return enqueue { writeNow(JSONObject().put("type", "audio_stream_set")
-            .put("protocol", 1).put("enabled", enabled)) }
+            .put("protocol", 1).put("enabled", true).put("request_id", request)) }
     }
+    internal fun setLaptopAudioProfile(profile: String): Boolean {
+        if (!managedAudioServer || connectionState() != "connected" || profile !in listOf("balanced", "music", "low_delay")) return false
+        val request = UUID.randomUUID().toString().replace("-", "")
+        lastAudioRequestId = request
+        audioRequestNotice = "Preset requested; waiting for laptop confirmation."
+        return enqueue { writeNow(JSONObject().put("type", "audio_profile_set").put("protocol", 1).put("profile", profile).put("request_id", request)) }
+    }
+    internal fun laptopAudioStatus(): JSONObject? = confirmedAudioStatus?.let { JSONObject(it.toString()).put("request_notice", audioRequestNotice) }
+
     internal fun toggleLaptopPlayback(id: String): Boolean {
         if (connectionState() != "connected" || serverFingerprint == null || !isTransferId(id)) return false
         return enqueue { writeNow(JSONObject().put("type", "audio_playback_toggle")
@@ -630,6 +674,10 @@ class NativeTransport(internal val context: Context) {
     internal fun broadcast(action: String, payload: JSONObject) {
         if (action == ACTION_CONNECTION_STATE) {
             connectionStatus = payload.optString("state", "offline")
+            if (connectionStatus != "connected") {
+                managedAudioServer = false
+                confirmedAudioStatus = null
+            }
         }
         context.sendBroadcast(Intent(action).putExtra(EXTRA_JSON, payload.toString()).setPackage(context.packageName))
     }
@@ -669,6 +717,7 @@ class NativeTransport(internal val context: Context) {
         const val ACTION_PAIR_REQUEST = "org.handover.android.PAIR_REQUEST"
         const val ACTION_PAIRED = "org.handover.android.PAIRED"
         const val ACTION_REVOKED = "org.handover.android.REVOKED"
+        const val ACTION_AUDIO_STATUS = "org.handover.android.AUDIO_STATUS"
         const val ACTION_CONNECTION_STATE = "org.handover.android.CONNECTION_STATE"
         const val EXTRA_JSON = "json"
         private const val SERVICE_TYPE = "_handover._tcp"

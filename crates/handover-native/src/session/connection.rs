@@ -1260,21 +1260,78 @@ impl NativeBackend {
                     last_received = Instant::now();
                     self.handle_media_sync(&peer, sessions, event)?;
                 }
-                Ok(Message::AudioReady { realtime, .. }) => {
+                Ok(Message::AudioReady {
+                    realtime,
+                    managed,
+                    pause_request,
+                    ..
+                }) => {
                     last_received = Instant::now();
-                    self.audio_ready(&id, realtime, event);
+                    if pause_request
+                        .as_ref()
+                        .is_some_and(|request| !valid_transfer_id(request))
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    self.audio_ready(&id, realtime, managed, pause_request.is_some(), event);
+                    if let Some(request_id) = pause_request {
+                        self.audio_stream_result(&id, request_id, true);
+                    }
                 }
                 Ok(Message::AudioRtcAnswer { stream_id, sdp, .. }) => {
                     last_received = Instant::now();
                     self.audio_rtc_answer(&id, &stream_id, sdp);
                 }
+                Ok(Message::AudioProfileSet {
+                    protocol: WIRE_VERSION,
+                    profile,
+                    request_id,
+                }) => {
+                    last_received = Instant::now();
+                    if request_id
+                        .as_ref()
+                        .is_some_and(|request| !valid_transfer_id(request))
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    let result = self.set_audio_profile(&id, profile, event.clone());
+                    if let Some(request_id) = request_id {
+                        self.audio_stream_result(&id, request_id, result.is_ok());
+                    }
+                }
+                Ok(Message::AudioReceiverState {
+                    protocol: WIRE_VERSION,
+                    stream_id,
+                    state,
+                }) => {
+                    last_received = Instant::now();
+                    self.audio_receiver_state(&id, &stream_id, state, event);
+                }
+                Ok(Message::AudioDiagnostics {
+                    protocol: WIRE_VERSION,
+                    stream_id,
+                    diagnostics,
+                }) => {
+                    last_received = Instant::now();
+                    self.audio_receiver_diagnostics(&id, &stream_id, diagnostics, event);
+                }
                 Ok(Message::AudioStreamSet {
                     protocol: WIRE_VERSION,
                     enabled,
+                    request_id,
                 }) => {
                     last_received = Instant::now();
+                    if request_id
+                        .as_ref()
+                        .is_some_and(|request| !valid_transfer_id(request))
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
                     // The authenticated control session chooses its own receiver only.
-                    let _ = self.set_audio_from_phone(&id, enabled, event.clone());
+                    let result = self.set_audio_from_phone(&id, enabled, event.clone());
+                    if let Some(request_id) = request_id {
+                        self.audio_stream_result(&id, request_id, result.is_ok());
+                    }
                 }
                 Ok(Message::AudioPlaybackToggle {
                     protocol: WIRE_VERSION,
@@ -1292,7 +1349,7 @@ impl NativeBackend {
                     self.finish_audio(
                         &id,
                         &stream_id,
-                        handover_core::AudioStreamPhase::Failed,
+                        handover_core::AudioStreamPhase::Idle,
                         event,
                     );
                 }

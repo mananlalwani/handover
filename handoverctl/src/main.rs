@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use clap::{CommandFactory, Parser};
 use handover_core::{
-    Contact, ConversationId, Device, DeviceId, MediaCommand, MediaSession, MediaSessionId,
-    MessageId, MessagingAccountId, Notification, SharedResource,
+    AudioProfile, Contact, ConversationId, Device, DeviceId, MediaCommand, MediaSession,
+    MediaSessionId, MessageId, MessagingAccountId, Notification, SharedResource,
 };
 use handover_ipc::{Client, IpcError, PROTOCOL_VERSION, ServerPayload};
 use handoverctl::Cli;
 use handoverctl::cli::{
-    AudioCommand, ClipboardHistoryCommand, Command, ContactsCommand, CustomCommand,
-    MediaSubcommand, MessagesCommand, NativeCommand,
+    AudioCommand, AudioProfileArg, ClipboardHistoryCommand, Command, ContactsCommand,
+    CustomCommand, MediaSubcommand, MessagesCommand, NativeCommand,
 };
 use thiserror::Error;
 use url::Url;
@@ -206,8 +206,20 @@ async fn audio(command: AudioCommand) -> Result<(), CliError> {
         AudioCommand::Stop { device } => (device, false),
         AudioCommand::Status => {
             for status in client.audio_streams().await? {
-                println!("{}  {:?}", status.device_id, status.state);
+                print_audio_status(&status);
             }
+            return Ok(());
+        }
+        AudioCommand::Profile { device, profile } => {
+            let profile = match profile {
+                AudioProfileArg::Balanced => AudioProfile::Balanced,
+                AudioProfileArg::Music => AudioProfile::Music,
+                AudioProfileArg::LowDelay => AudioProfile::LowDelay,
+            };
+            let devices = client.devices().await?;
+            let id = select_device(&devices, &device)?;
+            client.audio_profile(id, profile).await?;
+            println!("Audio profile request accepted; use audio status to check current state");
             return Ok(());
         }
     };
@@ -215,6 +227,59 @@ async fn audio(command: AudioCommand) -> Result<(), CliError> {
     client.set_audio_stream(device, enable).await?;
     println!("Audio request accepted; use audio status to check receiver playback");
     Ok(())
+}
+
+fn print_audio_status(status: &handover_core::AudioStreamStatus) {
+    println!(
+        "{}  {:?}  intent={}  profile={}  revision={}  retry={}",
+        status.device_id,
+        status.state,
+        match status.enabled {
+            Some(true) => "enabled",
+            Some(false) => "stopped",
+            None => "unavailable",
+        },
+        status
+            .profile
+            .map_or_else(|| "unavailable".into(), |profile| format!("{profile:?}")),
+        status.revision,
+        status.retry_attempt
+    );
+    if let Some(failure) = &status.failure {
+        println!("  failure: {failure:?}");
+    }
+    if let Some(diagnostics) = &status.diagnostics {
+        if let Some(sender) = &diagnostics.sender {
+            println!(
+                "  sender: target {} kb/s, {} ms packets, {} capture drops, updated {}",
+                sender.encoder_bitrate_bps / 1000,
+                sender.packet_duration_ms,
+                sender.capture_dropped_packets,
+                sender.updated_at_ms
+            );
+        }
+        if let Some(receiver) = &diagnostics.receiver {
+            println!(
+                "  receiver: route={:?} transport={:?} RTT={} jitter={} buffer={} bitrate={} received={} lost={} updated={}",
+                receiver.route,
+                receiver.transport,
+                optional_metric(receiver.round_trip_ms.map(|v| format!("{v} ms"))),
+                optional_metric(receiver.jitter_ms.map(|v| format!("{v} ms"))),
+                optional_metric(receiver.jitter_buffer_ms.map(|v| format!("{v} ms"))),
+                optional_metric(receiver.bitrate_bps.map(|v| format!("{} kb/s", v / 1000))),
+                optional_metric(receiver.packets_received.map(|v| v.to_string())),
+                optional_metric(receiver.packets_lost.map(|v| v.to_string())),
+                receiver.updated_at_ms
+            );
+            println!(
+                "  RTT measures the network round trip; buffer is the lifetime-average receiver buffering delay. Audible/Bluetooth delay is unmeasured."
+            );
+        }
+    }
+}
+
+fn optional_metric(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "unmeasured".into())
 }
 
 async fn list_devices() -> Result<(), CliError> {

@@ -249,6 +249,23 @@ where
         Method::AudioList => ServerPayload::AudioStreams {
             streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
         },
+        Method::AudioProfile { device_id, profile } => {
+            let audio_state = state.clone();
+            let audio_events = events.clone();
+            let callback = std::sync::Arc::new(move |event| {
+                apply_backend_event(&audio_state, &audio_events, event)
+            });
+            native_command_response(
+                native_backend().map(|native| {
+                    device_id
+                        .as_str()
+                        .strip_prefix("native:")
+                        .ok_or(handover_native::NativeCommandError::Offline)
+                        .and_then(|peer| native.set_audio_profile(peer, profile, callback))
+                }),
+                "audio profile",
+            )
+        }
         Method::AudioStart { device_id } | Method::AudioStop { device_id } => {
             let enable = audio_enable;
             let Some(peer) = device_id.as_str().strip_prefix("native:") else {
