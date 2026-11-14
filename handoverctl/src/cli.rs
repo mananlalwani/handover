@@ -530,7 +530,9 @@ pub enum MediaSubcommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AudioCommand {
-    /// Route all laptop app audio to the phone and silence laptop outputs.
+    /// Discover laptop audio apps, players, and shared routing settings.
+    Controls,
+    /// Start the shared laptop audio mix for this phone.
     Start { device: String },
     /// Stop capture and phone playback.
     Stop { device: String },

@@ -73,7 +73,10 @@ class NativeTransport(internal val context: Context) {
         if (callEnded) realtimeAudio.resumeAfterCall()
     }
     @Volatile internal var managedAudioServer = false
+    @Volatile internal var audioControlsServer = false
     @Volatile internal var confirmedAudioStatus: JSONObject? = null
+    @Volatile internal var confirmedAudioControls: JSONObject? = null
+    @Volatile internal var audioControlsSessionRequested = false
     @Volatile internal var lastAudioRequestId: String? = null
     @Volatile internal var audioRequestNotice = ""
     internal val laptopAudio = LaptopAudioReceiver(this)
@@ -125,6 +128,17 @@ class NativeTransport(internal val context: Context) {
         return enqueue { writeNow(JSONObject().put("type", "audio_profile_set").put("protocol", 1).put("profile", profile).put("request_id", request)) }
     }
     internal fun laptopAudioStatus(): JSONObject? = confirmedAudioStatus?.let { JSONObject(it.toString()).put("request_notice", audioRequestNotice) }
+
+    internal fun laptopAudioControls(): JSONObject? = confirmedAudioControls?.let { JSONObject(it.toString()) }
+
+    internal fun requestLaptopAudioControls(change: JSONObject? = null): Boolean {
+        if (connectionState() != "connected" || serverFingerprint == null || !audioControlsServer) return false
+        val requestId = UUID.randomUUID().toString().replace("-", "")
+        val message = JSONObject().put("type", "audio_controls_request").put("protocol", 1)
+            .put("request_id", requestId)
+        change?.let { message.put("change", JSONObject(it.toString())) }
+        return enqueue { writeNow(message) }
+    }
 
     internal fun toggleLaptopPlayback(id: String): Boolean {
         if (connectionState() != "connected" || serverFingerprint == null || !isTransferId(id)) return false
@@ -676,7 +690,10 @@ class NativeTransport(internal val context: Context) {
             connectionStatus = payload.optString("state", "offline")
             if (connectionStatus != "connected") {
                 managedAudioServer = false
+                audioControlsServer = false
                 confirmedAudioStatus = null
+                confirmedAudioControls = null
+                audioControlsSessionRequested = false
             }
         }
         context.sendBroadcast(Intent(action).putExtra(EXTRA_JSON, payload.toString()).setPackage(context.packageName))
@@ -718,6 +735,7 @@ class NativeTransport(internal val context: Context) {
         const val ACTION_PAIRED = "org.handover.android.PAIRED"
         const val ACTION_REVOKED = "org.handover.android.REVOKED"
         const val ACTION_AUDIO_STATUS = "org.handover.android.AUDIO_STATUS"
+        const val ACTION_AUDIO_CONTROLS = "org.handover.android.AUDIO_CONTROLS"
         const val ACTION_CONNECTION_STATE = "org.handover.android.CONNECTION_STATE"
         const val EXTRA_JSON = "json"
         private const val SERVICE_TYPE = "_handover._tcp"

@@ -14,9 +14,11 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use handover_core::{
+    AudioControlFailure, AudioControlsSnapshot, AudioPlaybackTarget, AudioRoutingChange,
     ClipboardFile, ClipboardText, PresentationCommand, RemoteInputAction, RemoteInputCommand,
-    VolumeCommand,
+    StateEvent, VolumeCommand,
 };
+use tokio::sync::{broadcast, oneshot};
 
 /// Upper bound for one desktop tool invocation. These tools answer in
 /// milliseconds when healthy; anything slower is wedged.
@@ -30,6 +32,19 @@ pub(crate) enum Effect {
     DesktopPlaybackToggle {
         device_id: handover_core::DeviceId,
         stream_id: String,
+        playback: AudioPlaybackTarget,
+        request_id: Option<String>,
+    },
+    AudioControls {
+        change: Option<AudioRoutingChange>,
+        response: oneshot::Sender<Result<AudioControlsSnapshot, AudioControlFailure>>,
+        events: broadcast::Sender<StateEvent>,
+    },
+    NativeAudioControls {
+        device_id: handover_core::DeviceId,
+        request_id: String,
+        change: Option<AudioRoutingChange>,
+        events: broadcast::Sender<StateEvent>,
     },
     Volume(VolumeCommand),
     RemoteInput(RemoteInputCommand),
@@ -95,6 +110,22 @@ pub(crate) fn submit(effect: Effect) {
     effects.ready.notify_one();
 }
 
+/// Queue a request that requires a response. On overflow, the caller owns
+/// sending a failure through its one-shot channel.
+pub(crate) fn submit_request(effect: Effect) -> bool {
+    let effects = effects();
+    let mut queue = effects
+        .queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if queue.len() >= MAX_EFFECTS {
+        return false;
+    }
+    queue.push_back(effect);
+    effects.ready.notify_one();
+    true
+}
+
 fn worker() {
     let effects = effects();
     loop {
@@ -117,34 +148,44 @@ fn worker() {
             Effect::DesktopPlaybackToggle {
                 device_id,
                 stream_id,
+                playback,
+                request_id,
             } => {
-                let current = device_id
-                    .as_str()
-                    .strip_prefix("native:")
-                    .zip(crate::native_backend())
-                    .is_some_and(|(peer, backend)| {
-                        backend.audio_stream_is_playing(peer, &stream_id)
-                    });
-                if !current {
-                    continue;
+                let accepted = crate::native_backend().is_some_and(|backend| {
+                    backend.execute_audio_playback(&device_id, &stream_id, &playback)
+                });
+                if let Some(backend) = crate::native_backend() {
+                    backend.reply_audio_playback(&device_id, request_id, accepted);
                 }
-                // Prefer playerctld's most recently active player. Never send the
-                // command through Handover's proxy back to a phone.
-                let result = status_timeout(
-                    Command::new("playerctl")
-                        .args([
-                            "--ignore-player=handover",
-                            "--player=playerctld,%any",
-                            "play-pause",
-                        ])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null()),
-                );
-                if !result.is_ok_and(|status| status.success()) {
-                    tracing::warn!(
-                        "desktop playback toggle failed; check playerctl and local player support"
-                    );
+            }
+            Effect::AudioControls {
+                change,
+                response,
+                events,
+            } => {
+                let result = crate::native_backend()
+                    .ok_or(AudioControlFailure::Unavailable)
+                    .and_then(|backend| backend.audio_controls(change));
+                if let Ok(snapshot) = &result
+                    && let Some(backend) = crate::native_backend()
+                {
+                    let callback: std::sync::Arc<dyn Fn(StateEvent) + Send + Sync> =
+                        std::sync::Arc::new(move |event| crate::publish_event(&events, event));
+                    backend.publish_audio_controls(snapshot.clone(), &callback);
+                }
+                let _ = response.send(result);
+            }
+            Effect::NativeAudioControls {
+                device_id,
+                request_id,
+                change,
+                events,
+            } => {
+                if let Some(backend) = crate::native_backend() {
+                    let result = backend.audio_controls_from_phone(&device_id, change);
+                    let callback: std::sync::Arc<dyn Fn(StateEvent) + Send + Sync> =
+                        std::sync::Arc::new(move |event| crate::publish_event(&events, event));
+                    backend.reply_audio_controls(&device_id, request_id, result, &callback);
                 }
             }
             Effect::Presentation(command) => crate::presentation::execute(&command),

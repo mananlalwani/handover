@@ -202,6 +202,12 @@ async fn native(command: NativeCommand) -> Result<(), CliError> {
 async fn audio(command: AudioCommand) -> Result<(), CliError> {
     let mut client = connected_client().await?;
     let (selector, enable) = match command {
+        AudioCommand::Controls => {
+            print_message(ServerPayload::AudioControls {
+                snapshot: client.audio_controls().await?,
+            });
+            return Ok(());
+        }
         AudioCommand::Start { device } => (device, true),
         AudioCommand::Stop { device } => (device, false),
         AudioCommand::Status => {
@@ -1106,6 +1112,12 @@ fn print_message(payload: ServerPayload) {
             result.device_id, result.action, result.accepted, result.failure
         ),
         ServerPayload::CallQueued { request_id } => println!("call command queued: {request_id}"),
+        ServerPayload::AudioControls { snapshot }
+        | ServerPayload::AudioControlsUpdated { snapshot } => {
+            if let Ok(text) = serde_json::to_string_pretty(&snapshot) {
+                println!("{text}");
+            }
+        }
         ServerPayload::AudioStreams { streams } => {
             for status in streams {
                 println!("audio {} {:?}", status.device_id, status.state);

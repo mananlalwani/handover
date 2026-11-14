@@ -28,7 +28,7 @@ pub(crate) struct AudioSession {
     rtc: Option<crate::audio_rtc::RtcControl>,
     enabled: bool,
     ready: bool,
-    managed: bool,
+    pub(crate) managed: bool,
     profile: AudioProfile,
     retry_attempt: u32,
     generation: u64,
@@ -152,6 +152,7 @@ impl NativeBackend {
                 if queue.len() < crate::limits::MAX_OUTBOX_PER_PEER {
                     queue.push(Message::AudioStatus {
                         protocol: WIRE_VERSION,
+                        controls: true,
                         status: status.clone(),
                     });
                 } else if let Some(socket) = inner.active.get(peer) {
@@ -381,11 +382,23 @@ impl NativeBackend {
             .get(peer)
             .is_some_and(|a| !id.is_empty() && a.id == id && a.phase == AudioStreamPhase::Streaming)
     }
+    #[cfg(test)]
     pub(crate) fn audio_playback_toggle(&self, peer: &str, id: &str, event: &Event) {
+        self.audio_playback_request(peer, id, None, event);
+    }
+    pub(crate) fn audio_playback_request(
+        &self,
+        peer: &str,
+        id: &str,
+        request_id: Option<String>,
+        event: &Event,
+    ) {
         if self.audio_stream_is_playing(peer, id) {
             event(StateEvent::DesktopPlaybackToggle {
                 device_id: DeviceId::new(format!("native:{peer}")),
                 stream_id: id.to_owned(),
+                playback: self.audio_output.lock().unwrap().settings.playback.clone(),
+                request_id,
             });
         }
     }
@@ -858,6 +871,8 @@ mod tests {
             vec![StateEvent::DesktopPlaybackToggle {
                 device_id: DeviceId::new("native:phone"),
                 stream_id: "current".into(),
+                playback: handover_core::AudioPlaybackTarget::Automatic,
+                request_id: None,
             }]
         );
         backend

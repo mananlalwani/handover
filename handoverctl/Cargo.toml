@@ -12,6 +12,7 @@ clap_complete.workspace = true
 clap_mangen.workspace = true
 handover-core.workspace = true
 handover-ipc.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 url.workspace = true

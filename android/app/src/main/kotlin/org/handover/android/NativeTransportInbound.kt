@@ -59,12 +59,33 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             val previous = confirmedAudioStatus?.optLong("revision", -1) ?: -1
             if (status.optLong("revision") < previous) return
             managedAudioServer = true
+            audioControlsServer = message.optBoolean("controls", false)
             confirmedAudioStatus = JSONObject(status.toString())
             if (!status.optBoolean("enabled", false)) {
                 stopLaptopAudio()
             }
             HandoverForegroundService.audioStatusChanged()
             broadcast(NativeTransport.ACTION_AUDIO_STATUS, status)
+            if (audioControlsServer && !audioControlsSessionRequested) {
+                audioControlsSessionRequested = true
+                requestLaptopAudioControls()
+            }
+        }
+        "audio_controls_result" -> {
+            if (serverFingerprint == null || !managedAudioServer) return
+            val snapshot = message.optJSONObject("snapshot")
+            val cachedSnapshot = snapshot?.takeIf { cacheAudioControls(it) }
+            broadcast(NativeTransport.ACTION_AUDIO_CONTROLS, JSONObject()
+                .put("request_id", message.optString("request_id"))
+                .apply { cachedSnapshot?.let { put("snapshot", it) } }
+                .put("failure", message.optString("failure").takeIf { it.isNotBlank() }))
+        }
+        "audio_controls_updated" -> {
+            if (serverFingerprint == null || !managedAudioServer) return
+            val snapshot = message.optJSONObject("snapshot") ?: return
+            if (cacheAudioControls(snapshot)) {
+                broadcast(NativeTransport.ACTION_AUDIO_CONTROLS, JSONObject().put("snapshot", snapshot))
+            }
         }
         "audio_offer" -> {
             if (serverFingerprint != null && serverId != null) {
@@ -171,6 +192,10 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             stopLaptopAudio()
             preferences.edit().remove(PIN_KEY).apply()
             serverFingerprint = null
+            managedAudioServer = false
+            audioControlsServer = false
+            confirmedAudioStatus = null
+            confirmedAudioControls = null
             releaseWakeLock()
             broadcast(ACTION_REVOKED, JSONObject())
             socket?.close()
@@ -412,6 +437,17 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             }
         }
     }
+}
+
+private fun NativeTransport.cacheAudioControls(snapshot: JSONObject): Boolean {
+    if (!snapshot.has("revision") || snapshot.optLong("revision", -1L) < 0L ||
+        snapshot.optJSONObject("settings") == null || snapshot.optJSONArray("applications") == null ||
+        snapshot.optJSONArray("players") == null
+    ) return false
+    val currentRevision = confirmedAudioControls?.optLong("revision", -1L) ?: -1L
+    if (snapshot.optLong("revision") < currentRevision) return false
+    confirmedAudioControls = JSONObject(snapshot.toString())
+    return true
 }
 
 internal fun NativeTransport.ringPhone() {

@@ -249,6 +249,8 @@ where
         Method::AudioList => ServerPayload::AudioStreams {
             streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
         },
+        Method::AudioControls => audio_controls_response(None, events).await,
+        Method::AudioConfigure { change } => audio_controls_response(Some(change), events).await,
         Method::AudioProfile { device_id, profile } => {
             let audio_state = state.clone();
             let audio_events = events.clone();
@@ -996,6 +998,38 @@ where
         write_json_line(writer, &ServerMessage::new(response)).await?;
     }
     Ok(true)
+}
+
+async fn audio_controls_response(
+    change: Option<handover_core::AudioRoutingChange>,
+    events: &broadcast::Sender<StateEvent>,
+) -> ServerPayload {
+    let (response, result) = tokio::sync::oneshot::channel();
+    let effect = crate::local_cmd::Effect::AudioControls {
+        change,
+        response,
+        events: events.clone(),
+    };
+    if !crate::local_cmd::submit_request(effect) {
+        return ServerPayload::Error {
+            code: ErrorCode::BackendUnavailable,
+            message: "desktop audio controls are busy".into(),
+            conversation_id: None,
+        };
+    }
+    match result.await {
+        Ok(Ok(snapshot)) => ServerPayload::AudioControls { snapshot },
+        Ok(Err(handover_core::AudioControlFailure::Unavailable)) | Err(_) => ServerPayload::Error {
+            code: ErrorCode::BackendUnavailable,
+            message: "desktop audio controls are unavailable".into(),
+            conversation_id: None,
+        },
+        Ok(Err(_)) => ServerPayload::Error {
+            code: ErrorCode::BackendRejected,
+            message: "desktop audio routing change was rejected".into(),
+            conversation_id: None,
+        },
+    }
 }
 
 #[cfg(test)]

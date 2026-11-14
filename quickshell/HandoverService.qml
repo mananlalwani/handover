@@ -31,6 +31,12 @@ Singleton {
         callAudio = null;
         sendRequest("calls.audio", {});
     }
+    function refreshAudioControls() {
+        return sendRequest("audio.controls", {});
+    }
+    function configureAudioRouting(change) {
+        return sendRequest("audio.configure", { change: change });
+    }
     function refreshContacts() {
         return sendRequest("contacts.list", {});
     }
@@ -95,6 +101,7 @@ Singleton {
     property var customResult: null
     property var pendingPeers: []
     property var audioStreams: []
+    property var audioControls: null
     property var snapshotBuffer: null
     property var listAssembly: null
     property string snapshotKind: ""
@@ -761,6 +768,7 @@ Singleton {
             sendRequest("custom.commands", null);
             sendRequest("clipboard.mirror_status", null);
             sendRequest("clipboard.history_list", null);
+            refreshAudioControls();
             // Outgoing operations follow the subscription snapshot on that socket.
         });
     }
@@ -771,6 +779,7 @@ Singleton {
         abortRequests(message);
         lastError = message;
         audioStreams = [];
+        audioControls = null;
         devices = [];
         notifications = [];
         mediaSessions = [];
@@ -943,7 +952,8 @@ Singleton {
             "native.pending": "native_pending", "native.peers": "native_peers",
             "clipboard.mirror_status": "clipboard_mirror", "clipboard.history_list": "clipboard_history",
             "custom.commands": "custom_commands", "custom.run": "custom_result",
-            "audio.list": "audio_streams", "notification.dismiss": "command_completed",
+            "audio.list": "audio_streams", "audio.controls": "audio_controls",
+            "audio.configure": "audio_controls", "notification.dismiss": "command_completed",
             "notification.action": "command_completed", "notification.reply": "command_completed",
             "media.control": "media_accepted", "share.file": "share_accepted", "share.url": "share_accepted",
             "share.cancel": "share_cancelled", "messages.accounts": "accounts",
@@ -1131,6 +1141,13 @@ Singleton {
             const previousAudio = audioStreams.find(s => s.device_id === message.status.device_id);
             if (!previousAudio || Number(message.status.revision || 0) >= Number(previousAudio.revision || 0))
                 audioStreams = audioStreams.filter(s => s.device_id !== message.status.device_id).concat([message.status]);
+            break;
+        case "audio_controls":
+        case "audio_controls_updated":
+            if (!message.snapshot || !message.snapshot.settings)
+                reject("daemon sent invalid laptop audio controls");
+            else if (!audioControls || Number(message.snapshot.revision || 0) >= Number(audioControls.revision || 0))
+                audioControls = message.snapshot;
             break;
         case "media":
             mediaSessions = message.media_sessions || [];

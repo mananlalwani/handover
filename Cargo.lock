@@ -1681,6 +1681,7 @@ dependencies = [
  "handover-core",
  "handover-ipc",
  "predicates",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "url",

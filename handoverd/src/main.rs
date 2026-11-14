@@ -258,6 +258,35 @@ fn apply_backend_event(
     events: &broadcast::Sender<StateEvent>,
     event: StateEvent,
 ) {
+    if let StateEvent::AudioControlsUpdated(snapshot) = &event {
+        publish_event(events, StateEvent::AudioControlsUpdated(snapshot.clone()));
+        return;
+    }
+    if let StateEvent::AudioControlRequest {
+        device_id,
+        request_id,
+        change,
+    } = &event
+    {
+        let effect = local_cmd::Effect::NativeAudioControls {
+            device_id: device_id.clone(),
+            request_id: request_id.clone(),
+            change: change.clone(),
+            events: events.clone(),
+        };
+        if !local_cmd::submit_request(effect)
+            && let Some(native) = native_backend()
+        {
+            let noop: Arc<dyn Fn(StateEvent) + Send + Sync> = Arc::new(|_| {});
+            native.reply_audio_controls(
+                device_id,
+                request_id.clone(),
+                Err(handover_core::AudioControlFailure::Unavailable),
+                &noop,
+            );
+        }
+        return;
+    }
     if let StateEvent::ShareResult(result) = &event {
         // Terminal share state: drop any staged send directory.
         send_staging::release(&result.transfer_id);
@@ -268,12 +297,21 @@ fn apply_backend_event(
     if let StateEvent::DesktopPlaybackToggle {
         device_id,
         stream_id,
+        playback,
+        request_id,
     } = &event
     {
-        local_cmd::submit(local_cmd::Effect::DesktopPlaybackToggle {
+        let effect = local_cmd::Effect::DesktopPlaybackToggle {
             device_id: device_id.clone(),
             stream_id: stream_id.clone(),
-        });
+            playback: playback.clone(),
+            request_id: request_id.clone(),
+        };
+        if !local_cmd::submit_request(effect)
+            && let Some(native) = native_backend()
+        {
+            native.reply_audio_playback(device_id, request_id.clone(), false);
+        }
     }
     if let StateEvent::Volume(command) = &event {
         local_cmd::submit(local_cmd::Effect::Volume(command.clone()));

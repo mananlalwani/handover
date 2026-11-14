@@ -41,6 +41,7 @@ class MainActivity : android.app.Activity() {
     private lateinit var awakeStatus: TextView
     private lateinit var awakeSwitch: Switch
     private lateinit var laptopAudioStatus: TextView
+    private lateinit var laptopAudioControls: LinearLayout
     private val laptopAudioProfileButtons = mutableMapOf<String, Button>()
     private lateinit var transferStatus: LinearLayout
     internal lateinit var capabilitiesStatus: TextView
@@ -143,6 +144,7 @@ class MainActivity : android.app.Activity() {
     }
 
     private fun refreshLaptopAudioStatus() {
+        if (::laptopAudioControls.isInitialized) refreshLaptopAudioControls()
         val audio = HandoverForegroundService.laptopAudioStatus()
         if (audio == null) {
             laptopAudioStatus.text = "Status unavailable. Connect to your laptop to read stream state.\n\nAudible delay, including Bluetooth, is not measured."
@@ -199,6 +201,144 @@ class MainActivity : android.app.Activity() {
                 if (key == profile) Color.rgb(205, 218, 255) else Color.rgb(238, 240, 246),
             )
         }
+    }
+
+    private fun refreshLaptopAudioControls() {
+        val host = laptopAudioControls
+        host.removeAllViews()
+        val snapshot = HandoverForegroundService.laptopAudioControls()
+        if (snapshot == null) {
+            host.addView(audioNote("Routing controls unavailable. Connect to an updated laptop daemon to read confirmed choices."))
+            host.addView(secondary(Button(this).apply {
+                text = "Refresh apps / players"
+                setOnClickListener {
+                    val queued = HandoverForegroundService.requestLaptopAudioControls()
+                    android.widget.Toast.makeText(this@MainActivity,
+                        if (queued) "Refresh request queued for laptop" else "Laptop routing unavailable. Update the desktop daemon or reconnect.",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }))
+            return
+        }
+        fun patch(change: org.json.JSONObject, label: String) {
+            val queued = HandoverForegroundService.configureLaptopAudio(change)
+            android.widget.Toast.makeText(this,
+                if (queued) "$label request queued for laptop" else "Connect to your laptop first",
+                android.widget.Toast.LENGTH_SHORT).show()
+        }
+        host.addView(audioNote("These choices apply to every receiving phone."))
+        val source = snapshot.optJSONObject("settings")?.optJSONObject("source")
+        val settingsAvailable = snapshot.optBoolean("settings_available", false)
+        val sourceKind = source?.optString("kind")
+        val selectedIds = source?.optJSONArray("ids") ?: org.json.JSONArray()
+        val selected = (0 until selectedIds.length()).mapNotNull { selectedIds.optString(it).takeIf(String::isNotBlank) }.toSet()
+        val applications = snapshot.optJSONArray("applications") ?: org.json.JSONArray()
+        val availableApps = (0 until applications.length()).mapNotNull { applications.optJSONObject(it) }
+        val selectedAppNames = availableApps.filter { it.optString("id") in selected }.map { it.optString("name", it.optString("id")) }
+        val sourceSummary = if (!settingsAvailable || sourceKind == null) "unavailable"
+            else if (sourceKind == "all") "All apps" else if (selected.isEmpty()) "No apps selected (audio will be silent)"
+            else selectedAppNames.plus((selected - availableApps.map { it.optString("id") }.toSet()).map { "Unavailable app ($it)" }).joinToString(", ")
+        host.addView(audioNote("Source: $sourceSummary"))
+        val applicationsAvailable = snapshot.optBoolean("applications_available", false)
+        val playersAvailable = snapshot.optBoolean("players_available", false)
+        host.addView(secondary(Button(this).apply {
+            text = "Choose source apps"
+            isEnabled = true
+            setOnClickListener {
+                val rows = mutableListOf("All apps")
+                val options = mutableListOf<Pair<String, String>>()
+                availableApps.filter { applicationsAvailable || it.optString("id") in selected }.forEach { app ->
+                    options.add(app.optString("id") to app.optString("name", app.optString("id")))
+                }
+                val unavailable = selected - options.map { it.first }.toSet()
+                unavailable.forEach { options.add(it to "Unavailable app ($it)") }
+                rows.addAll(options.map { option ->
+                    val app = availableApps.firstOrNull { it.optString("id") == option.first }
+                    option.second + if (app != null && !app.optBoolean("available", true)) " (unavailable)" else ""
+                })
+                val checked = BooleanArray(rows.size) { index -> if (index == 0) sourceKind == "all" else options[index - 1].first in selected }
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Audio source")
+                    .setMultiChoiceItems(rows.toTypedArray(), checked) { dialog, which, isChecked ->
+                        checked[which] = isChecked
+                        val list = (dialog as AlertDialog).listView
+                        if (which == 0 && isChecked) {
+                            for (i in 1 until checked.size) { checked[i] = false; list.setItemChecked(i, false) }
+                        } else if (which > 0 && isChecked) {
+                            checked[0] = false; list.setItemChecked(0, false)
+                        }
+                    }
+                    .setPositiveButton("Apply") { _, _ ->
+                        if (checked[0]) patch(org.json.JSONObject().put("source", org.json.JSONObject().put("kind", "all")), "Source")
+                        else {
+                            val ids = org.json.JSONArray()
+                            options.forEachIndexed { index, pair -> if (checked[index + 1]) ids.put(pair.first) }
+                            patch(org.json.JSONObject().put("source", org.json.JSONObject().put("kind", "applications").put("ids", ids)), "Source")
+                        }
+                    }.setNegativeButton("Cancel", null).show()
+            }
+        }))
+        host.addView(audioNote(if (applicationsAvailable) "${availableApps.count { it.optBoolean("available", true) }} apps observed" else "App list unavailable"))
+
+        val settings = snapshot.optJSONObject("settings")
+        val output = settings?.optString("output") ?: ""
+        host.addView(audioNote("Output: ${when (output) { "phone" -> "Phone only"; "laptop" -> "Laptop only"; "both" -> "Both"; else -> "unavailable" }}"))
+        host.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            listOf("Phone only" to "phone", "Laptop only" to "laptop", "Both" to "both").forEach { (label, value) ->
+                addView(secondary(Button(this@MainActivity).apply {
+                    text = label
+                    isEnabled = true
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(if (output == value) Color.rgb(205, 218, 255) else Color.rgb(238, 240, 246))
+                    setOnClickListener { patch(org.json.JSONObject().put("output", value), "Output") }
+                }), LinearLayout.LayoutParams(0, -2, 1f))
+            }
+        })
+        host.addView(audioNote("Laptop only plays audio locally and sends silence to the phone while keeping the stream connected. Both plays on the laptop and phone without synchronization, so an echo may occur."))
+
+        val playback = settings?.optJSONObject("playback")
+        val playbackKind = playback?.optString("kind")
+        val playerId = playback?.optString("id") ?: ""
+        val players = snapshot.optJSONArray("players") ?: org.json.JSONArray()
+        val playerItems = (0 until players.length()).mapNotNull { players.optJSONObject(it) }
+        val selectedPlayerName = playerItems.firstOrNull { it.optString("id") == playerId }?.optString("name") ?: "Unavailable player"
+        host.addView(audioNote("Player: ${if (!settingsAvailable || playbackKind == null) "unavailable" else if (playbackKind == "automatic") "Automatic" else selectedPlayerName}"))
+        host.addView(secondary(Button(this).apply {
+            text = "Choose player"
+            isEnabled = true
+            setOnClickListener {
+                val choices = mutableListOf("Automatic")
+                val ids = mutableListOf<String?>(null)
+                if (playersAvailable) playerItems.forEach { choices.add(it.optString("name", it.optString("id"))); ids.add(it.optString("id")) }
+                val selectedIndex = if (playbackKind == "automatic") 0 else ids.indexOf(playerId)
+                AlertDialog.Builder(this@MainActivity).setTitle("Laptop player")
+                    .setSingleChoiceItems(choices.toTypedArray(), selectedIndex) { dialog, which ->
+                        val selectedId = ids[which]
+                        val value = if (selectedId == null) org.json.JSONObject().put("kind", "automatic")
+                            else org.json.JSONObject().put("kind", "player").put("id", selectedId)
+                        patch(org.json.JSONObject().put("playback", value), "Player")
+                        dialog.dismiss()
+                    }.setNegativeButton("Cancel", null).show()
+            }
+        }))
+        host.addView(audioNote(if (playersAvailable) "${playerItems.size} players observed" else "Player list unavailable"))
+        host.addView(secondary(Button(this).apply {
+            text = "Refresh apps / players"
+            setOnClickListener {
+                val queued = HandoverForegroundService.requestLaptopAudioControls()
+                android.widget.Toast.makeText(this@MainActivity,
+                    if (queued) "Refresh request queued for laptop" else "Connect to your laptop first",
+                    android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }))
+        if (!settingsAvailable) host.addView(audioNote("Confirmed routing settings unavailable"))
+    }
+
+    private fun audioNote(message: String) = TextView(this).apply {
+        text = message
+        textSize = 14f
+        setTextColor(Color.rgb(70, 77, 94))
+        setPadding(0, dp(4), 0, dp(4))
     }
 
     private fun refreshTransferHistory() {
@@ -317,6 +457,24 @@ class MainActivity : android.app.Activity() {
                 refreshLaptopAudioStatus()
                 return
             }
+            if (intent.action == NativeTransport.ACTION_AUDIO_CONTROLS) {
+                val payload = runCatching {
+                    org.json.JSONObject(intent.getStringExtra(NativeTransport.EXTRA_JSON).orEmpty())
+                }.getOrNull()
+                val failure = payload?.optString("failure")?.takeIf { it.isNotBlank() }
+                if (failure != null) {
+                    val message = when (failure) {
+                        "unavailable" -> "Laptop audio routing is unavailable"
+                        "unknown_application" -> "That app is no longer available"
+                        "unknown_player" -> "That player is no longer available"
+                        "invalid_selection" -> "The laptop rejected that routing choice"
+                        else -> "The laptop could not apply that routing choice"
+                    }
+                    android.widget.Toast.makeText(this@MainActivity, message, android.widget.Toast.LENGTH_LONG).show()
+                }
+                refreshLaptopAudioStatus()
+                return
+            }
             if (intent.action == HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED) {
                 android.widget.Toast.makeText(this@MainActivity,
                     "Share could not be queued. Check the connection, link, file name, and 100 MiB limit.",
@@ -429,6 +587,7 @@ class MainActivity : android.app.Activity() {
             addAction(NativeTransport.ACTION_SHARE_RECEIVED)
             addAction(NativeTransport.ACTION_TRANSFER_RESULT)
             addAction(NativeTransport.ACTION_AUDIO_STATUS)
+            addAction(NativeTransport.ACTION_AUDIO_CONTROLS)
             addAction(HandoverForegroundService.ACTION_SHARE_QUEUE_FAILED)
             addAction(NativeTransport.ACTION_REMOTE_RESULT)
         }
@@ -789,6 +948,10 @@ class MainActivity : android.app.Activity() {
                 textSize = 14f
                 setTextColor(Color.rgb(70, 77, 94))
                 text = "Reading laptop audio status…"
+            }),
+            panel(sectionTitle("Audio routing"), LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                laptopAudioControls = this
             }),
             panel(sectionTitle("Stream to this phone"), TextView(this).apply {
                 text = "Pausing the stream leaves the laptop player running. Laptop audio output returns when the last stream stops."

@@ -27,6 +27,201 @@ Rectangle {
             width: parent.width
             spacing: 16
 
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: routingContent.implicitHeight + 24
+                radius: 8
+                color: "#202b3b"
+
+                ColumnLayout {
+                    id: routingContent
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 10
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Laptop audio routing"
+                            color: "#edf1f7"
+                            font.pixelSize: 17
+                            font.weight: Font.DemiBold
+                        }
+                        ActionButton {
+                            text: "Refresh apps and players"
+                            onClicked: {
+                                HandoverService.refreshAudioControls();
+                            }
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#b9c2cf"
+                        wrapMode: Text.WordWrap
+                        text: "These choices apply to every receiving phone."
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !audioSnapshot || !audioSnapshot.settings_available
+                        color: "#e5b96b"
+                        wrapMode: Text.WordWrap
+                        text: "Laptop routing settings are unavailable. Choose a routing option to try to restore them."
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !!audioSnapshot && !audioSnapshot.applications_available
+                        color: "#e5b96b"
+                        wrapMode: Text.WordWrap
+                        text: "The application catalog is unavailable. Existing source settings are still shown."
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !!audioSnapshot && !audioSnapshot.players_available
+                        color: "#e5b96b"
+                        wrapMode: Text.WordWrap
+                        text: "The player catalog is unavailable."
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#b9c2cf"
+                        wrapMode: Text.WordWrap
+                        text: "Source · " + sourceDescription()
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ActionButton {
+                            text: "All apps"
+                        enabled: !!audioSnapshot && audioSnapshot.applications_available
+                            onClicked: {
+                                HandoverService.configureAudioRouting({ source: { kind: "all" } });
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            color: "#b9c2cf"
+                            text: "Choose specific apps below, then apply. An empty selection intentionally routes no audio."
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    Repeater {
+                        model: audioSnapshot && audioSnapshot.applications_available ? audioSnapshot.applications : []
+                        delegate: CheckBox {
+                            id: applicationCheck
+                            required property var modelData
+                            Layout.fillWidth: true
+                            text: modelData.name + (modelData.available ? "" : " (unavailable)")
+                            checked: selectedApplicationIds.indexOf(modelData.id) >= 0
+                            Binding {
+                                target: applicationCheck
+                                property: "checked"
+                                value: selectedApplicationIds.indexOf(applicationCheck.modelData.id) >= 0
+                            }
+                            onToggled: {
+                                let next = selectedApplicationIds.slice();
+                                const index = next.indexOf(modelData.id);
+                                if (checked && index < 0) next.push(modelData.id);
+                                else if (!checked && index >= 0) next.splice(index, 1);
+                                selectedApplicationIds = next;
+                            }
+                            contentItem: Text {
+                                leftPadding: 28
+                                text: modelData.name + (modelData.available ? "" : " · unavailable")
+                                color: modelData.available ? "#edf1f7" : "#8793a3"
+                                verticalAlignment: Text.AlignVCenter
+                                wrapMode: Text.WordWrap
+                                textFormat: Text.PlainText
+                            }
+                        }
+                    }
+
+                    ActionButton {
+                        text: "Apply app selection"
+                        enabled: !!audioSnapshot && audioSnapshot.applications_available
+                        onClicked: HandoverService.configureAudioRouting({ source: { kind: "applications", ids: selectedApplicationIds.slice() } })
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#b9c2cf"
+                        text: "Output · " + outputDescription()
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: [ { label: "Phone only", value: "phone" }, { label: "Laptop only", value: "laptop" }, { label: "Both", value: "both" } ]
+                            delegate: ActionButton {
+                                required property var modelData
+                                text: modelData.label + (audioSnapshot && audioSnapshot.settings.output === modelData.value ? " · selected" : "")
+                                enabled: !!audioSnapshot
+                                onClicked: HandoverService.configureAudioRouting({ output: modelData.value })
+                            }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !!audioSnapshot && audioSnapshot.settings.output === "laptop"
+                        color: "#b9c2cf"
+                        wrapMode: Text.WordWrap
+                        text: "Laptop only plays apps locally and sends silence to the phone while keeping the stream connected."
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !!audioSnapshot && audioSnapshot.settings.output === "both"
+                        color: "#e5b96b"
+                        wrapMode: Text.WordWrap
+                        text: "Both outputs may echo because their playback is not synchronized."
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        color: "#b9c2cf"
+                        text: "Player · " + playerDescription()
+                    }
+                    ChoiceBox {
+                        id: playerChoice
+                        Layout.fillWidth: true
+                        model: (playerUnavailable() ? ["Selected player unavailable"] : []).concat(["Automatic"]).concat(audioSnapshot && audioSnapshot.players_available ? audioSnapshot.players.map((p) => p.name) : [])
+                        enabled: !!audioSnapshot && audioSnapshot.players_available
+                        contentItem: Text {
+                            leftPadding: 8
+                            rightPadding: 24
+                            text: playerChoice.currentText || "Player unavailable"
+                            color: playerChoice.enabled ? "#edf1f7" : "#8793a3"
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                        }
+                        background: Rectangle { radius: 6; color: playerChoice.enabled ? "#354154" : "#293444"; border.color: "#536176" }
+                        onActivated: {
+                            const selected = currentIndex;
+                            const offset = playerUnavailable() ? 1 : 0;
+                            const confirmedIndex = playerUnavailable() ? 0 : audioSnapshot.settings.playback.kind === "player" ? audioSnapshot.players.findIndex((p) => p.id === audioSnapshot.settings.playback.id) + 1 + offset : offset;
+                            currentIndex = confirmedIndex;
+                            if (selected === offset) HandoverService.configureAudioRouting({ playback: { kind: "automatic" } });
+                            else {
+                                const player = audioSnapshot.players[selected - offset - 1];
+                                if (player) HandoverService.configureAudioRouting({ playback: { kind: "player", id: player.id } });
+                            }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: playerUnavailable()
+                        color: "#e5b96b"
+                        wrapMode: Text.WordWrap
+                        text: "The selected player is unavailable. Choose Automatic or a listed player to change it."
+                    }
+                }
+            }
+
             Text {
                 text: "Laptop audio to phone"
                 color: "#ffffff"
@@ -283,6 +478,52 @@ Rectangle {
 
         }
 
+    }
+
+    property var audioSnapshot: HandoverService.audioControls
+    property var selectedApplicationIds: []
+    onAudioSnapshotChanged: {
+        const source = audioSnapshot && audioSnapshot.settings ? audioSnapshot.settings.source : null;
+        selectedApplicationIds = source && source.kind === "applications" ? source.ids.slice() : [];
+        const playback = audioSnapshot && audioSnapshot.settings ? audioSnapshot.settings.playback : null;
+        const playerIndex = playback && playback.kind === "player" && audioSnapshot.players ? audioSnapshot.players.findIndex((p) => p.id === playback.id) + 1 : 0;
+        playerChoice.currentIndex = playerUnavailable() ? 0 : playerIndex > 0 ? playerIndex : 0;
+    }
+
+    Component.onCompleted: {
+        HandoverService.refreshAudioControls();
+        const source = audioSnapshot && audioSnapshot.settings ? audioSnapshot.settings.source : null;
+        selectedApplicationIds = source && source.kind === "applications" ? source.ids.slice() : [];
+    }
+
+    function sourceDescription() {
+        if (!audioSnapshot || !audioSnapshot.settings || !audioSnapshot.settings.source) return "unavailable";
+        const source = audioSnapshot.settings.source;
+        if (source.kind === "all") return "all apps";
+        const names = (source.ids || []).map((id) => {
+            const app = (audioSnapshot.applications || []).find((item) => item.id === id);
+            return app ? app.name : "Unavailable app";
+        });
+        return names.length ? names.join(", ") : "no apps (intentional silence)";
+    }
+
+    function outputDescription() {
+        if (!audioSnapshot || !audioSnapshot.settings) return "unavailable";
+        return audioSnapshot.settings.output || "unavailable";
+    }
+
+    function playerDescription() {
+        if (!audioSnapshot || !audioSnapshot.settings || !audioSnapshot.settings.playback) return "unavailable";
+        const playback = audioSnapshot.settings.playback;
+        if (playback.kind === "automatic") return "automatic";
+        const player = (audioSnapshot.players || []).find((item) => item.id === playback.id);
+        return player ? player.name : "selected player unavailable";
+    }
+
+    function playerUnavailable() {
+        return !!audioSnapshot && !!audioSnapshot.settings && !!audioSnapshot.settings.playback
+            && audioSnapshot.settings.playback.kind === "player"
+            && !(audioSnapshot.players || []).some((item) => item.id === audioSnapshot.settings.playback.id);
     }
 
 }

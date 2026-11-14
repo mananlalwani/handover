@@ -145,6 +145,10 @@ class HandoverForegroundService : Service() {
         }
         fun volume(action: String) { activeTransport?.volumeControl(action) }
         fun laptopAudioStatus(): org.json.JSONObject? = activeTransport?.laptopAudioStatus()
+        fun laptopAudioControls(): org.json.JSONObject? = activeTransport?.laptopAudioControls()
+        fun requestLaptopAudioControls(): Boolean = activeTransport?.requestLaptopAudioControls() == true
+        fun configureLaptopAudio(change: org.json.JSONObject): Boolean =
+            activeTransport?.requestLaptopAudioControls(change) == true
         fun setLaptopAudioProfile(profile: String): Boolean = activeTransport?.setLaptopAudioProfile(profile) == true
         internal fun audioStatusChanged() {
             android.os.Handler(android.os.Looper.getMainLooper()).post {

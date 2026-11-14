@@ -52,6 +52,12 @@ impl Request {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "method")]
 pub enum Method {
+    #[serde(rename = "audio.controls")]
+    AudioControls,
+    #[serde(rename = "audio.configure")]
+    AudioConfigure {
+        change: handover_core::AudioRoutingChange,
+    },
     #[serde(rename = "audio.start")]
     AudioStart { device_id: DeviceId },
     #[serde(rename = "audio.profile")]
@@ -468,6 +474,12 @@ impl ServerMessage {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerPayload {
+    AudioControls {
+        snapshot: handover_core::AudioControlsSnapshot,
+    },
+    AudioControlsUpdated {
+        snapshot: handover_core::AudioControlsSnapshot,
+    },
     AudioStreams {
         streams: Vec<handover_core::AudioStreamStatus>,
     },
@@ -1045,6 +1057,27 @@ impl Client {
         self.send(Method::AudioList).await?;
         match self.receive().await?.payload {
             ServerPayload::AudioStreams { streams } => Ok(streams),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn audio_controls(
+        &mut self,
+    ) -> Result<handover_core::AudioControlsSnapshot, IpcError> {
+        self.send(Method::AudioControls).await?;
+        match self.receive().await?.payload {
+            ServerPayload::AudioControls { snapshot } => Ok(snapshot),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn audio_configure(
+        &mut self,
+        change: handover_core::AudioRoutingChange,
+    ) -> Result<handover_core::AudioControlsSnapshot, IpcError> {
+        self.send(Method::AudioConfigure { change }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::AudioControls { snapshot } => Ok(snapshot),
             payload => Err(unexpected(payload)),
         }
     }

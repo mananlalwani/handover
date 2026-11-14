@@ -293,6 +293,13 @@ pub(crate) fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::AudioStream(status) => {
             ServerMessage::new(ServerPayload::AudioStreamUpdated { status })
         }
+        StateEvent::AudioControlsUpdated(snapshot) => {
+            ServerMessage::new(ServerPayload::AudioControlsUpdated { snapshot })
+        }
+        StateEvent::AudioControlRequest { .. } => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "audio control requests are not broadcast to desktop clients",
+        ),
         StateEvent::Device(event) => ServerMessage::from_device_event(event),
         StateEvent::Notification(event) => ServerMessage::from_notification_event(event),
         StateEvent::Media(event) => ServerMessage::from_media_event(event),

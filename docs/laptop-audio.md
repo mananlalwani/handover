@@ -24,8 +24,10 @@ desktop daemon and keep the paired connection active.
 
 Tap **Pause / resume** to toggle the laptop player without ending the stream.
 This button requires the updated desktop daemon and `playerctl`, and works with
-players that expose MPRIS controls. With `playerctld` running, it targets the most
-recently active player; otherwise it uses the first available local player.
+players that expose MPRIS controls. Choose a specific player in Laptop audio
+or the desktop Media page. If that player closes, the request fails without
+controlling another player. Automatic uses the most recently active player
+with `playerctld`, or the first available local player otherwise.
 Handover's phone-player proxy is excluded. The app reports that a request was
 queued, not that playback changed. No Android media session or notification
 playback buttons are added.
@@ -52,16 +54,37 @@ The existing policy that pauses laptop players when a call starts is separate
 from stream recovery. Resuming the stream does not issue a Play command to a
 laptop player.
 
-Handover creates a silent virtual output and moves app audio into it while
-streaming. The phone receives that output's audio. Laptop outputs stay muted,
-and laptop mute and volume controls do not change the phone stream. Use the
-phone's media volume to adjust headphone loudness.
+## Apps and outputs
 
-Apps that start playing during the stream are routed automatically. Stopping,
-disconnecting, or shutting down restores their previous outputs and the laptop
-outputs' previous mute settings. Multiple receivers share the virtual output;
-restoration happens after the last stream stops. An audio routing journal lets
-the next daemon startup restore routing after an unexpected daemon exit.
+The phone's Laptop audio screen and the desktop Media page share one set of
+laptop routing settings. `handoverctl audio controls` also shows the observed
+apps, players, and settings. These settings apply to every receiving phone and
+persist across daemon restarts. They do not start a stopped stream.
+
+Choose All apps or select the apps whose audio should reach the phone. The
+list contains apps with audio streams observed on the laptop. Start playback
+and press Refresh if an app is missing. A selected app that stops playing stays
+selected and is routed again when it returns. Selecting no apps sends silence.
+Unselected apps keep playing through their laptop outputs.
+
+Choose where selected audio plays:
+
+- Phone sends selected apps to the phone. With All apps selected, Handover also
+  saves and mutes the laptop outputs until routing changes or the last stream ends.
+- Laptop returns apps to their original laptop outputs. The phone transport
+  stays connected and receives silence, so this choice does not pause players.
+- Both copies the selected mix to the current laptop output and the phone.
+  The two outputs are not synchronized and may echo when heard together.
+  Existing laptop mute settings still apply.
+
+Handover creates a silent virtual output for the shared mix. Laptop mute and
+volume controls do not change that mix; use the phone's media volume for its
+loudness. Apps that start playing are routed automatically by the current
+selection. Stopping, disconnecting, or shutting down restores previous app
+outputs and any laptop mute settings Handover changed. Restoration happens
+after the last receiving stream stops. A private routing journal lets the next
+daemon startup restore outputs after an unexpected exit. Invalid saved routing
+settings fall back to laptop playback and an empty app selection until repaired.
 
 ## Latency and status
 
@@ -128,15 +151,24 @@ DAC, headphone buffering, or total audible delay. Those remain unmeasured.
 
 ## Transport and compatibility
 
-Public IPC uses `audio.start`, `audio.stop`, `audio.profile`, and `audio.list` with normalized
+Public IPC uses `audio.controls` and `audio.configure` for shared routing, plus
+`audio.start`, `audio.stop`, `audio.profile`, and `audio.list` with normalized
 device IDs. Clients opt in with `audio.subscribe` and receive `audio_stream_updated` events and a separate
-`audio_streams` snapshot when subscribing and after lag recovery.
+`audio_streams` snapshot when subscribing and after lag recovery. Routing snapshots
+include opaque app/player IDs, settings, observation timestamps, availability
+flags, and revisions. Clients receive `audio_controls_updated` events and use
+`audio.controls` to refresh the observed app/player lists. Configuration changes
+patch only the provided fields. A reply confirms routing settings were applied,
+not that a player changed or sound reached a listener.
 
 The phone advertises support with `audio_ready` on each authenticated control
 session. Current apps include `realtime: true` and `managed: true`, plus a pending
 stop request ID when necessary. Managed clients receive normalized `audio_status`
 updates and correlated `audio_stream_result` acknowledgments, and send receiver
-state and diagnostic reports tied to the current stream ID. Legacy clients do
+state and diagnostic reports tied to the current stream ID. Current daemons
+include `controls: true` in `audio_status` to advertise the shared routing API.
+Phones request routing controls only after observing that flag, preserving
+connections to daemons that predate routing controls. Legacy clients do
 not receive these additional status frames. Focus recovery, stop acknowledgments,
 and receiver diagnostics require the updated Android app. A legacy client's
 unreasoned stop frame is treated as a manual stop, so it cannot trigger an

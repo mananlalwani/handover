@@ -1278,6 +1278,21 @@ impl NativeBackend {
                         self.audio_stream_result(&id, request_id, true);
                     }
                 }
+                Ok(Message::AudioControlsRequest {
+                    protocol: WIRE_VERSION,
+                    request_id,
+                    change,
+                }) => {
+                    last_received = Instant::now();
+                    if !valid_transfer_id(&request_id) {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    event(StateEvent::AudioControlRequest {
+                        device_id: handover_core::DeviceId::new(format!("native:{id}")),
+                        request_id,
+                        change,
+                    });
+                }
                 Ok(Message::AudioRtcAnswer { stream_id, sdp, .. }) => {
                     last_received = Instant::now();
                     self.audio_rtc_answer(&id, &stream_id, sdp);
@@ -1335,10 +1350,17 @@ impl NativeBackend {
                 }
                 Ok(Message::AudioPlaybackToggle {
                     protocol: WIRE_VERSION,
+                    request_id,
                     stream_id,
                 }) => {
                     last_received = Instant::now();
-                    self.audio_playback_toggle(&id, &stream_id, event);
+                    if request_id
+                        .as_ref()
+                        .is_some_and(|request| !valid_transfer_id(request))
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    self.audio_playback_request(&id, &stream_id, request_id, event);
                 }
                 Ok(Message::AudioPlaying { stream_id, .. }) => {
                     last_received = Instant::now();

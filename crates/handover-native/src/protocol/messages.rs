@@ -104,8 +104,28 @@ pub(crate) struct WireFileEntry {
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Message {
+    AudioControlsRequest {
+        protocol: u32,
+        request_id: String,
+        #[serde(default)]
+        change: Option<handover_core::AudioRoutingChange>,
+    },
+    AudioControlsResult {
+        protocol: u32,
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<handover_core::AudioControlsSnapshot>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<handover_core::AudioControlFailure>,
+    },
+    AudioControlsUpdated {
+        protocol: u32,
+        snapshot: handover_core::AudioControlsSnapshot,
+    },
     AudioStatus {
         protocol: u32,
+        #[serde(default)]
+        controls: bool,
         status: handover_core::AudioStreamStatus,
     },
     AudioProfileSet {
@@ -138,6 +158,8 @@ pub(crate) enum Message {
     AudioPlaybackToggle {
         protocol: u32,
         stream_id: String,
+        #[serde(default)]
+        request_id: Option<String>,
     },
     AudioFormat {
         protocol: u32,
@@ -559,7 +581,10 @@ fn is_true(value: &bool) -> bool {
 impl Message {
     pub(crate) fn version(&self) -> u32 {
         match self {
-            Self::AudioStatus { protocol, .. }
+            Self::AudioControlsRequest { protocol, .. }
+            | Self::AudioControlsResult { protocol, .. }
+            | Self::AudioControlsUpdated { protocol, .. }
+            | Self::AudioStatus { protocol, .. }
             | Self::AudioStreamResult { protocol, .. }
             | Self::AudioProfileSet { protocol, .. }
             | Self::AudioReceiverState { protocol, .. }

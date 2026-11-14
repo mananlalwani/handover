@@ -1,6 +1,7 @@
 //! Native Android transport. TLS authenticates a persistent certificate; DNS-SD only locates us.
 
 mod audio;
+mod audio_controls;
 mod audio_output;
 mod audio_rtc;
 mod contacts;

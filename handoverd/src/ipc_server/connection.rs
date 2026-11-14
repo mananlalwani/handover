@@ -40,7 +40,7 @@ pub(crate) async fn handle_client(
                     event = receiver.recv() => {
                         match event {
                             Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_)) && !flags.shares => {}
-                            Ok(event) if matches!(event, StateEvent::AudioStream(_)) && !flags.audio => {}
+                            Ok(event) if matches!(event, StateEvent::AudioStream(_) | StateEvent::AudioControlsUpdated(_)) && !flags.audio => {}
                             Ok(event) if matches!(event, StateEvent::Media(_)) && !flags.media => {}
                             Ok(event) if matches!(event, StateEvent::Messaging(_)) && !flags.messages => {}
                             Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
@@ -60,6 +60,9 @@ pub(crate) async fn handle_client(
                                     write_json_line(&mut writer, &ServerMessage::new(ServerPayload::AudioStreams {
                                         streams: native_backend().map_or_else(Vec::new, |native| native.audio_streams()),
                                     })).await?;
+                                    if let Some(snapshot) = native_backend().and_then(|native| native.cached_audio_controls()) {
+                                        write_json_line(&mut writer, &ServerMessage::new(ServerPayload::AudioControlsUpdated { snapshot })).await?;
+                                    }
                                 }
                                 if flags.messages {
                                     let operations = state.read().unwrap_or_else(std::sync::PoisonError::into_inner)

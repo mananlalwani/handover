@@ -504,10 +504,18 @@ impl NotificationCommand {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StateEvent {
     AudioStream(AudioStreamStatus),
+    AudioControlsUpdated(AudioControlsSnapshot),
+    AudioControlRequest {
+        device_id: DeviceId,
+        request_id: String,
+        change: Option<AudioRoutingChange>,
+    },
     /// Toggle playback of a local desktop player, without stopping audio delivery.
     DesktopPlaybackToggle {
         device_id: DeviceId,
         stream_id: String,
+        playback: AudioPlaybackTarget,
+        request_id: Option<String>,
     },
     Device(DeviceEvent),
     Notification(NotificationEvent),
@@ -530,6 +538,8 @@ pub enum StateEvent {
 
 mod audio;
 pub use audio::*;
+mod audio_controls;
+pub use audio_controls::*;
 
 /// A media player identity scoped to its source device.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

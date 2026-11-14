@@ -49,11 +49,17 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
         'handoverctl;audio' {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
+            [CompletionResult]::new('controls', 'controls', [CompletionResultType]::ParameterValue, 'Discover laptop audio apps, players, and shared routing settings')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start the shared laptop audio mix for this phone')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
             [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Set the stream quality/latency preset for one device')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'handoverctl;audio;controls' {
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
         'handoverctl;audio;start' {
@@ -77,11 +83,15 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;audio;help' {
-            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
+            [CompletionResult]::new('controls', 'controls', [CompletionResultType]::ParameterValue, 'Discover laptop audio apps, players, and shared routing settings')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start the shared laptop audio mix for this phone')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
             [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Set the stream quality/latency preset for one device')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'handoverctl;audio;help;controls' {
             break
         }
         'handoverctl;audio;help;start' {
@@ -683,10 +693,14 @@ Register-ArgumentCompleter -Native -CommandName 'handoverctl' -ScriptBlock {
             break
         }
         'handoverctl;help;audio' {
-            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Route all laptop app audio to the phone and silence laptop outputs')
+            [CompletionResult]::new('controls', 'controls', [CompletionResultType]::ParameterValue, 'Discover laptop audio apps, players, and shared routing settings')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start the shared laptop audio mix for this phone')
             [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Stop capture and phone playback')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show receivers and their reported playback state')
             [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Set the stream quality/latency preset for one device')
+            break
+        }
+        'handoverctl;help;audio;controls' {
             break
         }
         'handoverctl;help;audio;start' {

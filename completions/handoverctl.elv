@@ -45,11 +45,16 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
         &'handoverctl;audio'= {
             cand -h 'Print help'
             cand --help 'Print help'
-            cand start 'Route all laptop app audio to the phone and silence laptop outputs'
+            cand controls 'Discover laptop audio apps, players, and shared routing settings'
+            cand start 'Start the shared laptop audio mix for this phone'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
             cand profile 'Set the stream quality/latency preset for one device'
             cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'handoverctl;audio;controls'= {
+            cand -h 'Print help'
+            cand --help 'Print help'
         }
         &'handoverctl;audio;start'= {
             cand -h 'Print help'
@@ -68,11 +73,14 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand --help 'Print help'
         }
         &'handoverctl;audio;help'= {
-            cand start 'Route all laptop app audio to the phone and silence laptop outputs'
+            cand controls 'Discover laptop audio apps, players, and shared routing settings'
+            cand start 'Start the shared laptop audio mix for this phone'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
             cand profile 'Set the stream quality/latency preset for one device'
             cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'handoverctl;audio;help;controls'= {
         }
         &'handoverctl;audio;help;start'= {
         }
@@ -554,10 +562,13 @@ set edit:completion:arg-completer[handoverctl] = {|@words|
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'handoverctl;help;audio'= {
-            cand start 'Route all laptop app audio to the phone and silence laptop outputs'
+            cand controls 'Discover laptop audio apps, players, and shared routing settings'
+            cand start 'Start the shared laptop audio mix for this phone'
             cand stop 'Stop capture and phone playback'
             cand status 'Show receivers and their reported playback state'
             cand profile 'Set the stream quality/latency preset for one device'
+        }
+        &'handoverctl;help;audio;controls'= {
         }
         &'handoverctl;help;audio;start'= {
         }

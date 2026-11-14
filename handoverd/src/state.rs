@@ -28,6 +28,12 @@ impl StateStore {
                 changed: true,
                 changes: vec![StateChange::AudioStream(status)],
             },
+            StateEvent::AudioControlsUpdated(_) | StateEvent::AudioControlRequest { .. } => {
+                ApplyOutcome {
+                    changed: false,
+                    changes: Vec::new(),
+                }
+            }
             StateEvent::Device(event) => self.apply_device(event),
             StateEvent::Notification(event) => self.apply_notification(event),
             StateEvent::Media(event) => self.apply_media(event),

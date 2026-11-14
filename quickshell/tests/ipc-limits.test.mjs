@@ -344,3 +344,14 @@ test('late audio updates and list replies cannot roll back a newer stream state'
     c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_streams', streams: [] }));
     assert.equal(c.audioStreams.length, 0, 'an authoritative removal must still clear the view');
 });
+
+test('routing replies cannot overwrite a newer pushed configuration', () => {
+    const { c } = service();
+    c.audioControls = null;
+    const snapshot = (revision, output) => ({ revision, settings: { output }, applications: [], players: [] });
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_controls_updated', snapshot: snapshot(5, 'both') }));
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_controls', snapshot: snapshot(4, 'phone') }));
+    assert.equal(c.audioControls.settings.output, 'both');
+    c.handleLine(JSON.stringify({ protocol: 1, type: 'audio_controls', snapshot: snapshot(6, 'laptop') }));
+    assert.equal(c.audioControls.settings.output, 'laptop');
+});
