@@ -45,6 +45,8 @@ pub(crate) struct MessagingStore {
 impl MessagingStore {
     pub(crate) fn apply(&mut self, event: MessagingEvent) -> MessagingOutcome {
         match event {
+            // Settings are persisted in the workspace, outside provider state.
+            MessagingEvent::ConversationSettings(_) => MessagingOutcome::unchanged(),
             MessagingEvent::Outgoing(operation) => self.apply_outgoing(operation),
             MessagingEvent::OutgoingRemoved(id) => {
                 if self.outgoing.remove(&id).is_some() {

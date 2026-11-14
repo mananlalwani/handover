@@ -387,6 +387,9 @@ fn fake_server(
         attachment_drafts,
         outgoing,
     } = state;
+    let settings = Arc::new(Mutex::new(
+        std::collections::BTreeMap::<String, Value>::new(),
+    ));
     let staged_path = staged_path.to_string_lossy().into_owned();
     let listener = UnixListener::bind(path).unwrap();
     thread::spawn(move || {
@@ -401,6 +404,7 @@ fn fake_server(
             let drafts = drafts.clone();
             let attachment_drafts = attachment_drafts.clone();
             let outgoing = outgoing.clone();
+            let settings = settings.clone();
             let staged_path = staged_path.clone();
             let attachment_staging = attachment_staging.clone();
             let photo_base64 = photo_base64.clone();
@@ -485,6 +489,57 @@ fn fake_server(
                             &mut stream,
                             response("message_previews", json!({"messages":messages,"done":true})),
                         );
+                    }
+                    "messages.conversation_settings" => send_json(
+                        &mut stream,
+                        response(
+                            "conversation_settings",
+                            json!({"settings":settings.lock().unwrap().values().cloned().collect::<Vec<_>>()}),
+                        ),
+                    ),
+                    "messages.save_conversation_settings" => {
+                        let mut setting = request["settings"].clone();
+                        let key = setting["conversation_id"].to_string();
+                        let mut current = settings.lock().unwrap();
+                        let revision = current
+                            .get(&key)
+                            .and_then(|setting| setting["revision"].as_u64())
+                            .unwrap_or(0);
+                        if setting["revision"].as_u64() != Some(revision) {
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "error",
+                                    json!({"code":"draft_conflict","message":"Conversation settings changed"}),
+                                ),
+                            );
+                        } else {
+                            setting["revision"] = json!(
+                                current
+                                    .values()
+                                    .filter_map(|setting| setting["revision"].as_u64())
+                                    .max()
+                                    .unwrap_or(0)
+                                    + 1
+                            );
+                            current.insert(key, setting.clone());
+                            send_json(
+                                &mut stream,
+                                response(
+                                    "conversation_settings_updated",
+                                    json!({"settings":setting}),
+                                ),
+                            );
+                            if let Some(writer) = subscription_writer.lock().unwrap().as_mut() {
+                                send_json(
+                                    writer,
+                                    response(
+                                        "conversation_settings_updated",
+                                        json!({"settings":setting}),
+                                    ),
+                                );
+                            }
+                        }
                     }
                     "messages.draft" => {
                         let conversation_id = request["conversation_id"].clone();
@@ -1161,7 +1216,7 @@ fn native_window_round_trips_real_frontend_actions() {
         .rows
         .borrow()
         .iter()
-        .position(|(id, _)| id.local_id == "family-chat")
+        .position(|item| matches!(item, SidebarItem::Chat((id, _)) if id.local_id == "family-chat"))
         .unwrap();
     let family_row = ui.list.row_at_index(family_index as i32).unwrap();
     assert!(
@@ -1176,7 +1231,7 @@ fn native_window_round_trips_real_frontend_actions() {
             .rows
             .borrow()
             .iter()
-            .position(|(id, _)| id == &read_thread)
+            .position(|item| matches!(item, SidebarItem::Chat((id, _)) if id == &read_thread))
             .unwrap();
         let row = ui.list.row_at_index(index as i32).unwrap();
         find_widget(row.upcast_ref(), &|widget| {
@@ -1246,6 +1301,275 @@ fn native_window_round_trips_real_frontend_actions() {
         "temporarily hidden avatars keep their decoded image"
     );
     ui.avatar.disconnect(avatar_watch);
+
+    pump_until(
+        || {
+            ui.model.borrow().settings_loaded
+                && ui
+                    .model
+                    .borrow()
+                    .selected_draft()
+                    .is_some_and(|draft| draft.loaded)
+        },
+        "conversation settings load before actions",
+    );
+    ui.organization_buttons[0].set_active(true);
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .settings
+                .get(&id())
+                .is_some_and(|settings| settings.pinned)
+                && ui.organization_box.is_sensitive()
+        },
+        "pin is confirmed by the daemon",
+    );
+    pump_until(
+        || ui.sidebar_timer.borrow().is_none(),
+        "pinned sidebar order settles",
+    );
+    assert!(
+        matches!(ui.rows.borrow().first(), Some(SidebarItem::Chat((target, None))) if target == &id())
+    );
+    ui.organization_buttons[1].set_active(true);
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .settings
+                .get(&id())
+                .is_some_and(|settings| settings.archived)
+                && ui.sidebar_timer.borrow().is_none()
+        },
+        "archive updates local organization",
+    );
+    assert!(
+        !ui.rows
+            .borrow()
+            .iter()
+            .any(|item| matches!(item, SidebarItem::Chat((target, _)) if target == &id()))
+    );
+    ui.chat_filter.set_selected(2);
+    assert!(
+        ui.rows
+            .borrow()
+            .iter()
+            .any(|item| matches!(item, SidebarItem::Chat((target, _)) if target == &id()))
+    );
+    ui.organization_buttons[1].set_active(false);
+    pump_until(
+        || {
+            ui.organization_box.is_sensitive()
+                && ui
+                    .model
+                    .borrow()
+                    .settings
+                    .get(&id())
+                    .is_some_and(|settings| !settings.archived)
+        },
+        "unarchive is confirmed",
+    );
+    ui.chat_filter.set_selected(0);
+    ui.organization_buttons[2].set_active(true);
+    pump_until(
+        || {
+            ui.organization_box.is_sensitive()
+                && ui
+                    .model
+                    .borrow()
+                    .settings
+                    .get(&id())
+                    .is_some_and(|settings| settings.muted)
+        },
+        "local mute persists",
+    );
+    let saved_preferences = ui.model.borrow().settings.get(&id()).unwrap().clone();
+    let original_writer = subscription_writer
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .try_clone()
+        .unwrap();
+    let restored_window = Window::new(&app);
+    restored_window.window.present();
+    pump_until(
+        || {
+            restored_window.model.borrow().connected
+                && restored_window.model.borrow().settings_loaded
+        },
+        "replacement window reloads organization",
+    );
+    restored_window.open(id(), None);
+    pump_until(
+        || restored_window.model.borrow().settings.get(&id()) == Some(&saved_preferences),
+        "organization survives frontend replacement",
+    );
+    assert!(
+        restored_window.organization_buttons[0].is_active()
+            && restored_window.organization_buttons[2].is_active()
+    );
+    restored_window.window.close();
+    drop(restored_window);
+    pump_until(
+        || subscription_writer.lock().unwrap().is_none(),
+        "organization replacement closes normally",
+    );
+    *subscription_writer.lock().unwrap() = Some(original_writer);
+    ui.window.present();
+    ui.organization_buttons[2].set_active(false);
+    pump_until(
+        || {
+            ui.organization_box.is_sensitive()
+                && ui
+                    .model
+                    .borrow()
+                    .settings
+                    .get(&id())
+                    .is_some_and(|settings| !settings.muted)
+        },
+        "unmute is confirmed",
+    );
+    let reported_unread = ui.model.borrow().unread(&id());
+    ui.organization_buttons[3].set_active(true);
+    pump_until(
+        || {
+            ui.organization_box.is_sensitive()
+                && ui
+                    .model
+                    .borrow()
+                    .settings
+                    .get(&id())
+                    .is_some_and(|settings| settings.unread_reminder)
+        },
+        "local unread reminder appears",
+    );
+    assert_eq!(
+        ui.model.borrow().unread(&id()),
+        reported_unread,
+        "local reminder never changes provider read state"
+    );
+    assert!(ui.model.borrow().unread_marker(&id()));
+    ui.open(read_thread.clone(), None);
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .selected_draft()
+                .is_some_and(|draft| draft.loaded)
+        },
+        "switch away from reminder",
+    );
+    ui.open(id(), None);
+    pump_until(
+        || {
+            ui.model
+                .borrow()
+                .settings
+                .get(&id())
+                .is_some_and(|settings| !settings.unread_reminder)
+                && ui.organization_box.is_sensitive()
+        },
+        "opening chat acknowledges its local reminder",
+    );
+    ui.organization_buttons[0].set_active(false);
+    pump_until(
+        || {
+            ui.organization_box.is_sensitive()
+                && ui
+                    .model
+                    .borrow()
+                    .settings
+                    .get(&id())
+                    .is_some_and(|settings| !settings.pinned)
+        },
+        "restore ordinary conversation order",
+    );
+    pump_until(
+        || ui.model.borrow().messages.len() >= 5 && !ui.loading_latest.get(),
+        "restored history before selection",
+    );
+    ui.selection_mode.set(true);
+    ui.select_message(&MessageId::new(id(), "m1"), true);
+    ui.select_message(&MessageId::new(id(), "m2"), true);
+    assert_eq!(ui.selection_count.text(), "2 selected");
+    assert!(ui.selection_bar.is_visible());
+    ui.selection_copy.emit_clicked();
+    let copied = Rc::new(RefCell::new(None));
+    let copied_text = copied.clone();
+    let clipboard = ui.window.clipboard();
+    glib::spawn_future_local(async move {
+        *copied_text.borrow_mut() = clipboard
+            .read_text_future()
+            .await
+            .unwrap()
+            .map(|text| text.to_string());
+    });
+    pump_until(
+        || copied.borrow().is_some(),
+        "selected messages reach clipboard",
+    );
+    let copied = copied.borrow().clone().unwrap();
+    assert!(
+        copied.find("Hey! Are we still").unwrap() < copied.find("Absolutely").unwrap(),
+        "multi-copy preserves conversation chronology"
+    );
+    ui.select_message(&MessageId::new(id(), "m5"), true);
+    assert!(ui.selection_save.is_sensitive());
+    ui.end_selection();
+    assert!(ui.selected_messages.borrow().is_empty() && !ui.selection_bar.is_visible());
+    ui.focus_reply(id());
+    assert_eq!(
+        gtk::prelude::RootExt::focus(&ui.window),
+        Some(ui.compose.clone().upcast()),
+        "notification Reply focuses the existing composer without sending"
+    );
+    assert!(sent.lock().unwrap().is_empty());
+    ui.search.set_text("3125550100");
+    pump_until(
+        || {
+            ui.rows.borrow().iter().any(|item| matches!(item, SidebarItem::Contact(contact) if contact.display_name == "Alex Example"))
+        },
+        "formatted contact number matches global search",
+    );
+    assert!(
+        ui.rows
+            .borrow()
+            .iter()
+            .any(|item| matches!(item, SidebarItem::Chat((target, None)) if target == &id()))
+    );
+    let contact_row = ui
+        .rows
+        .borrow()
+        .iter()
+        .position(|item| matches!(item, SidebarItem::Contact(_)))
+        .unwrap();
+    ui.list.emit_by_name::<()>(
+        "row-activated",
+        &[&ui.list.row_at_index(contact_row as i32).unwrap()],
+    );
+    let contact_card = app
+        .windows()
+        .into_iter()
+        .find(|window| window.title().as_deref() == Some("Contact details"))
+        .expect("contact result opens details");
+    assert!(
+        find_widget(contact_card.upcast_ref(), &|widget| widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "+1 (312) 555-0100"))
+        .is_some()
+    );
+    contact_card.close();
+    ui.search.set_text("");
+    ui.search_changed();
+    ui.show_shortcuts();
+    let shortcuts = app
+        .windows()
+        .into_iter()
+        .find(|window| window.title().as_deref() == Some("Keyboard shortcuts"))
+        .expect("keyboard reference window");
+    shortcuts.close();
 
     let original_messages = ui.model.borrow().messages.clone();
     let original_conversations_for_names = ui.model.borrow().conversations.clone();
@@ -1720,6 +2044,14 @@ fn native_window_round_trips_real_frontend_actions() {
             "Play advances the media timestamp",
         );
         assert!(stream.timestamp() > 0);
+        ui.selection_mode.set(true);
+        ui.select_message(&MessageId::new(id(), "av-fixture"), true);
+        assert!(
+            stream.is_playing(),
+            "message selection keeps the playing decoder intact"
+        );
+        ui.end_selection();
+
         pump_until(
             || stream.duration() > 0 && stream.is_seekable(),
             "local media reports a seekable duration",
@@ -3668,7 +4000,16 @@ fn native_window_round_trips_real_frontend_actions() {
         || !ui.model.borrow().hits.is_empty(),
         "search results from IPC",
     );
-    let result_row = ui.list.row_at_index(0).expect("search hit row");
+    let result_index = ui
+        .rows
+        .borrow()
+        .iter()
+        .position(|item| matches!(item, SidebarItem::Chat((_, Some(_)))))
+        .expect("saved-message result");
+    let result_row = ui
+        .list
+        .row_at_index(result_index as i32)
+        .expect("search hit row");
     ui.list.emit_by_name::<()>("row-activated", &[&result_row]);
     pump_until(
         || ui.model.borrow().anchor.is_some() && !ui.model.borrow().messages.is_empty(),
@@ -4346,7 +4687,13 @@ fn native_window_round_trips_real_frontend_actions() {
     let second_thread = "thread-2";
     let mut second = ChildProcess(
         Command::new(&binary)
-            .args(["--account", ACCOUNT, "--conversation", second_thread])
+            .args([
+                "--account",
+                ACCOUNT,
+                "--conversation",
+                second_thread,
+                "--reply",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

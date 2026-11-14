@@ -800,6 +800,8 @@ where
         | Method::MessagesPreviews { .. }
         | Method::MessagesContext { .. }
         | Method::MessagesWorkspace
+        | Method::MessagesConversationSettings
+        | Method::MessagesSaveConversationSettings { .. }
         | Method::MessagesSelect { .. }
         | Method::MessagesDraft { .. }
         | Method::MessagesSaveDraft { .. }
@@ -807,7 +809,7 @@ where
         | Method::MessagesAttachmentSend { .. }
         | Method::MessagesAttachmentDraft { .. }
         | Method::MessagesSaveAttachmentDraft { .. }) => {
-            return local_messages::handle(method, writer, state, messaging).await;
+            return local_messages::handle(method, writer, state, messaging, events).await;
         }
         Method::MessagesConversations { account_id } => {
             return handle_conversations(account_id, writer, state).await;

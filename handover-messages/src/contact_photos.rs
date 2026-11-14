@@ -102,7 +102,7 @@ impl ContactPhotos {
     }
 }
 
-fn key(address: &str) -> Option<String> {
+pub(crate) fn key(address: &str) -> Option<String> {
     let address = address.trim();
     if let Some((local, domain)) = address.split_once('@') {
         if local.is_empty() || domain.is_empty() || domain.contains('@') {

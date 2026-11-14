@@ -10,12 +10,12 @@ pub mod messaging;
 
 pub use messaging::{
     Attachment, AttachmentDraftSource, AttachmentKind, Conversation, ConversationEvent,
-    ConversationId, ConversationKind, MAX_PAGE_LIMIT, MAX_TEXT_CHARS, Message,
-    MessageAttachmentDraft, MessageDraft, MessageEvent, MessageId, MessageSearchHit, MessageStatus,
-    MessageStatusUpdate, MessagingAccount, MessagingAccountEvent, MessagingAccountId,
-    MessagingCapability, MessagingCommand, MessagingEvent, MessagingLocation, MessagingWorkspace,
-    OutgoingOperation, OutgoingOperationKind, OutgoingOutcome, PairingPrompt, Participant,
-    Reaction, ReadState, SendFailure, TransportKind, TypingState, ValidationError,
+    ConversationId, ConversationKind, ConversationSettings, MAX_PAGE_LIMIT, MAX_TEXT_CHARS,
+    Message, MessageAttachmentDraft, MessageDraft, MessageEvent, MessageId, MessageSearchHit,
+    MessageStatus, MessageStatusUpdate, MessagingAccount, MessagingAccountEvent,
+    MessagingAccountId, MessagingCapability, MessagingCommand, MessagingEvent, MessagingLocation,
+    MessagingWorkspace, OutgoingOperation, OutgoingOperationKind, OutgoingOutcome, PairingPrompt,
+    Participant, Reaction, ReadState, SendFailure, TransportKind, TypingState, ValidationError,
     sanitize_file_name, validate_account, validate_command, validate_conversation,
     validate_conversation_id, validate_message, validate_message_draft,
     validate_messaging_location,

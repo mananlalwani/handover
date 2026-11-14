@@ -8,6 +8,7 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
     writer: &mut W,
     state: &Arc<RwLock<StateStore>>,
     messaging: &Option<crate::messaging_backend::MessagingHub>,
+    events: &broadcast::Sender<StateEvent>,
 ) -> Result<bool, IpcError> {
     let (workspace, archive, accounts) = {
         let state = state
@@ -308,6 +309,42 @@ pub(super) async fn handle<W: AsyncWrite + Unpin>(
             }
         }
 
+        Method::MessagesConversationSettings => match workspace.conversation_settings().await {
+            Ok(mut settings) => {
+                settings.retain(|setting| known(&setting.conversation_id));
+                ServerMessage::new(ServerPayload::ConversationSettings { settings })
+            }
+            Err(_) => error(
+                ErrorCode::BackendUnavailable,
+                "Conversation settings are unavailable",
+            ),
+        },
+        Method::MessagesSaveConversationSettings { settings } => {
+            if !known(&settings.conversation_id) {
+                error(ErrorCode::UnknownMessagingAccount, "Account is unavailable")
+            } else {
+                match workspace.save_conversation_settings(settings).await {
+                    Ok(settings) => {
+                        let _ = events.send(StateEvent::Messaging(
+                            handover_core::MessagingEvent::ConversationSettings(settings.clone()),
+                        ));
+                        ServerMessage::new(ServerPayload::ConversationSettingsUpdated { settings })
+                    }
+                    Err(crate::messaging_workspace::WorkspaceError::Conflict) => error(
+                        ErrorCode::DraftConflict,
+                        "Conversation settings changed; reload before trying again",
+                    ),
+                    Err(crate::messaging_workspace::WorkspaceError::Invalid(_)) => error(
+                        ErrorCode::InvalidMessagingCommand,
+                        "Conversation settings exceed their limits",
+                    ),
+                    Err(_) => error(
+                        ErrorCode::BackendUnavailable,
+                        "Conversation settings could not be saved",
+                    ),
+                }
+            }
+        }
         Method::MessagesWorkspace | Method::MessagesSelect { .. } => {
             let result = match method {
                 Method::MessagesSelect { location } => {

@@ -26,7 +26,8 @@ controls require Python 3. Launch failures leave the QML fallback available.
 
 Choose an account and conversation. Offline accounts retain their saved history
 and drafts; send controls require the account's reported connection and
-capabilities. Search matches conversation names and saved message text. It does
+capabilities. Search matches contacts, conversation names, participant addresses,
+and saved message text. It does
 not search messages that the daemon has never fetched. Selecting a message
 result opens its saved context. Scrolling upward loads older messages before
 you reach the top and keeps the message you were reading in place. A small
@@ -74,7 +75,11 @@ available for workflows the native app does not yet expose.
 
 | Shortcut | Action |
 | --- | --- |
-| Ctrl+K | Search all saved messages |
+| Ctrl+K | Search contacts, conversations, and saved messages |
+| Enter / Down in global search | Open / focus the first result |
+| Ctrl+Shift+M | Select messages |
+| Ctrl+A in selection mode | Select up to 100 loaded messages |
+| Escape in selection mode | Finish selection |
 | Ctrl+F | Find within the current conversation |
 | Enter / Shift+Enter in Find | Next / previous match |
 | Enter or Ctrl+Enter | Send the current draft |
@@ -163,13 +168,48 @@ Attachment sends show indeterminate activity while submission is pending. The
 current backend does not report byte progress or cancel a submitted message.
 Remove files or Clear all before sending to cancel a selection.
 
+## Organizing conversations
+
+Details has an **Only on this computer** section for pinning, archiving, muting
+Handover desktop message alerts, and marking a conversation unread here. These
+settings belong to the daemon workspace and survive app restarts. They do not
+change the phone's conversation state. With persistence disabled, they last only
+for the daemon session.
+
+Pinned conversations appear first and have a star. Muted conversations have a
+muted-alert icon. The sidebar filter switches between Chats, Unread, Archived,
+and All conversations. Search includes archived chats. Mark unread here adds a
+local reminder; opening another conversation and returning clears it. The
+reminder does not create a phone read state or an unread-message boundary.
+Muting affects the optional Handover message-alert bridge, not phone alerts or
+notifications from other applications.
+
+Choose Select messages from the main menu or Select message from a message's
+actions. Select up to 100 loaded messages, then Copy or Save files. Copy preserves
+conversation order and includes sender names, text, and attachment filenames.
+Selection controls update without interrupting media playback. Changing
+conversations ends selection.
+
+Save files opens a folder chooser. It exports up to 64 attachments and attempts
+at most 512 MiB per operation. Missing local files are skipped. Original bytes
+and filenames are preserved; duplicate names get numbered suffixes and existing
+files are never overwritten. The completion dialog reports saved, skipped, and
+failed files. Export does not download missing attachments.
+
 ## Search, links, and saving files
 
 Use Find in conversation or Ctrl+F to search that chat's saved history.
 Matches highlight in the message text. Previous/Next and Shift+Enter/Enter move
 between matches, fetching the next saved-result page when needed. The counter
 shows the known result count, with + when more remain. Escape closes Find.
-Ctrl+K keeps the global saved-message search available.
+Ctrl+K searches the synced address book, conversation titles and participant
+addresses, and saved message text. Results have separate Conversations,
+Contacts, and Saved messages sections. Contact cards can copy addresses or open
+an existing matching conversation within the account filter. They do not create
+a conversation. Phone-number search ignores formatting punctuation. Local
+results show up to 50 conversations and 30 distinct contacts; saved-message
+results use pages of 25. Enter opens the first selectable result and Down moves
+keyboard focus into the list. The main menu also has a keyboard shortcut reference.
 Opening a result shows its surrounding saved messages and highlights the query.
 The context bar moves between global results, including across result pages.
 Back to conversation, or Alt+Left, restores the conversation and visible message
@@ -296,11 +336,19 @@ systemctl --user enable --now handover-desktop.service
 
 New incoming messages can create desktop alerts. Startup and recovery snapshots
 establish a silent baseline. Open conversation and Reply actions both open the
-native app; they do not send text. For direct routing, pass both scoped values:
+native app; Reply focuses the matching conversation's composer after its saved
+draft loads. Neither action sends text. For direct routing, pass both scoped values:
 
 ```sh
 handover-messages --account ACCOUNT_ID --conversation CONVERSATION_ID
+# Add --reply to focus its composer without sending.
 ```
+
+The window title counts unread conversations, including local unread reminders.
+The desktop bridge publishes the same count through LauncherEntry for desktops
+that support launcher badges. This is a conversation count, not a message count.
+The bridge clears the badge when disconnected and rebuilds it from current
+state after reconnecting. Muted conversations still count as unread.
 
 Repeated launches route to the running application. The app rebuilds its view
 from daemon snapshots after reconnecting. Neither it nor the notification bridge

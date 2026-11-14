@@ -37,11 +37,27 @@ fn main() -> gtk::glib::ExitCode {
         "Open this conversation",
         Some("THREAD"),
     );
+    application.add_main_option(
+        "reply",
+        gtk::glib::Char::from(0),
+        gtk::glib::OptionFlags::NONE,
+        gtk::glib::OptionArg::None,
+        "Focus the conversation composer without sending",
+        None,
+    );
     let controller = std::rc::Rc::new(std::cell::RefCell::new(None::<std::rc::Rc<ui::Window>>));
     application.connect_command_line(move |app, command_line| {
         let options = command_line.options_dict();
         let account = options.lookup::<String>("account").ok().flatten();
         let thread = options.lookup::<String>("conversation").ok().flatten();
+        let reply = options
+            .lookup::<bool>("reply")
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+        if reply && (account.is_none() || thread.is_none()) {
+            return gtk::glib::ExitCode::from(2);
+        }
         let target = match (account, thread) {
             (Some(account), Some(thread)) => {
                 let id = handover_core::ConversationId::new(
@@ -61,7 +77,10 @@ fn main() -> gtk::glib::ExitCode {
             .get_or_insert_with(|| ui::Window::new(app))
             .clone();
         if let Some(target) = target {
-            window.open(target, None);
+            window.open(target.clone(), None);
+            if reply {
+                window.focus_reply(target);
+            }
         }
         window.window.present();
         gtk::glib::ExitCode::SUCCESS
@@ -72,5 +91,6 @@ fn main() -> gtk::glib::ExitCode {
     application.set_accels_for_action("win.previous", &["<Alt>Up"]);
     application.set_accels_for_action("win.next", &["<Alt>Down"]);
     application.set_accels_for_action("win.back-context", &["<Alt>Left"]);
+    application.set_accels_for_action("win.select-messages", &["<Control><Shift>m"]);
     application.run()
 }

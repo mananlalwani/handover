@@ -97,6 +97,29 @@ impl fmt::Display for ConversationId {
     }
 }
 
+/// Handover-only desktop organization. These fields never attest phone state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationSettings {
+    pub conversation_id: ConversationId,
+    pub revision: u64,
+    pub pinned: bool,
+    pub archived: bool,
+    pub muted: bool,
+    pub unread_reminder: bool,
+}
+impl ConversationSettings {
+    pub fn new(conversation_id: ConversationId) -> Self {
+        Self {
+            conversation_id,
+            revision: 0,
+            pinned: false,
+            archived: false,
+            muted: false,
+            unread_reminder: false,
+        }
+    }
+}
+
 /// An unsent local draft. A revision is an optimistic concurrency token, never a send ID.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MessageDraft {
@@ -535,6 +558,8 @@ pub enum MessagingCommand {
 /// A normalized messaging state transition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MessagingEvent {
+    /// Workspace-backed local preferences; not a helper/provider event.
+    ConversationSettings(ConversationSettings),
     Outgoing(OutgoingOperation),
     OutgoingRemoved(String),
     Account(MessagingAccountEvent),

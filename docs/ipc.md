@@ -191,12 +191,29 @@ accounts cannot access search results, context, or drafts.
 | `messages.media` | `conversation_id`, `offset` default 0, maximum 10000 | `message_media` with `conversation_id`, `messages`, `has_more`, `done` |
 | `messages.previews` | `conversation_ids`, at most 50 | `message_previews` with `messages`, `done` |
 | `messages.context` | `message_id` | `message_context` with `conversation_id`, `messages`, `done`, optional `cursor_next` |
+| `messages.conversation_settings` | none | `conversation_settings` with `settings` list |
+| `messages.save_conversation_settings` | `settings` | `conversation_settings_updated` with saved `settings` |
 | `messages.workspace` | none | `messaging_workspace` with `workspace` |
 | `messages.select` | `location`, or null to clear | `messaging_workspace` with `workspace` |
 | `messages.draft` | `conversation_id` | `message_draft` with `draft` |
 | `messages.save_draft` | `draft` | `message_draft` with saved `draft` |
 | `messages.submit_draft` | `draft` | `message_accepted` with durable operation `request_id` |
 | `messages.resolve_draft_send` | bound `draft` | `message_draft` after clearing a confirmed sent draft or restoring it for review |
+
+Conversation settings contain `conversation_id`, `revision`, `pinned`, `archived`,
+`muted`, and `unread_reminder`. All flags default to false at revision zero.
+They organize Handover's desktop views and alerts only. They do not represent
+provider capabilities, change phone read state, or belong to helper IPC.
+
+Saving requires the current revision and a known account. The workspace assigns
+a new revision, persists the record, and broadcasts `conversation_settings_updated`
+to messaging subscribers. Stale revisions are rejected. Clients merge updates by
+revision and read the settings list after subscribing and after recovery snapshots;
+provider snapshots do not contain these workspace records. Account removal clears
+its settings. The list has at most 512 records, including cleared records retained
+to reject stale writes. Account IDs are limited to 128 bytes and thread IDs to 256
+bytes. The normal IPC line limit applies. Storage follows the workspace's private
+SQLite or session-only mode.
 
 Search reads saved history. Queries have at most 256 characters and 16 literal
 prefix terms. Each page contains at most 25 hits; offset is limited to 10,000.

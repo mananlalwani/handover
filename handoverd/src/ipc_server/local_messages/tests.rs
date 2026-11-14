@@ -56,7 +56,12 @@ fn state_with_account(conversation_id: &ConversationId) -> Arc<RwLock<crate::sta
             kind: ConversationKind::Direct,
             transport: TransportKind::Unknown,
             title: Some("Peer".into()),
-            participants: Vec::new(),
+            participants: vec![Participant {
+                local_id: "peer".into(),
+                display_name: Some("Peer".into()),
+                address: None,
+                is_self: false,
+            }],
             latest_message_id: None,
             last_activity_at: None,
             unread_count: None,
@@ -69,7 +74,11 @@ fn state_with_account(conversation_id: &ConversationId) -> Arc<RwLock<crate::sta
 
 async fn call(state: &Arc<RwLock<crate::state::StateStore>>, method: Method) -> Vec<ServerMessage> {
     let (mut writer, reader) = tokio::io::duplex(handover_ipc::MAX_LINE_BYTES * 3);
-    assert!(handle(method, &mut writer, state, &None).await.unwrap());
+    assert!(
+        handle(method, &mut writer, state, &None, &broadcast::channel(8).0)
+            .await
+            .unwrap()
+    );
     drop(writer);
     let mut reader = BufReader::new(reader);
     let mut messages = Vec::new();
@@ -334,6 +343,7 @@ async fn previews_chunk_large_records_within_frame_bounds_and_preserve_all_recor
             &mut writer,
             &state,
             &None,
+            &broadcast::channel(8).0,
         )
         .await
         .unwrap()
@@ -418,6 +428,80 @@ async fn unknown_account_filters_reject_search_context_and_draft_access() {
             }]
         ));
     }
+}
+
+#[tokio::test]
+async fn conversation_organization_is_scoped_local_state_with_revision_checks() {
+    let (_, id) = identity();
+    let state = state_with_account(&id);
+    let mut settings = handover_core::ConversationSettings::new(id.clone());
+    settings.pinned = true;
+    settings.archived = true;
+    settings.muted = true;
+    settings.unread_reminder = true;
+    let (events, mut updates) = broadcast::channel(8);
+    let (mut writer, reader) = tokio::io::duplex(8192);
+    handle(
+        Method::MessagesSaveConversationSettings {
+            settings: settings.clone(),
+        },
+        &mut writer,
+        &state,
+        &None,
+        &events,
+    )
+    .await
+    .unwrap();
+    drop(writer);
+    let response = read_json_line::<_, ServerMessage>(&mut BufReader::new(reader))
+        .await
+        .unwrap()
+        .unwrap();
+    let saved = match response.payload {
+        ServerPayload::ConversationSettingsUpdated { settings } => settings,
+        other => panic!("unexpected settings response: {other:?}"),
+    };
+    assert!(saved.revision > 0);
+    assert!(
+        matches!(updates.recv().await.unwrap(), StateEvent::Messaging(MessagingEvent::ConversationSettings(value)) if value == saved)
+    );
+    let stale = call(
+        &state,
+        Method::MessagesSaveConversationSettings { settings },
+    )
+    .await;
+    assert!(matches!(
+        stale[0].payload,
+        ServerPayload::Error {
+            code: ErrorCode::DraftConflict,
+            ..
+        }
+    ));
+    let list = call(&state, Method::MessagesConversationSettings).await;
+    assert!(
+        matches!(&list[0].payload, ServerPayload::ConversationSettings { settings } if settings == &vec![saved])
+    );
+    let phone = state.read().unwrap().messaging().snapshot_conversations();
+    assert_eq!(
+        phone[0].unread_count, None,
+        "local reminders never fabricate a phone read count"
+    );
+    let foreign = handover_core::ConversationSettings::new(ConversationId::new(
+        MessagingAccountId::new("other"),
+        "thread",
+    ));
+    let refused = call(
+        &state,
+        Method::MessagesSaveConversationSettings { settings: foreign },
+    )
+    .await;
+    assert!(matches!(
+        refused[0].payload,
+        ServerPayload::Error {
+            code: ErrorCode::UnknownMessagingAccount,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

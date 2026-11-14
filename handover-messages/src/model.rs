@@ -46,6 +46,9 @@ pub struct Model {
     pub drafts: BTreeMap<ConversationId, Draft>,
     pub drafted: Vec<ConversationId>,
     pub persistent: bool,
+    pub settings: BTreeMap<ConversationId, ConversationSettings>,
+    pub settings_loaded: bool,
+    pub contacts: Vec<Contact>,
     pub outgoing: BTreeMap<String, OutgoingOperation>,
     pub typing: BTreeMap<ConversationId, Vec<String>>,
     read_states: BTreeMap<ConversationId, ReadState>,
@@ -62,6 +65,31 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn apply_settings(&mut self, settings: ConversationSettings) {
+        if validate_conversation_id(&settings.conversation_id).is_ok()
+            && self
+                .accounts
+                .iter()
+                .any(|account| account.id == settings.conversation_id.account_id)
+            && self
+                .settings
+                .get(&settings.conversation_id)
+                .is_none_or(|old| settings.revision >= old.revision)
+        {
+            self.settings
+                .insert(settings.conversation_id.clone(), settings);
+            while self.settings.len() > 512 {
+                self.settings.pop_first();
+            }
+        }
+    }
+    pub fn unread_marker(&self, id: &ConversationId) -> bool {
+        self.unread(id) == Some(true)
+            || self
+                .settings
+                .get(id)
+                .is_some_and(|settings| settings.unread_reminder)
+    }
     pub fn reset_read(&mut self, states: Vec<ReadState>) {
         self.read_states.clear();
         for state in states.into_iter().take(4096) {
@@ -465,6 +493,11 @@ impl Model {
                 ..
             } => {
                 self.accounts = messaging_accounts;
+                self.settings.retain(|id, _| {
+                    self.accounts
+                        .iter()
+                        .any(|account| account.id == id.account_id)
+                });
                 self.conversations = conversations;
                 self.reset_typing(typing_states);
                 self.reset_read(read_states);
@@ -481,6 +514,7 @@ impl Model {
                 self.accounts.push(account);
             }
             ServerPayload::AccountRemoved { account_id } => {
+                self.settings.retain(|id, _| id.account_id != account_id);
                 self.read_states.retain(|id, _| id.account_id != account_id);
                 self.typing.retain(|id, _| id.account_id != account_id);
                 self.statuses

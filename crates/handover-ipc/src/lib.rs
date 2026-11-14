@@ -258,6 +258,12 @@ pub enum Method {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         refresh: bool,
     },
+    #[serde(rename = "messages.conversation_settings")]
+    MessagesConversationSettings,
+    #[serde(rename = "messages.save_conversation_settings")]
+    MessagesSaveConversationSettings {
+        settings: handover_core::ConversationSettings,
+    },
     #[serde(rename = "messages.workspace")]
     MessagesWorkspace,
     #[serde(rename = "messages.select")]
@@ -450,6 +456,9 @@ impl ServerMessage {
                 }
             },
             MessagingEvent::Status(update) => ServerPayload::MessageStatus { update },
+            MessagingEvent::ConversationSettings(settings) => {
+                ServerPayload::ConversationSettingsUpdated { settings }
+            }
             MessagingEvent::Outgoing(operation) => ServerPayload::OutgoingOperation { operation },
             MessagingEvent::OutgoingRemoved(operation_id) => {
                 ServerPayload::OutgoingOperationRemoved { operation_id }
@@ -685,6 +694,12 @@ pub enum ServerPayload {
     ConversationsChunk {
         conversations: Vec<Conversation>,
         done: bool,
+    },
+    ConversationSettings {
+        settings: Vec<handover_core::ConversationSettings>,
+    },
+    ConversationSettingsUpdated {
+        settings: handover_core::ConversationSettings,
     },
     ArchiveSettings {
         limit_mib: u32,
@@ -1821,6 +1836,29 @@ impl Client {
         self.send(Method::MessagesSelect { location }).await?;
         match self.receive().await?.payload {
             ServerPayload::MessagingWorkspace { workspace } => Ok(workspace),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn conversation_settings(
+        &mut self,
+    ) -> Result<Vec<handover_core::ConversationSettings>, IpcError> {
+        self.send(Method::MessagesConversationSettings).await?;
+        match self.receive().await?.payload {
+            ServerPayload::ConversationSettings { settings } if settings.len() <= 512 => {
+                Ok(settings)
+            }
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn save_conversation_settings(
+        &mut self,
+        settings: handover_core::ConversationSettings,
+    ) -> Result<handover_core::ConversationSettings, IpcError> {
+        self.send(Method::MessagesSaveConversationSettings { settings })
+            .await?;
+        match self.receive().await?.payload {
+            ServerPayload::ConversationSettingsUpdated { settings } => Ok(settings),
             payload => Err(unexpected(payload)),
         }
     }

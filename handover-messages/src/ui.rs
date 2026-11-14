@@ -1,3 +1,6 @@
+mod organization;
+mod search;
+mod selection;
 mod send_activity;
 use crate::{
     connection::{self, Command, Event, Failure, Reply, Request},
@@ -13,6 +16,12 @@ use std::{
 };
 
 type Target = (ConversationId, Option<MessageId>);
+#[derive(Clone, PartialEq)]
+enum SidebarItem {
+    Chat(Target),
+    Contact(Contact),
+    Heading,
+}
 
 #[derive(Clone, PartialEq)]
 struct RowStamp {
@@ -60,6 +69,20 @@ pub struct Window {
     recent_threads: RefCell<VecDeque<RecentThread>>,
     cached_messages: RefCell<BTreeSet<MessageId>>,
     photos: RefCell<crate::contact_photos::ContactPhotos>,
+    organization_box: gtk::Box,
+    organization_buttons: [gtk::CheckButton; 4],
+    organization_updating: Cell<bool>,
+    settings_again: Cell<bool>,
+    reminder_open: RefCell<Option<ConversationId>>,
+    chat_filter: gtk::DropDown,
+    selected_messages: RefCell<BTreeSet<MessageId>>,
+    selection_mode: Cell<bool>,
+    selection_updating: Cell<bool>,
+    selection_bar: gtk::Box,
+    selection_count: gtk::Label,
+    selection_copy: gtk::Button,
+    selection_save: gtk::Button,
+    reply_focus: RefCell<Option<ConversationId>>,
     media: crate::media::Media,
     commands: tokio::sync::mpsc::Sender<Command>,
     pending: RefCell<BTreeMap<u64, Request>>,
@@ -69,7 +92,7 @@ pub struct Window {
     find: Rc<crate::conversation_find::Find>,
     accounts: gtk::DropDown,
     list: gtk::ListBox,
-    rows: RefCell<Vec<Target>>,
+    rows: RefCell<Vec<SidebarItem>>,
     sidebar_previews: RefCell<Vec<SidebarPreview>>,
     sidebar_timer: RefCell<Option<glib::SourceId>>,
     filter: RefCell<Option<MessagingAccountId>>,
@@ -192,6 +215,12 @@ impl Window {
             Some("win.connect-account"),
         );
         menu.append(Some("Reconnect"), Some("win.reconnect"));
+        menu.append(Some("Select messages"), Some("win.select-messages"));
+        menu.append(
+            Some("Reload conversation organization"),
+            Some("win.reload-organization"),
+        );
+        menu.append(Some("Keyboard shortcuts"), Some("win.shortcuts"));
         menu.append(Some("About Handover Messages"), Some("win.about"));
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -206,6 +235,12 @@ impl Window {
         search.set_placeholder_text(Some("Search"));
         search.set_tooltip_text(Some("Search conversations and saved messages · Ctrl+K"));
         tools.append(&search);
+        let chat_filter =
+            gtk::DropDown::from_strings(&["Chats", "Unread", "Archived", "All conversations"]);
+        chat_filter.set_tooltip_text(Some(
+            "Organization on this computer. Search includes archived conversations.",
+        ));
+        tools.append(&chat_filter);
         sidebar.append(&tools);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
@@ -340,6 +375,43 @@ impl Window {
         context_bar.append(&context_next);
         context_bar.set_visible(false);
         content.add_top_bar(&context_bar);
+        let organization_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let local = gtk::Label::new(Some("Only on this computer"));
+        local.add_css_class("caption");
+        local.add_css_class("dim-label");
+        organization_box.append(&local);
+        let organization_buttons = [
+            gtk::CheckButton::with_label("Pin conversation"),
+            gtk::CheckButton::with_label("Archive here"),
+            gtk::CheckButton::with_label("Mute desktop alerts"),
+            gtk::CheckButton::with_label("Mark unread here"),
+        ];
+        for button in &organization_buttons {
+            organization_box.append(button);
+        }
+        organization_buttons[3].set_tooltip_text(Some(
+            "A local unread reminder. This does not change the phone's reported read state.",
+        ));
+        let selection_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        selection_bar.add_css_class("selection-bar");
+        let selection_count = gtk::Label::new(Some("0 selected"));
+        selection_count.set_hexpand(true);
+        selection_count.set_xalign(0.0);
+        let selection_all = gtk::Button::with_label("Select all");
+        let selection_copy = gtk::Button::with_label("Copy");
+        let selection_save = gtk::Button::with_label("Save files");
+        let selection_done = gtk::Button::with_label("Done");
+        selection_bar.append(&selection_count);
+        for button in [
+            &selection_all,
+            &selection_copy,
+            &selection_save,
+            &selection_done,
+        ] {
+            selection_bar.append(button);
+        }
+        selection_bar.set_visible(false);
+        content.add_top_bar(&selection_bar);
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         let empty = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -526,6 +598,20 @@ impl Window {
             recent_threads: RefCell::new(VecDeque::new()),
             cached_messages: RefCell::new(BTreeSet::new()),
             photos: RefCell::new(crate::contact_photos::ContactPhotos::default()),
+            organization_box,
+            organization_buttons,
+            organization_updating: Cell::new(false),
+            settings_again: Cell::new(false),
+            reminder_open: RefCell::new(None),
+            chat_filter,
+            selected_messages: RefCell::new(BTreeSet::new()),
+            selection_mode: Cell::new(false),
+            selection_updating: Cell::new(false),
+            selection_bar,
+            selection_count,
+            selection_copy,
+            selection_save,
+            reply_focus: RefCell::new(None),
             media: crate::media::Media::new(),
             commands,
             pending: RefCell::new(BTreeMap::new()),
@@ -682,11 +768,110 @@ impl Window {
                 this.search_now();
             }
         });
+        for (index, button) in this.organization_buttons.iter().enumerate() {
+            let weak = Rc::downgrade(&this);
+            button.connect_toggled(move |button| {
+                if let Some(this) = weak.upgrade()
+                    && !this.organization_updating.get()
+                {
+                    this.change_organization(index, button.is_active());
+                }
+            });
+        }
+        let weak = Rc::downgrade(&this);
+        this.chat_filter.connect_selected_notify(move |_| {
+            if let Some(this) = weak.upgrade()
+                && !this.updating.get()
+            {
+                this.render_sidebar();
+            }
+        });
+        for (button, action) in [
+            (&selection_all, 0),
+            (&this.selection_copy, 1),
+            (&this.selection_save, 2),
+            (&selection_done, 3),
+        ] {
+            let weak = Rc::downgrade(&this);
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    match action {
+                        0 => this.select_all_messages(),
+                        1 => this.copy_selected_messages(),
+                        2 => this.save_selected_files(),
+                        _ => this.end_selection(),
+                    }
+                }
+            });
+        }
+        let selection_keys = gtk::EventControllerKey::new();
+        selection_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&this);
+        selection_keys.connect_key_pressed(move |_, key, _, state| {
+            if let Some(this) = weak.upgrade()
+                && this.selection_mode.get()
+            {
+                if key == gtk::gdk::Key::Escape {
+                    this.end_selection();
+                    return glib::Propagation::Stop;
+                }
+                if key == gtk::gdk::Key::a && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                    this.select_all_messages();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        this.window.add_controller(selection_keys);
+        let weak = Rc::downgrade(&this);
+        this.search.connect_activate(move |_| {
+            if let Some(this) = weak.upgrade() {
+                let first = this
+                    .rows
+                    .borrow()
+                    .iter()
+                    .position(|item| !matches!(item, SidebarItem::Heading));
+                if let Some(index) = first
+                    && let Some(row) = this.list.row_at_index(index as i32)
+                {
+                    this.list.select_row(Some(&row));
+                    this.list.emit_by_name::<()>("row-activated", &[&row]);
+                } else if !this.model.borrow().query.trim().is_empty() {
+                    this.result_navigation.set(Some(1));
+                    this.search_now();
+                }
+            }
+        });
+        let search_keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(&this);
+        search_keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Down
+                && let Some(this) = weak.upgrade()
+            {
+                let first = this
+                    .rows
+                    .borrow()
+                    .iter()
+                    .position(|item| !matches!(item, SidebarItem::Heading));
+                if let Some(index) = first
+                    && let Some(row) = this.list.row_at_index(index as i32)
+                {
+                    this.list.select_row(Some(&row));
+                    row.grab_focus();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        this.search.add_controller(search_keys);
         let weak = Rc::downgrade(&this);
         this.list.connect_row_activated(move |_, row| {
             if let Some(this) = weak.upgrade() {
                 let target = this.rows.borrow().get(row.index() as usize).cloned();
-                if let Some((id, anchor)) = target {
+                if let Some(SidebarItem::Contact(contact)) = &target {
+                    this.show_contact(contact);
+                }
+                if let Some(SidebarItem::Chat((id, anchor))) = target {
                     if let Some(anchor) = anchor {
                         this.open_search_result(anchor);
                     } else {
@@ -988,6 +1173,9 @@ impl Window {
             ("find", 6),
             ("reconnect", 7),
             ("back-context", 8),
+            ("select-messages", 9),
+            ("shortcuts", 10),
+            ("reload-organization", 11),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(&this);
@@ -996,6 +1184,7 @@ impl Window {
                     match callback {
                         0 => {
                             this.search.grab_focus();
+                            this.search.select_region(0, -1);
                         }
                         1 => this.send_text(),
                         2 => this.navigate(-1),
@@ -1004,6 +1193,18 @@ impl Window {
                         6 => this.find.show(),
                         7 => this.reconnect(),
                         8 => this.return_to_conversation(),
+                        9 => {
+                            if this.selection_mode.get() {
+                                this.end_selection();
+                            } else {
+                                this.selection_mode.set(true);
+                                this.render_selection();
+                            }
+                        }
+                        10 => this.show_shortcuts(),
+                        11 => {
+                            this.request(Request::Settings);
+                        }
                         _ => this.about(),
                     }
                 }
@@ -1048,6 +1249,15 @@ impl Window {
     }
 
     fn request(&self, request: Request) -> bool {
+        if matches!(request, Request::Settings)
+            && self
+                .pending
+                .borrow()
+                .values()
+                .any(|request| matches!(request, Request::Settings))
+        {
+            return true;
+        }
         if let Request::Draft(id) = &request
             && self.pending.borrow().values().any(|request| matches!(request, Request::Send(draft) | Request::ResolveDraftSend(draft, _) if &draft.conversation_id == id)) {
             // The mutation's reply refreshes this draft. A concurrent read could
@@ -1167,6 +1377,18 @@ impl Window {
         self.find.set_conversation(Some(id.clone()));
         self.save_drafts();
         self.quotes.borrow_mut().clear();
+        self.end_selection();
+        if self.model.borrow().selected.as_ref() != Some(&id) {
+            *self.reminder_open.borrow_mut() = Some(id.clone());
+        }
+        if self
+            .reply_focus
+            .borrow()
+            .as_ref()
+            .is_some_and(|target| target != &id)
+        {
+            self.reply_focus.borrow_mut().take();
+        }
         self.history_epoch.set(self.history_epoch.get() + 1);
         self.history_epochs.borrow_mut().clear();
         self.history_cursors.borrow_mut().clear();
@@ -1225,6 +1447,8 @@ impl Window {
                 {
                     let mut model = self.model.borrow_mut();
                     model.connected = true;
+                    model.settings_loaded = false;
+                    model.settings.clear();
                     model.accounts = accounts;
                     model.conversations = conversations;
                     model.reset_typing(typing);
@@ -1238,6 +1462,7 @@ impl Window {
                         draft.saving = false;
                     }
                 }
+                self.request(Request::Settings);
                 self.request(Request::Workspace);
                 self.request(Request::Contacts);
                 self.render_sidebar();
@@ -1264,6 +1489,28 @@ impl Window {
                 model.notice = "Handover disconnected. Submitted sends are never retried.".into();
             }
             Event::State(payload) => {
+                if let ServerPayload::ConversationSettingsUpdated { settings } = payload.as_ref() {
+                    self.model.borrow_mut().apply_settings(settings.clone());
+                    self.schedule_sidebar();
+                    self.render_organization();
+                    self.render_status();
+                    return;
+                }
+                if matches!(
+                    payload.as_ref(),
+                    ServerPayload::AccountAdded { .. } | ServerPayload::Snapshot { .. }
+                ) {
+                    if self
+                        .pending
+                        .borrow()
+                        .values()
+                        .any(|request| matches!(request, Request::Settings))
+                    {
+                        self.settings_again.set(true);
+                    } else {
+                        self.request(Request::Settings);
+                    }
+                }
                 match payload.as_ref() {
                     ServerPayload::MessageAdded { message }
                     | ServerPayload::MessageUpdated { message } => {
@@ -1498,6 +1745,8 @@ impl Window {
             }
         }
         self.warm_previews();
+        self.clear_open_reminder();
+        self.render_selection();
         self.reconcile_text_sends();
         self.render_send_activity();
         self.render_editor();
@@ -1533,6 +1782,23 @@ impl Window {
 
     fn reply(self: &Rc<Self>, request: Request, reply: Reply) {
         match reply {
+            Reply::Settings(settings) => {
+                {
+                    let mut model = self.model.borrow_mut();
+                    for setting in settings {
+                        model.apply_settings(setting);
+                    }
+                    model.settings_loaded = true;
+                }
+                if self.settings_again.replace(false) {
+                    self.request(Request::Settings);
+                }
+                self.schedule_sidebar();
+            }
+            Reply::Setting(settings) => {
+                self.model.borrow_mut().apply_settings(settings);
+                self.schedule_sidebar();
+            }
             Reply::Workspace(workspace) => {
                 let location = workspace.location;
                 let sidebar_changed = self.model.borrow().drafted != workspace.draft_conversations;
@@ -1946,6 +2212,18 @@ impl Window {
                 }
             }
             Reply::Contacts(contacts) => {
+                self.model.borrow_mut().contacts = contacts
+                    .iter()
+                    .map(|contact| Contact {
+                        device_id: contact.device_id.clone(),
+                        local_id: contact.local_id.clone(),
+                        display_name: contact.display_name.clone(),
+                        phones: contact.phones.clone(),
+                        emails: contact.emails.clone(),
+                        photo: None,
+                    })
+                    .collect();
+                self.schedule_sidebar();
                 if self.photos.borrow_mut().replace(contacts) {
                     self.schedule_sidebar();
                     self.render_thread();
@@ -1985,6 +2263,14 @@ impl Window {
                 | Request::SaveAttachmentQueue(..)
         );
         match request {
+            Request::Settings => {
+                self.model.borrow_mut().notice =
+                    "Conversation organization is unavailable. Reconnect to reload it.".into();
+            }
+            Request::SaveSettings(_) => {
+                self.model.borrow_mut().notice = error.message;
+                self.request(Request::Settings);
+            }
             Request::Read(_, message) => {
                 if *self.last_read.borrow() == message {
                     self.last_read.borrow_mut().take();
@@ -2628,6 +2914,22 @@ impl Window {
             }
         });
         content.append(&copy);
+        let select = gtk::Button::with_label("Select message");
+        select.add_css_class("flat");
+        select.set_sensitive(!message.deleted);
+        let weak = Rc::downgrade(self);
+        let id = message.id.clone();
+        let popup = popover.downgrade();
+        select.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.selection_mode.set(true);
+                this.select_message(&id, true);
+            }
+            if let Some(popup) = popup.upgrade() {
+                popup.popdown();
+            }
+        });
+        content.append(&select);
         if message.sender.is_self
             && !message.deleted
             && message.attachments.is_empty()
@@ -3000,13 +3302,23 @@ impl Window {
             .selected_row()
             .map(|row| row.index())
             .unwrap_or(-1);
-        let index = (selected + direction).max(0);
-        if let Some(row) = self.list.row_at_index(index) {
-            self.list.select_row(Some(&row));
-            let target = self.rows.borrow().get(index as usize).cloned();
-            if let Some((id, anchor)) = target {
-                self.open(id, anchor);
+        let rows = self.rows.borrow();
+        let mut index = selected + direction;
+        while index >= 0 && (index as usize) < rows.len() {
+            if let SidebarItem::Chat((id, anchor)) = &rows[index as usize] {
+                let target = (id.clone(), anchor.clone());
+                drop(rows);
+                if let Some(row) = self.list.row_at_index(index) {
+                    self.list.select_row(Some(&row));
+                }
+                if let Some(anchor) = target.1 {
+                    self.open_search_result(anchor);
+                } else {
+                    self.open(target.0, None);
+                }
+                return;
             }
+            index += direction;
         }
     }
     fn warm_previews(&self) {
@@ -3161,12 +3473,46 @@ impl Window {
                     .is_none_or(|id| &c.id.account_id == id)
             })
             .collect::<Vec<_>>();
-        conversations.sort_by_key(|c| std::cmp::Reverse(c.last_activity_at));
+        conversations.retain(|conversation| {
+            if !query.is_empty() {
+                return true;
+            }
+            let settings = model.settings.get(&conversation.id);
+            let archived = settings.is_some_and(|setting| setting.archived);
+            match self.chat_filter.selected() {
+                0 => !archived,
+                1 => model.unread_marker(&conversation.id),
+                2 => archived,
+                _ => true,
+            }
+        });
+        conversations.sort_by_key(|c| {
+            (
+                std::cmp::Reverse(
+                    model
+                        .settings
+                        .get(&c.id)
+                        .is_some_and(|settings| settings.pinned),
+                ),
+                std::cmp::Reverse(c.last_activity_at),
+            )
+        });
+        let mut conversation_heading = false;
+        let mut conversation_matches = 0;
         for conversation in conversations {
             let title = self.conversation_label(&model, &conversation.id);
-            if !query.is_empty() && !title.to_lowercase().contains(&query) {
+            if !query.is_empty() && !self.conversation_matches(conversation, &model.query) {
                 continue;
             }
+            if !query.is_empty() && conversation_matches >= 50 {
+                continue;
+            }
+            if !query.is_empty() && !conversation_heading {
+                self.sidebar_heading("Conversations");
+                rows.push(SidebarItem::Heading);
+                conversation_heading = true;
+            }
+            conversation_matches += 1;
             let preview = self
                 .send_draft_preview(&model, &conversation.id)
                 .unwrap_or_else(|| {
@@ -3215,17 +3561,78 @@ impl Window {
             let label = self.add_row(
                 &title,
                 &preview,
-                model.unread(&conversation.id) == Some(true),
+                model.unread_marker(&conversation.id),
                 conversation.last_activity_at,
                 conversation.kind == ConversationKind::Group,
                 self.photos.borrow().conversation_photos(conversation),
             );
+            if let Some(settings) = model.settings.get(&conversation.id)
+                && let Some(text) = label.parent().and_downcast::<gtk::Box>()
+                && let Some(top) = text.first_child().and_downcast::<gtk::Box>()
+            {
+                for (enabled, icon, description) in [
+                    (
+                        settings.pinned,
+                        "starred-symbolic",
+                        "Pinned on this computer",
+                    ),
+                    (
+                        settings.muted,
+                        "notifications-disabled-symbolic",
+                        "Handover desktop message alerts muted",
+                    ),
+                ] {
+                    if enabled {
+                        let icon = gtk::Image::from_icon_name(icon);
+                        icon.set_tooltip_text(Some(description));
+                        icon.add_css_class("dim-label");
+                        top.append(&icon);
+                    }
+                }
+            }
             self.sidebar_previews.borrow_mut().push(SidebarPreview {
                 conversation: conversation.id.clone(),
                 label: label.downgrade(),
                 text: preview.replace(['\n', '\t'], " "),
             });
-            rows.push((conversation.id.clone(), None));
+            rows.push(SidebarItem::Chat((conversation.id.clone(), None)));
+        }
+        if !query.is_empty() {
+            let contacts = self.matching_contacts(&model.contacts, &model.query);
+            if !contacts.is_empty() {
+                self.sidebar_heading("Contacts · address book");
+                rows.push(SidebarItem::Heading);
+            }
+            for contact in contacts {
+                let address = contact
+                    .phones
+                    .first()
+                    .or_else(|| contact.emails.first())
+                    .cloned();
+                let participant = Participant {
+                    local_id: contact.local_id.clone(),
+                    display_name: Some(contact.display_name.clone()),
+                    address: address.clone(),
+                    is_self: false,
+                };
+                self.add_row(
+                    &contact.display_name,
+                    address.as_deref().unwrap_or("Contact details"),
+                    false,
+                    None,
+                    false,
+                    self.photos
+                        .borrow()
+                        .participant(&participant)
+                        .into_iter()
+                        .collect(),
+                );
+                rows.push(SidebarItem::Contact(contact));
+            }
+            if !model.hits.is_empty() {
+                self.sidebar_heading("Saved messages");
+                rows.push(SidebarItem::Heading);
+            }
         }
         for hit in &model.hits {
             self.add_row(
@@ -3240,10 +3647,10 @@ impl Window {
                     .into_iter()
                     .collect(),
             );
-            rows.push((
+            rows.push(SidebarItem::Chat((
                 hit.message_id.conversation_id.clone(),
                 Some(hit.message_id.clone()),
-            ));
+            )));
         }
         if rows.is_empty() {
             let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -3280,8 +3687,12 @@ impl Window {
             placeholder.append(&description);
             self.list.set_placeholder(Some(&placeholder));
         }
-        let selected =
-            selected.or_else(|| model.selected.clone().map(|id| (id, model.anchor.clone())));
+        let selected = selected.or_else(|| {
+            model
+                .selected
+                .clone()
+                .map(|id| SidebarItem::Chat((id, model.anchor.clone())))
+        });
         let index = selected.and_then(|target| rows.iter().position(|row| row == &target));
         *self.rows.borrow_mut() = rows;
         if let Some(index) = index
@@ -3371,6 +3782,12 @@ impl Window {
                 .unwrap_or_default(),
         );
         self.updating.set(false);
+        if self.reply_focus.borrow().as_ref() == model.selected.as_ref()
+            && model.selected_draft().is_some_and(|draft| draft.loaded)
+        {
+            self.reply_focus.borrow_mut().take();
+            self.compose.grab_focus();
+        }
     }
     fn render_typing(&self) {
         let model = self.model.borrow();
@@ -3444,6 +3861,16 @@ impl Window {
             .map(|id| self.conversation_label(&model, id))
             .unwrap_or_else(|| "Messages".into());
         self.title.set_label(&title);
+        let unread = model
+            .conversations
+            .iter()
+            .filter(|conversation| model.unread_marker(&conversation.id))
+            .count();
+        self.window.set_title(Some(&if unread == 0 {
+            "Handover Messages".into()
+        } else {
+            format!("Handover Messages · {unread} unread conversations")
+        }));
         let conversation = model.selected.as_ref().and_then(|id| {
             model
                 .conversations
@@ -3536,7 +3963,13 @@ impl Window {
             label.add_css_class("dim-label");
             detail.append(&label);
         }
+        if let Some(parent) = self.organization_box.parent().and_downcast::<gtk::Box>() {
+            parent.remove(&self.organization_box);
+        }
+        detail.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        detail.append(&self.organization_box);
         self.details.set_child(Some(&detail));
+        self.render_organization();
         let pending = self.pending.borrow().values().any(|request| match request {
             Request::Send(draft) => Some(&draft.conversation_id) == model.selected.as_ref(),
             Request::Attachment(draft, ..) => {
@@ -3965,6 +4398,22 @@ impl Window {
             } else {
                 opposite_margin
             });
+            let select = gtk::CheckButton::new();
+            select.add_css_class("message-selection");
+            select.set_tooltip_text(Some("Select this message"));
+            select.set_valign(gtk::Align::Start);
+            select.set_visible(self.selection_mode.get());
+            select.set_sensitive(!message.deleted);
+            let id = message.id.clone();
+            let weak = Rc::downgrade(self);
+            select.connect_toggled(move |button| {
+                if let Some(this) = weak.upgrade()
+                    && !this.selection_updating.get()
+                {
+                    this.select_message(&id, button.is_active());
+                }
+            });
+            row.append(&select);
             let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
             if !grouped
                 && !message.sender.is_self
@@ -4244,6 +4693,7 @@ impl Window {
             .take(4)
             .collect::<Vec<_>>();
         drop(model);
+        self.render_selection();
         for id in missing_quotes {
             if !self
                 .pending

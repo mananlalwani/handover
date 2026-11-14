@@ -1344,7 +1344,9 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::MessagingWorkspace { .. }
         | ServerPayload::MessageMedia { .. }
         | ServerPayload::MessageAttachmentDraft { .. }
-        | ServerPayload::MessageDraft { .. } => {}
+        | ServerPayload::MessageDraft { .. }
+        | ServerPayload::ConversationSettings { .. }
+        | ServerPayload::ConversationSettingsUpdated { .. } => {}
     }
 }
 

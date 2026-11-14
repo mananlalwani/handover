@@ -134,3 +134,8 @@
 .handover-media-browser .media-message-link { padding: 3px 0; min-height: 22px; font-size: 12px; font-weight: 500; color: @accent_color; }
 .handover-image-viewer .viewer-zoom-level { font-size: 12px; color: alpha(white, 0.75); }
 .video-surface { background: #111316; }
+
+.handover-messages .selection-bar { padding: 6px 12px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.handover-messages .selection-bar button { font-size: 12px; padding: 4px 8px; }
+.handover-messages .message-selection { margin-top: 6px; }
+.handover-messages .search-section { margin: 12px 10px 4px; font-size: 11px; font-weight: 600; opacity: 0.65; }

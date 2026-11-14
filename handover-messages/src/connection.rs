@@ -6,6 +6,8 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub enum Request {
     Workspace,
+    Settings,
+    SaveSettings(ConversationSettings),
     Contacts,
     Sync(MessagingAccountId),
     Select(Option<MessagingLocation>),
@@ -38,6 +40,8 @@ pub enum Request {
 }
 
 pub enum Reply {
+    Settings(Vec<ConversationSettings>),
+    Setting(ConversationSettings),
     Workspace(MessagingWorkspace),
     Contacts(Vec<Contact>),
     Draft(MessageDraft),
@@ -186,6 +190,10 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
     let result = tokio::time::timeout(Duration::from_secs(255), async {
         let mut client = Client::connect_to(path).await?;
         Ok::<_, IpcError>(match request {
+            Request::Settings => Reply::Settings(client.conversation_settings().await?),
+            Request::SaveSettings(settings) => {
+                Reply::Setting(client.save_conversation_settings(settings).await?)
+            }
             Request::Workspace => Reply::Workspace(client.messaging_workspace().await?),
             Request::Contacts => Reply::Contacts(client.contacts().await?),
             Request::Sync(account) => {

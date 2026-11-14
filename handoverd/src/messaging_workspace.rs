@@ -14,6 +14,7 @@ use std::{
 use thiserror::Error;
 
 mod attachment_drafts;
+mod conversation_settings;
 mod draft_sends;
 
 const MAX_DRAFTS: usize = 128;
@@ -42,6 +43,7 @@ struct MemoryState {
     drafts: BTreeMap<ConversationId, MessageDraft>,
     attachments: BTreeMap<ConversationId, MessageAttachmentDraft>,
     revision: u64,
+    settings: BTreeMap<ConversationId, handover_core::ConversationSettings>,
 }
 
 pub(crate) struct Workspace {
@@ -101,6 +103,8 @@ impl Workspace {
              CREATE TABLE IF NOT EXISTS drafts(account TEXT NOT NULL, thread TEXT NOT NULL,
                 text TEXT NOT NULL, reply_to TEXT, revision INTEGER NOT NULL,
                 PRIMARY KEY(account,thread));
+             CREATE TABLE IF NOT EXISTS conversation_settings(account TEXT NOT NULL, thread TEXT NOT NULL,
+                payload TEXT NOT NULL, PRIMARY KEY(account,thread));
              CREATE TABLE IF NOT EXISTS location(id INTEGER PRIMARY KEY CHECK(id=1),
                 account TEXT NOT NULL, thread TEXT NOT NULL, message TEXT);
              CREATE TABLE IF NOT EXISTS attachment_drafts(account TEXT NOT NULL,thread TEXT NOT NULL,
@@ -191,6 +195,9 @@ impl Workspace {
                     state
                         .attachments
                         .retain(|id, _| id.account_id.as_str() != account);
+                    state
+                        .settings
+                        .retain(|id, _| id.account_id.as_str() != account);
                     if state.location.as_ref().is_some_and(|location| {
                         location.conversation_id.account_id.as_str() == account
                     }) {
@@ -203,6 +210,10 @@ impl Workspace {
                     tx.execute("DELETE FROM drafts WHERE account=?1", [&account])?;
                     tx.execute("DELETE FROM attachment_drafts WHERE account=?1", [&account])?;
                     tx.execute("DELETE FROM location WHERE account=?1", [&account])?;
+                    tx.execute(
+                        "DELETE FROM conversation_settings WHERE account=?1",
+                        [&account],
+                    )?;
                     tx.commit()?;
                     Ok(())
                 }
