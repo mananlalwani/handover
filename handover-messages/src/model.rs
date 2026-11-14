@@ -47,7 +47,7 @@ pub struct Model {
     pub persistent: bool,
     pub outgoing: BTreeMap<String, OutgoingOperation>,
     pub typing: BTreeMap<ConversationId, Vec<String>>,
-    read_states: BTreeMap<ConversationId, bool>,
+    read_states: BTreeMap<ConversationId, ReadState>,
     pub statuses: BTreeMap<MessageId, MessageStatus>,
     pub new_messages: BTreeSet<MessageId>,
     pub new_messages_overflow: bool,
@@ -73,18 +73,38 @@ impl Model {
             .iter()
             .any(|conversation| conversation.id == state.conversation_id)
         {
-            self.read_states.insert(state.conversation_id, state.unread);
+            self.read_states
+                .insert(state.conversation_id.clone(), state);
             while self.read_states.len() > 4096 {
                 self.read_states.pop_first();
             }
         }
     }
     pub fn unread(&self, id: &ConversationId) -> Option<bool> {
-        self.read_states.get(id).copied().or_else(|| {
-            self.conversations
-                .iter()
-                .find(|conversation| &conversation.id == id)
-                .and_then(|conversation| conversation.unread_count.map(|count| count > 0))
+        self.read_states
+            .get(id)
+            .map(|state| state.unread)
+            .or_else(|| {
+                self.conversations
+                    .iter()
+                    .find(|conversation| &conversation.id == id)
+                    .and_then(|conversation| conversation.unread_count.map(|count| count > 0))
+            })
+    }
+
+    pub fn unread_boundary(&self, id: &ConversationId) -> Option<UnreadBoundary> {
+        if self.unread(id) != Some(true) {
+            return None;
+        }
+        let conversation = self.conversations.iter().find(|c| &c.id == id)?;
+        Some(UnreadBoundary {
+            conversation_id: id.clone(),
+            last_read_message_id: self
+                .read_states
+                .get(id)
+                .and_then(|state| state.last_read_message_id.clone()),
+            latest_message_id: conversation.latest_message_id.clone(),
+            count: conversation.unread_count,
         })
     }
 
@@ -525,6 +545,45 @@ impl Model {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct UnreadBoundary {
+    pub conversation_id: ConversationId,
+    pub last_read_message_id: Option<MessageId>,
+    pub latest_message_id: Option<MessageId>,
+    pub count: Option<u64>,
+}
+
+impl UnreadBoundary {
+    pub fn first_unread(&self, messages: &[Message]) -> Option<MessageId> {
+        let scoped = messages
+            .iter()
+            .filter(|message| message.id.conversation_id == self.conversation_id)
+            .collect::<Vec<_>>();
+        if let Some(anchor) = &self.last_read_message_id {
+            if anchor.conversation_id != self.conversation_id {
+                return None;
+            }
+            let position = scoped.iter().position(|message| message.id == *anchor)?;
+            return scoped[position + 1..]
+                .iter()
+                .find(|message| !message.sender.is_self && !message.deleted)
+                .map(|message| message.id.clone());
+        }
+        let count = self.count.filter(|count| *count > 0)?;
+        let latest = self.latest_message_id.as_ref()?;
+        if latest.conversation_id != self.conversation_id {
+            return None;
+        }
+        let end = scoped.iter().position(|message| message.id == *latest)?;
+        let incoming = scoped[..=end]
+            .iter()
+            .filter(|message| !message.sender.is_self && !message.deleted)
+            .collect::<Vec<_>>();
+        let index = incoming.len().checked_sub(usize::try_from(count).ok()?)?;
+        Some(incoming[index].id.clone())
+    }
+}
+
 fn status_label(status: &MessageStatus) -> &'static str {
     match status {
         MessageStatus::Accepted => "Accepted",
@@ -553,6 +612,38 @@ pub fn outcome_label(outcome: &OutgoingOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn message(id: &ConversationId, local_id: &str, is_self: bool, deleted: bool) -> Message {
+        Message {
+            id: MessageId::new(id.clone(), local_id),
+            sender: Participant {
+                local_id: if is_self { "self" } else { "peer" }.into(),
+                display_name: None,
+                address: None,
+                is_self,
+            },
+            transport: None,
+            sent_at: None,
+            text: None,
+            attachments: vec![],
+            reply_preview: None,
+            reply_to: None,
+            reactions: vec![],
+            deleted,
+        }
+    }
+    fn boundary(
+        id: &ConversationId,
+        count: Option<u64>,
+        latest: Option<&str>,
+        anchor: Option<&str>,
+    ) -> UnreadBoundary {
+        UnreadBoundary {
+            conversation_id: id.clone(),
+            last_read_message_id: anchor.map(|v| MessageId::new(id.clone(), v)),
+            latest_message_id: latest.map(|v| MessageId::new(id.clone(), v)),
+            count,
+        }
+    }
     fn draft(text: &str, revision: u64) -> MessageDraft {
         MessageDraft {
             conversation_id: ConversationId::new(MessagingAccountId::new("fixture"), "thread"),
@@ -670,6 +761,53 @@ mod tests {
         assert_eq!(model.messages.first().unwrap().id.local_id, "m000");
         assert_eq!(model.messages.last().unwrap().id.local_id, "m299");
         assert!(model.newer_gap);
+    }
+
+    #[test]
+    fn unread_anchor_requires_loaded_anchor_and_ignores_out_of_scope_messages() {
+        let id = draft("", 0).conversation_id;
+        let other = ConversationId::new(id.account_id.clone(), "other");
+        let b = boundary(&id, None, None, Some("read"));
+        let messages = vec![
+            message(&other, "foreign", false, false),
+            message(&id, "read", false, false),
+            message(&id, "next", false, false),
+        ];
+        assert_eq!(
+            b.first_unread(&messages),
+            Some(MessageId::new(id.clone(), "next"))
+        );
+        assert_eq!(b.first_unread(&messages[0..1]), None);
+    }
+
+    #[test]
+    fn unread_count_is_snapshot_bounded_and_excludes_outgoing_or_deleted_messages() {
+        let id = draft("", 0).conversation_id;
+        let b = boundary(&id, Some(2), Some("latest"), None);
+        let messages = vec![
+            message(&id, "old", false, false),
+            message(&id, "out", true, false),
+            message(&id, "gone", false, true),
+            message(&id, "unread1", false, false),
+            message(&id, "latest", false, false),
+            message(&id, "live", false, false),
+        ];
+        assert_eq!(
+            b.first_unread(&messages),
+            Some(MessageId::new(id.clone(), "unread1"))
+        );
+        assert_eq!(
+            boundary(&id, Some(4), Some("latest"), None).first_unread(&messages),
+            None
+        );
+        assert_eq!(
+            boundary(&id, None, Some("latest"), None).first_unread(&messages),
+            None
+        );
+        assert_eq!(
+            boundary(&id, Some(1), Some("absent"), None).first_unread(&messages),
+            None
+        );
     }
 }
 

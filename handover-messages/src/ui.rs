@@ -22,6 +22,7 @@ struct RowStamp {
     quote: Option<String>,
     delivery: Option<&'static str>,
     find_query: String,
+    unread: bool,
     sender: String,
 }
 
@@ -35,6 +36,20 @@ struct SidebarPreview {
     conversation: ConversationId,
     label: glib::WeakRef<gtk::Label>,
     text: String,
+}
+
+struct ContextReturn {
+    was_context: bool,
+    conversation: ConversationId,
+    anchor: Option<MessageId>,
+    viewport: Option<(MessageId, f64)>,
+}
+
+struct UnreadVisit {
+    boundary: crate::model::UnreadBoundary,
+    first: Option<MessageId>,
+    jump: bool,
+    pages: u8,
 }
 
 pub struct Window {
@@ -92,6 +107,18 @@ pub struct Window {
     loading_latest: Cell<bool>,
     jump_pending: Cell<bool>,
     latest: gtk::Button,
+    unread_button: gtk::Button,
+    unread_visit: RefCell<Option<UnreadVisit>>,
+    context_bar: gtk::Box,
+    context_back: gtk::Button,
+    context_label: gtk::Label,
+    context_previous: gtk::Button,
+    context_next: gtk::Button,
+    context_return: RefCell<Option<ContextReturn>>,
+    navigation_target: RefCell<Option<(MessageId, f64)>>,
+    preserve_next_history: Cell<bool>,
+    restore_history_context: Cell<bool>,
+    result_navigation: Cell<Option<i32>>,
     status: gtk::Label,
     typing_indicator: gtk::Label,
     composer_typing: gtk::Label,
@@ -287,6 +314,28 @@ impl Window {
         content_header.append(&close);
         content.add_top_bar(&content_handle);
         content.add_top_bar(&find.bar);
+        let context_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        context_bar.add_css_class("message-context-bar");
+        let context_back = gtk::Button::with_label("Back to conversation");
+        context_back.add_css_class("flat");
+        context_back.set_tooltip_text(Some("Return to where you left off (Alt+Left)"));
+        let context_label = gtk::Label::new(None);
+        context_label.set_hexpand(true);
+        context_label.set_xalign(0.0);
+        context_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        context_label.add_css_class("dim-label");
+        let context_previous = gtk::Button::from_icon_name("go-up-symbolic");
+        context_previous.add_css_class("flat");
+        context_previous.set_tooltip_text(Some("Previous search result"));
+        let context_next = gtk::Button::from_icon_name("go-down-symbolic");
+        context_next.add_css_class("flat");
+        context_next.set_tooltip_text(Some("Next search result"));
+        context_bar.append(&context_back);
+        context_bar.append(&context_label);
+        context_bar.append(&context_previous);
+        context_bar.append(&context_next);
+        context_bar.set_visible(false);
+        content.add_top_bar(&context_bar);
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         let empty = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -343,6 +392,17 @@ impl Window {
         latest.set_margin_end(24);
         latest.set_margin_bottom(10);
         viewport.add_overlay(&latest);
+        let unread_button = gtk::Button::with_label("First unread ↑");
+        unread_button.add_css_class("jump-latest");
+        unread_button.set_tooltip_text(Some(
+            "Jump to the unread boundary from when you opened this conversation",
+        ));
+        unread_button.set_halign(gtk::Align::Start);
+        unread_button.set_valign(gtk::Align::End);
+        unread_button.set_margin_start(24);
+        unread_button.set_margin_bottom(10);
+        unread_button.set_visible(false);
+        viewport.add_overlay(&unread_button);
         body.append(&viewport);
         let composer_area = gtk::Box::new(gtk::Orientation::Vertical, 6);
         composer_area.add_css_class("composer-area");
@@ -503,6 +563,18 @@ impl Window {
             loading_latest: Cell::new(false),
             jump_pending: Cell::new(false),
             latest,
+            unread_button,
+            unread_visit: RefCell::new(None),
+            context_bar,
+            context_back,
+            context_label,
+            context_previous,
+            context_next,
+            context_return: RefCell::new(None),
+            navigation_target: RefCell::new(None),
+            preserve_next_history: Cell::new(false),
+            restore_history_context: Cell::new(false),
+            result_navigation: Cell::new(None),
             status,
             typing_indicator,
             composer_typing,
@@ -530,7 +602,7 @@ impl Window {
         let weak = Rc::downgrade(&this);
         this.find.set_on_select(move |id| {
             if let Some(this) = weak.upgrade() {
-                this.open(id.conversation_id.clone(), Some(id));
+                this.open_search_result(id);
                 this.find.entry.grab_focus();
             }
         });
@@ -590,6 +662,7 @@ impl Window {
                         .get(index as usize)
                         .map(|a| a.id.clone())
                 });
+                this.result_navigation.set(None);
                 this.model.borrow_mut().offset = 0;
                 this.render_sidebar();
                 this.search_now();
@@ -600,8 +673,36 @@ impl Window {
             if let Some(this) = weak.upgrade() {
                 let target = this.rows.borrow().get(row.index() as usize).cloned();
                 if let Some((id, anchor)) = target {
-                    this.open(id, anchor);
+                    if let Some(anchor) = anchor {
+                        this.open_search_result(anchor);
+                    } else {
+                        this.open(id, None);
+                    }
                 }
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        this.context_back.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.return_to_conversation();
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        this.context_previous.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.navigate_search_result(-1);
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        this.context_next.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.navigate_search_result(1);
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        this.unread_button.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.jump_unread();
             }
         });
         let weak = Rc::downgrade(&this);
@@ -707,6 +808,10 @@ impl Window {
         let weak = Rc::downgrade(&this);
         this.latest.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
+                if let Some(visit) = this.unread_visit.borrow_mut().as_mut() {
+                    visit.jump = false;
+                }
+                this.navigation_target.borrow_mut().take();
                 let id = this.model.borrow().selected.clone();
                 if let Some(id) = id {
                     if this.model.borrow().anchor.is_none() && !this.model.borrow().newer_gap {
@@ -732,6 +837,7 @@ impl Window {
         previous.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
                 let offset = this.model.borrow().offset.saturating_sub(25);
+                this.result_navigation.set(None);
                 this.model.borrow_mut().offset = offset;
                 this.search_now();
             }
@@ -741,6 +847,7 @@ impl Window {
             if let Some(this) = weak.upgrade()
                 && this.model.borrow().more
             {
+                this.result_navigation.set(None);
                 this.model.borrow_mut().offset += 25;
                 this.search_now();
             }
@@ -855,6 +962,7 @@ impl Window {
             ("about", 5),
             ("find", 6),
             ("reconnect", 7),
+            ("back-context", 8),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(&this);
@@ -870,6 +978,7 @@ impl Window {
                         4 => this.connect_account(),
                         6 => this.find.show(),
                         7 => this.reconnect(),
+                        8 => this.return_to_conversation(),
                         _ => this.about(),
                     }
                 }
@@ -941,6 +1050,7 @@ impl Window {
             Request::History(..)
                 | Request::Context(_)
                 | Request::ReplyContext(_)
+                | Request::UnreadContext(_)
                 | Request::ResolveReply(_)
         ) {
             self.history_epochs
@@ -955,6 +1065,33 @@ impl Window {
     }
 
     pub fn open(self: &Rc<Self>, id: ConversationId, anchor: Option<MessageId>) {
+        self.open_position(id, anchor, None);
+    }
+    fn open_position(
+        self: &Rc<Self>,
+        id: ConversationId,
+        anchor: Option<MessageId>,
+        position: Option<(MessageId, f64)>,
+    ) {
+        self.restore_history_context.set(false);
+        *self.navigation_target.borrow_mut() = position.clone();
+        self.preserve_next_history.set(position.is_some());
+        if anchor.is_none() {
+            self.context_return.borrow_mut().take();
+            self.result_navigation.set(None);
+        }
+        if self.model.borrow().selected.as_ref() != Some(&id) {
+            *self.unread_visit.borrow_mut() =
+                self.model
+                    .borrow()
+                    .unread_boundary(&id)
+                    .map(|boundary| UnreadVisit {
+                        boundary,
+                        first: None,
+                        jump: anchor.is_none() && position.is_none(),
+                        pages: 0,
+                    });
+        }
         if !self.model.borrow().connected {
             *self.pending_open.borrow_mut() = Some((id, anchor));
             return;
@@ -1006,7 +1143,7 @@ impl Window {
             model.selected = Some(id.clone());
             model.anchor = anchor.clone();
             model.scroll_anchor = anchor.clone();
-            model.browsing_older = false;
+            model.browsing_older = position.is_some();
             let (messages, cursor) = cached.unwrap_or_default();
             // Fresh history replaces these provisional rows, but not live updates.
             *self.cached_messages.borrow_mut() =
@@ -1291,6 +1428,7 @@ impl Window {
                     Request::History(..)
                         | Request::Context(_)
                         | Request::ReplyContext(_)
+                        | Request::UnreadContext(_)
                         | Request::ResolveReply(_)
                 ) && self.history_epochs.borrow_mut().remove(&id)
                     != Some(self.history_epoch.get())
@@ -1419,6 +1557,24 @@ impl Window {
                     self.model.borrow_mut().hits = hits;
                     self.model.borrow_mut().more = more;
                     self.render_sidebar();
+                    if let Some(direction) = self.result_navigation.take() {
+                        let target = if direction < 0 {
+                            self.model
+                                .borrow()
+                                .hits
+                                .last()
+                                .map(|hit| hit.message_id.clone())
+                        } else {
+                            self.model
+                                .borrow()
+                                .hits
+                                .first()
+                                .map(|hit| hit.message_id.clone())
+                        };
+                        if let Some(target) = target {
+                            self.open_search_result(target);
+                        }
+                    }
                 }
             }
             Reply::History(id, messages, cursor) => {
@@ -1458,8 +1614,13 @@ impl Window {
                     self.model.borrow_mut().merge(messages);
                     self.model.borrow_mut().cursor = cursor;
                     self.model.borrow_mut().notice.clear();
-                    self.render_thread();
                     if !older {
+                        self.loading_latest.set(false);
+                    }
+                    let unread_target = self.unread_history_target();
+                    let preserve = !older && self.preserve_next_history.replace(false);
+                    self.render_thread();
+                    if !older && !unread_target && !preserve {
                         self.to_end();
                     }
                     self.mark_read();
@@ -1469,9 +1630,22 @@ impl Window {
                 }
             }
             Reply::Context(id, messages, cursor) => {
+                let unread_target = if matches!(request, Request::UnreadContext(_)) {
+                    self.unread_visit
+                        .borrow()
+                        .as_ref()
+                        .and_then(|visit| visit.boundary.first_unread(&messages))
+                } else {
+                    None
+                };
+                if matches!(request, Request::UnreadContext(_)) && unread_target.is_none() {
+                    self.model.borrow_mut().notice =
+                        "The unread position isn't available in saved history.".into();
+                    return;
+                }
                 let matches = match &request {
                     Request::Context(anchor) => self.model.borrow().anchor.as_ref() == Some(anchor),
-                    Request::ReplyContext(anchor)
+                    Request::ReplyContext(anchor) | Request::UnreadContext(anchor)
                         if self.model.borrow().selected.as_ref() == Some(&id)
                             && messages.iter().any(|message| &message.id == anchor) =>
                     {
@@ -1502,6 +1676,28 @@ impl Window {
                     self.model.borrow_mut().merge(messages);
                     self.model.borrow_mut().cursor = cursor;
                     self.model.borrow_mut().notice = "Viewing saved message context".into();
+                    if let Some(first) = unread_target {
+                        if let Some(visit) = self.unread_visit.borrow_mut().as_mut() {
+                            visit.first = Some(first.clone());
+                            visit.jump = false;
+                        }
+                        self.model.borrow_mut().anchor = Some(first.clone());
+                        *self.navigation_target.borrow_mut() = Some((first, 0.0));
+                    }
+                    if self.restore_history_context.replace(false) {
+                        let mut model = self.model.borrow_mut();
+                        model.newer_gap = !model
+                            .conversations
+                            .iter()
+                            .find(|conversation| conversation.id == id)
+                            .and_then(|conversation| conversation.latest_message_id.as_ref())
+                            .is_some_and(|latest| {
+                                model.messages.iter().any(|message| &message.id == latest)
+                            });
+                        model.anchor = None;
+                        model.browsing_older = true;
+                    }
+                    self.resolve_unread();
                     self.render_thread();
                 }
             }
@@ -1718,6 +1914,10 @@ impl Window {
                 self.model.borrow_mut().notice.clear();
                 self.loading_latest.set(false);
             }
+            Request::UnreadContext(_) => {
+                self.model.borrow_mut().notice =
+                    "Couldn't load the unread position. Your conversation is still open.".into();
+            }
             Request::ReplyContext(id) => {
                 if self.model.borrow().selected.as_ref() == Some(&id.conversation_id) {
                     self.model.borrow_mut().notice =
@@ -1813,6 +2013,7 @@ impl Window {
         if self.updating.get() {
             return;
         }
+        self.result_navigation.set(None);
         {
             let mut model = self.model.borrow_mut();
             model.query = self.search.text().to_string();
@@ -1849,6 +2050,230 @@ impl Window {
         {
             self.search_request.set(Some(self.sequence.get()));
         }
+    }
+    fn resolve_unread(&self) -> Option<MessageId> {
+        let model = self.model.borrow();
+        let mut visit = self.unread_visit.borrow_mut();
+        let visit = visit
+            .as_mut()
+            .filter(|visit| model.selected.as_ref() == Some(&visit.boundary.conversation_id))?;
+        if visit.first.is_none() {
+            visit.first = visit.boundary.first_unread(&model.messages);
+        }
+        visit.first.clone()
+    }
+    fn jump_unread(self: &Rc<Self>) {
+        let Some(boundary) = self
+            .unread_visit
+            .borrow()
+            .as_ref()
+            .map(|visit| visit.boundary.clone())
+        else {
+            return;
+        };
+        if let Some(first) = self.resolve_unread() {
+            if self
+                .model
+                .borrow()
+                .messages
+                .iter()
+                .any(|message| message.id == first)
+            {
+                self.model.borrow_mut().browsing_older = true;
+                *self.navigation_target.borrow_mut() = Some((first, 0.0));
+                self.render_thread();
+            } else {
+                self.open_position(
+                    boundary.conversation_id,
+                    Some(first.clone()),
+                    Some((first, 0.0)),
+                );
+            }
+        } else if let Some(anchor) = boundary.last_read_message_id {
+            if !self
+                .pending
+                .borrow()
+                .values()
+                .any(|request| matches!(request, Request::UnreadContext(_)))
+            {
+                self.request(Request::UnreadContext(anchor));
+                self.model.borrow_mut().notice = "Finding unread messages…".into();
+            }
+        } else {
+            if boundary.latest_message_id.is_none()
+                || boundary.count.is_none_or(|count| count == 0 || count > 300)
+            {
+                self.model.borrow_mut().notice =
+                    "The phone hasn't supplied a usable unread position.".into();
+                self.render_status();
+                return;
+            }
+            if let Some(visit) = self.unread_visit.borrow_mut().as_mut() {
+                visit.jump = true;
+                visit.pages = 0;
+            }
+            self.model.borrow_mut().browsing_older = true;
+            self.load_older(true);
+            if self.model.borrow().cursor.is_none() {
+                self.model.borrow_mut().notice =
+                    "The unread position isn't available in saved history.".into();
+            }
+        }
+        self.render_history_status();
+        self.render_status();
+    }
+    fn unread_history_target(&self) -> bool {
+        let target = self.resolve_unread();
+        let mut visit = self.unread_visit.borrow_mut();
+        let Some(visit) = visit.as_mut().filter(|visit| visit.jump) else {
+            return false;
+        };
+        if let Some(first) = target {
+            visit.jump = false;
+            self.model.borrow_mut().browsing_older = true;
+            *self.navigation_target.borrow_mut() = Some((first, 0.0));
+            return true;
+        }
+        let usable = visit.boundary.last_read_message_id.is_some()
+            || (visit.boundary.latest_message_id.is_some()
+                && visit
+                    .boundary
+                    .count
+                    .is_some_and(|count| count > 0 && count <= 300));
+        if usable && self.model.borrow().cursor.is_some() && visit.pages < 6 {
+            visit.pages += 1;
+            self.model.borrow_mut().browsing_older = true;
+            return true;
+        }
+        visit.jump = false;
+        false
+    }
+    fn viewport_anchor(&self) -> Option<(MessageId, f64)> {
+        let y = self.scroll.vadjustment().value();
+        let mut child = self.thread.first_child();
+        for id in self.rendered.borrow().iter() {
+            let widget = child?;
+            let (top, height) = message_bounds(&widget, &self.thread);
+            if top + height >= y {
+                return Some((id.clone(), top - y));
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+    fn open_search_result(self: &Rc<Self>, target: MessageId) {
+        if self.context_return.borrow().is_none() {
+            let model = self.model.borrow();
+            if let Some(id) = &model.selected {
+                let viewport = if model.browsing_older || model.anchor.is_some() {
+                    self.viewport_anchor()
+                } else {
+                    None
+                };
+                let anchor = model
+                    .anchor
+                    .clone()
+                    .or_else(|| viewport.as_ref().map(|(id, _)| id.clone()));
+                *self.context_return.borrow_mut() = Some(ContextReturn {
+                    was_context: model.anchor.is_some(),
+                    conversation: id.clone(),
+                    anchor,
+                    viewport,
+                });
+            }
+        }
+        self.open(target.conversation_id.clone(), Some(target));
+    }
+    fn return_to_conversation(self: &Rc<Self>) {
+        let origin = self.context_return.borrow_mut().take();
+        self.result_navigation.set(None);
+        self.find.close();
+        self.search.set_text("");
+        self.search_changed();
+        if let Some(origin) = origin {
+            let restore_history = !origin.was_context && origin.anchor.is_some();
+            self.open_position(origin.conversation, origin.anchor, origin.viewport);
+            self.restore_history_context.set(restore_history);
+        } else {
+            let selected = self.model.borrow().selected.clone();
+            if let Some(id) = selected {
+                self.open(id, None);
+            }
+        }
+    }
+    fn navigate_search_result(self: &Rc<Self>, direction: i32) {
+        let (target, page) = {
+            let model = self.model.borrow();
+            let index = model
+                .anchor
+                .as_ref()
+                .and_then(|anchor| model.hits.iter().position(|hit| &hit.message_id == anchor));
+            let Some(index) = index else {
+                return;
+            };
+            if direction < 0 && index > 0 {
+                (Some(model.hits[index - 1].message_id.clone()), None)
+            } else if direction > 0 && index + 1 < model.hits.len() {
+                (Some(model.hits[index + 1].message_id.clone()), None)
+            } else if direction < 0 && model.offset > 0 {
+                (None, Some(model.offset.saturating_sub(25)))
+            } else if direction > 0 && model.more && model.offset < 10000 {
+                (None, Some(model.offset + 25))
+            } else {
+                (None, None)
+            }
+        };
+        if let Some(target) = target {
+            self.open_search_result(target);
+        }
+        if let Some(offset) = page {
+            self.model.borrow_mut().offset = offset;
+            self.result_navigation.set(Some(direction));
+            self.search_now();
+            self.render_status();
+        }
+    }
+    fn render_context_bar(&self) {
+        let model = self.model.borrow();
+        self.context_bar.set_visible(model.anchor.is_some());
+        if let Some(action) = self
+            .window
+            .lookup_action("back-context")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(model.anchor.is_some());
+        }
+        self.context_back.set_sensitive(model.connected);
+        let index = model
+            .anchor
+            .as_ref()
+            .and_then(|anchor| model.hits.iter().position(|hit| &hit.message_id == anchor));
+        let global =
+            !model.query.trim().is_empty() && index.is_some() && self.find.query().is_empty();
+        self.context_previous.set_visible(global);
+        self.context_next.set_visible(global);
+        let waiting = self.result_navigation.get().is_some();
+        self.context_previous.set_sensitive(
+            !waiting && model.connected && index.is_some_and(|index| index > 0 || model.offset > 0),
+        );
+        self.context_next.set_sensitive(
+            !waiting
+                && model.connected
+                && index.is_some_and(|index| index + 1 < model.hits.len() || model.more),
+        );
+        self.context_label
+            .set_text(&if let Some(index) = index.filter(|_| global) {
+                format!(
+                    "Result {} of {}{}",
+                    model.offset as usize + index + 1,
+                    model.offset as usize + model.hits.len(),
+                    if model.more { "+" } else { "" }
+                )
+            } else if !self.find.query().is_empty() {
+                "Search match · surrounding messages".into()
+            } else {
+                "Message context".into()
+            });
     }
     fn quote_label(&self, model: &Model, id: &MessageId) -> String {
         let quotes = self.quotes.borrow();
@@ -2400,7 +2825,12 @@ impl Window {
     }
     fn mark_read(&self) {
         let adjustment = self.scroll.vadjustment();
-        if !self.window.is_active()
+        if self
+            .unread_visit
+            .borrow()
+            .as_ref()
+            .is_some_and(|visit| visit.jump)
+            || !self.window.is_active()
             || adjustment.value() + adjustment.page_size() < adjustment.upper() - 2.0
         {
             return;
@@ -3003,6 +3433,7 @@ impl Window {
                 }),
         );
         self.render_history_status();
+        self.render_context_bar();
         self.reload
             .set_visible(draft.is_some_and(|draft| !draft.error.is_empty()));
         self.reload
@@ -3068,12 +3499,21 @@ impl Window {
         );
     }
     fn render_history_status(&self) {
+        self.unread_button
+            .set_visible(self.unread_visit.borrow().as_ref().is_some_and(|visit| {
+                self.model.borrow().selected.as_ref() == Some(&visit.boundary.conversation_id)
+            }));
+        self.unread_button
+            .set_sensitive(self.model.borrow().connected && !self.loading_latest.get());
         let model = self.model.borrow();
         let fetching = self.pending.borrow().iter().any(|(id, request)| {
             self.history_epochs.borrow().get(id) == Some(&self.history_epoch.get())
                 && match request {
                     Request::History(id, _) => Some(id) == model.selected.as_ref(),
                     Request::Context(anchor) => model.anchor.as_ref() == Some(anchor),
+                    Request::UnreadContext(anchor) => {
+                        model.selected.as_ref() == Some(&anchor.conversation_id)
+                    }
                     _ => false,
                 }
         });
@@ -3117,7 +3557,13 @@ impl Window {
         );
     }
     fn follow_tail(&self) {
-        if self.model.borrow().anchor.is_some() {
+        if self.model.borrow().anchor.is_some()
+            || self
+                .unread_visit
+                .borrow()
+                .as_ref()
+                .is_some_and(|visit| visit.jump)
+        {
             return;
         }
         let adjustment = self.scroll.vadjustment();
@@ -3194,17 +3640,14 @@ impl Window {
                 && conversation.kind == ConversationKind::Group
         });
         let replies = model.can(MessagingCapability::Replies);
-        let gallery = Rc::new(
-            model
-                .messages
-                .iter()
-                .filter(|message| !message.deleted)
-                .flat_map(|message| &message.attachments)
-                .filter(|attachment| crate::media::is_image(attachment))
-                .take(256)
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
+        let message_query = {
+            let query = self.find.query();
+            if query.is_empty() && model.anchor.is_some() {
+                model.query.clone()
+            } else {
+                query
+            }
+        };
         let mut stamps = BTreeMap::new();
         let mut preceding: Option<gtk::Widget> = None;
 
@@ -3227,7 +3670,13 @@ impl Window {
                     .reply_to
                     .as_ref()
                     .map(|id| self.quote_label(&model, id)),
-                find_query: self.find.query(),
+                find_query: message_query.clone(),
+                unread: self
+                    .unread_visit
+                    .borrow()
+                    .as_ref()
+                    .and_then(|visit| visit.first.as_ref())
+                    == Some(&message.id),
                 sender: self.photos.borrow().label(&message.sender),
                 delivery: if message.sender.is_self && !message.deleted {
                     model.message_status(&message.id)
@@ -3265,15 +3714,17 @@ impl Window {
                 self.thread.remove(&old);
             }
             let sender_name = stamp.sender.clone();
+            let unread = stamp.unread;
             stamps.insert(message.id.clone(), stamp);
-            let grouped = previous.is_some_and(|previous| {
-                previous.sender.local_id == message.sender.local_id
-                    && previous.sender.is_self == message.sender.is_self
-                    && previous
-                        .sent_at
-                        .zip(message.sent_at)
-                        .is_some_and(|(a, b)| (0..=300_000_000).contains(&b.saturating_sub(a)))
-            });
+            let grouped = !unread
+                && previous.is_some_and(|previous| {
+                    previous.sender.local_id == message.sender.local_id
+                        && previous.sender.is_self == message.sender.is_self
+                        && previous
+                            .sent_at
+                            .zip(message.sent_at)
+                            .is_some_and(|(a, b)| (0..=300_000_000).contains(&b.saturating_sub(a)))
+                });
             // Keep one wrapper per message so saved scroll anchors retain their identity.
             let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
             if let Some(time) = message.sent_at.filter(|time| {
@@ -3286,6 +3737,21 @@ impl Window {
                 date.set_halign(gtk::Align::Center);
                 wrapper.append(&date);
             }
+            if unread {
+                let divider = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+                divider.add_css_class("unread-divider");
+                let left = gtk::Separator::new(gtk::Orientation::Horizontal);
+                left.set_hexpand(true);
+                left.set_valign(gtk::Align::Center);
+                let label = gtk::Label::new(Some("Unread messages"));
+                let right = gtk::Separator::new(gtk::Orientation::Horizontal);
+                right.set_hexpand(true);
+                right.set_valign(gtk::Align::Center);
+                divider.append(&left);
+                divider.append(&label);
+                divider.append(&right);
+                wrapper.append(&divider);
+            }
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             row.add_css_class("message-row");
             row.set_margin_top(if grouped { 3 } else { 8 });
@@ -3295,8 +3761,27 @@ impl Window {
                 gtk::Align::Start
             });
             // Leave breathing room on the opposite side without forcing short bubbles to fill it.
-            row.set_margin_start(if message.sender.is_self { 48 } else { 0 });
-            row.set_margin_end(if message.sender.is_self { 0 } else { 48 });
+            let opposite_margin = if message
+                .attachments
+                .iter()
+                .filter(|attachment| crate::media::is_image(attachment))
+                .count()
+                > 1
+            {
+                16
+            } else {
+                48
+            };
+            row.set_margin_start(if message.sender.is_self {
+                opposite_margin
+            } else {
+                0
+            });
+            row.set_margin_end(if message.sender.is_self {
+                0
+            } else {
+                opposite_margin
+            });
             let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
             if !grouped
                 && !message.sender.is_self
@@ -3350,7 +3835,7 @@ impl Window {
                 });
                 bubble.append(&quote);
             }
-            let query = self.find.query();
+            let query = &message_query;
             let text = crate::message_text::label(
                 if message.deleted {
                     "Message deleted"
@@ -3369,27 +3854,8 @@ impl Window {
                 message.deleted || message.text.as_ref().is_some_and(|text| !text.is_empty()),
             );
             bubble.append(&text);
-            let mut images = Vec::new();
             for attachment in message.attachments.iter().filter(|_| !message.deleted) {
                 if crate::media::is_image(attachment) {
-                    let image =
-                        if let Some(index) = gallery.iter().position(|item| item == attachment) {
-                            self.media.attachment_gallery(
-                                attachment,
-                                &self.window,
-                                gallery.clone(),
-                                index,
-                            )
-                        } else {
-                            self.media.attachment(attachment, &self.window)
-                        };
-                    image.set_halign(if message.sender.is_self {
-                        gtk::Align::End
-                    } else {
-                        gtk::Align::Start
-                    });
-                    image.set_margin_top(6);
-                    images.push(image);
                     continue;
                 }
                 if matches!(
@@ -3431,8 +3897,17 @@ impl Window {
                         .any(|attachment| !crate::media::is_image(attachment)),
             );
             column.append(&bubble);
-            for image in images {
-                column.append(&image);
+            if !message.deleted && message.attachments.iter().any(crate::media::is_image) {
+                let images = self
+                    .media
+                    .message_images(&message.attachments, &self.window);
+                images.set_halign(if message.sender.is_self {
+                    gtk::Align::End
+                } else {
+                    gtk::Align::Start
+                });
+                images.set_margin_top(6);
+                column.append(&images);
             }
             if message.sender.is_self && !message.deleted {
                 let label = gtk::Label::new(None);
@@ -3446,7 +3921,7 @@ impl Window {
             reply.add_css_class("flat");
             reply.add_css_class("circular");
             reply.add_css_class("message-actions");
-            reply.set_valign(gtk::Align::Center);
+            reply.set_valign(gtk::Align::Start);
             reply.set_sensitive(!message.deleted && model.can(MessagingCapability::Replies));
             let id = message.id.clone();
             let weak = Rc::downgrade(self);
@@ -3455,15 +3930,35 @@ impl Window {
                     this.set_reply(Some(id.clone()));
                 }
             });
-            if message.sender.is_self {
-                row.append(&reply);
-            }
-            row.append(&column);
-            if !message.sender.is_self {
-                row.append(&reply);
-            }
             let actions = self.message_actions(message);
-            row.append(&actions);
+            actions.set_valign(gtk::Align::Start);
+            let action_bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            action_bar.add_css_class("message-action-bar");
+            action_bar.set_valign(gtk::Align::Start);
+            action_bar.set_margin_top(if !grouped && group && !message.sender.is_self {
+                20
+            } else {
+                0
+            });
+            action_bar.append(&reply);
+            action_bar.append(&actions);
+            if message.sender.is_self {
+                row.append(&action_bar);
+                row.append(&column);
+            } else {
+                row.append(&column);
+                row.append(&action_bar);
+            }
+            let active_row = row.downgrade();
+            actions.connect_active_notify(move |menu| {
+                if let Some(row) = active_row.upgrade() {
+                    if menu.is_active() {
+                        row.add_css_class("actions-open");
+                    } else {
+                        row.remove_css_class("actions-open");
+                    }
+                }
+            });
             let click = gtk::GestureClick::new();
             click.set_button(3);
             click.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -3534,7 +4029,14 @@ impl Window {
             .iter()
             .map(|message| message.id.clone())
             .collect();
-        let target = if initial {
+        let target = if let Some(target) = self
+            .navigation_target
+            .borrow()
+            .clone()
+            .filter(|(id, _)| model.messages.iter().any(|message| &message.id == id))
+        {
+            Some(target)
+        } else if initial {
             model.anchor.clone().map(|id| (id, 0.0)).or(previous)
         } else {
             previous
@@ -3594,9 +4096,25 @@ impl Window {
                     if let Some(child) = child {
                         adjustment
                             .set_value((message_bounds(&child, &this.thread).0 - offset).max(0.0));
+                        if this
+                            .navigation_target
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|(target, _)| target == id)
+                        {
+                            this.navigation_target.borrow_mut().take();
+                        }
                     }
                 }
                 this.restoring.set(false);
+                if this
+                    .unread_visit
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|visit| visit.jump)
+                {
+                    this.load_older(true);
+                }
                 this.follow_tail();
                 if following {
                     this.mark_read();

@@ -26,6 +26,7 @@ pub enum Request {
     History(ConversationId, Option<String>),
     Context(MessageId),
     ReplyContext(MessageId),
+    UnreadContext(MessageId),
     Quote(MessageId),
     ResolveReply(MessageId),
     React(MessageId, String, bool),
@@ -222,7 +223,7 @@ async fn execute(path: PathBuf, request: Request) -> Result<Reply, Failure> {
                     .await?;
                 Reply::History(id, messages, next)
             }
-            Request::Context(id) | Request::ReplyContext(id) => {
+            Request::Context(id) | Request::ReplyContext(id) | Request::UnreadContext(id) => {
                 let conversation_id = id.conversation_id.clone();
                 let (messages, cursor_next) = client.message_context_page(id).await?;
                 Reply::Context(conversation_id, messages, cursor_next)

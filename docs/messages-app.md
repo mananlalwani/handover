@@ -79,6 +79,7 @@ available for workflows the native app does not yet expose.
 | Enter or Ctrl+Enter | Send the current draft |
 | Shift+Enter in the composer | Insert a new line |
 | Alt+Up or Alt+Down | Move between conversations |
+| Alt+Left | Return from message context |
 
 Drafts autosave through the daemon. The app restores the selected conversation
 and message position. A conflicting draft revision requires reloading the saved
@@ -125,6 +126,16 @@ messages do not increment it. Selecting the indicator returns to the newest
 messages and clears the count, including when another update arrives during the
 jump.
 
+When a conversation opens unread, an unread divider uses the reported read
+anchor, or the reported count and latest message identity when the loaded tail
+is sufficient. The app makes bounded older-page requests to find that position.
+First unread returns to it. The divider remains stable for that visit even if a
+read acknowledgement arrives. Missing read metadata never creates a guessed
+message identity; an unresolved jump reports that the position is unavailable.
+
+Message actions fade in on hover or keyboard focus and stay visible while their
+menu is open. Their space is reserved, so revealing them does not move a bubble.
+
 A send acknowledgement means the daemon accepted the command. Delivery labels
 use later provider evidence. If the connection drops before the acknowledgement,
 the app retains the draft and warns that the outcome is unknown. It does not
@@ -137,6 +148,11 @@ Matches highlight in the message text. Previous/Next and Shift+Enter/Enter move
 between matches, fetching the next saved-result page when needed. The counter
 shows the known result count, with + when more remain. Escape closes Find.
 Ctrl+K keeps the global saved-message search available.
+Opening a result shows its surrounding saved messages and highlights the query.
+The context bar moves between global results, including across result pages.
+Back to conversation, or Alt+Left, restores the conversation and visible message
+position from before the search. Returning from a search does not jump to the
+bottom of an older conversation.
 
 HTTP and HTTPS links open in your browser when clicked. Message actions include
 Copy link. Save attachment as opens a destination chooser for a locally available
@@ -145,8 +161,12 @@ controls. Saving writes a new local copy and never downloads missing media.
 
 ## Images, audio, video, and contact pictures
 
-Image attachments stored locally appear directly in the conversation. Click an
-image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
+Image attachments stored locally appear directly in the conversation.
+Multiple images in one message use a compact two-column grid. A three-photo
+message has a wider lead photo. Larger groups show four tiles and an explicit
+remaining-photo count. The viewer contains every image from that message, in
+order, rather than continuing into another message's images.
+Click an image to open the in-app viewer. Zoom in and out, pan with the scrollbars, or
 choose Fit to see the whole image. Escape closes the viewer. Open externally
 uses your system viewer when needed. Previous and Next, or the left and right
 arrow keys, move between images in the opened gallery. The app uses installed

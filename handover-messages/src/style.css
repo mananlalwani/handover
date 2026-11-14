@@ -35,9 +35,10 @@
 .handover-messages .message-bubble.outgoing .message-text link { color: @accent_fg_color; }
 .handover-messages .message-date { font-size: 0.76em; font-weight: 500; opacity: 0.55; margin: 16px 0 12px; padding: 4px 10px; }
 .handover-messages .message-sender { font-size: 0.8em; opacity: 0.6; margin: 0 12px 4px; }
-.handover-messages .message-actions { opacity: 0; transition: opacity 120ms ease; }
-.handover-messages .message-row:hover .message-actions,
-.handover-messages .message-row:focus-within .message-actions { opacity: 1; }
+.handover-messages .message-action-bar { opacity: 0; transition: opacity 120ms ease; }
+.handover-messages .message-row:hover .message-action-bar,
+.handover-messages .message-row:focus-within .message-action-bar,
+.handover-messages .message-row.actions-open .message-action-bar { opacity: 1; }
 .handover-messages .composer-area { padding: 12px 28px 18px; }
 .handover-messages .composer { border-radius: 22px; background: @view_bg_color; border: 1px solid alpha(@window_fg_color, 0.18); padding: 5px; }
 .handover-messages .composer:focus-within { border-color: alpha(@accent_bg_color, 0.7); box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.09); }
@@ -62,6 +63,10 @@
 .handover-messages .contact-heading { margin-left: 4px; }
 .handover-messages .image-attachment { border: 0; border-radius: 12px; padding: 0; background: alpha(@window_fg_color, 0.06); box-shadow: none; }
 .handover-messages .image-attachment picture { border-radius: 12px; }
+.handover-messages .message-image-grid { padding: 0; }
+.handover-messages .message-image-grid .image-attachment,
+.handover-messages .message-image-grid .image-attachment picture { border-radius: 4px; }
+.handover-messages .message-image-grid .message-image-tile { padding: 0; }
 .handover-messages .image-placeholder { font-size: 0.9em; opacity: 0.7; padding: 16px; }
 .handover-image-viewer { background: #111316; color: #f2f3f5; font-family: "Inter", "Noto Sans", sans-serif; }
 .handover-image-viewer .viewer-toolbar { min-height: 48px; padding: 6px 14px; background: #191c20; border-bottom: 1px solid #282c32; }
@@ -112,3 +117,10 @@
 .handover-messages .attachment-remove { min-width: 21px; min-height: 21px; margin: 4px; padding: 0; border-radius: 50%; background: alpha(@window_bg_color, 0.88); box-shadow: 0 1px 3px alpha(#000000, 0.18); }
 .handover-messages .attachment-remove image { -gtk-icon-size: 10px; }
 .handover-messages .attachment-remove:hover { background: @window_bg_color; }
+
+.handover-messages .message-image-overflow { background: alpha(#000000, 0.5); color: white; font-size: 24px; font-weight: 600; border-radius: 10px; }
+
+.handover-messages .unread-divider { margin: 12px 4px 6px; color: @accent_color; font-size: 11px; font-weight: 600; }
+.handover-messages .unread-divider separator { background: alpha(@accent_bg_color, 0.3); min-height: 1px; }
+.handover-messages .message-context-bar { padding: 5px 10px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.handover-messages .message-context-bar label { font-size: 12px; }

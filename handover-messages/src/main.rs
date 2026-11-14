@@ -70,5 +70,6 @@ fn main() -> gtk::glib::ExitCode {
     application.set_accels_for_action("win.send", &["<Control>Return"]);
     application.set_accels_for_action("win.previous", &["<Alt>Up"]);
     application.set_accels_for_action("win.next", &["<Alt>Down"]);
+    application.set_accels_for_action("win.back-context", &["<Alt>Left"]);
     application.run()
 }

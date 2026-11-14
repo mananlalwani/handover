@@ -687,7 +687,10 @@ fn fake_server(
                         let hit = json!({"message_id":message_id,"snippet":"Found in saved history","sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"sent_at":1});
                         send_json(
                             &mut stream,
-                            response("message_search", json!({"hits":[hit],"has_more":false})),
+                            response(
+                                "message_search",
+                                json!({"hits":[hit, {"message_id":{"conversation_id":conversation.id,"local_id":"message-2"},"snippet":"Another saved term in context","sender":{"local_id":"alex","display_name":"Alex Example","address":null,"is_self":false},"sent_at":2}],"has_more":false}),
+                            ),
                         );
                     }
                     "messages.search_conversation" => {
@@ -1358,6 +1361,10 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap()
     .downcast::<gtk::Button>()
     .unwrap();
+    assert!(
+        ancestor_with_class(image_button.upcast_ref(), "message-image-grid").is_some(),
+        "photos attached to one message share a compact grid"
+    );
     image_button.emit_clicked();
     pump_until(
         || {
@@ -1413,6 +1420,62 @@ fn native_window_round_trips_real_frontend_actions() {
         capture_fixture(&viewer, path.with_file_name(name));
     }
     viewer.close();
+    let album = (0..6)
+        .map(|index| Attachment {
+            local_id: format!("album-{index}"),
+            name: Some(format!("album-{index}.png")),
+            mime: Some("image/png".into()),
+            size_bytes: None,
+            staged_path: Some(staged_path.to_string_lossy().into_owned()),
+        })
+        .collect::<Vec<_>>();
+    let album_grid = ui.media.message_images(&album, &ui.window);
+    assert!(
+        find_widget(&album_grid, &|widget| widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == "+2"))
+        .is_some(),
+        "overflow is explicit rather than a nested scroll area"
+    );
+    let overflow = find_widget(&album_grid, &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.tooltip_text().as_deref() == Some("Open image 4 of 6"))
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    overflow.emit_clicked();
+    pump_until(
+        || {
+            app.windows()
+                .iter()
+                .any(|window| window.title().as_deref() == Some("album-3.png"))
+        },
+        "overflow opens the matching image within its own message gallery",
+    );
+    let album_viewer = app
+        .windows()
+        .into_iter()
+        .find(|window| window.title().as_deref() == Some("album-3.png"))
+        .unwrap();
+    let album_next = find_widget(album_viewer.upcast_ref(), &|widget| {
+        widget.tooltip_text().as_deref() == Some("Next image")
+    })
+    .unwrap()
+    .downcast::<gtk::Button>()
+    .unwrap();
+    album_next.emit_clicked();
+    pump_until(
+        || album_viewer.title().as_deref() == Some("album-4.png"),
+        "next image remains within the message album",
+    );
+    album_next.emit_clicked();
+    pump_until(
+        || album_viewer.title().as_deref() == Some("album-5.png") && !album_next.is_sensitive(),
+        "gallery exposes every original and stops at the last image in this message",
+    );
+    album_viewer.close();
 
     pump_until(
         || ui.model.borrow().messages.len() >= 5,
@@ -1571,8 +1634,15 @@ fn native_window_round_trips_real_frontend_actions() {
     .unwrap()
     .downcast::<gtk::MenuButton>()
     .unwrap();
+    let row_size = (map_row.width(), map_row.height());
     map_actions.popup();
     let map_menu = map_actions.popover().expect("map message actions menu");
+    wait_for_layout(&ui.window);
+    assert_eq!(
+        (map_row.width(), map_row.height()),
+        row_size,
+        "opening message actions preserves the row geometry"
+    );
     pump_until(|| map_menu.is_visible(), "map message actions menu opens");
     let copy_link = find_widget(map_menu.upcast_ref(), &|widget| {
         widget
@@ -1650,7 +1720,26 @@ fn native_window_round_trips_real_frontend_actions() {
         || ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "m1")),
         "previous find page returns to the first fixture message",
     );
-    ui.find.close();
+    assert!(ui.context_bar.is_visible());
+    let return_target = ui
+        .context_return
+        .borrow()
+        .as_ref()
+        .and_then(|origin| origin.viewport.clone());
+    ui.context_back.emit_clicked();
+    pump_until(
+        || !ui.context_bar.is_visible() && !ui.restoring.get(),
+        "scoped search returns to the original conversation position",
+    );
+    if let Some((id, _)) = return_target {
+        assert!(
+            ui.model
+                .borrow()
+                .messages
+                .iter()
+                .any(|message| message.id == id)
+        );
+    }
     ui.open(id(), None);
     pump_until(
         || {
@@ -3250,12 +3339,98 @@ fn native_window_round_trips_real_frontend_actions() {
         || ui.model.borrow().anchor.is_some() && !ui.model.borrow().messages.is_empty(),
         "search result opens message context",
     );
+    assert!(ui.context_bar.is_visible());
+    assert!(ui.context_next.is_sensitive());
+    ui.context_next.emit_clicked();
+    pump_until(
+        || ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "message-2")),
+        "next global result retains surrounding context",
+    );
+    assert!(ui.context_previous.is_sensitive());
+    ui.context_previous.emit_clicked();
+    pump_until(
+        || ui.model.borrow().anchor.as_ref() == Some(&MessageId::new(id(), "message-1")),
+        "previous global result returns to the first match",
+    );
+    ui.context_back.emit_clicked();
+    pump_until(
+        || {
+            !ui.context_bar.is_visible()
+                && ui.model.borrow().anchor.is_none()
+                && ui.model.borrow().query.is_empty()
+        },
+        "return from search restores normal conversation and clears search controls",
+    );
 
     ui.open(id(), None);
     pump_until(
         || ui.model.borrow().selected_draft().is_some_and(|d| d.loaded),
         "thread draft reload",
     );
+    let mut unread_conversation = fixture().1;
+    unread_conversation.latest_message_id = Some(MessageId::new(id(), "m5"));
+    unread_conversation.unread_count = Some(1);
+    ui.open(
+        ConversationId::new(MessagingAccountId::new(ACCOUNT), "other"),
+        None,
+    );
+    ui.event(Event::State(Box::new(ServerPayload::ConversationUpdated {
+        conversation: unread_conversation,
+    })));
+    ui.event(Event::State(Box::new(ServerPayload::ReadState {
+        state: ReadState {
+            conversation_id: id(),
+            last_read_message_id: Some(MessageId::new(id(), "m1")),
+            unread: true,
+        },
+    })));
+    ui.open(id(), None);
+    pump_until(
+        || {
+            ui.unread_visit
+                .borrow()
+                .as_ref()
+                .and_then(|visit| visit.first.as_ref())
+                .is_some_and(|first| first.local_id == "m3")
+                && !ui.restoring.get()
+        },
+        "opening an unread chat locates the first incoming message after its read anchor",
+    );
+    assert!(
+        find_widget(ui.thread.upcast_ref(), &|widget| widget
+            .has_css_class("unread-divider"))
+        .is_some()
+    );
+    ui.event(Event::State(Box::new(ServerPayload::ReadState {
+        state: ReadState {
+            conversation_id: id(),
+            last_read_message_id: Some(MessageId::new(id(), "m5")),
+            unread: false,
+        },
+    })));
+    ui.render_thread();
+    assert!(
+        find_widget(ui.thread.upcast_ref(), &|widget| widget
+            .has_css_class("unread-divider"))
+        .is_some(),
+        "read acknowledgement does not move the opening unread divider"
+    );
+    ui.unread_button.emit_clicked();
+    pump_until(
+        || !ui.restoring.get() && ui.navigation_target.borrow().is_none(),
+        "first unread action returns to the saved boundary",
+    );
+    ui.open(
+        ConversationId::new(MessagingAccountId::new(ACCOUNT), "other"),
+        None,
+    );
+    ui.open(id(), None);
+    pump_until(
+        || ui.model.borrow().selected.as_ref() == Some(&id()) && !ui.loading_latest.get(),
+        "leaving the chat ends its previous unread visit",
+    );
+    assert!(ui.unread_visit.borrow().is_none());
+
     // Offline account state must disable send while retaining an editable draft.
     let mut offline = fixture().0;
     offline.connected = false;
@@ -3671,6 +3846,29 @@ fn native_window_round_trips_real_frontend_actions() {
     pump_until(
         || !ui.restoring.get() && ui.model.borrow().messages.len() >= 10,
         "restored message context",
+    );
+    let before_search = ui
+        .viewport_anchor()
+        .expect("visible history position before search");
+    ui.open_search_result(MessageId::new(id(), "m1"));
+    pump_until(
+        || ui.model.borrow().selected.as_ref() == Some(&id()) && !ui.restoring.get(),
+        "search context can open another conversation",
+    );
+    ui.context_back.emit_clicked();
+    pump_until(
+        || {
+            ui.model.borrow().selected.as_ref() == Some(&history_id)
+                && ui.model.borrow().anchor.as_ref() == Some(&restored)
+                && !ui.restoring.get()
+        },
+        "return to search origin restores the old history context",
+    );
+    let after_search = ui.viewport_anchor().expect("restored history position");
+    assert_eq!(after_search.0, before_search.0);
+    assert!(
+        (after_search.1 - before_search.1).abs() <= 2.0,
+        "returning from search moved the visible history position"
     );
     ui.scroll.vadjustment().set_value(0.0);
     pump_until(

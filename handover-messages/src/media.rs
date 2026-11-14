@@ -357,6 +357,67 @@ impl Media {
     ) -> gtk::Button {
         self.tile(attachment, parent, gallery, index, (220, 165))
     }
+    /// Build the image preview for one message. The gallery is scoped to this
+    /// message and retains attachment order for the viewer's previous/next keys.
+    pub fn message_images(
+        &self,
+        attachments: &[Attachment],
+        parent: &adw::ApplicationWindow,
+    ) -> gtk::Widget {
+        let images: Vec<_> = attachments
+            .iter()
+            .filter(|attachment| is_image(attachment))
+            .cloned()
+            .collect();
+        match images.as_slice() {
+            [] => gtk::Box::new(gtk::Orientation::Vertical, 0).upcast(),
+            [image] => self.attachment(image, parent).upcast(),
+            _ => {
+                let gallery = Rc::new(images.clone());
+                let grid = gtk::Grid::new();
+                grid.add_css_class("message-image-grid");
+                grid.set_column_spacing(4);
+                grid.set_row_spacing(4);
+                grid.set_column_homogeneous(true);
+                grid.set_halign(gtk::Align::Start);
+
+                let wide_lead = images.len() == 3;
+                for (index, image) in images.iter().take(4).enumerate() {
+                    let (column, row, width, height, span) = if wide_lead && index == 0 {
+                        (0, 0, 268, 130, 2)
+                    } else if wide_lead {
+                        (index as i32 - 1, 1, 132, 100, 1)
+                    } else {
+                        ((index % 2) as i32, (index / 2) as i32, 132, 100, 1)
+                    };
+                    let tile = self.tile(image, parent, gallery.clone(), index, (width, height));
+                    tile.add_css_class("message-image-tile");
+                    if index == 3 && images.len() > 4 {
+                        if let Some(content) = tile.child() {
+                            tile.set_child(None::<&gtk::Widget>);
+                            let overlay = gtk::Overlay::new();
+                            overlay.set_child(Some(&content));
+                            let more = gtk::Label::new(Some(&format!("+{}", images.len() - 4)));
+                            more.add_css_class("message-image-overflow");
+                            more.set_halign(gtk::Align::Fill);
+                            more.set_valign(gtk::Align::Fill);
+                            more.set_can_target(false);
+                            overlay.add_overlay(&more);
+                            tile.set_child(Some(&overlay));
+                        }
+                        tile.set_tooltip_text(Some(&format!(
+                            "Open image {} of {}",
+                            index + 1,
+                            images.len()
+                        )));
+                    }
+                    grid.attach(&tile, column, row, span, 1);
+                }
+
+                grid.upcast()
+            }
+        }
+    }
     pub fn composer_attachment(
         &self,
         attachment: &Attachment,
