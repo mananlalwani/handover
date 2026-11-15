@@ -30,84 +30,126 @@ impl Window {
                 if model.connected {
                     "All devices"
                 } else {
-                    "Connecting…"
+                    "Service offline"
                 },
-                "phone-heading",
-            ));
-            self.phone_pane.append(&toolbar_text(
-                "Choose a phone to send files or use device controls.",
                 "card-subtitle",
             ));
             return;
         };
         let ready = model.ready(&device.id);
+        let state = if ready {
+            "Connected"
+        } else if device.paired {
+            "Offline"
+        } else {
+            "Not paired"
+        };
+        let battery = device
+            .battery
+            .map(|b| {
+                format!(
+                    " · {}%{}",
+                    b.percentage(),
+                    if ready {
+                        if b.charging { " charging" } else { " battery" }
+                    } else {
+                        " last known"
+                    }
+                )
+            })
+            .unwrap_or_default();
         self.phone_pane.append(&toolbar_text(
-            if ready {
-                "Connected"
-            } else if !device.paired {
-                "Not paired"
-            } else {
-                "Offline"
-            },
+            &format!("{state}{battery}"),
             if ready {
                 "connected-label"
             } else {
                 "card-subtitle"
             },
         ));
-        if let Some(battery) = device.battery {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
-            row.append(&gtk::Image::from_icon_name(if battery.charging {
-                "battery-good-charging-symbolic"
-            } else {
-                "battery-good-symbolic"
-            }));
-            row.append(&toolbar_text(
-                &format!(
-                    "{}%{}",
-                    battery.percentage(),
-                    if !ready {
-                        " · Last known"
-                    } else if battery.charging {
-                        " · Charging"
-                    } else {
-                        ""
-                    }
-                ),
-                "phone-stat",
-            ));
-            self.phone_pane.append(&row);
-        }
-        if ready && let Some(network) = device.connectivity {
-            let name = match network.transport {
-                ConnectivityTransport::Wifi => "Wi-Fi",
-                ConnectivityTransport::Ethernet => "Ethernet",
-                ConnectivityTransport::Cellular => "Cellular",
-                ConnectivityTransport::Bluetooth => "Bluetooth",
-                ConnectivityTransport::Other => "Other network",
-                ConnectivityTransport::None => "No network",
-            };
-            self.phone_pane.append(&toolbar_text(
-                &format!("{name}{}", if network.metered { " · Metered" } else { "" }),
-                "card-subtitle",
+    }
+    pub(super) fn overview(self: &Rc<Self>) {
+        let model = self.model.borrow();
+        let panel = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        panel.add_css_class("content-panel");
+        panel.append(&text("Your devices", "list-heading"));
+        if model.devices.is_empty() {
+            panel.append(&empty(
+                "phone-symbolic",
+                "No phones yet",
+                "Open Handover on your phone and connect to this computer.",
             ));
         }
-        if let Some(call) = model.calls.get(&device.id)
-            && matches!(call.phase, CallPhase::Ringing | CallPhase::OffHook)
-        {
-            self.phone_pane.append(&toolbar_text(
-                if call.phase == CallPhase::Ringing {
-                    "Incoming call"
+        for device in model.devices.values() {
+            let row = gtk::Box::new(gtk::Orientation::Vertical, 10);
+            row.add_css_class("overview-device");
+            let title = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let ready = model.ready(&device.id);
+            title.append(&text(
+                "●",
+                if ready {
+                    "connected-label"
                 } else {
-                    "Call in progress"
+                    "card-subtitle"
                 },
-                "phone-stat",
             ));
+            let name = text(&device.name, "card-title");
+            name.set_hexpand(true);
+            title.append(&name);
+            let battery = device
+                .battery
+                .map(|b| {
+                    format!(
+                        " · {}%{}",
+                        b.percentage(),
+                        if ready { "" } else { " last known" }
+                    )
+                })
+                .unwrap_or_default();
+            title.append(&text(
+                &format!("{}{battery}", if ready { "Connected" } else { "Offline" }),
+                if ready {
+                    "connected-label"
+                } else {
+                    "card-subtitle"
+                },
+            ));
+            row.append(&title);
+            let detail = if !device.paired {
+                "Waiting for pairing approval"
+            } else if !ready {
+                "Open Handover on the phone to reconnect."
+            } else {
+                match device.connectivity.map(|n| n.transport) {
+                    Some(ConnectivityTransport::Wifi) => "Phone network: Wi-Fi",
+                    Some(ConnectivityTransport::Ethernet) => "Phone network: Ethernet",
+                    Some(ConnectivityTransport::Cellular) => "Phone network: Cellular",
+                    Some(ConnectivityTransport::Bluetooth) => "Phone network: Bluetooth",
+                    Some(ConnectivityTransport::Other) => "Phone network: Other network",
+                    Some(ConnectivityTransport::None) => "Phone network: No network",
+                    None => "Phone network not reported",
+                }
+            };
+            row.append(&text(detail, "body-copy"));
+            if let Some(call) = model.calls.get(&device.id) {
+                match call.phase {
+                    CallPhase::Ringing => row.append(&text("Incoming call", "body-copy")),
+                    CallPhase::OffHook => row.append(&text("Call in progress", "body-copy")),
+                    _ => {}
+                }
+            }
+            row.append(&self.share_actions(&device.id));
+            panel.append(&row);
         }
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        spacer.set_hexpand(true);
-        self.phone_pane.append(&spacer);
-        self.phone_pane.append(&self.share_actions(&device.id));
+        let pairing = gtk::Button::with_label("Devices & pairing");
+        pairing.set_halign(gtk::Align::Start);
+        let weak = Rc::downgrade(self);
+        pairing.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.navigate(Page::Connection);
+            }
+        });
+        panel.append(&pairing);
+        self.body.append(&panel);
     }
     fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::Box {
         let model = self.model.borrow();
@@ -262,6 +304,9 @@ impl Window {
     }
     pub(super) fn sharing(self: &Rc<Self>) {
         let model = self.model.borrow();
+        if let Some(id) = self.selected.borrow().as_ref() {
+            self.body.append(&self.share_actions(id));
+        }
         self.body.append(&self.file_composer());
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         heading.append(&text("Recent transfers", "list-heading"));
@@ -355,7 +400,7 @@ impl Window {
                 .append(&text("No recent transfers", "card-subtitle"));
         }
     }
-    fn text_dialog_to(self: &Rc<Self>, id: DeviceId, kind: u8) {
+    pub(super) fn text_dialog_to(self: &Rc<Self>, id: DeviceId, kind: u8) {
         let dialog = adw::MessageDialog::new(
             Some(&self.window),
             Some(if kind == 0 {

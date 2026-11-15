@@ -11,10 +11,15 @@ installer.
 
 ## Phone and task views
 
-The top toolbar keeps device selection and task tabs visible. The strip below
-shows reported connection, battery, and network state, with actions for files,
-links, and clipboard text. Notifications, Files, Contacts, Clipboard, and Media
-use the full window width. Offline battery values are labeled as last known. Messages opens the separate native Messages app.
+The native window follows the Quickshell reference client's blue-gray palette,
+grouped sidebar, page headings, and device selector. Overview shows reported
+device connection, battery, network, and active call state. Workspace, Sharing,
+and Tools group the implemented task views. Messages opens the separate native
+Messages app. Devices & pairing opens trust and pairing controls.
+
+The selected phone and its reported status appear beside the page heading.
+Offline battery values are labeled as last known. Send actions are on Overview
+and Send & transfers. Clipboard has a Send text action and computer-wide history.
 
 The app selects the only connected paired device when there is one. Use the
 phone-name menu to switch devices or view all devices. Selection changes preserve
@@ -57,9 +62,9 @@ The control center does not change those phone preferences.
 
 ## Files, links, and clipboard
 
-Choose Send file in the device toolbar, use Choose files in Files, or drop
-local files anywhere on the control center. Selection opens Files for review and sends
-nothing. Keep up to eight files in the selection, choose a connected phone, then
+Choose Send file on Overview, use Choose files in Send & transfers, or drop
+local files anywhere on the control center. Selection opens Send & transfers for review
+and sends nothing. Keep up to eight files in the selection, choose a connected phone, then
 press Send. Each file is a separate tracked transfer. Duplicate selections are
 ignored, and an oversized selection is rejected without partially adding it.
 Original filenames and bytes go through the existing file-sharing API; the app

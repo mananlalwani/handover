@@ -21,6 +21,7 @@ mod tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Page {
+    Overview,
     Notifications,
     Sharing,
     Contacts,
@@ -31,12 +32,24 @@ pub(super) enum Page {
 impl Page {
     fn name(self) -> &'static str {
         match self {
+            Self::Overview => "Overview",
             Self::Notifications => "Notifications",
-            Self::Sharing => "Files",
+            Self::Sharing => "Send & transfers",
             Self::Contacts => "Contacts",
             Self::Clipboard => "Clipboard",
             Self::Media => "Media",
-            Self::Connection => "Devices",
+            Self::Connection => "Devices & pairing",
+        }
+    }
+    fn description(self) -> &'static str {
+        match self {
+            Self::Overview => "Your phones and connection",
+            Self::Notifications => "Notifications from your phones",
+            Self::Sharing => "Send a file or link to your phone",
+            Self::Contacts => "Contacts synced from your phone",
+            Self::Clipboard => "Send text and manage clipboard history",
+            Self::Media => "Phone playback and controls",
+            Self::Connection => "Trusted devices and pairing requests",
         }
     }
 }
@@ -62,6 +75,8 @@ pub struct Window {
     scroll: gtk::ScrolledWindow,
     body_dirty: Cell<bool>,
     heading: gtk::Label,
+    description: gtk::Label,
+    service_status: gtk::Label,
     status_bar: gtk::Box,
     status: gtk::Label,
     search: gtk::SearchEntry,
@@ -91,9 +106,10 @@ impl Window {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title("Handover")
-            .default_width(900)
-            .default_height(620)
+            .default_width(1120)
+            .default_height(780)
             .build();
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         window.add_css_class("control");
         // The top toolbar owns window controls and dragging.
         window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
@@ -122,71 +138,101 @@ impl Window {
             .child(&device_label)
             .build();
         device_picker.add_css_class("device-selector");
-        let phone_pane = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-        phone_pane.add_css_class("device-toolbar");
-        let messages = gtk::Button::from_icon_name("mail-message-new-symbolic");
+        let phone_pane = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let messages = gtk::Button::with_label("Messages ↗");
+        messages.add_css_class("nav-button");
         messages.set_tooltip_text(Some("Open Messages"));
-        messages.update_property(&[gtk::accessible::Property::Label("Open Messages")]);
-        messages.add_css_class("flat");
-        let manage = gtk::Button::from_icon_name("preferences-system-symbolic");
-        manage.set_tooltip_text(Some("Devices & pairing"));
-        manage.update_property(&[gtk::accessible::Property::Label("Devices & pairing")]);
-        manage.add_css_class("flat");
-        let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        main.set_hexpand(true);
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        top.add_css_class("app-toolbar");
-        let navigation = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        navigation.set_hexpand(true);
+        if let Some(label) = messages.child().and_downcast::<gtk::Label>() {
+            label.set_xalign(0.0);
+        }
+        let rail = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        rail.set_width_request(204);
+        rail.add_css_class("navigation-rail");
+        let brand = text("handover", "brand");
+        let brand_handle = gtk::WindowHandle::new();
+        brand_handle.set_child(Some(&brand));
+        rail.append(&brand_handle);
+        let navigation = gtk::Box::new(gtk::Orientation::Vertical, 4);
         let mut tabs = Vec::new();
         let mut first = None::<gtk::ToggleButton>;
-        for page in [
-            Page::Notifications,
-            Page::Sharing,
-            Page::Contacts,
-            Page::Clipboard,
-            Page::Media,
+        for (group, pages) in [
+            (
+                "Workspace",
+                vec![Page::Overview, Page::Notifications, Page::Media],
+            ),
+            ("Sharing", vec![Page::Sharing, Page::Clipboard]),
+            ("Tools", vec![Page::Contacts, Page::Connection]),
         ] {
-            let tab = gtk::ToggleButton::with_label(page.name());
-            if let Some(first) = &first {
-                tab.set_group(Some(first));
-            } else {
-                first = Some(tab.clone());
+            navigation.append(&text(&group.to_uppercase(), "nav-group"));
+            for page in pages {
+                let tab = gtk::ToggleButton::with_label(page.name());
+                if let Some(first) = &first {
+                    tab.set_group(Some(first));
+                } else {
+                    first = Some(tab.clone());
+                }
+                tab.add_css_class("nav-button");
+                if let Some(label) = tab.child().and_downcast::<gtk::Label>() {
+                    label.set_xalign(0.0);
+                }
+                navigation.append(&tab);
+                tabs.push((page, tab));
+                if page == Page::Overview {
+                    navigation.append(&messages);
+                }
             }
-            tab.add_css_class("view-tab");
-            navigation.append(&tab);
-            tabs.push((page, tab));
         }
+        let nav_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&navigation)
+            .build();
+        rail.append(&nav_scroll);
+        let service_status = text("Connecting…", "service-status");
+        rail.append(&service_status);
         tabs[0].1.set_active(true);
-        top.append(&device_picker);
-        top.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        top.append(&navigation);
-        top.append(&messages);
-        top.append(&manage);
+        let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        main.set_hexpand(true);
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        top.add_css_class("window-toolbar");
+        let drag_space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        drag_space.set_hexpand(true);
+        top.append(&drag_space);
         top.append(&gtk::WindowControls::new(gtk::PackType::End));
         let handle = gtk::WindowHandle::new();
         handle.set_child(Some(&top));
         main.append(&handle);
-        main.append(&phone_pane);
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 20);
         header.add_css_class("page-header");
-        let heading = text("Notifications", "page-title");
-        heading.set_hexpand(true);
-        header.append(&heading);
+        let titles = gtk::Box::new(gtk::Orientation::Vertical, 5);
+        titles.set_hexpand(true);
+        let heading = text("Overview", "page-title");
+        let description = text(Page::Overview.description(), "page-description");
+        titles.append(&heading);
+        titles.append(&description);
+        header.append(&titles);
+        let device_context = gtk::Box::new(gtk::Orientation::Vertical, 5);
+        device_context.set_width_request(210);
+        device_context.append(&device_picker);
+        device_context.append(&phone_pane);
+        header.append(&device_context);
+        main.append(&header);
+        let filters = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        filters.add_css_class("filter-toolbar");
+        let search = gtk::SearchEntry::new();
+        search.set_placeholder_text(Some("Search this view"));
+        search.set_hexpand(true);
+        filters.append(&search);
         let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
         refresh.add_css_class("flat");
         refresh.set_tooltip_text(Some("Refresh"));
         header.append(&refresh);
-        let search = gtk::SearchEntry::new();
-        search.set_placeholder_text(Some("Search this view"));
-        search.set_width_request(230);
-        header.append(&search);
-        main.append(&header);
+        main.append(&filters);
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        body.set_margin_start(16);
-        body.set_margin_end(16);
-        body.set_margin_top(12);
-        body.set_margin_bottom(16);
+        body.set_margin_start(28);
+        body.set_margin_end(28);
+        body.set_margin_top(18);
+        body.set_margin_bottom(28);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -206,7 +252,10 @@ impl Window {
         dismiss_status.set_tooltip_text(Some("Dismiss notice"));
         status_bar.append(&dismiss_status);
         main.append(&status_bar);
-        window.set_child(Some(&main));
+        let layout = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        layout.append(&rail);
+        layout.append(&main);
+        window.set_child(Some(&layout));
         let (commands, events) =
             connection::start(handover_ipc::socket_path().expect("Handover runtime directory"));
         let this = Rc::new(Self {
@@ -217,7 +266,7 @@ impl Window {
             reply_editor: RefCell::new(None),
             selected: RefCell::new(None),
             selection_initialized: Cell::new(false),
-            page: Cell::new(Page::Notifications),
+            page: Cell::new(Page::Overview),
             devices,
             tabs,
             device_picker,
@@ -231,6 +280,8 @@ impl Window {
             scroll: scroll.clone(),
             body_dirty: Cell::new(true),
             heading,
+            description,
+            service_status,
             status_bar,
             status,
             search,
@@ -268,12 +319,6 @@ impl Window {
                 }
             });
         }
-        let weak = Rc::downgrade(&this);
-        manage.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
-                this.navigate(Page::Connection);
-            }
-        });
         let weak = Rc::downgrade(&this);
         this.devices.connect_row_selected(move |_, row| {
             if let (Some(this), Some(row)) = (weak.upgrade(), row) {
@@ -465,7 +510,7 @@ impl Window {
     }
     fn refresh_page(self: &Rc<Self>) {
         match self.page.get() {
-            Page::Connection => self.request(Request::Pairing),
+            Page::Connection | Page::Overview => self.request(Request::Pairing),
             Page::Sharing => self.request(Request::Transfers),
             Page::Contacts => self.request(Request::Contacts),
             Page::Clipboard => self.request(Request::ClipboardHistory),
@@ -567,7 +612,7 @@ impl Window {
                 }
                 let key = request.as_ref().and_then(Request::read_key);
                 rebuild = match key {
-                    Some(0) => self.page.get() == Page::Connection,
+                    Some(0) => matches!(self.page.get(), Page::Connection | Page::Overview),
                     Some(1) => self.page.get() == Page::Contacts,
                     Some(2) => self.page.get() == Page::Sharing,
                     Some(3) => self.page.get() == Page::Clipboard,
@@ -666,6 +711,7 @@ impl Window {
             ServerPayload::Snapshot { .. }
             | ServerPayload::DeviceAdded { .. }
             | ServerPayload::DeviceRemoved { .. } => true,
+            ServerPayload::DeviceUpdated { .. } if page == Page::Overview => true,
             ServerPayload::DeviceUpdated { device } => self
                 .model
                 .borrow()
@@ -682,7 +728,9 @@ impl Window {
             ServerPayload::MediaAdded { .. }
             | ServerPayload::MediaUpdated { .. }
             | ServerPayload::MediaRemoved { .. } => page == Page::Media,
-            ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. } => false,
+            ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. } => {
+                page == Page::Overview
+            }
             ServerPayload::ContactsSynced { .. } | ServerPayload::ContactsRemoved { .. } => {
                 page == Page::Contacts
             }
@@ -782,6 +830,17 @@ impl Window {
         self.devices
             .select_row(self.devices.row_at_index(index as i32).as_ref());
         self.heading.set_label(self.page.get().name());
+        self.description.set_label(self.page.get().description());
+        self.service_status.set_label(if model.connected {
+            "●  Service connected"
+        } else {
+            "●  Service offline"
+        });
+        if model.connected {
+            self.service_status.add_css_class("connected");
+        } else {
+            self.service_status.remove_css_class("connected");
+        }
         let selected = self
             .selected
             .borrow()
@@ -815,7 +874,7 @@ impl Window {
         }
         self.refresh.set_visible(matches!(
             self.page.get(),
-            Page::Connection | Page::Sharing | Page::Clipboard
+            Page::Overview | Page::Connection | Page::Sharing | Page::Clipboard
         ));
         self.search
             .set_placeholder_text(Some(if self.page.get() == Page::Contacts {
@@ -837,6 +896,7 @@ impl Window {
             self.body.remove(&child);
         }
         match self.page.get() {
+            Page::Overview => self.overview(),
             Page::Notifications => self.notifications(),
             Page::Sharing => self.sharing(),
             Page::Contacts => self.contacts(),

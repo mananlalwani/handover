@@ -235,6 +235,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         !ui.status_bar.is_visible(),
         "a healthy connection needs no permanent banner"
     );
+    ui.navigate(Page::Notifications);
+    spin(|| !ui.scheduled.get());
     // Reply drafts live independently of rebuilt notification rows and never send on open.
     button(&ui.body, "Reply…").emit_clicked();
     let editor = ui.reply_editor.borrow().clone().unwrap();
@@ -542,7 +544,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     *ui.selected.borrow_mut() = Some(device(true).id);
     ui.page.set(Page::Sharing);
     ui.render();
-    button(&ui.phone_pane, "Send link").emit_clicked();
+    button(&ui.body, "Send link").emit_clicked();
     let dialog = app
         .windows()
         .into_iter()
@@ -566,7 +568,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     assert!(has_text(&ui.body, "Received by phone"));
     // Review clipboard contents explicitly, then lose the reply after the fixture consumes the command.
     ui.window.clipboard().set_text("Fictional clipboard text");
-    button(&ui.phone_pane, "Send clipboard text").emit_clicked();
+    button(&ui.body, "Send clipboard text").emit_clicked();
     let dialog = app
         .windows()
         .into_iter()
@@ -847,8 +849,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     );
     ui.page.set(Page::Sharing);
     ui.render();
-    assert!(!button(&ui.phone_pane, "Send file").is_sensitive());
-    assert!(!button(&ui.phone_pane, "Send link").is_sensitive());
+    assert!(!button(&ui.body, "Send file").is_sensitive());
+    assert!(!button(&ui.body, "Send link").is_sensitive());
     offline.store(false, Ordering::SeqCst);
     spin(|| ui.model.borrow().connected && ui.pending.borrow().is_empty());
     assert!(
@@ -864,6 +866,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     assert!(received.try_recv().is_err());
     replacement.window.close();
     let page = match std::env::var("HANDOVER_CONTROL_TEST_PAGE").as_deref() {
+        Ok("overview") => Page::Overview,
         Ok("notifications") => Page::Notifications,
         Ok("sharing") => Page::Sharing,
         Ok("contacts") => Page::Contacts,

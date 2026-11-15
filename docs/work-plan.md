@@ -232,8 +232,10 @@ and upgrade checks; they do not block the app implementation.
 
 ## 7. Native control center
 
-The native Linux control center has compact device and action toolbars, with
-task views for notifications, files, contacts, clipboard history, and media. File selection
+The native Linux control center follows the Quickshell reference client's
+grouped sidebar, page headings, device selector, and blue-gray palette. Overview
+shows reported devices; task views cover notifications, transfers, contacts,
+clipboard history, and media. File selection
 supports review, drag
 and drop, and independent reported outcomes without resending unknown requests.
 It brings device status, code-comparison pairing,

@@ -7,6 +7,17 @@ impl Window {
         let scope = text("History on this computer · All devices", "card-subtitle");
         scope.set_hexpand(true);
         toolbar.append(&scope);
+        if let Some(id) = self.selected.borrow().clone() {
+            let send = gtk::Button::with_label("Send text…");
+            send.set_sensitive(model.ready(&id) && !self.busy());
+            let weak = Rc::downgrade(self);
+            send.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.text_dialog_to(id.clone(), 1);
+                }
+            });
+            toolbar.append(&send);
+        }
         let clear = gtk::Button::with_label("Clear history…");
         clear.set_sensitive(
             model.connected
