@@ -12,13 +12,16 @@ use std::{
     rc::Rc,
 };
 
+mod audio;
 mod clipboard;
+mod contact_images;
 mod files;
 mod notification_reply;
 mod pages;
 mod phone;
 #[cfg(test)]
 mod tests;
+mod tools;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Page {
@@ -55,7 +58,7 @@ impl Page {
             Self::Sharing => "Send a file or link to your phone",
             Self::Contacts => "Contacts synced from your phone",
             Self::Clipboard => "Send text and manage clipboard history",
-            Self::Media => "Phone playback and controls",
+            Self::Media => "Laptop audio and phone playback",
             Self::Connection => "Trusted devices and pairing requests",
         }
     }
@@ -65,6 +68,10 @@ pub struct Window {
     model: RefCell<Model>,
     file_queue: RefCell<Vec<files::PickedFile>>,
     dial_address: RefCell<String>,
+    remote_drafts: RefCell<BTreeMap<DeviceId, String>>,
+    audio_source_draft: RefCell<Option<AudioSourceSelection>>,
+    audio_diagnostics: RefCell<Option<(DeviceId, gtk::Label, gtk::Label)>>,
+    expanded_sections: RefCell<BTreeSet<&'static str>>,
     folder_path: RefCell<String>,
     folder_requested: RefCell<Option<(DeviceId, String)>>,
     folder_busy: Cell<bool>,
@@ -275,6 +282,10 @@ impl Window {
             model: RefCell::new(Model::default()),
             file_queue: RefCell::new(Vec::new()),
             dial_address: RefCell::new(String::new()),
+            remote_drafts: RefCell::new(BTreeMap::new()),
+            audio_source_draft: RefCell::new(None),
+            audio_diagnostics: RefCell::new(None),
+            expanded_sections: RefCell::new(BTreeSet::new()),
             folder_path: RefCell::new(".".into()),
             folder_requested: RefCell::new(None),
             folder_busy: Cell::new(false),
@@ -424,7 +435,12 @@ impl Window {
                     | files::FileStatus::Unconfirmed { .. }
             )
         });
-        if self.close_confirmed.get() || (!needs_review && self.reply_drafts.borrow().is_empty()) {
+        if self.close_confirmed.get()
+            || (!needs_review
+                && self.reply_drafts.borrow().is_empty()
+                && self.remote_drafts.borrow().values().all(|s| s.is_empty())
+                && self.audio_source_draft.borrow().is_none())
+        {
             return glib::Propagation::Proceed;
         }
         if self.close_prompt.replace(true) {
@@ -434,7 +450,7 @@ impl Window {
             Some(&self.window),
             Some("Close Handover?"),
             Some(
-                "Unsent file selections and notification reply drafts will be discarded. Closing does not cancel submitted commands.",
+                "Unsent file selections, reply drafts, remote text, and unapplied audio choices will be discarded. Closing does not cancel submitted commands.",
             ),
         );
         dialog.set_application(self.window.application().as_ref());
@@ -536,7 +552,14 @@ impl Window {
     }
     fn refresh_page(self: &Rc<Self>) {
         match self.page.get() {
-            Page::Connection | Page::Overview => self.request(Request::Pairing),
+            Page::Connection | Page::Overview => {
+                self.request(Request::Pairing);
+                if self.page.get() == Page::Connection {
+                    self.request(Request::Tools);
+                }
+            }
+            Page::Media => self.request(Request::Audio),
+            Page::Calls => self.request(Request::CallAudio),
             Page::Sharing => self.request(Request::Transfers),
             Page::Contacts => self.request(Request::Contacts),
             Page::Clipboard => self.request(Request::ClipboardHistory),
@@ -551,12 +574,17 @@ impl Window {
                     let mut model = self.model.borrow_mut();
                     model.connected = true;
                     model.apply(*snapshot);
-                    model.notice.clear();
                     model.peers.clear();
                     model.pairing.clear();
                     model.clipboard_history = None;
                     model.clipboard_mirror = None;
                     model.folder = None;
+                    model.audio_controls = None;
+                    model.audio_error = None;
+                    model.audio_streams.clear();
+                    model.call_audio = None;
+                    model.commands = None;
+                    model.command_result = None;
                 }
                 if !self.selection_initialized.replace(true) {
                     let model = self.model.borrow();
@@ -576,6 +604,12 @@ impl Window {
                 self.request(Request::Pairing);
                 self.request(Request::Contacts);
                 self.request(Request::Transfers);
+                match self.page.get() {
+                    Page::Media => self.request(Request::Audio),
+                    Page::Calls => self.request(Request::CallAudio),
+                    Page::Connection => self.request(Request::Tools),
+                    _ => {}
+                }
                 if self.page.get() == Page::Clipboard {
                     self.request(Request::ClipboardHistory);
                 }
@@ -585,7 +619,6 @@ impl Window {
                 let mut model = self.model.borrow_mut();
                 model.connected = false;
                 model.pairing.clear();
-                model.notice = "Connection lost. Reconnecting…".into();
             }
             Event::State(payload) => {
                 if let ServerPayload::Filesystem { result } = payload.as_ref() {
@@ -602,6 +635,14 @@ impl Window {
                     if self.page.get() == Page::Sharing {
                         rebuild = true;
                     }
+                }
+                if self.page.get() == Page::Calls
+                    && matches!(
+                        *payload,
+                        ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. }
+                    )
+                {
+                    self.request(Request::CallAudio);
                 }
                 let snapshot = matches!(*payload, ServerPayload::Snapshot { .. });
                 let transfers = matches!(
@@ -656,6 +697,9 @@ impl Window {
                     Some(1) => self.page.get() == Page::Contacts,
                     Some(2) => self.page.get() == Page::Sharing,
                     Some(3) => self.page.get() == Page::Clipboard,
+                    Some(4) => self.page.get() == Page::Media,
+                    Some(5) => self.page.get() == Page::Connection,
+                    Some(6) => self.page.get() == Page::Calls,
                     _ => true,
                 };
                 match result {
@@ -665,18 +709,38 @@ impl Window {
                         model.pairing = pairing;
                     }
                     Ok(Reply::Contacts(contacts)) => {
-                        self.model.borrow_mut().contacts = contacts
-                            .into_iter()
-                            .map(|mut c| {
-                                c.photo = None;
-                                c
-                            })
-                            .collect();
+                        self.model.borrow_mut().contacts = contacts;
                     }
                     Ok(Reply::ClipboardHistory(entries, mirror)) => {
                         let mut model = self.model.borrow_mut();
                         model.clipboard_history = Some(entries);
                         model.clipboard_mirror = Some(mirror);
+                    }
+                    Ok(Reply::Audio(controls, streams)) => {
+                        let mut model = self.model.borrow_mut();
+                        model.observe_audio_controls(controls);
+                        for stream in streams {
+                            model.observe_audio_stream(stream);
+                        }
+                    }
+                    Ok(Reply::AudioControls(controls)) => {
+                        self.model.borrow_mut().observe_audio_controls(controls);
+                        if matches!(
+                            request,
+                            Some(Request::ConfigureAudio(AudioRoutingChange {
+                                source: Some(_),
+                                ..
+                            }))
+                        ) {
+                            self.audio_source_draft.borrow_mut().take();
+                        }
+                    }
+                    Ok(Reply::CallAudio(status)) => {
+                        self.model.borrow_mut().call_audio = Some(status)
+                    }
+                    Ok(Reply::Tools(commands)) => self.model.borrow_mut().commands = Some(commands),
+                    Ok(Reply::CommandResult(result)) => {
+                        self.model.borrow_mut().command_result = Some(result)
                     }
                     Ok(Reply::Transfers(activities)) => {
                         for activity in &activities {
@@ -706,6 +770,27 @@ impl Window {
                         ) {
                             self.request(Request::ClipboardHistory);
                         }
+                        if let Some(Request::RemoteInput(command)) = &request
+                            && command.action == RemoteInputAction::Type
+                            && self.remote_drafts.borrow().get(&command.device_id)
+                                == command.text.as_ref()
+                        {
+                            self.remote_drafts.borrow_mut().remove(&command.device_id);
+                        }
+                        if matches!(
+                            request,
+                            Some(Request::AudioStream(..) | Request::AudioProfile(..))
+                        ) {
+                            self.request(Request::Audio);
+                        }
+                        if matches!(request, Some(Request::Screensaver(..))) {
+                            self.transient_notice("Desktop sleep policy request accepted.");
+                        }
+                        if matches!(request, Some(Request::RemoteInput(..))) {
+                            self.transient_notice(
+                                "Input request accepted. Check the phone for its effect.",
+                            );
+                        }
                         if matches!(request, Some(Request::Phone(..) | Request::Call(..))) {
                             self.transient_notice("Request queued for the phone.");
                         }
@@ -718,6 +803,9 @@ impl Window {
                             self.request(Request::Pairing);
                         }
                     }
+                    Err(failure) if key == Some(4) => {
+                        self.model.borrow_mut().audio_error = Some(failure.message)
+                    }
                     Err(failure) => self.model.borrow_mut().notice = failure.message,
                 }
                 if let Some(key) = key
@@ -727,7 +815,10 @@ impl Window {
                         0 => Request::Pairing,
                         1 => Request::Contacts,
                         2 => Request::Transfers,
-                        _ => Request::ClipboardHistory,
+                        3 => Request::ClipboardHistory,
+                        4 => Request::Audio,
+                        5 => Request::Tools,
+                        _ => Request::CallAudio,
                     });
                 }
             }
@@ -781,6 +872,24 @@ impl Window {
                 matches!(page, Page::Overview | Page::Calls)
             }
             ServerPayload::Filesystem { .. } => page == Page::PhoneFiles,
+            ServerPayload::AudioStreamUpdated { status } => {
+                page == Page::Media
+                    && self
+                        .model
+                        .borrow()
+                        .audio_streams
+                        .get(&status.device_id)
+                        .is_none_or(|old| {
+                            old.state != status.state
+                                || old.enabled != status.enabled
+                                || old.profile != status.profile
+                                || old.failure != status.failure
+                                || old.retry_attempt != status.retry_attempt
+                        })
+            }
+            ServerPayload::AudioStreams { .. } | ServerPayload::AudioControlsUpdated { .. } => {
+                page == Page::Media
+            }
             ServerPayload::ContactsSynced { .. } | ServerPayload::ContactsRemoved { .. } => {
                 page == Page::Contacts
             }
@@ -924,19 +1033,34 @@ impl Window {
         }
         self.status_bar
             .set_visible(!model.connected || !model.notice.is_empty());
-        self.status.set_label(if model.notice.is_empty() {
-            "Connecting…"
+        let status = if !model.connected {
+            if model.notice.is_empty() {
+                "Reconnecting to Handover…".to_owned()
+            } else {
+                format!("Reconnecting to Handover…\n{}", model.notice)
+            }
         } else {
-            &model.notice
-        });
+            model.notice.clone()
+        };
+        self.status.set_label(&status);
         drop(model);
         self.refresh_notification_reply();
+        if self.page.get() == Page::Media {
+            self.update_audio_diagnostics();
+        } else {
+            self.audio_diagnostics.borrow_mut().take();
+        }
         if phone_changed {
             self.render_phone();
         }
         self.refresh.set_visible(matches!(
             self.page.get(),
-            Page::Overview | Page::Connection | Page::Sharing | Page::Clipboard
+            Page::Overview
+                | Page::Connection
+                | Page::Sharing
+                | Page::Clipboard
+                | Page::Media
+                | Page::Calls
         ));
         self.search
             .set_placeholder_text(Some(if self.page.get() == Page::Contacts {

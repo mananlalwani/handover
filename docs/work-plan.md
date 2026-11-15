@@ -253,9 +253,14 @@ with a maximum of 128 records. Clients reconstruct this list through public IPC.
 It is not a durable transfer archive. Calls, phone folder listings, device ring,
 lock, awake requests, hotspot settings, and clipboard mirroring now have native
 controls. Call requests can carry the observed generation to reject stale
-controls. Laptop audio routing, remote input, configured commands, contact
-pictures, and local call-audio observations remain interface work; see the guide's
-coverage table.
+controls. Media now includes laptop-audio receiving and shared application,
+output, and player routing. Phone contains remote input; Device settings contains
+configured commands and desktop sleep-policy requests. Contacts uses bounded
+asynchronous picture decoding and offers call shortcuts. Calls exposes local HFP
+observations. These close the recorded native interface gaps. Phone directory
+listings remain read-only because no backend download operation exists; live
+phone and audio effects still need device validation. See the guide's coverage
+table.
 
 ## Limits to keep explicit
 

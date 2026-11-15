@@ -9,6 +9,12 @@ pub struct Model {
     pub notifications: BTreeMap<NotificationId, Notification>,
     pub media: BTreeMap<MediaSessionId, MediaSession>,
     pub calls: BTreeMap<DeviceId, CallState>,
+    pub call_audio: Option<CallAudioStatus>,
+    pub audio_controls: Option<AudioControlsSnapshot>,
+    pub audio_error: Option<String>,
+    pub audio_streams: BTreeMap<DeviceId, AudioStreamStatus>,
+    pub commands: Option<Vec<CustomCommandEntry>>,
+    pub command_result: Option<CustomCommandResult>,
     pub contacts: Vec<Contact>,
     pub folder: Option<FilesystemResult>,
     pub clipboard_mirror: Option<bool>,
@@ -41,6 +47,8 @@ impl Model {
                     .into_iter()
                     .map(|v| (v.device_id.clone(), v))
                     .collect();
+                self.audio_streams
+                    .retain(|id, _| self.devices.contains_key(id));
             }
             ServerPayload::DeviceAdded { device } | ServerPayload::DeviceUpdated { device } => {
                 self.devices.insert(device.id.clone(), device);
@@ -51,6 +59,7 @@ impl Model {
                 self.contacts.retain(|c| c.device_id != device_id);
                 self.media.retain(|id, _| id.device_id != device_id);
                 self.calls.remove(&device_id);
+                self.audio_streams.remove(&device_id);
             }
             ServerPayload::NotificationAdded { notification }
             | ServerPayload::NotificationUpdated { notification } => {
@@ -73,6 +82,14 @@ impl Model {
             ServerPayload::CallRemoved { device_id } => {
                 self.calls.remove(&device_id);
             }
+            ServerPayload::AudioStreams { streams } => {
+                for stream in streams {
+                    self.observe_audio_stream(stream);
+                }
+            }
+            ServerPayload::AudioStreamUpdated { status } => self.observe_audio_stream(status),
+            ServerPayload::AudioControlsUpdated { snapshot }
+            | ServerPayload::AudioControls { snapshot } => self.observe_audio_controls(snapshot),
             ServerPayload::ContactsRemoved { device_id } => {
                 self.contacts.retain(|c| c.device_id != device_id)
             }
@@ -142,6 +159,26 @@ impl Model {
                 self.folder = Some(result);
             }
             _ => {}
+        }
+    }
+    pub fn observe_audio_controls(&mut self, snapshot: AudioControlsSnapshot) {
+        if self
+            .audio_controls
+            .as_ref()
+            .is_none_or(|current| snapshot.revision >= current.revision)
+        {
+            self.audio_controls = Some(snapshot);
+            self.audio_error = None;
+        }
+    }
+    pub fn observe_audio_stream(&mut self, stream: AudioStreamStatus) {
+        if self.devices.contains_key(&stream.device_id)
+            && self
+                .audio_streams
+                .get(&stream.device_id)
+                .is_none_or(|current| stream.revision >= current.revision)
+        {
+            self.audio_streams.insert(stream.device_id.clone(), stream);
         }
     }
     pub fn ready(&self, id: &DeviceId) -> bool {

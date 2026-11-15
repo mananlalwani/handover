@@ -32,6 +32,15 @@ pub enum Request {
     Folder(DeviceId, String),
     Call(DeviceId, CallAction, Option<String>, u64),
     Mirror(bool),
+    Audio,
+    ConfigureAudio(AudioRoutingChange),
+    AudioStream(DeviceId, bool),
+    AudioProfile(DeviceId, AudioProfile),
+    Tools,
+    RunCommand(String),
+    RemoteInput(RemoteInputCommand),
+    Screensaver(Option<bool>),
+    CallAudio,
 }
 impl Request {
     pub fn read_key(&self) -> Option<u8> {
@@ -40,6 +49,9 @@ impl Request {
             Self::Contacts => Some(1),
             Self::Transfers => Some(2),
             Self::ClipboardHistory => Some(3),
+            Self::Audio => Some(4),
+            Self::Tools => Some(5),
+            Self::CallAudio => Some(6),
             _ => None,
         }
     }
@@ -49,6 +61,11 @@ pub enum Reply {
     Contacts(Vec<Contact>),
     Transfers(Vec<TransferActivity>),
     ClipboardHistory(Vec<handover_ipc::ClipboardHistoryEntry>, bool),
+    Audio(AudioControlsSnapshot, Vec<AudioStreamStatus>),
+    AudioControls(AudioControlsSnapshot),
+    Tools(Vec<CustomCommandEntry>),
+    CommandResult(CustomCommandResult),
+    CallAudio(CallAudioStatus),
     Accepted,
     Share(Option<String>),
 }
@@ -142,6 +159,32 @@ async fn execute(
             }
             Ok(Reply::Accepted)
         }
+        Request::Audio => Ok(Reply::Audio(
+            client.audio_controls().await?,
+            client.audio_streams().await?,
+        )),
+        Request::ConfigureAudio(change) => {
+            Ok(Reply::AudioControls(client.audio_configure(change).await?))
+        }
+        Request::AudioStream(id, enabled) => {
+            client.set_audio_stream(id, enabled).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::AudioProfile(id, profile) => {
+            client.audio_profile(id, profile).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::Tools => Ok(Reply::Tools(client.custom_commands().await?)),
+        Request::RunCommand(name) => Ok(Reply::CommandResult(client.run_custom(name).await?)),
+        Request::RemoteInput(command) => {
+            client.remote_input(command).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::Screensaver(policy) => {
+            client.set_screensaver(policy).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::CallAudio => Ok(Reply::CallAudio(client.call_audio_status().await?)),
         Request::Pair(id, code) => {
             client.native_pair(id, code).await?;
             Ok(Reply::Accepted)
@@ -223,7 +266,7 @@ pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<E
             let mut generation=0u64;
             loop {
                 let connection=tokio::time::timeout(Duration::from_secs(5),async {
-                    Client::connect_to(path.clone()).await?.subscribe_control_center().await
+                    Client::connect_to(path.clone()).await?.subscribe_control_center_with_audio().await
                 }).await;
                 let Ok(Ok(mut subscription))=connection else {
                     if events.send(Event::Disconnected).await.is_err(){return;}
@@ -283,8 +326,8 @@ fn rejection(code: handover_ipc::ErrorCode) -> &'static str {
         ErrorCode::DeviceNotPaired => "Pair this device before using this action.",
         ErrorCode::UnsupportedCapability => "This action is not available on this device.",
         ErrorCode::NotificationNotFound => "This notification is no longer available.",
-        ErrorCode::BackendUnavailable => "The device service is unavailable.",
-        _ => "The request was rejected. Check the device and try again.",
+        ErrorCode::BackendUnavailable => "Handover service is unavailable.",
+        _ => "Request rejected. Review the current controls and try again.",
     }
 }
 

@@ -116,6 +116,7 @@ impl Window {
         self.body.append(&self.phone_controls(&device.id));
         self.body.append(&text("Send to phone", "list-heading"));
         self.body.append(&self.share_actions(&device.id));
+        self.body.append(&self.remote_input(&device.id));
     }
     fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::Box {
         let model = self.model.borrow();
@@ -497,6 +498,16 @@ impl Window {
             };
             let card = card(&contact.display_name, &device);
             card.add_css_class("contact-row");
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            let avatar = contact_images::avatar(&contact.display_name, 42);
+            contact_images::load_photo(
+                &avatar,
+                &format!("{}:{}", contact.device_id, contact.local_id),
+                contact.photo.as_deref(),
+            );
+            row.append(&avatar);
+            card.set_hexpand(true);
+            row.append(&card);
             for address in contact.phones.iter().chain(&contact.emails) {
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
                 let label = text(address, "body-copy");
@@ -511,9 +522,33 @@ impl Window {
                 let clipboard = self.window.clipboard();
                 copy.connect_clicked(move |_| clipboard.set_text(&value));
                 row.append(&copy);
+                if contact.phones.contains(address)
+                    && let Some(number) = dial_number(address)
+                {
+                    let call = gtk::Button::with_label("Call…");
+                    call.set_sensitive(
+                        model.ready(&contact.device_id)
+                            && model
+                                .calls
+                                .get(&contact.device_id)
+                                .is_some_and(|c| c.controls.contains(&CallAction::Place))
+                            && !self.busy(),
+                    );
+                    let weak = Rc::downgrade(self);
+                    let id = contact.device_id.clone();
+                    call.connect_clicked(move |_| {
+                        if let Some(this) = weak.upgrade() {
+                            this.select_device(Some(id.clone()));
+                            this.dial_address.replace(number.clone());
+                            this.navigate(Page::Calls);
+                        }
+                    });
+                    row.append(&call);
+                }
                 card.append(&row);
             }
-            list.append(&card);
+            row.add_css_class("contact-with-avatar");
+            list.append(&row);
         }
         if contacts.is_empty() {
             self.body.append(&empty(
@@ -538,6 +573,8 @@ impl Window {
         }
     }
     pub(super) fn media(self: &Rc<Self>) {
+        self.laptop_audio();
+        self.body.append(&text("Phone playback", "list-heading"));
         let model = self.model.borrow();
         let mut count = 0;
         for session in model
@@ -757,6 +794,7 @@ impl Window {
             card.append(&forget);
             self.body.append(&card);
         }
+        self.desktop_tools();
         let help = gtk::Expander::new(Some("Phone not finding this computer?"));
         help.set_child(Some(&text("Connect both devices to the same network. On the phone, enter this computer's address with port 24837.","card-subtitle")));
         self.body.append(&help);
@@ -781,4 +819,18 @@ fn toolbar_text(value: &str, class: &str) -> gtk::Label {
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label.set_tooltip_text(Some(value));
     label
+}
+
+fn dial_number(address: &str) -> Option<String> {
+    if !address
+        .chars()
+        .all(|c| c.is_ascii_digit() || "+()- .".contains(c))
+    {
+        return None;
+    }
+    let number = address
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect::<String>();
+    valid_call_address(&number).then_some(number)
 }

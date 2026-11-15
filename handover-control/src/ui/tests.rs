@@ -14,6 +14,49 @@ use tokio::{
     sync::{broadcast, watch},
 };
 
+const PHOTO: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==";
+fn audio_fixture() -> AudioControlsSnapshot {
+    AudioControlsSnapshot {
+        settings: AudioRoutingSettings::default(),
+        applications: vec![
+            AudioApplication {
+                id: "browser".into(),
+                name: "Browser".into(),
+                available: true,
+            },
+            AudioApplication {
+                id: "music".into(),
+                name: "Music application".into(),
+                available: true,
+            },
+        ],
+        players: vec![AudioDesktopPlayer {
+            id: "player-1".into(),
+            name: "Desktop music".into(),
+        }],
+        revision: 1,
+        observed_at_ms: 1_800_000_000_000,
+        applications_available: true,
+        players_available: true,
+        settings_available: true,
+    }
+}
+fn check(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::CheckButton {
+    descendants(root)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::CheckButton>().ok())
+        .find(|b| b.label().as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("Check button missing: {label}"))
+}
+fn expand(root: &impl IsA<gtk::Widget>, label: &str) {
+    descendants(root)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Expander>().ok())
+        .find(|w| w.label().as_deref() == Some(label))
+        .unwrap()
+        .set_expanded(true);
+}
+
 fn device(online: bool) -> Device {
     Device {
         id: DeviceId::new(if online {
@@ -90,6 +133,7 @@ fn baseline() -> ServerPayload {
         read_states: vec![],
     }
 }
+#[track_caller]
 fn spin(mut condition: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(8);
     while !condition() {
@@ -156,6 +200,20 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     let worker_history = history.clone();
     let mirror = Arc::new(AtomicBool::new(false));
     let worker_mirror = mirror.clone();
+    let audio = Arc::new(std::sync::Mutex::new(audio_fixture()));
+    let audio_stream = Arc::new(std::sync::Mutex::new(AudioStreamStatus::idle(
+        device(true).id,
+    )));
+    let reject_audio = Arc::new(AtomicBool::new(false));
+    let slow_audio = Arc::new(AtomicBool::new(false));
+    let audio_gate = Arc::new(tokio::sync::Notify::new());
+    let read_audio_available = Arc::new(AtomicBool::new(true));
+    let worker_read_audio_available = read_audio_available.clone();
+    let worker_audio = audio.clone();
+    let worker_stream = audio_stream.clone();
+    let worker_reject = reject_audio.clone();
+    let worker_slow = slow_audio.clone();
+    let worker_audio_gate = audio_gate.clone();
     let (mutations, received) = mpsc::channel::<Method>();
     let command_gate = Arc::new(tokio::sync::Notify::new());
     let worker_gate = command_gate.clone();
@@ -173,6 +231,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             let listener=UnixListener::bind(path).unwrap();ready.send(()).unwrap();
             loop {
                 let (socket,_)=listener.accept().await.unwrap();if worker_offline.load(Ordering::SeqCst){drop(socket);continue;}
+                let read_audio_available=worker_read_audio_available.clone();let audio=worker_audio.clone();let audio_stream=worker_stream.clone();let reject=worker_reject.clone();let slow=worker_slow.clone();let audio_gate=worker_audio_gate.clone();
                 let mirror=worker_mirror.clone();let history=worker_history.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
                 tokio::spawn(async move {
                     let mut socket=BufReader::new(socket);
@@ -182,20 +241,37 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                 assert!(shares&&media&&!messages);
                                 let mut updates=events.subscribe();reset.borrow_and_update();
                                 write_json_line(socket.get_mut(),&ServerMessage::new(baseline())).await.unwrap();
+                                let request=read_json_line::<_,IpcRequest>(&mut socket).await.unwrap().unwrap();assert!(matches!(request.method,Method::AudioSubscribe));
+                                let streams=vec![audio_stream.lock().unwrap().clone()];write_json_line(socket.get_mut(),&ServerMessage::new(ServerPayload::AudioStreams {streams})).await.unwrap();
                                 loop {tokio::select! {
                                     update=updates.recv()=>{let Ok(update)=update else {break;};if write_json_line(socket.get_mut(),&ServerMessage::new(update)).await.is_err(){break;}},
                                     _=reset.changed()=>break,
                                 }}return;
                             },
+                            Method::AudioControls if !read_audio_available.load(Ordering::SeqCst)=>ServerPayload::Error {code:handover_ipc::ErrorCode::BackendUnavailable,message:"fixture unavailable".into(),conversation_id:None},
+                            Method::AudioControls=>{let snapshot=audio.lock().unwrap().clone();if slow.swap(false,Ordering::SeqCst){audio_gate.notified().await;}ServerPayload::AudioControls {snapshot}},
+                            Method::AudioList=>ServerPayload::AudioStreams {streams:vec![audio_stream.lock().unwrap().clone()]},
+                            Method::CustomCommands=>ServerPayload::CustomCommands {commands:vec![CustomCommandEntry {name:"fixture-command".into(),argv:vec!["/bin/true".into()]}]},
+                            Method::CallsAudio=>ServerPayload::CallAudio {status:CallAudioStatus {observed:true,gateway_ready:true,duplex_running:false}},
                             Method::ClipboardMirrorStatus=>ServerPayload::ClipboardMirror {enabled:mirror.load(Ordering::SeqCst)},
                             Method::ClipboardHistoryList=>ServerPayload::ClipboardHistory {entries:history.lock().unwrap().clone()},
                             Method::NativePeers=>ServerPayload::NativePeers {peers:vec![]},
                             Method::NativePending=>ServerPayload::NativePending {pending:vec![handover_ipc::NativePendingPeer {id:"pending-test".into(),name:"New phone".into(),code:"12345678".into()}]},
-                            Method::ContactsList=>ServerPayload::Contacts {contacts:vec![Contact {device_id:device(true).id,local_id:"alex".into(),display_name:"Alex Example".into(),phones:vec!["+1 312 555 0100".into()],emails:vec![],photo:None}]},
+                            Method::ContactsList=>ServerPayload::Contacts {contacts:vec![Contact {device_id:device(true).id,local_id:"alex".into(),display_name:"Alex Example".into(),phones:vec!["+1 312 555 0100".into()],emails:vec![],photo:Some(PHOTO.into())}]},
                             Method::TransfersList=>ServerPayload::TransferActivity {activities:vec![TransferActivity {sequence:1,observed_at_ms:1_800_000_000_000,event:TransferActivityEvent::Result {result:ShareResult {device_id:device(true).id,transfer_id:"fixture-transfer".into(),status:ShareStatus::Completed,reason:None}}}]},
                             method=>{
                                 mutations.send(method.clone()).unwrap();
                                 match method {
+                                    Method::AudioConfigure {change}=>{
+                                        if reject.swap(false,Ordering::SeqCst) {ServerPayload::Error {code:handover_ipc::ErrorCode::BackendRejected,message:"fixture rejection".into(),conversation_id:None}}
+                                        else {let mut current=audio.lock().unwrap();if let Some(source)=change.source {current.settings.source=source;}
+                                        if let Some(output)=change.output {current.settings.output=output;}
+                                        if let Some(playback)=change.playback {current.settings.playback=playback;}current.revision+=1;let snapshot=current.clone();let _=events.send(ServerPayload::AudioControlsUpdated {snapshot:snapshot.clone()});ServerPayload::AudioControls {snapshot}}
+                                    },
+                                    Method::AudioProfile {profile,..}=>{let mut stream=audio_stream.lock().unwrap();stream.profile=Some(profile);stream.revision+=1;ServerPayload::NativeAccepted},
+                                    Method::AudioStart {..}|Method::AudioStop {..}=>ServerPayload::NativeAccepted,
+                                    Method::CustomRun {name}=>ServerPayload::CustomResult {result:CustomCommandResult {name,accepted:true,exit_code:Some(0),failure:None}},
+                                    Method::RemoteInputSend {text:Some(text),..} if text=="lost input"=>return,
                                     Method::ClipboardMirror {enable}=>{mirror.store(enable,Ordering::SeqCst);ServerPayload::NativeAccepted},
                                     Method::CallsControl {..}=>ServerPayload::CallQueued {request_id:"fixture-call".into()},
                                     Method::NativeFilesystemList {path,..}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult {device_id:device(true).id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else{vec![]},failure:None}});ServerPayload::NativeAccepted},
@@ -253,7 +329,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     // Device actions are explicit requests, and acceptance does not invent device state.
     assert_eq!(ui.page.get(), Page::Overview);
     button(&ui.body, "Ring").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert_eq!(
         received.try_recv().unwrap(),
         Method::NativeRing {
@@ -261,7 +337,90 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         }
     );
     assert!(ui.model.borrow().notice.contains("queued"));
+    // Remote input keeps drafts on lost acknowledgements and never sends on expand.
+    expand(&ui.body, "Remote input");
+    assert!(received.try_recv().is_err());
+    let remote = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Entry>().ok())
+        .unwrap();
+    remote.set_text(&"🦀".repeat(200));
+    assert!(
+        !button(&ui.body, "Type text").is_sensitive(),
+        "byte limit must hold for Unicode too"
+    );
+    remote.set_text("hello phone");
+    button(&ui.body, "Type text").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::RemoteInputSend {device_id,action:RemoteInputAction::Type,text:Some(text),..} if device_id==device(true).id && text=="hello phone")
+    );
+    assert!(ui.remote_drafts.borrow().is_empty());
+    let remote = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Entry>().ok())
+        .unwrap();
+    remote.set_text("lost input");
+    button(&ui.body, "Type text").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty() && ui.model.borrow().notice.contains("outcome is unknown")
+    });
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::RemoteInputSend {text:Some(text),..} if text=="lost input")
+    );
+    assert_eq!(ui.remote_drafts.borrow()[&device(true).id], "lost input");
+    let remote = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Entry>().ok())
+        .unwrap();
+    remote.set_text("");
+    button(&ui.body, "Left click").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert!(matches!(
+        received.try_recv().unwrap(),
+        Method::RemoteInputSend {
+            action: RemoteInputAction::Click,
+            button: 1,
+            ..
+        }
+    ));
+    ui.navigate(Page::Connection);
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && ui.model.borrow().commands.is_some()
+            && !ui.scheduled.get()
+    });
+    expand(&ui.body, "Phone connection test");
+    button(&ui.body, "Ping phone").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::NativePing {
+            id: "phone-a".into()
+        }
+    );
+    expand(&ui.body, "Desktop behavior");
+    button(&ui.body, "Automatic").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(received.try_recv().unwrap(), Method::ScreensaverFollow);
+    button(&ui.body, "Keep desktop awake").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(received.try_recv().unwrap(), Method::ScreensaverInhibit);
+    button(&ui.body, "Allow desktop sleep").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(received.try_recv().unwrap(), Method::ScreensaverRelease);
+    expand(&ui.body, "Configured commands");
+    button(&ui.body, "Run").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Exit 0"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::CustomRun {
+            name: "fixture-command".into()
+        }
+    );
     ui.navigate(Page::Calls);
+    expand(&ui.body, "Call audio on this computer");
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "HFP profile selected"));
     assert!(has_text(&ui.body, "Incoming call"));
     assert!(
         !descendants(&ui.body)
@@ -270,7 +429,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             .any(|b| b.label().as_deref() == Some("Call"))
     );
     button(&ui.body, "Answer").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert_eq!(
         received.try_recv().unwrap(),
         Method::CallsControl {
@@ -302,7 +461,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     assert!(!button(&ui.body, "Call").is_sensitive());
     dial.set_text("+12025550111");
     button(&ui.body, "Call").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert_eq!(
         received.try_recv().unwrap(),
         Method::CallsControl {
@@ -651,7 +810,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         .unwrap()
         .set_active(true);
     button(&ui.body, "Pair device").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert_eq!(
         received.try_recv().unwrap(),
         Method::NativePair {
@@ -685,7 +844,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         .unwrap()
         .set_text("https://example.test/shared");
     dialog.response("send");
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert_eq!(
         received.try_recv().unwrap(),
         Method::ShareUrl {
@@ -713,7 +872,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         "opening the clipboard dialog must not send"
     );
     dialog.response("send");
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert!(
         matches!(received.try_recv().unwrap(),Method::ClipboardSend {text,..} if text=="Fictional clipboard text")
     );
@@ -744,7 +903,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     assert_eq!(ui.file_queue.borrow().len(), 2);
     ui.devices.select_row(ui.devices.row_at_index(1).as_ref());
     button(&ui.body, "Send selected files").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     let mut sent = Vec::new();
     for _ in 0..2 {
         match received.try_recv().unwrap() {
@@ -877,8 +1036,49 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         .unwrap()
         .unwrap();
     assert_eq!(text, "+1 312 555 0100");
-    // Show the control appropriate to the reported playback state, without optimistic changes.
+    spin(|| {
+        descendants(&ui.body)
+            .into_iter()
+            .filter_map(|w| w.downcast::<adw::Avatar>().ok())
+            .any(|a| a.custom_image().is_some())
+    });
+    let photo = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::Avatar>().ok())
+        .unwrap()
+        .custom_image()
+        .unwrap();
+    ui.render();
+    let rebuilt = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::Avatar>().ok())
+        .unwrap();
+    assert_eq!(
+        rebuilt.custom_image().as_ref(),
+        Some(&photo),
+        "cached pictures must be installed immediately on rebuild"
+    );
+    button(&ui.body, "Call…").emit_clicked();
+    assert_eq!(ui.page.get(), Page::Calls);
+    assert_eq!(*ui.dial_address.borrow(), "+13125550100");
+    assert!(
+        received.try_recv().is_err(),
+        "contact shortcut only opens the dialer"
+    );
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    // Failed routing inspection must not hide receiver controls or the independent phone player.
+    read_audio_available.store(false, Ordering::SeqCst);
     ui.navigate(Page::Media);
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert!(ui.model.borrow().audio_controls.is_none());
+    assert!(button(&ui.body, "Start laptop audio").is_sensitive());
+    assert!(has_text(&ui.body, "Laptop routing controls unavailable"));
+    read_audio_available.store(true, Ordering::SeqCst);
+    ui.refresh.emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert!(ui.model.borrow().audio_controls.is_some());
+    assert!(ui.model.borrow().audio_error.is_none());
+    // Show the control appropriate to the reported playback state, without optimistic changes.
     assert!(has_text(&ui.body, "Evening walk"));
     assert!(
         !descendants(&ui.body)
@@ -887,7 +1087,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             .any(|b| b.tooltip_text().as_deref() == Some("Play"))
     );
     button(&ui.body, "Pause").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     assert!(matches!(
         received.try_recv().unwrap(),
         Method::MediaControl {
@@ -898,8 +1098,241 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         ui.model.borrow().media.values().next().unwrap().playback,
         PlaybackState::Playing
     );
+    // Audio controls report receiver state; accepted intent alone never claims streaming.
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && ui.model.borrow().audio_controls.is_some()
+            && !ui.scheduled.get()
+    });
+    button(&ui.body, "Start laptop audio").emit_clicked();
+    assert_eq!(
+        ui.model.borrow().audio_streams[&device(true).id].state,
+        AudioStreamPhase::Idle
+    );
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::AudioStart {
+            device_id: device(true).id
+        }
+    );
+    assert!(has_text(&ui.body, "Not streaming"));
+    let mut streaming = audio_stream.lock().unwrap().clone();
+    streaming.state = AudioStreamPhase::Streaming;
+    streaming.enabled = Some(true);
+    streaming.revision += 1;
+    *audio_stream.lock().unwrap() = streaming.clone();
+    events
+        .send(ServerPayload::AudioStreamUpdated { status: streaming })
+        .unwrap();
+    spin(|| has_text(&ui.body, "Receiver output started"));
+    assert!(button(&ui.body, "Stop laptop audio").is_sensitive());
+    button(&ui.body, "Music").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && ui.model.borrow().audio_streams[&device(true).id].profile
+                == Some(AudioProfile::Music)
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::AudioProfile {
+            device_id: device(true).id,
+            profile: AudioProfile::Music
+        }
+    );
+    // Diagnostic reports update labels in place, preserving routing widgets and focus.
+    expand(&ui.body, "Audio diagnostics");
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    let body_child = ui.body.first_child().unwrap();
+    let mut measured = ui.model.borrow().audio_streams[&device(true).id].clone();
+    measured.revision += 1;
+    measured.diagnostics = Some(AudioStreamDiagnostics {
+        sender: None,
+        receiver: Some(AudioReceiverDiagnostics {
+            route: AudioRoute::Direct,
+            transport: Some(AudioTransport::Udp),
+            round_trip_ms: Some(25),
+            jitter_ms: Some(3),
+            jitter_buffer_ms: Some(60),
+            bitrate_bps: Some(64000),
+            packets_received: Some(400),
+            packets_lost: Some(2),
+            updated_at_ms: 1_800_000_000_000,
+        }),
+    });
+    *audio_stream.lock().unwrap() = measured.clone();
+    events
+        .send(ServerPayload::AudioStreamUpdated { status: measured })
+        .unwrap();
+    spin(|| has_text(&ui.body, "25 ms round trip"));
+    assert_eq!(ui.body.first_child().unwrap(), body_child);
+    button(&ui.body, "Stop laptop audio").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::AudioStop {
+            device_id: device(true).id
+        }
+    );
+    assert_eq!(
+        ui.model.borrow().audio_streams[&device(true).id].state,
+        AudioStreamPhase::Streaming,
+        "stop acknowledgement is not receiver confirmation"
+    );
+    let stale_stream = AudioStreamStatus::idle(device(true).id);
+    ui.event(Event::State(Box::new(ServerPayload::AudioStreamUpdated {
+        status: stale_stream,
+    })));
+    spin(|| !ui.scheduled.get());
+    assert_eq!(
+        ui.model.borrow().audio_streams[&device(true).id].state,
+        AudioStreamPhase::Streaming
+    );
+    assert_eq!(
+        ui.model.borrow().audio_streams[&device(true).id].profile,
+        Some(AudioProfile::Music)
+    );
+    expand(&ui.body, "Laptop audio routing");
+    reject_audio.store(true, Ordering::SeqCst);
+    button(&ui.body, "Both").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(
+        ui.model
+            .borrow()
+            .audio_controls
+            .as_ref()
+            .unwrap()
+            .settings
+            .output,
+        AudioOutputMode::Phone
+    );
+    assert!(matches!(
+        received.try_recv().unwrap(),
+        Method::AudioConfigure {
+            change: AudioRoutingChange {
+                output: Some(AudioOutputMode::Both),
+                ..
+            }
+        }
+    ));
+    button(&ui.body, "Both").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && ui
+                .model
+                .borrow()
+                .audio_controls
+                .as_ref()
+                .unwrap()
+                .settings
+                .output
+                == AudioOutputMode::Both
+    });
+    assert!(matches!(
+        received.try_recv().unwrap(),
+        Method::AudioConfigure { .. }
+    ));
+    check(&ui.body, "Selected applications").set_active(true);
+    spin(|| !ui.scheduled.get() && has_text(&ui.body, "Select at least one"));
+    assert!(!button(&ui.body, "Apply audio source").is_sensitive());
+    check(&ui.body, "Browser").set_active(true);
+    spin(|| !ui.scheduled.get());
+    assert!(matches!(
+        audio.lock().unwrap().settings.source,
+        AudioSourceSelection::All
+    ));
+    assert!(received.try_recv().is_err());
+    button(&ui.body, "Apply audio source").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && ui.audio_source_draft.borrow().is_none());
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::AudioConfigure {change:AudioRoutingChange {source:Some(AudioSourceSelection::Applications {ids}),..}} if ids==vec!["browser"])
+    );
+    // Returning a draft to the reported value must not resurrect a discarded checkbox on the next edit.
+    check(&ui.body, "Music application").set_active(true);
+    spin(|| !ui.scheduled.get());
+    check(&ui.body, "Music application").set_active(false);
+    check(&ui.body, "Browser").set_active(false);
+    spin(|| !ui.scheduled.get());
+    assert!(
+        matches!(&*ui.audio_source_draft.borrow(),Some(AudioSourceSelection::Applications {ids}) if ids.is_empty())
+    );
+    assert!(!button(&ui.body, "Apply audio source").is_sensitive());
+    check(&ui.body, "Browser").set_active(true);
+    spin(|| !ui.scheduled.get());
+    assert!(ui.audio_source_draft.borrow().is_none());
+    let picker = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::DropDown>().ok())
+        .unwrap();
+    picker.set_selected(1);
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::AudioConfigure {change:AudioRoutingChange {playback:Some(AudioPlaybackTarget::Player {id}),..}} if id=="player-1")
+    );
+    // A slow old read must not overwrite a newer audio-settings event.
+    slow_audio.store(true, Ordering::SeqCst);
+    ui.request(Request::Audio);
+    spin(|| !slow_audio.load(Ordering::SeqCst));
+    let mut newer = audio.lock().unwrap().clone();
+    newer.revision += 10;
+    newer.settings.output = AudioOutputMode::Laptop;
+    *audio.lock().unwrap() = newer.clone();
+    events
+        .send(ServerPayload::AudioControlsUpdated {
+            snapshot: newer.clone(),
+        })
+        .unwrap();
+    spin(|| ui.model.borrow().audio_controls.as_ref().unwrap().revision == newer.revision);
+    audio_gate.notify_one();
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    assert_eq!(
+        ui.model.borrow().audio_controls.as_ref().unwrap().revision,
+        newer.revision
+    );
+    assert_eq!(
+        ui.model
+            .borrow()
+            .audio_controls
+            .as_ref()
+            .unwrap()
+            .settings
+            .output,
+        AudioOutputMode::Laptop
+    );
+    // Unknown routing observations cannot appear as a selected default configuration.
+    let mut unavailable = newer.clone();
+    unavailable.revision += 1;
+    unavailable.settings_available = false;
+    events
+        .send(ServerPayload::AudioControlsUpdated {
+            snapshot: unavailable,
+        })
+        .unwrap();
+    spin(|| has_text(&ui.body, "Laptop audio settings are unavailable"));
+    assert!(
+        !descendants(&ui.body)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Button>().ok())
+            .any(|b| b.label().as_deref() == Some("Both"))
+    );
+    let mut restored = newer;
+    restored.revision += 2;
+    *audio.lock().unwrap() = restored.clone();
+    events
+        .send(ServerPayload::AudioControlsUpdated { snapshot: restored })
+        .unwrap();
+    spin(|| {
+        !ui.scheduled.get()
+            && ui
+                .model
+                .borrow()
+                .audio_controls
+                .as_ref()
+                .unwrap()
+                .settings_available
+    });
     // A slow command reply must not block the subscription's live device updates.
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     ui.request(Request::Clipboard(device(true).id, "slow command".into()));
     let mut admitted = false;
     spin(|| {
@@ -937,7 +1370,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         responsive,
         "live subscription updates were blocked by a pending command reply"
     );
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     // A replacement snapshot replaces the whole inventory, including removed notifications.
     let snapshot = ServerPayload::Snapshot {
         devices: vec![device(true)],
@@ -952,7 +1385,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     events.send(snapshot).unwrap();
     spin(|| ui.model.borrow().notifications.is_empty());
     // Work waiting behind an in-flight command is rejected when its subscription is lost.
-    spin(|| ui.pending.borrow().is_empty());
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
     ui.request(Request::Clipboard(device(true).id, "slow command".into()));
     let mut admitted = false;
     spin(|| {
@@ -970,8 +1403,14 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     reset.send(1).unwrap();
     spin(|| !ui.model.borrow().connected);
     command_gate.notify_one();
-    spin(|| ui.pending.borrow().is_empty());
-    assert!(ui.model.borrow().notice.contains("Nothing was submitted"));
+    spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());
+    // Retrying a lost subscription can report Disconnected again after the command verdict.
+    ui.event(Event::Disconnected);
+    assert!(
+        ui.model.borrow().notice.contains("Nothing was submitted"),
+        "Operation outcome was lost: {:?}",
+        ui.model.borrow().notice
+    );
     assert!(
         received.try_recv().is_err(),
         "queued work must not start after session loss"
@@ -1008,6 +1447,9 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     };
     ui.navigate(page);
     if let Some(path) = std::env::var_os("HANDOVER_CONTROL_TEST_SCREENSHOT") {
+        if ui.status_bar.is_visible() {
+            button(&ui.status_bar, "Dismiss notice").emit_clicked();
+        }
         let until = Instant::now() + Duration::from_millis(250);
         while Instant::now() < until {
             while glib::MainContext::default().pending() {

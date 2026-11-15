@@ -130,25 +130,66 @@ not change it. A successful change refreshes its reported state.
 Contacts reads synced address books. Select a connected phone and use the sync
 button to request a refresh, which still needs Android contact permission.
 Search by name, phone number, or email and copy an address. The view shows up to
-100 matches. Contact photos and direct contact-to-call actions are not yet part of this view.
+100 matches. Reported contact pictures decode and resize off the GTK thread;
+rebuilt rows reuse cached images. Invalid, oversized, or unsupported pictures
+fall back to initials. Call… opens the selected contact's number in Calls for
+review. It does not place a call automatically and requires a reported Place
+control.
 
-Media shows reported phone players and supported Previous, Play, Pause,
-Play/Pause, and Next controls. The central control follows the reported playback
-state. Commands do not optimistically change that state.
+Media groups laptop audio and phone playback. Phone playback offers the
+reported Previous, Play, Pause, Play/Pause, and Next controls without optimistic
+state changes.
 
-## Remaining interface gaps
+Laptop audio shows reported receiver state, Start/Stop, and available quality
+profiles. Streaming means receiver output started, not confirmation that a
+listener heard sound. Audio diagnostics show reported sender and receiver data.
+Laptop audio routing contains shared source, output, and playback-player
+choices. Output can be Phone, Laptop, or Both. Source can be all applications or
+an explicit application selection. Source edits remain drafts until Apply and
+survive unrelated state updates. Failed or unknown replies keep the draft.
+Missing application/player observations remain unavailable rather than being
+replaced with an invented default. Older snapshots cannot overwrite newer audio
+revisions. Diagnostic values update in place without rebuilding the routing choices.
 
-The native app does not yet expose every control in the QML client. These gaps
-remain explicit instead of appearing as nonfunctional buttons.
+## Remote input and desktop tools
 
-| Capability | Native status |
+Phone contains Remote input for pointer moves, clicks, scrolling, and text.
+Text is limited to 512 UTF-8 bytes and belongs to the selected phone. A lost
+acknowledgement keeps the draft and never retries automatically. Closing with
+remote text or an unapplied audio-source draft asks before discarding it.
+
+Device settings contains a phone connection test, Desktop behavior, and
+Configured commands. Desktop behavior offers Automatic, Keep desktop awake, and Allow desktop sleep policy
+requests. It does not claim to observe actual sleep inhibition. Commands lists
+the desktop allowlist; Run submits only a reported command name. The app shows
+the returned result and exit code, not an invented execution success.
+
+Calls contains Call audio on this computer, a read-only inspection of local HFP
+gateway and duplex observations. Refresh and phone call-state events update it. These observations do not
+confirm the associated phone or microphone/speaker routing.
+
+Connection status and operation outcomes are separate. Reconnect retries do not
+erase rejected or unconfirmed command results. No mutation replays after the
+subscription session changes.
+
+## Capability coverage
+
+| Capability | Location |
 | --- | --- |
-| Laptop audio streaming and source/output/player routing | Not exposed; phone playback controls work |
-| Remote input and configured desktop commands | Not exposed |
-| Contact pictures and call shortcuts | Not exposed; contact search and copy work |
-| Local HFP call-audio observations | Not exposed; phone call controls work |
-| Desktop awake-policy overrides | Not exposed; daemon policy is unchanged |
-| Phone file downloads | No backend download operation; directory listings work |
+| Device ring, lock, awake requests, hotspot settings | Phone |
+| Calls and local HFP audio observations | Calls |
+| File/link sharing and phone directory listings | Files |
+| Clipboard text, mirroring, history and pins | Clipboard |
+| Contact pictures, search, copy and call shortcuts | Contacts |
+| Laptop audio, shared routing and phone playback | Media |
+| Pairing, desktop sleep policy and configured commands | Device settings |
+| Pointer, click, scrolling and text input | Phone, under Remote input |
+| Messaging | Separate native Messages app |
+
+Phone directory listings remain read-only. The backend does not expose an
+operation to download listed phone files. The app does not show a nonfunctional
+download action. Real phone permissions, audio output, input effects, and call
+routing still require live device validation.
 
 ## Validation
 
@@ -158,6 +199,8 @@ The runner requires Xvfb and dbus-daemon; screenshots also need ImageMagick.
 Fictional devices and a private session bus exercise device selection,
 phone controls, call-generation guards, phone folder navigation and isolation,
 notification actions, reply drafts and lost acknowledgements, clipboard search,
-copy, mirroring, pinning and clearing, pairing comparison, drag-and-drop review, independent
-file outcomes, lost replies, contact copy, media controls, and reconnect without command
-replay. Physical-phone effects need separate live validation.
+copy, mirroring, pinning and clearing, pairing comparison, drag-and-drop review,
+independent file outcomes, lost replies, contact pictures and call shortcuts,
+remote-input drafts, allowlisted commands, desktop sleep policy requests, local
+call-audio observations, laptop-audio controls, stale-snapshot ordering, and
+reconnect without command replay. Physical-phone effects need separate live validation.

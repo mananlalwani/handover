@@ -63,6 +63,7 @@ impl Window {
                 "Choose a phone",
                 "Select a device in the sidebar to see its call controls.",
             ));
+            self.body.append(&self.call_audio_panel());
             return;
         };
         let call = model.calls.get(&id);
@@ -145,6 +146,26 @@ impl Window {
         }
         panel.append(&actions);
         self.body.append(&panel);
+        self.body.append(&self.call_audio_panel());
+    }
+
+    fn call_audio_panel(self: &Rc<Self>) -> gtk::Expander {
+        let model = self.model.borrow();
+        let status = model.call_audio.as_ref();
+        let panel = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        panel.add_css_class("card");
+        panel.append(&text(
+            match status {
+                Some(s) if !s.observed => "Local call-audio status unavailable",
+                Some(s) if !s.gateway_ready => "No local HFP gateway profile selected",
+                Some(s) if s.duplex_running => "Local HFP input and output running",
+                Some(_) => "HFP profile selected · Input and output not running",
+                None => "Refresh to inspect local call audio",
+            },
+            "body-copy",
+        ));
+        panel.append(&text("This computer's audio observations do not confirm the phone association or microphone/speaker routing.", "card-subtitle"));
+        self.remembered_expander("call-audio", "Call audio on this computer", &panel)
     }
 
     pub(super) fn file_tabs(self: &Rc<Self>) {
@@ -263,7 +284,7 @@ impl Window {
                 ));
                 let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
                 list.add_css_class("detail-list");
-                for entry in result.entries.iter().take(500) {
+                for entry in result.entries.iter().take(512) {
                     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
                     row.add_css_class("settings-row");
                     row.append(&gtk::Image::from_icon_name(if entry.directory {
@@ -303,7 +324,11 @@ impl Window {
                 self.body.append(&list);
             }
         } else {
-            self.body.append(&empty("folder-symbolic", "Phone folders", "Browse folders shared by your phone. Files can be listed here but not downloaded."));
+            self.body.append(&empty(
+                "folder-symbolic",
+                "Phone folders",
+                "Browse folders shared by your phone. Files can be listed here but not downloaded.",
+            ));
         }
     }
 }

@@ -1308,6 +1308,33 @@ impl Client {
 
     /// Current normalized call states. Absence of a device means no call
     /// state is attested, not that the phone is idle.
+    pub async fn call_audio_status(&mut self) -> Result<handover_core::CallAudioStatus, IpcError> {
+        self.send(Method::CallsAudio).await?;
+        match self.receive().await?.payload {
+            ServerPayload::CallAudio { status } => Ok(status),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn remote_input(
+        &mut self,
+        command: handover_core::RemoteInputCommand,
+    ) -> Result<(), IpcError> {
+        self.send(Method::RemoteInputSend {
+            device_id: command.device_id,
+            action: command.action,
+            delta_x: command.delta_x,
+            delta_y: command.delta_y,
+            button: command.button,
+            text: command.text,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
     pub async fn calls(&mut self) -> Result<Vec<CallState>, IpcError> {
         self.send(Method::CallsList).await?;
         match self.receive().await?.payload {
@@ -1612,6 +1639,17 @@ impl Client {
     /// Device continuity state and share events, without messaging history.
     pub async fn subscribe_control_center(self) -> Result<Subscription, IpcError> {
         self.subscribe_to(true, true, false).await
+    }
+
+    /// Add receiver and laptop-audio events to a control-center subscription.
+    pub async fn subscribe_control_center_with_audio(self) -> Result<Subscription, IpcError> {
+        let mut subscription = self.subscribe_control_center().await?;
+        write_json_line(
+            &mut subscription._writer,
+            &Request::new(Method::AudioSubscribe),
+        )
+        .await?;
+        Ok(subscription)
     }
 
     async fn subscribe_to(
