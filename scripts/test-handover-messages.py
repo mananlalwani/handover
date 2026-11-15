@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from cargo_test_artifacts import test_executable
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,17 +51,12 @@ def main():
     for tool in ("cargo", "dbus-daemon", "Xvfb", "ffmpeg", "xdotool"):
         if not shutil.which(tool):
             raise SystemExit(f"Required tool is missing: {tool}")
-    built = subprocess.run(
+    test_binary = test_executable(
+        "handover-messages",
         ["cargo", "test", "--locked", "-p", "handover-messages", "--bin",
          "handover-messages", "--no-run", "--message-format=json"],
-        cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE,
+        ROOT,
     )
-    binaries = [entry["executable"] for line in built.stdout.splitlines()
-                if (entry := json.loads(line)).get("reason") == "compiler-artifact"
-                and entry.get("executable") and entry["target"].get("name") == "handover-messages"
-                and entry["target"].get("test")]
-    if len(binaries) != 1:
-        raise SystemExit("native Messages GUI test executable not found")
     application_build = subprocess.run(
         ["cargo", "build", "--locked", "-p", "handover-messages", "--bin",
          "handover-messages", "--message-format=json"],
@@ -140,7 +136,7 @@ fi
             display_number = read_line(display, "private Xvfb")
             environment["DISPLAY"] = ":" + display_number
             test = subprocess.Popen(
-                [binaries[0], "--ignored", "--exact",
+                [test_binary, "--ignored", "--exact",
                  "ui::tests::native_window_round_trips_real_frontend_actions", "--nocapture"],
                 env=environment, start_new_session=True,
             )

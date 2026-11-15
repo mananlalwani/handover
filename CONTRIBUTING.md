@@ -81,6 +81,14 @@ single-instance application routing. The setup dialog uses a fake setup helper.
 The control center runner covers pairing comparison, notification actions,
 sharing, contact copy, and reconnect behavior with fictional devices.
 Run these launchers rather than invoking the ignored GUI tests on your desktop.
+
+CI compiles workspace tests once and passes their Cargo JSON manifest through
+`HANDOVER_TEST_ARTIFACTS` to the credential and GUI runners. Without that variable,
+the runners build their own test executable as before. A supplied manifest must
+contain an existing executable for the requested test target; invalid manifests
+fail rather than triggering another build. The Messages runner also builds its
+ordinary application binary for the single-instance checks.
+
 For visual checks, add `--screenshot /tmp/messages.png`, optionally with
 `--dark` or `--width 760`. PNG capture needs ImageMagick `import` and contains
 only the synthetic conversation on the private display.

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run the native control center window test on a private display and D-Bus."""
 
-import json
 import argparse
 import os
 from pathlib import Path
@@ -10,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from cargo_test_artifacts import test_executable
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,17 +51,12 @@ def main():
     for tool in ("cargo", "dbus-daemon", "Xvfb"):
         if not shutil.which(tool):
             raise SystemExit(f"Required tool is missing: {tool}")
-    built = subprocess.run(
+    test_binary = test_executable(
+        "handover-control",
         ["cargo", "test", "--locked", "-p", "handover-control", "--bin",
          "handover-control", "--no-run", "--message-format=json"],
-        cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE,
+        ROOT,
     )
-    binaries = [entry["executable"] for line in built.stdout.splitlines()
-                if (entry := json.loads(line)).get("reason") == "compiler-artifact"
-                and entry.get("executable") and entry["target"].get("name") == "handover-control"
-                and entry["target"].get("test")]
-    if len(binaries) != 1:
-        raise SystemExit("native control center GUI test executable not found")
     with tempfile.TemporaryDirectory(prefix="handover-control-ui-") as temporary:
         root = Path(temporary)
         environment = dict(os.environ, HANDOVER_CONTROL_TEST_ROOT=str(root))
@@ -115,7 +110,7 @@ def main():
             display_number = read_line(display, "private Xvfb")
             environment["DISPLAY"] = ":" + display_number
             test = subprocess.Popen(
-                [binaries[0], "--ignored", "--exact",
+                [test_binary, "--ignored", "--exact",
                  "ui::tests::native_control_center_uses_daemon_state_and_never_replays_commands", "--nocapture"],
                 env=environment, start_new_session=True,
             )

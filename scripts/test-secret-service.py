@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run credential-store integration against GNOME Keyring on a private D-Bus."""
 
-import json
 import os
 from pathlib import Path
 import selectors
@@ -9,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from cargo_test_artifacts import test_executable
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -34,15 +34,12 @@ def main():
     for tool in ("cargo", "dbus-daemon", "gnome-keyring-daemon"):
         if not shutil.which(tool):
             raise SystemExit(f"Required tool is missing: {tool}")
-    built = subprocess.run(
+    binary = test_executable(
+        "desktop_credential_store",
         ["cargo", "test", "--locked", "-p", "handover-google-messages", "--test",
          "desktop_credential_store", "--no-run", "--message-format=json"],
-        cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE,
+        ROOT,
     )
-    binaries = [entry["executable"] for line in built.stdout.splitlines()
-                if (entry := json.loads(line)).get("reason") == "compiler-artifact"
-                and entry.get("executable") and entry["target"]["name"] == "desktop_credential_store"]
-    assert len(binaries) == 1, "credential-store test executable not found"
     with tempfile.TemporaryDirectory(prefix="handover-keyring-") as temporary:
         root = Path(temporary)
         environment = dict(os.environ, HANDOVER_SECRET_SERVICE_TEST_ROOT=str(root))
@@ -77,7 +74,7 @@ def main():
                 address = bus.stdout.readline().strip()
             assert address.startswith(f"unix:path={root}/runtime_dir/bus"), "unexpected private bus address"
             environment["DBUS_SESSION_BUS_ADDRESS"] = address
-            test = subprocess.Popen([binaries[0], "--ignored", "--exact", "desktop_store_lifecycle",
+            test = subprocess.Popen([binary, "--ignored", "--exact", "desktop_store_lifecycle",
                                      "--nocapture"], env=environment, start_new_session=True)
             try:
                 test.wait(timeout=90)
