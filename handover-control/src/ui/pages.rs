@@ -910,11 +910,66 @@ impl Window {
         }
         for peer in &model.peers {
             let card = card(&peer.name, "Trusted device");
+            let device_id = DeviceId::new(format!("native:{}", peer.id));
             let fingerprint = text(&peer.fingerprint, "card-subtitle");
             fingerprint.set_selectable(true);
             let details = gtk::Expander::new(Some("Device fingerprint"));
             details.set_child(Some(&fingerprint));
             card.append(&details);
+            card.append(&text(
+                "This name is used only by Handover on this computer.",
+                "card-subtitle",
+            ));
+            let name = gtk::Entry::new();
+            name.set_max_length(80);
+            name.set_placeholder_text(Some("Name in Handover"));
+            let effective_name = model
+                .devices
+                .get(&device_id)
+                .map(|device| device.name.as_str())
+                .unwrap_or(&peer.name);
+            name.set_text(
+                self.device_name_drafts
+                    .borrow()
+                    .get(&device_id)
+                    .map(String::as_str)
+                    .unwrap_or(effective_name),
+            );
+            let weak = Rc::downgrade(self);
+            let draft_device = device_id.clone();
+            name.connect_changed(move |entry| {
+                if let Some(this) = weak.upgrade() {
+                    this.device_name_drafts
+                        .borrow_mut()
+                        .insert(draft_device.clone(), entry.text().to_string());
+                }
+            });
+            card.append(&name);
+            let name_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let save_name = gtk::Button::with_label("Save name");
+            save_name.set_sensitive(model.connected && !self.busy());
+            let weak = Rc::downgrade(self);
+            let target = device_id.clone();
+            let entry = name.clone();
+            save_name.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.request(Request::RenameDevice(
+                        target.clone(),
+                        entry.text().to_string(),
+                    ));
+                }
+            });
+            name_actions.append(&save_name);
+            let reset_name = gtk::Button::with_label("Use phone name");
+            reset_name.set_sensitive(model.connected && !self.busy());
+            let weak = Rc::downgrade(self);
+            reset_name.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.request(Request::RenameDevice(device_id.clone(), String::new()));
+                }
+            });
+            name_actions.append(&reset_name);
+            card.append(&name_actions);
             let forget = gtk::Button::with_label("Forget device…");
             forget.set_sensitive(model.connected && !self.busy());
             let weak = Rc::downgrade(self);

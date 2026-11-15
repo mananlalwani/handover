@@ -87,6 +87,7 @@ pub struct Window {
     file_queue: RefCell<Vec<files::PickedFile>>,
     dial_address: RefCell<String>,
     remote_drafts: RefCell<BTreeMap<DeviceId, String>>,
+    device_name_drafts: RefCell<BTreeMap<DeviceId, String>>,
     volume_drafts: RefCell<BTreeMap<(DeviceId, VolumeKind), u32>>,
     call_audio_draft: RefCell<Option<CallAudioDraft>>,
     audio_source_draft: RefCell<Option<AudioSourceSelection>>,
@@ -309,6 +310,7 @@ impl Window {
             file_queue: RefCell::new(Vec::new()),
             dial_address: RefCell::new(String::new()),
             remote_drafts: RefCell::new(BTreeMap::new()),
+            device_name_drafts: RefCell::new(BTreeMap::new()),
             volume_drafts: RefCell::new(BTreeMap::new()),
             call_audio_draft: RefCell::new(None),
             audio_source_draft: RefCell::new(None),
@@ -764,6 +766,14 @@ impl Window {
                         let mut model = self.model.borrow_mut();
                         model.peers = peers;
                         model.pairing = pairing;
+                    }
+                    Ok(Reply::RenamedDevice(device)) => {
+                        let id = device.id.clone();
+                        self.model
+                            .borrow_mut()
+                            .apply(ServerPayload::DeviceUpdated { device });
+                        self.device_name_drafts.borrow_mut().remove(&id);
+                        self.request(Request::Pairing);
                     }
                     Ok(Reply::Contacts(contacts)) => {
                         self.model.borrow_mut().contacts = contacts;

@@ -379,3 +379,12 @@ updated `call_audio_controls`. States are `waiting_for_call`, `routing` with
 `duplex_running`, and `failed` with an explanation. Backend card names, Bluetooth
 addresses, and PipeWire node names are not public identifiers. Routing does not
 prove a physical call is audible.
+
+## Local device names
+
+`devices.rename` takes `device_id` and `name` for a paired native device. Names
+are trimmed and accept up to 80 Unicode characters without control characters.
+An empty name removes the nickname. The daemon persists the setting before
+returning `device_updated` and publishing the updated device. The device can be
+offline. This affects the desktop's display name; it does not rename the phone
+or change its identity, trust, or pairing. Reconnection keeps the local nickname.

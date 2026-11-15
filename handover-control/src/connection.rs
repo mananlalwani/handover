@@ -21,6 +21,7 @@ pub enum Request {
     NotificationReply(NotificationId, String),
     Pair(String, String),
     Forget(String),
+    RenameDevice(DeviceId, String),
     Dismiss(NotificationId),
     Action(NotificationId, String),
     SendFile(DeviceId, String),
@@ -69,6 +70,7 @@ impl Request {
 }
 pub enum Reply {
     Pairing(Vec<NativePeer>, Vec<NativePendingPeer>),
+    RenamedDevice(Device),
     Contacts(Vec<Contact>),
     Transfers(Vec<TransferActivity>),
     ClipboardHistory(Vec<handover_ipc::ClipboardHistoryEntry>, bool),
@@ -250,6 +252,9 @@ async fn execute(
         Request::Forget(id) => {
             client.native_unpair(id).await?;
             Ok(Reply::Accepted)
+        }
+        Request::RenameDevice(id, name) => {
+            Ok(Reply::RenamedDevice(client.rename_device(id, name).await?))
         }
         Request::Dismiss(id) => {
             client.dismiss_notification(id).await?;

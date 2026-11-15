@@ -81,6 +81,13 @@ fn check(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::CheckButton {
         .find(|b| b.label().as_deref() == Some(label))
         .unwrap_or_else(|| panic!("Check button missing: {label}"))
 }
+fn entry_with_placeholder(root: &impl IsA<gtk::Widget>, value: &str) -> gtk::Entry {
+    descendants(root)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Entry>().ok())
+        .find(|entry| entry.placeholder_text().as_deref() == Some(value))
+        .unwrap_or_else(|| panic!("Entry missing: {value}"))
+}
 fn expand(root: &impl IsA<gtk::Widget>, label: &str) {
     descendants(root)
         .into_iter()
@@ -356,7 +363,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                             Method::CallAudioControls=>ServerPayload::CallAudioControls {controls:call_audio_controls.lock().unwrap().clone()},
                             Method::ClipboardMirrorStatus=>ServerPayload::ClipboardMirror {enabled:mirror.load(Ordering::SeqCst)},
                             Method::ClipboardHistoryList=>ServerPayload::ClipboardHistory {entries:history.lock().unwrap().clone()},
-                            Method::NativePeers=>ServerPayload::NativePeers {peers:vec![]},
+                            Method::NativePeers=>ServerPayload::NativePeers {peers:vec![handover_ipc::NativePeer{id:"phone-a".into(),name:"Pixel test".into(),fingerprint:"fixture-fingerprint".into()}]},
                             Method::NativePending=>ServerPayload::NativePending {pending:vec![handover_ipc::NativePendingPeer {id:"pending-test".into(),name:"New phone".into(),code:"12345678".into()}]},
                             Method::ContactsList=>ServerPayload::Contacts {contacts:vec![Contact {device_id:device(true).id,local_id:"alex".into(),display_name:"Alex Example".into(),phones:vec!["+1 312 555 0100".into()],emails:vec![],photo:Some(PHOTO.into())}]},
                             Method::TransfersList=>ServerPayload::TransferActivity {activities:transfer_log.lock().unwrap().clone()},
@@ -398,6 +405,15 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                         let snapshot=controls.clone();drop(controls);
                                         let _=events.send(ServerPayload::CallAudioControls {controls:snapshot.clone()});
                                         ServerPayload::CallAudioControls {controls:snapshot}
+                                    },
+                                    Method::DeviceRename {device_id,name}=>{
+                                        assert_eq!(device_id,device(true).id);
+                                        let mut updated=device(true);
+                                        updated.connected=false;
+                                        updated.name=if name.is_empty(){"Pixel test".into()}else{name};
+                                        let payload=ServerPayload::DeviceUpdated {device:updated};
+                                        let _=events.send(payload.clone());
+                                        payload
                                     },
                                     Method::FileList {device_id,path,cursor}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult { cursor_next: if path=="." && cursor.is_none(){Some("page-2".into())}else{None},device_id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." && cursor.is_none() {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else if path=="." {vec![FilesystemEntry{name:"archive.zip".into(),directory:false,size:Some(360)}]}else{vec![FilesystemEntry {name:"photo.jpg".into(),directory:false,size:Some(240)}]},failure:None}});ServerPayload::FilesystemQueued {request_id:"fixture-folder".into()}},
                                     Method::FileDownload {device_id,path,kind}=>{
@@ -533,8 +549,75 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     spin(|| {
         ui.pending.borrow().is_empty()
             && ui.model.borrow().commands.is_some()
+            && !ui.model.borrow().peers.is_empty()
             && !ui.scheduled.get()
     });
+    let device_id = device(true).id;
+    let name_entry = entry_with_placeholder(&ui.body, "Name in Handover");
+    assert_eq!(name_entry.text(), "Pixel test");
+    assert_eq!(name_entry.max_length(), 80);
+    name_entry.set_text("Local Desk");
+    ui.navigate(Page::Overview);
+    spin(|| !ui.scheduled.get());
+    ui.navigate(Page::Connection);
+    spin(|| !ui.scheduled.get());
+    assert_eq!(
+        entry_with_placeholder(&ui.body, "Name in Handover").text(),
+        "Local Desk"
+    );
+    let mut offline_device = device(true);
+    offline_device.connected = false;
+    ui.event(Event::State(Box::new(ServerPayload::DeviceUpdated {
+        device: offline_device,
+    })));
+    spin(|| !ui.model.borrow().ready(&device_id) && !ui.scheduled.get());
+    assert!(
+        button(&ui.body, "Save name").is_sensitive(),
+        "local naming remains available while the phone is offline"
+    );
+    button(&ui.body, "Save name").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && !ui.device_name_drafts.borrow().contains_key(&device_id)
+            && ui
+                .model
+                .borrow()
+                .devices
+                .get(&device_id)
+                .is_some_and(|d| d.name == "Local Desk")
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::DeviceRename {
+            device_id: device_id.clone(),
+            name: "Local Desk".into()
+        }
+    );
+    spin(|| entry_with_placeholder(&ui.body, "Name in Handover").text() == "Local Desk");
+    button(&ui.body, "Use phone name").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && !ui.device_name_drafts.borrow().contains_key(&device_id)
+            && ui
+                .model
+                .borrow()
+                .devices
+                .get(&device_id)
+                .is_some_and(|d| d.name == "Pixel test")
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::DeviceRename {
+            device_id: device_id.clone(),
+            name: String::new()
+        }
+    );
+    let mut online_device = device(true);
+    online_device.name = "Pixel test".into();
+    ui.event(Event::State(Box::new(ServerPayload::DeviceUpdated {
+        device: online_device,
+    })));
+    spin(|| ui.model.borrow().ready(&device_id) && !ui.scheduled.get());
     expand(&ui.body, "Phone connection test");
     button(&ui.body, "Ping phone").emit_clicked();
     spin(|| ui.pending.borrow().is_empty() && !ui.scheduled.get());

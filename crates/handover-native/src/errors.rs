@@ -26,6 +26,10 @@ pub enum NativeError {
     QuotaExceeded,
     #[error("unknown pending peer or comparison code")]
     UnknownPending,
+    #[error("device names must have at most 80 characters and no control characters")]
+    InvalidDeviceName,
+    #[error("unknown paired device")]
+    UnknownPeer,
     #[error("discovery: {0}")]
     Discovery(String),
 }

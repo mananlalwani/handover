@@ -399,6 +399,70 @@ fn pair_client(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
 }
 
 #[test]
+fn local_device_name_is_preserved_by_live_updates_disconnect_and_reconnect() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    let next_device = || loop {
+        if let StateEvent::Device(DeviceEvent::Added(device) | DeviceEvent::Updated(device)) =
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        {
+            break device;
+        }
+    };
+    assert_eq!(next_device().name, "Test Phone");
+    assert_eq!(
+        harness
+            .backend
+            .rename_peer(&client.fingerprint, "Pocket phone")
+            .unwrap(),
+        "Pocket phone"
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"battery","protocol":1,"percentage":77,"charging":false}),
+    );
+    let updated = next_device();
+    assert_eq!(updated.name, "Pocket phone");
+    assert_eq!(updated.battery.unwrap().percentage(), 77);
+    drop(peer);
+    let offline = next_device();
+    assert!(!offline.connected);
+    assert_eq!(offline.name, "Pocket phone");
+    let mut peer = connect(harness.port, &client);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"New reported name","trusted_server_id":harness.backend.identity()}),
+    );
+    assert_eq!(recv(&mut peer)["type"], "hello");
+    assert_eq!(recv(&mut peer)["type"], "paired");
+    for expected in [
+        "notifications_request",
+        "call_request",
+        "media_request",
+        "contacts_request",
+    ] {
+        assert_eq!(recv(&mut peer)["type"], expected);
+    }
+    let online = next_device();
+    assert!(online.connected);
+    assert_eq!(online.name, "Pocket phone");
+    assert_eq!(
+        harness
+            .backend
+            .rename_peer(&client.fingerprint, "")
+            .unwrap(),
+        "New reported name"
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"battery","protocol":1,"percentage":79,"charging":false}),
+    );
+    assert_eq!(next_device().name, "New reported name");
+}
+
+#[test]
 fn audio_offers_require_readiness_and_the_paired_certificate() {
     use handover_core::AudioStreamPhase;
     let harness = harness();

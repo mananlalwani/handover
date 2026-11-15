@@ -516,6 +516,77 @@ where
                 conversation_id: None,
             },
         },
+        Method::DeviceRename { device_id, name } => {
+            let current = state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_device(&device_id)
+                .cloned();
+            match current.filter(|d| d.paired).zip(
+                device_id
+                    .as_str()
+                    .strip_prefix("native:")
+                    .and_then(|id| native_backend().map(|n| (n, id))),
+            ) {
+                Some((_, (native, id))) => match native.rename_peer(id, &name) {
+                    Ok(_) => {
+                        // Update only the current name after persistence. A battery or
+                        // connection report may have arrived while the file was saved.
+                        let renamed = {
+                            let mut store = state
+                                .write()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            store
+                                .get_device(&device_id)
+                                .filter(|d| d.paired)
+                                .cloned()
+                                .zip(native.device_name(id))
+                                .map(|(mut device, name)| {
+                                    device.name = name;
+                                    let outcome = store.apply(StateEvent::Device(
+                                        DeviceEvent::Updated(device.clone()),
+                                    ));
+                                    (device, outcome)
+                                })
+                        };
+                        if let Some((device, outcome)) = renamed {
+                            for change in outcome.changes {
+                                crate::log_change(change);
+                            }
+                            if outcome.changed {
+                                let _ = events
+                                    .send(StateEvent::Device(DeviceEvent::Updated(device.clone())));
+                            }
+                            ServerPayload::DeviceUpdated { device }
+                        } else {
+                            ServerPayload::Error {
+                                code: ErrorCode::BackendRejected,
+                                message: "The device was removed before its name could be updated"
+                                    .into(),
+                                conversation_id: None,
+                            }
+                        }
+                    }
+                    Err(handover_native::NativeError::InvalidDeviceName) => ServerPayload::Error {
+                        code: ErrorCode::MalformedRequest,
+                        message:
+                            "Use up to 80 characters without control characters for the device name"
+                                .into(),
+                        conversation_id: None,
+                    },
+                    Err(_) => ServerPayload::Error {
+                        code: ErrorCode::BackendRejected,
+                        message: "Could not save the device name".into(),
+                        conversation_id: None,
+                    },
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "This paired device cannot be renamed".into(),
+                    conversation_id: None,
+                },
+            }
+        }
         Method::DevicesList => ServerPayload::Devices {
             devices: snapshot(state).devices,
         },
@@ -524,10 +595,13 @@ where
                 native
                     .peers()
                     .into_iter()
-                    .map(|peer| handover_ipc::NativePeer {
-                        id: peer.id,
-                        name: peer.name,
-                        fingerprint: peer.fingerprint,
+                    .map(|peer| {
+                        let name = peer.display_name().to_owned();
+                        handover_ipc::NativePeer {
+                            id: peer.id,
+                            name,
+                            fingerprint: peer.fingerprint,
+                        }
                     })
                     .collect()
             }),

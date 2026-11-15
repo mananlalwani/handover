@@ -102,10 +102,11 @@ impl NativeBackend {
                 pair_commit: Some(hex::encode(Sha256::digest(nonce))),
             },
         )?;
-        let peer = Peer {
+        let mut peer = Peer {
             id: id.clone(),
             name: name.clone(),
             fingerprint: peer_fp.clone(),
+            nickname: None,
             file_downloads,
             files_v2,
             volume_control,
@@ -279,6 +280,7 @@ impl NativeBackend {
             if !inner.peers.peers.contains_key(&id) {
                 return Err(NativeError::InvalidFrame);
             }
+            peer.nickname = inner.peers.peers.get(&id).and_then(|p| p.nickname.clone());
             inner.active.insert(id.clone(), tls.get_ref().try_clone()?);
             inner.peers.peers.insert(id.clone(), peer.clone());
             session.published = true;

@@ -118,6 +118,8 @@ pub enum Method {
     },
     #[serde(rename = "devices.list")]
     DevicesList,
+    #[serde(rename = "devices.rename")]
+    DeviceRename { device_id: DeviceId, name: String },
     #[serde(rename = "native.peers")]
     NativePeers,
     #[serde(rename = "native.pending")]
@@ -1084,6 +1086,18 @@ impl Client {
             ServerPayload::Hello {
                 supported_protocols,
             } => Ok(supported_protocols),
+            payload => Err(unexpected(payload)),
+        }
+    }
+
+    pub async fn rename_device(
+        &mut self,
+        device_id: DeviceId,
+        name: String,
+    ) -> Result<Device, IpcError> {
+        self.send(Method::DeviceRename { device_id, name }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::DeviceUpdated { device } => Ok(device),
             payload => Err(unexpected(payload)),
         }
     }

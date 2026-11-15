@@ -52,6 +52,8 @@ pub struct Peer {
     pub id: String,
     pub name: String,
     pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
     /// Negotiated for this connection only; never restored from persisted trust.
     #[serde(skip)]
     pub file_downloads: bool,
@@ -59,6 +61,12 @@ pub struct Peer {
     pub files_v2: bool,
     #[serde(skip)]
     pub volume_control: bool,
+}
+
+impl Peer {
+    pub fn display_name(&self) -> &str {
+        self.nickname.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -463,6 +471,30 @@ impl NativeBackend {
             .values()
             .cloned()
             .collect()
+    }
+    pub fn device_name(&self, id: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .peers
+            .peers
+            .get(id)
+            .map(|p| p.display_name().to_owned())
+    }
+    /// Set a name used only by this desktop. Empty input restores the phone name.
+    pub fn rename_peer(&self, id: &str, name: &str) -> Result<String, NativeError> {
+        let name = name.trim();
+        if name.chars().count() > 80 || name.chars().any(char::is_control) {
+            return Err(NativeError::InvalidDeviceName);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let mut peers = inner.peers.clone();
+        let peer = peers.peers.get_mut(id).ok_or(NativeError::UnknownPeer)?;
+        peer.nickname = (!name.is_empty()).then(|| name.to_owned());
+        let display_name = peer.display_name().to_owned();
+        self.save_peers(&peers)?;
+        inner.peers = peers;
+        Ok(display_name)
     }
     pub fn remembered_devices(&self) -> Vec<Device> {
         self.peers()
@@ -1289,6 +1321,19 @@ impl NativeBackend {
         listener: TcpListener,
         event: Arc<dyn Fn(StateEvent) + Send + Sync>,
     ) -> Result<(), NativeError> {
+        // Sessions retain their pairing-time peer data. Always resolve the local
+        // nickname at publication so battery, media, and disconnect events use it.
+        let runtime = self.inner.clone();
+        let event: EventSink = Arc::new(move |mut update| {
+            if let StateEvent::Device(DeviceEvent::Added(device) | DeviceEvent::Updated(device)) =
+                &mut update
+                && let Some(id) = device.id.as_str().strip_prefix("native:")
+                && let Some(peer) = runtime.lock().unwrap().peers.peers.get(id)
+            {
+                device.name = peer.display_name().to_owned();
+            }
+            event(update);
+        });
         let _ = self.download_events.set(event.clone());
         for incoming in listener.incoming() {
             let stream = match incoming {
@@ -1349,7 +1394,7 @@ pub(crate) fn device(
     }
     Device {
         id: DeviceId::new(format!("native:{}", peer.id)),
-        name: peer.name.clone(),
+        name: peer.display_name().to_owned(),
         connected,
         paired: true,
         battery,
@@ -1981,6 +2026,7 @@ mod tests {
             id: "android-device-01".into(),
             name: "Pixel Test".into(),
             fingerprint: "fingerprint".into(),
+            nickname: None,
             file_downloads: false,
             files_v2: false,
             volume_control: false,
@@ -2002,11 +2048,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn local_device_name_survives_restart_and_failed_writes_and_can_be_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let peer = test_peer();
+        fs::write(
+            dir.path().join("peers.json"),
+            serde_json::to_vec(&serde_json::json!({"peers": {peer.id.clone(): peer}})).unwrap(),
+        )
+        .unwrap();
+        let backend = NativeBackend::open(dir.path().to_owned()).unwrap();
+        assert_eq!(
+            backend.rename_peer(&peer.id, "  My phone 📱  ").unwrap(),
+            "My phone 📱"
+        );
+        assert_eq!(backend.remembered_devices()[0].name, "My phone 📱");
+        let reopened = NativeBackend::open(dir.path().to_owned()).unwrap();
+        assert_eq!(reopened.remembered_devices()[0].name, "My phone 📱");
+        fs::create_dir(dir.path().join("peers.json.tmp")).unwrap();
+        assert!(backend.rename_peer(&peer.id, "Unsaved name").is_err());
+        assert_eq!(backend.peers()[0].display_name(), "My phone 📱");
+        fs::remove_dir(dir.path().join("peers.json.tmp")).unwrap();
+        for invalid in ["x".repeat(81), "bad\nname".into(), "bad\0name".into()] {
+            assert!(matches!(
+                backend.rename_peer(&peer.id, &invalid),
+                Err(NativeError::InvalidDeviceName)
+            ));
+        }
+        assert!(matches!(
+            backend.rename_peer("missing", "name"),
+            Err(NativeError::UnknownPeer)
+        ));
+        assert_eq!(backend.rename_peer(&peer.id, " ").unwrap(), "Pixel Test");
+        assert_eq!(
+            NativeBackend::open(dir.path().to_owned())
+                .unwrap()
+                .remembered_devices()[0]
+                .name,
+            "Pixel Test"
+        );
+    }
+
     fn test_peer() -> Peer {
         Peer {
             id: "android-device-01".into(),
             name: "Pixel Test".into(),
             fingerprint: "fingerprint".into(),
+            nickname: None,
             file_downloads: false,
             files_v2: false,
             volume_control: false,

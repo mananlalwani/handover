@@ -255,3 +255,10 @@ independent file outcomes, lost replies, contact pictures and call shortcuts,
 remote-input drafts, allowlisted commands, desktop sleep policy requests, local
 call-audio observations, laptop-audio controls, stale-snapshot ordering, and
 reconnect without command replay. Physical-phone effects need separate live validation.
+
+## Device names
+
+In Device settings, edit Name in Handover under a trusted device and press Save
+name. This changes the name used on this computer, including the device selector
+and alerts. It remains saved across reconnects and daemon restarts. The phone can
+be offline. Use phone name removes the nickname and restores its reported name.
