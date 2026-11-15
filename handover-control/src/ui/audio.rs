@@ -51,6 +51,8 @@ impl Window {
                     let quality = text("Quality", "card-subtitle");
                     quality.set_wrap(false);
                     row.append(&quality);
+                    let segments = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+                    segments.add_css_class("quality-selector");
                     for (label, value) in [
                         ("Balanced", AudioProfile::Balanced),
                         ("Music", AudioProfile::Music),
@@ -64,8 +66,9 @@ impl Window {
                         if profile == value {
                             button.add_css_class("selected-choice");
                         }
-                        row.append(&button);
+                        segments.append(&button);
                     }
+                    row.append(&segments);
                     panel.append(&row);
                 }
                 if let Some(failure) = stream.failure {

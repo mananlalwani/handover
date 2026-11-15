@@ -42,7 +42,8 @@ connection help are available in expandable details.
 
 ## Notifications
 
-Notifications groups current forwarded notifications by app and supports search.
+Notifications shows one searchable inbox of current phone notifications, with
+app identity and actions on each row. In All devices, rows also name the phone.
 The close button requests dismissal on the phone and appears only for clearable
 notifications. Other buttons come from reported phone actions. Commands are
 disabled for disconnected devices. Acceptance alone does not change phone state.

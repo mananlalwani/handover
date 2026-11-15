@@ -189,32 +189,38 @@ impl Window {
             ));
             return;
         }
-        let mut group_key = None;
-        let mut group = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.add_css_class("notification-list");
         for note in notes.iter().take(100) {
-            let key = (&note.app_name, &note.id.device_id);
-            if group_key != Some(key) {
-                let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                header.append(&gtk::Image::from_icon_name(
-                    "application-x-executable-symbolic",
-                ));
-                header.append(&text(&note.app_name, "list-heading"));
-                let device = text(&model.name(&note.id.device_id), "card-subtitle");
-                device.set_hexpand(true);
-                device.set_xalign(1.0);
-                header.append(&device);
-                self.body.append(&header);
-                group = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                group.add_css_class("detail-list");
-                self.body.append(&group);
-                group_key = Some(key);
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            row.add_css_class("notification-item");
+            let initials = note
+                .app_name
+                .split_whitespace()
+                .filter_map(|word| word.chars().next())
+                .take(2)
+                .flat_map(char::to_uppercase)
+                .collect::<String>();
+            let badge = gtk::Label::new(Some(if initials.is_empty() { "?" } else { &initials }));
+            badge.add_css_class("notification-app-badge");
+            badge.set_size_request(32, 32);
+            badge.set_valign(gtk::Align::Start);
+            row.append(&badge);
+            let content = gtk::Box::new(gtk::Orientation::Vertical, 5);
+            content.set_hexpand(true);
+            let context = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let app = text(&note.app_name, "notification-app-name");
+            app.set_wrap(false);
+            app.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            app.set_hexpand(true);
+            context.append(&app);
+            if self.selected.borrow().is_none() {
+                let device = text(&model.name(&note.id.device_id), "notification-device");
+                device.set_wrap(false);
+                device.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                device.set_max_width_chars(18);
+                context.append(&device);
             }
-            let item = gtk::Box::new(gtk::Orientation::Vertical, 6);
-            item.add_css_class("notification-row");
-            let title = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let label = text(&note.title, "notification-title");
-            label.set_hexpand(true);
-            title.append(&label);
             if note.clearable {
                 let dismiss = self.button(
                     "Dismiss on phone",
@@ -225,17 +231,31 @@ impl Window {
                 dismiss.set_tooltip_text(Some("Dismiss on phone"));
                 dismiss.update_property(&[gtk::accessible::Property::Label("Dismiss on phone")]);
                 dismiss.add_css_class("flat");
-                dismiss.add_css_class("circular");
-                title.append(&dismiss);
+                dismiss.add_css_class("notification-dismiss");
+                context.append(&dismiss);
             }
-            item.append(&title);
-            let body = text(&note.body, "body-copy");
-            body.set_selectable(true);
-            body.set_lines(6);
-            body.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            item.append(&body);
-            if !note.actions.is_empty() {
-                let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            content.append(&context);
+            if !note.title.is_empty() {
+                let title = text(&note.title, "notification-title");
+                title.set_selectable(true);
+                content.append(&title);
+            }
+            if !note.body.is_empty() {
+                let body = text(&note.body, "notification-body");
+                body.set_selectable(true);
+                body.set_lines(6);
+                body.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                content.append(&body);
+            }
+            if !note.actions.is_empty() || note.reply_supported {
+                let actions = gtk::FlowBox::new();
+                actions.set_selection_mode(gtk::SelectionMode::None);
+                actions.set_min_children_per_line(1);
+                actions.set_max_children_per_line(8);
+                actions.set_column_spacing(4);
+                actions.set_row_spacing(4);
+                actions.set_halign(gtk::Align::Start);
+                actions.add_css_class("notification-actions");
                 for action in &note.actions {
                     let button = self.button(
                         &action.label,
@@ -243,25 +263,27 @@ impl Window {
                         Request::Action(note.id.clone(), action.id.clone()),
                     );
                     button.add_css_class("flat");
-                    actions.append(&button);
+                    actions.insert(&button, -1);
                 }
-                item.append(&actions);
+                if note.reply_supported {
+                    let reply = gtk::Button::with_label("Reply…");
+                    reply.set_sensitive(model.ready(&note.id.device_id) && !self.busy());
+                    reply.add_css_class("flat");
+                    let weak = Rc::downgrade(self);
+                    let id = note.id.clone();
+                    reply.connect_clicked(move |_| {
+                        if let Some(this) = weak.upgrade() {
+                            this.open_notification_reply(id.clone());
+                        }
+                    });
+                    actions.insert(&reply, -1);
+                }
+                content.append(&actions);
             }
-            if note.reply_supported {
-                let reply = gtk::Button::with_label("Reply…");
-                reply.set_halign(gtk::Align::Start);
-                reply.set_sensitive(model.ready(&note.id.device_id) && !self.busy());
-                let weak = Rc::downgrade(self);
-                let id = note.id.clone();
-                reply.connect_clicked(move |_| {
-                    if let Some(this) = weak.upgrade() {
-                        this.open_notification_reply(id.clone());
-                    }
-                });
-                item.append(&reply);
-            }
-            group.append(&item);
+            row.append(&content);
+            list.append(&row);
         }
+        self.body.append(&list);
         if notes.len() > 100 {
             self.body.append(&text(
                 "100 shown. Search to narrow the list.",
