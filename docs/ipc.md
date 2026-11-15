@@ -284,8 +284,8 @@ provider history, mark conversations read, or claim that saved history is comple
 Use the normal aggregate and line limits. The daemon retains at most 128 records
 for its current session, newest first. Records contain a daemon-local `sequence`,
 `observed_at_ms`, and an `event` tagged by `kind`: `received` with normalized
-`share`, `progress` with normalized `progress`, or `result` with normalized
-`result`. Progress and results coalesce by device and transfer ID. A late
+`share`, `progress` with normalized `progress`, `result` with normalized
+`result`, or `download` with normalized `download`. Progress and results coalesce by device and transfer ID. A late
 progress event cannot replace a retained terminal result.
 
 Activity records represent observations. They do not fabricate a result from
@@ -296,3 +296,34 @@ refresh requests. `Client::subscribe_control_center` enables share and media
 events without messaging history. Forgetting a device clears its activity;
 daemon restart clears the full list. Received files are never deleted by this
 metadata cleanup.
+
+
+## Requested phone files
+
+`files.download` takes `device_id` and a relative `path` under the folder shared
+by that device. The device must be connected, paired, and advertise the normalized
+`file_download` capability. The native adapter learns support from the current
+phone connection; saved pairing records never imply support.
+
+The response and subscribed event are `file_download` with a `download` record
+containing `device_id`, `transfer_id`, `source_path`, and `state`. The state is
+tagged by `status`: `queued`, `receiving`, `completed` with a local `path`, or
+`failed` with a normalized `reason`. Queue acceptance never proves transfer or
+storage. Only the desktop's atomic save produces `completed`. Failures include
+`permission_required`, `invalid_resource`, `size_limit`, `unavailable`, `storage`,
+`interrupted`, `timed_out`, and `disconnected`. Requests are not replayed or retried.
+
+Events require `shares:true`. `transfers.list` also retains these records as
+`event.kind:download` with `download`. Coalesce by device and transfer ID; terminal
+states win over late acceptance or receiving events. Active requests survive
+terminal-history eviction within the 128-record session log. Daemon restart
+clears the log. Fetch it after subscription recovery or reopening a client.
+
+The native wire uses an optional `hello.file_downloads` boolean and
+`file_request` with protocol 1, transfer ID, and relative path. Android returns
+an existing `share_file` header and original bytes with the same transfer ID,
+or `file_request_failure` before the header. The existing mutual TLS, filename,
+size, timeout, quota, and atomic-receive rules apply. The phone resolves exact
+names inside its persisted system folder grant. Document-provider identifiers
+and tree URIs never enter normalized IPC. New folder failures echo `path` so a
+failure can be attached to the requested location.

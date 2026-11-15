@@ -70,6 +70,7 @@ impl NativeBackend {
             name,
             trusted_server_id,
             pair_commit,
+            file_downloads,
         } = hello
         else {
             return Err(NativeError::InvalidFrame);
@@ -91,6 +92,7 @@ impl NativeBackend {
                 id: self.id.clone(),
                 name: "Linux desktop".into(),
                 trusted_server_id: None,
+                file_downloads: false,
                 pair_commit: Some(hex::encode(Sha256::digest(nonce))),
             },
         )?;
@@ -98,6 +100,7 @@ impl NativeBackend {
             id: id.clone(),
             name: name.clone(),
             fingerprint: peer_fp.clone(),
+            file_downloads,
         };
         if trusted_server_id.as_deref() == Some(self.id.as_str())
             && !self.inner.lock().unwrap().peers.peers.contains_key(&id)
@@ -269,6 +272,7 @@ impl NativeBackend {
                 return Err(NativeError::InvalidFrame);
             }
             inner.active.insert(id.clone(), tls.get_ref().try_clone()?);
+            inner.peers.peers.insert(id.clone(), peer.clone());
             session.published = true;
             device(
                 &peer,
@@ -345,6 +349,9 @@ impl NativeBackend {
                     );
                 }
                 snapshot_retry_sent = true;
+            }
+            for download in self.expire_downloads(&id, Instant::now()) {
+                event(StateEvent::FileDownload(download));
             }
             let expired = {
                 let mut inner = self.inner.lock().unwrap();
@@ -597,6 +604,20 @@ impl NativeBackend {
                         None
                     };
                     if let Some(reason) = rejected {
+                        let download_reason = if reason == ShareFailure::SizeLimit {
+                            handover_core::FileDownloadFailure::SizeLimit
+                        } else {
+                            handover_core::FileDownloadFailure::InvalidResource
+                        };
+                        if let Some(download) = self.finish_download(
+                            &id,
+                            &transfer_id,
+                            handover_core::FileDownloadState::Failed {
+                                reason: download_reason,
+                            },
+                        ) {
+                            event(StateEvent::FileDownload(download));
+                        }
                         let _ = write_frame(
                             &mut tls,
                             &Message::ShareResult {
@@ -608,7 +629,36 @@ impl NativeBackend {
                         );
                         return Err(NativeError::InvalidFrame);
                     }
-                    let path = match self.receive_share_file(&mut tls, &name, size) {
+                    let requested = match self.download_started(&id, &transfer_id, &name) {
+                        Ok(download) => download,
+                        Err(error) => {
+                            if let Some(download) = self.finish_download(
+                                &id,
+                                &transfer_id,
+                                handover_core::FileDownloadState::Failed {
+                                    reason: handover_core::FileDownloadFailure::InvalidResource,
+                                },
+                            ) {
+                                event(StateEvent::FileDownload(download));
+                            }
+                            return Err(error);
+                        }
+                    };
+                    if let Some(download) = &requested {
+                        event(StateEvent::FileDownload(download.clone()));
+                    }
+                    let deadline = self
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .pending_downloads
+                        .get(&id)
+                        .and_then(|p| p.get(&transfer_id))
+                        .map_or(Instant::now() + INBOUND_TRANSFER_DEADLINE, |p| {
+                            p.started + SHARE_RESULT_TIMEOUT
+                        });
+                    let path = match self.receive_share_file_until(&mut tls, &name, size, deadline)
+                    {
                         Ok(path) => path,
                         Err(error) => {
                             let reason = match &error {
@@ -617,8 +667,34 @@ impl NativeBackend {
                                 {
                                     ShareFailure::Interrupted
                                 }
+                                NativeError::Io(io)
+                                    if matches!(
+                                        io.kind(),
+                                        std::io::ErrorKind::TimedOut
+                                            | std::io::ErrorKind::WouldBlock
+                                    ) =>
+                                {
+                                    ShareFailure::TimedOut
+                                }
                                 _ => ShareFailure::Storage,
                             };
+                            if let Some(download) = self.finish_download(
+                                &id,
+                                &transfer_id,
+                                handover_core::FileDownloadState::Failed {
+                                    reason: match reason {
+                                        ShareFailure::Interrupted => {
+                                            handover_core::FileDownloadFailure::Interrupted
+                                        }
+                                        ShareFailure::TimedOut => {
+                                            handover_core::FileDownloadFailure::TimedOut
+                                        }
+                                        _ => handover_core::FileDownloadFailure::Storage,
+                                    },
+                                },
+                            ) {
+                                event(StateEvent::FileDownload(download));
+                            }
                             let _ = write_frame(
                                 &mut tls,
                                 &Message::ShareResult {
@@ -632,6 +708,15 @@ impl NativeBackend {
                         }
                     };
                     last_received = Instant::now();
+                    if let Some(download) = self.finish_download(
+                        &id,
+                        &transfer_id,
+                        handover_core::FileDownloadState::Completed {
+                            path: path.to_string_lossy().into_owned(),
+                        },
+                    ) {
+                        event(StateEvent::FileDownload(download));
+                    }
                     event(StateEvent::ShareReceived(ReceivedShare {
                         device_id: DeviceId::new(format!("native:{id}")),
                         resource: SharedResource::File {
@@ -679,6 +764,23 @@ impl NativeBackend {
                         }));
                     }
                 }
+                Ok(Message::FileRequestFailure {
+                    protocol: WIRE_VERSION,
+                    transfer_id,
+                    reason,
+                }) => {
+                    if !valid_transfer_id(&transfer_id) {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    if let Some(download) = self.finish_download(
+                        &id,
+                        &transfer_id,
+                        handover_core::FileDownloadState::Failed { reason },
+                    ) {
+                        event(StateEvent::FileDownload(download));
+                    }
+                    last_received = Instant::now();
+                }
                 Ok(Message::FilesystemList {
                     protocol: WIRE_VERSION,
                     request_id,
@@ -698,6 +800,7 @@ impl NativeBackend {
                             protocol: WIRE_VERSION,
                             request_id,
                             reason: "unavailable".into(),
+                            path: Some(path),
                         },
                     };
                     write_frame(&mut tls, &response)?;
@@ -783,15 +886,19 @@ impl NativeBackend {
                 Ok(Message::FilesystemFailure {
                     protocol: WIRE_VERSION,
                     request_id,
+                    path,
                     reason,
                 }) => {
-                    if !valid_transfer_id(&request_id) || reason.len() > 128 {
+                    if !valid_transfer_id(&request_id)
+                        || reason.len() > 128
+                        || path.as_ref().is_some_and(|p| !safe_browse_path(p))
+                    {
                         return Err(NativeError::InvalidFrame);
                     }
                     event(StateEvent::Filesystem(FilesystemResult {
                         device_id: DeviceId::new(format!("native:{id}")),
                         request_id,
-                        path: ".".into(),
+                        path: path.unwrap_or_else(|| ".".into()),
                         entries: Vec::new(),
                         failure: Some(reason),
                     }));

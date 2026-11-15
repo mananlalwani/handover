@@ -6,6 +6,7 @@ mod audio_output;
 mod audio_rtc;
 mod contacts;
 mod discovery;
+mod downloads;
 mod errors;
 mod identity;
 mod limits;
@@ -49,6 +50,9 @@ pub struct Peer {
     pub id: String,
     pub name: String,
     pub fingerprint: String,
+    /// Negotiated for this connection only; never restored from persisted trust.
+    #[serde(skip)]
+    pub file_downloads: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -91,6 +95,7 @@ pub(crate) struct Runtime {
     // Queued Linux-to-phone notification commands, drained by the owning
     // session thread. Bounded per peer; IPC reports acceptance, not delivery.
     pub(crate) outbox: BTreeMap<String, Vec<Message>>,
+    pub(crate) pending_downloads: BTreeMap<String, BTreeMap<String, downloads::PendingDownload>>,
     pub(crate) pending_shares: BTreeMap<String, BTreeMap<String, Instant>>,
     // Latest call-state generation reported by each peer. A queued call
     // command stamped with an older generation is stale: a new call may have
@@ -198,6 +203,16 @@ impl Drop for Session<'_> {
                     status: ShareStatus::Failed,
                     reason: Some(ShareFailure::Disconnected),
                 }));
+            }
+            for (_, mut pending) in inner
+                .pending_downloads
+                .remove(&self.peer.id)
+                .unwrap_or_default()
+            {
+                pending.download.state = handover_core::FileDownloadState::Failed {
+                    reason: handover_core::FileDownloadFailure::Disconnected,
+                };
+                pending_events.push(StateEvent::FileDownload(pending.download));
             }
             let removed_keys = inner.notif_keys.remove(&self.peer.id).unwrap_or_default();
             inner.notif_enabled.remove(&self.peer.id);
@@ -344,6 +359,7 @@ impl NativeBackend {
                 media_enabled: BTreeMap::new(),
                 media_players: BTreeMap::new(),
                 outbox: BTreeMap::new(),
+                pending_downloads: BTreeMap::new(),
                 pending_shares: BTreeMap::new(),
                 call_generations: BTreeMap::new(),
                 pending_call_results: BTreeMap::new(),
@@ -1272,6 +1288,9 @@ pub(crate) fn device(
     media_supported: bool,
 ) -> Device {
     let mut capabilities = BTreeSet::from([Capability::Battery, Capability::FileTransfer]);
+    if connected && peer.file_downloads {
+        capabilities.insert(Capability::FileDownload);
+    }
     if notifications_supported {
         capabilities.insert(Capability::Notifications);
     }
@@ -1912,6 +1931,7 @@ mod tests {
             id: "android-device-01".into(),
             name: "Pixel Test".into(),
             fingerprint: "fingerprint".into(),
+            file_downloads: false,
         };
         fs::write(
             dir.path().join("peers.json"),
@@ -1935,6 +1955,7 @@ mod tests {
             id: "android-device-01".into(),
             name: "Pixel Test".into(),
             fingerprint: "fingerprint".into(),
+            file_downloads: false,
         }
     }
 

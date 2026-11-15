@@ -39,7 +39,7 @@ pub(crate) async fn handle_client(
                     result = &mut request => break result,
                     event = receiver.recv() => {
                         match event {
-                            Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_)) && !flags.shares => {}
+                            Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_) | StateEvent::FileDownload(_)) && !flags.shares => {}
                             Ok(event) if matches!(event, StateEvent::AudioStream(_) | StateEvent::AudioControlsUpdated(_)) && !flags.audio => {}
                             Ok(event) if matches!(event, StateEvent::Media(_)) && !flags.media => {}
                             Ok(event) if matches!(event, StateEvent::Messaging(_)) && !flags.messages => {}

@@ -523,6 +523,7 @@ fn log_change(change: StateChange) {
             info!(device_id = %result.device_id, transfer_id = %result.transfer_id,
                 status = ?result.status, reason = ?result.reason, "share result");
         }
+        StateChange::FileDownload(_) => {}
         StateChange::Filesystem(result) => {
             info!(device_id = %result.device_id, request_id = %result.request_id,
                 entries = result.entries.len(), failed = result.failure.is_some(),

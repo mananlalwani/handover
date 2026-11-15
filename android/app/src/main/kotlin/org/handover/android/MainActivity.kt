@@ -35,6 +35,7 @@ import java.util.Date
 @SuppressLint("SetTextI18n", "InlinedApi", "UnspecifiedRegisterReceiverFlag", "GestureBackNavigation")
 class MainActivity : android.app.Activity() {
     private val pickFileRequest = 47
+    private val pickSharedFolderRequest = 48
     private lateinit var status: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
@@ -54,6 +55,45 @@ class MainActivity : android.app.Activity() {
     private var pairDialog: AlertDialog? = null
     private var testCounter = 1
     private var reconnectPromptShown = false
+    internal var sharedFolderStatus: TextView? = null
+    internal fun refreshSharedFolderStatus() {
+        sharedFolderStatus?.text = if (getSharedPreferences("handover_native_peers", MODE_PRIVATE).contains("shared_folder_tree"))
+            "A folder is selected. Linux can request files within it."
+        else "Choose one folder to let Linux request files from it."
+    }
+
+    internal fun chooseSharedFolder() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), pickSharedFolderRequest)
+    }
+
+    internal fun stopSharingFolder() {
+        val prefs = getSharedPreferences("handover_native_peers", MODE_PRIVATE)
+        val previous = prefs.getString("shared_folder_tree", null)
+        prefs.edit().remove("shared_folder_tree").putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
+        refreshSharedFolderStatus()
+        previous?.let { raw ->
+            runCatching { contentResolver.releasePersistableUriPermission(Uri.parse(raw), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
+    }
+
+    private fun acceptSharedFolderResult(resultCode: Int, data: Intent?) {
+        if (resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            val flags = data.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+            if (flags == 0 || runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }.isFailure) {
+                android.widget.Toast.makeText(this, "Could not keep read access to this folder. Choose another folder.", android.widget.Toast.LENGTH_LONG).show()
+                return
+            }
+            val prefs = getSharedPreferences("handover_native_peers", MODE_PRIVATE)
+            val previous = prefs.getString("shared_folder_tree", null)
+            prefs.edit().putString("shared_folder_tree", uri.toString()).putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
+            refreshSharedFolderStatus()
+            previous?.takeIf { it != uri.toString() }?.let {
+                runCatching { contentResolver.releasePersistableUriPermission(Uri.parse(it), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            }
+            android.widget.Toast.makeText(this, "Shared folder selected", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     private var connectionState = "offline"
     private var githubUpdateStatus = "Check GitHub for a signed release APK"
     internal val permissionButtons = mutableListOf<Pair<Button, () -> Boolean>>()
@@ -1148,6 +1188,7 @@ class MainActivity : android.app.Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == pickSharedFolderRequest) { acceptSharedFolderResult(resultCode, data); return }
         if (requestCode != pickFileRequest || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         sendFileWithConfirmation(uri)

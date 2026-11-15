@@ -42,21 +42,6 @@ import org.handover.android.NativeTransport.Companion.remainingTransferTimeoutMi
 import org.handover.android.NativeTransport.Companion.transferDeadlineExpired
 import org.handover.android.NativeTransport.Companion.uniqueDestination
 
-internal fun NativeTransport.listPhoneDirectory(requestId: String, path: String): JSONObject {
-    val root = Environment.getExternalStorageDirectory().canonicalFile
-    val target = File(root, path.trimStart('/')).canonicalFile
-    require(target.path == root.path || target.path.startsWith(root.path + File.separator))
-    require(target.isDirectory)
-    val entries = org.json.JSONArray()
-    target.listFiles()?.asSequence()?.sortedBy { it.name }?.take(512)?.forEach { file ->
-        if (file.name.isEmpty() || file.name == "." || file.name == ".." ||
-            file.name.any { it.isISOControl() } || file.name.contains('/')) return@forEach
-        entries.put(JSONObject().put("name", file.name).put("directory", file.isDirectory)
-            .apply { if (file.isFile) put("size", file.length()) })
-    }
-    return JSONObject().put("type", "filesystem_entries").put("protocol", 1)
-        .put("request_id", requestId).put("path", path).put("entries", entries)
-}
 /** Sends a URL to the one explicitly paired desktop. */
 fun NativeTransport.shareUrl(url: String): Boolean {
     if (serverFingerprint == null || socket?.isClosed != false || output == null || !isValidShareUrl(url)) return false
@@ -365,9 +350,10 @@ internal fun NativeTransport.sendTransferFailureAndClose(transferId: String, rea
     socket?.close()
 }
 
-internal fun NativeTransport.registerTransfer(kind: String, name: String, uri: Uri?): String? {
+internal fun NativeTransport.registerTransfer(kind: String, name: String, uri: Uri?, requestedId: String? = null): String? {
     if (pendingTransfers.size >= MAX_PENDING_TRANSFERS) return null
-    val id = UUID.randomUUID().toString().replace("-", "")
+    val id = requestedId ?: UUID.randomUUID().toString().replace("-", "")
+    if (!isTransferId(id) || pendingTransfers.containsKey(id)) return null
     pendingTransfers[id] = NativeTransport.PendingTransfer(
         android.os.SystemClock.elapsedRealtime() + TRANSFER_TIMEOUT_MS, kind, name, uri,
     )

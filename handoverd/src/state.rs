@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use handover_core::{
     BatteryState, CallEvent, CallState, Capability, Contact, ContactsEvent, Device, DeviceEvent,
-    DeviceId, MediaCommand, MediaEvent, MediaSession, MediaSessionId, Notification,
+    DeviceId, FileDownload, MediaCommand, MediaEvent, MediaSession, MediaSessionId, Notification,
     NotificationCommand, NotificationEvent, NotificationId, ReceivedShare, ShareProgress,
     ShareResult, StateEvent,
 };
@@ -75,6 +75,19 @@ impl StateStore {
                 ApplyOutcome {
                     changed: true,
                     changes: vec![StateChange::ShareResult(result)],
+                }
+            }
+            StateEvent::FileDownload(download) => {
+                if !self.devices.contains_key(&download.device_id) {
+                    return ApplyOutcome::unchanged();
+                }
+                self.transfer_activity
+                    .record(handover_core::TransferActivityEvent::Download {
+                        download: download.clone(),
+                    });
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::FileDownload(download)],
                 }
             }
             StateEvent::Messaging(event) => {
@@ -454,6 +467,7 @@ pub(crate) enum StateChange {
     ShareReceived(ReceivedShare),
     ShareProgress(ShareProgress),
     ShareResult(ShareResult),
+    FileDownload(FileDownload),
     Filesystem(handover_core::FilesystemResult),
     Messaging(MessagingChange),
 }

@@ -1,7 +1,9 @@
 //! Backend-independent domain types used across Handover.
 
 mod transfer_activity;
-pub use transfer_activity::{TransferActivity, TransferActivityEvent};
+pub use transfer_activity::{
+    FileDownload, FileDownloadFailure, FileDownloadState, TransferActivity, TransferActivityEvent,
+};
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -131,6 +133,7 @@ pub enum Capability {
     Battery,
     Connectivity,
     FileTransfer,
+    FileDownload,
     Media,
     Notifications,
 }
@@ -526,6 +529,7 @@ pub enum StateEvent {
     Call(CallEvent),
     CallCommandResult(CallCommandResult),
     DeviceCommandResult(DeviceCommandResult),
+    FileDownload(FileDownload),
     ShareReceived(ReceivedShare),
     ShareProgress(ShareProgress),
     ShareResult(ShareResult),

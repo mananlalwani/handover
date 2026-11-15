@@ -23,6 +23,19 @@ mod phone;
 mod tests;
 mod tools;
 
+pub(super) fn download_failure(reason: FileDownloadFailure) -> &'static str {
+    match reason {
+        FileDownloadFailure::PermissionRequired => "Choose a shared folder in the phone app",
+        FileDownloadFailure::InvalidResource => "The phone rejected this file path",
+        FileDownloadFailure::SizeLimit => "The file is too large to download",
+        FileDownloadFailure::Unavailable => "The file is unavailable on the phone",
+        FileDownloadFailure::Storage => "There is not enough storage to save the file",
+        FileDownloadFailure::Interrupted => "The download was interrupted",
+        FileDownloadFailure::TimedOut => "The phone did not respond in time",
+        FileDownloadFailure::Disconnected => "The phone disconnected during the download",
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Page {
     Overview,
@@ -650,6 +663,7 @@ impl Window {
                     ServerPayload::ShareReceived { .. }
                         | ServerPayload::ShareProgress { .. }
                         | ServerPayload::ShareResult { .. }
+                        | ServerPayload::FileDownload { .. }
                 );
                 let contacts = matches!(
                     *payload,
@@ -757,6 +771,13 @@ impl Window {
                         } else {
                             "Share accepted · No tracking available"
                         });
+                    }
+                    Ok(Reply::Download) => {
+                        self.model.borrow_mut().notice.clear();
+                        self.request(Request::Transfers);
+                        self.transient_notice(
+                            "Download request accepted · Check the phone for completion",
+                        );
                     }
                     Ok(Reply::Accepted) => {
                         self.model.borrow_mut().notice.clear();
@@ -872,6 +893,7 @@ impl Window {
                 matches!(page, Page::Overview | Page::Calls)
             }
             ServerPayload::Filesystem { .. } => page == Page::PhoneFiles,
+            ServerPayload::FileDownload { .. } => matches!(page, Page::PhoneFiles | Page::Sharing),
             ServerPayload::AudioStreamUpdated { status } => {
                 page == Page::Media
                     && self

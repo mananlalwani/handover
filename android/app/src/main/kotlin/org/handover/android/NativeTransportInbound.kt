@@ -108,17 +108,15 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             val requestId = message.optString("request_id")
             val path = message.optString("path", ".")
             if (!isTransferId(requestId)) return
-            val response = if (!isSafeBrowsePath(path)) {
+            if (!isSafeBrowsePath(path)) {
                 JSONObject().put("type", "filesystem_failure").put("protocol", 1)
-                    .put("request_id", requestId).put("reason", "unavailable")
-            } else {
-                runCatching { listPhoneDirectory(requestId, path) }.getOrElse {
-                    JSONObject().put("type", "filesystem_failure").put("protocol", 1)
-                        .put("request_id", requestId).put("reason", "unavailable")
-                }
+                    .put("request_id", requestId).put("path", path).put("reason", "unavailable")
+                    .also(::send)
+                return
             }
-            send(response)
+            handleDirectoryRequest(requestId, path)
         }
+        "file_request" -> { if (serverFingerprint != null) handleFileRequest(message) }
         "filesystem_entries", "filesystem_failure", "custom_command_list", "custom_command_result" -> {
             broadcast(ACTION_REMOTE_RESULT, message)
         }

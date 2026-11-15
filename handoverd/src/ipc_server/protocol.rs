@@ -320,6 +320,9 @@ pub(crate) fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::ShareResult(result) => {
             ServerMessage::new(ServerPayload::ShareResult { result })
         }
+        StateEvent::FileDownload(download) => {
+            ServerMessage::new(ServerPayload::FileDownload { download })
+        }
         StateEvent::Filesystem(result) => ServerMessage::new(ServerPayload::Filesystem { result }),
         StateEvent::DesktopPlaybackToggle { .. } | StateEvent::Presentation(_) => {
             ServerMessage::protocol_error(

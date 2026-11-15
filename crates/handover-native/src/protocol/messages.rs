@@ -203,6 +203,8 @@ pub(crate) enum Message {
     },
     Hello {
         protocol: u32,
+        #[serde(default)]
+        file_downloads: bool,
         id: String,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -484,6 +486,16 @@ pub(crate) enum Message {
     /// Browse a bounded directory on the authenticated peer. Paths are
     /// interpreted by the receiving platform and never cross the trust
     /// boundary as executable input.
+    FileRequest {
+        protocol: u32,
+        transfer_id: String,
+        path: String,
+    },
+    FileRequestFailure {
+        protocol: u32,
+        transfer_id: String,
+        reason: handover_core::FileDownloadFailure,
+    },
     FilesystemList {
         protocol: u32,
         request_id: String,
@@ -497,6 +509,8 @@ pub(crate) enum Message {
     },
     FilesystemFailure {
         protocol: u32,
+        #[serde(default)]
+        path: Option<String>,
         request_id: String,
         reason: String,
     },
@@ -639,6 +653,8 @@ impl Message {
             | Self::KeepAwake { protocol, .. }
             | Self::ScreensaverControl { protocol, .. }
             | Self::TetheringSettings { protocol, .. }
+            | Self::FileRequest { protocol, .. }
+            | Self::FileRequestFailure { protocol, .. }
             | Self::FilesystemList { protocol, .. }
             | Self::FilesystemEntries { protocol, .. }
             | Self::FilesystemFailure { protocol, .. }

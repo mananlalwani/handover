@@ -162,6 +162,13 @@ where
             ErrorCode::BackendRejected,
             "native backend could not accept the share",
         ),
+        Err(
+            handover_native::NativeCommandError::Unsupported
+            | handover_native::NativeCommandError::InvalidResource,
+        ) => ServerMessage::protocol_error(
+            ErrorCode::BackendRejected,
+            "native backend rejected the share",
+        ),
     };
     write_json_line(writer, &payload).await?;
     Ok(true)

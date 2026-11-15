@@ -77,6 +77,7 @@ fn device(online: bool) -> Device {
         capabilities: BTreeSet::from([
             Capability::Battery,
             Capability::FileTransfer,
+            Capability::FileDownload,
             Capability::Notifications,
             Capability::Media,
         ]),
@@ -95,7 +96,14 @@ fn note(online: bool) -> Notification {
         body: "Fictional notification, never sent to a phone.".into(),
         icon_path: None,
         clearable: true,
-        actions: vec![],
+        actions: if online {
+            vec![NotificationAction {
+                id: "fixture-action".into(),
+                label: "Next track".into(),
+            }]
+        } else {
+            vec![]
+        },
         reply_supported: online,
     }
 }
@@ -178,6 +186,15 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     if std::env::var_os("HANDOVER_CONTROL_TEST_DARK").is_some() {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
     }
+    if std::env::var_os("HANDOVER_CONTROL_TEST_BLACK_ACCENT").is_some() {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data("@define-color accent_color #000000;");
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
+        );
+    }
     let root = std::path::PathBuf::from(std::env::var_os("HANDOVER_CONTROL_TEST_ROOT").unwrap());
     let path = handover_ipc::socket_path().unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -198,6 +215,21 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         },
     ]));
     let worker_history = history.clone();
+    let transfer_log = Arc::new(std::sync::Mutex::new(vec![TransferActivity {
+        sequence: 1,
+        observed_at_ms: 1_800_000_000_000,
+        event: TransferActivityEvent::Result {
+            result: ShareResult {
+                device_id: device(true).id,
+                transfer_id: "fixture-transfer".into(),
+                status: ShareStatus::Completed,
+                reason: None,
+            },
+        },
+    }]));
+    let worker_transfer_log = transfer_log.clone();
+    let download_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let worker_download_counter = download_counter.clone();
     let mirror = Arc::new(AtomicBool::new(false));
     let worker_mirror = mirror.clone();
     let audio = Arc::new(std::sync::Mutex::new(audio_fixture()));
@@ -232,7 +264,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             loop {
                 let (socket,_)=listener.accept().await.unwrap();if worker_offline.load(Ordering::SeqCst){drop(socket);continue;}
                 let read_audio_available=worker_read_audio_available.clone();let audio=worker_audio.clone();let audio_stream=worker_stream.clone();let reject=worker_reject.clone();let slow=worker_slow.clone();let audio_gate=worker_audio_gate.clone();
-                let mirror=worker_mirror.clone();let history=worker_history.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
+                let mirror=worker_mirror.clone();let history=worker_history.clone();let transfer_log=worker_transfer_log.clone();let download_counter=worker_download_counter.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
                 tokio::spawn(async move {
                     let mut socket=BufReader::new(socket);
                     while let Ok(Some(request))=read_json_line::<_,IpcRequest>(&mut socket).await {
@@ -258,7 +290,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                             Method::NativePeers=>ServerPayload::NativePeers {peers:vec![]},
                             Method::NativePending=>ServerPayload::NativePending {pending:vec![handover_ipc::NativePendingPeer {id:"pending-test".into(),name:"New phone".into(),code:"12345678".into()}]},
                             Method::ContactsList=>ServerPayload::Contacts {contacts:vec![Contact {device_id:device(true).id,local_id:"alex".into(),display_name:"Alex Example".into(),phones:vec!["+1 312 555 0100".into()],emails:vec![],photo:Some(PHOTO.into())}]},
-                            Method::TransfersList=>ServerPayload::TransferActivity {activities:vec![TransferActivity {sequence:1,observed_at_ms:1_800_000_000_000,event:TransferActivityEvent::Result {result:ShareResult {device_id:device(true).id,transfer_id:"fixture-transfer".into(),status:ShareStatus::Completed,reason:None}}}]},
+                            Method::TransfersList=>ServerPayload::TransferActivity {activities:transfer_log.lock().unwrap().clone()},
                             method=>{
                                 mutations.send(method.clone()).unwrap();
                                 match method {
@@ -274,8 +306,19 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                     Method::RemoteInputSend {text:Some(text),..} if text=="lost input"=>return,
                                     Method::ClipboardMirror {enable}=>{mirror.store(enable,Ordering::SeqCst);ServerPayload::NativeAccepted},
                                     Method::CallsControl {..}=>ServerPayload::CallQueued {request_id:"fixture-call".into()},
-                                    Method::NativeFilesystemList {path,..}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult {device_id:device(true).id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else{vec![]},failure:None}});ServerPayload::NativeAccepted},
+                                    Method::NativeFilesystemList {path,..}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult {device_id:device(true).id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else{vec![FilesystemEntry {name:"photo.jpg".into(),directory:false,size:Some(240)}]},failure:None}});ServerPayload::NativeAccepted},
+                                    Method::FileDownload {device_id,path}=>{
+                                        let sequence=download_counter.fetch_add(1,Ordering::SeqCst)+1;
+                                        let download=FileDownload {device_id,transfer_id:format!("fixture-download-{sequence}"),source_path:path,state:FileDownloadState::Queued};
+                                        let mut log=transfer_log.lock().unwrap();
+                                        log.retain(|activity| !matches!(&activity.event,TransferActivityEvent::Download {download:old} if old.device_id==download.device_id && old.transfer_id==download.transfer_id));
+                                        log.insert(0,TransferActivity {sequence:2,observed_at_ms:1_800_000_000_002,event:TransferActivityEvent::Download {download:download.clone()}});
+                                        let payload=ServerPayload::FileDownload {download};
+                                        let _=events.send(payload.clone());
+                                        payload
+                                    },
                                     Method::NotificationDismiss {notification_id}=>{let _=events.send(ServerPayload::NotificationRemoved {notification_id:notification_id.clone()});ServerPayload::CommandCompleted {notification_id}},
+                                    Method::NotificationInvokeAction {notification_id,action_id}=>{assert_eq!(action_id,"fixture-action");ServerPayload::CommandCompleted {notification_id}},
                                     Method::NotificationReply {text,..} if text=="lost reply"=>return,
                                     Method::NotificationReply {text,..} if text=="rejected reply"=>ServerPayload::Error {code:handover_ipc::ErrorCode::NotificationNotFound,message:"fixture rejection".into(),conversation_id:None},
                                     Method::NotificationReply {notification_id,..}=>ServerPayload::CommandCompleted {notification_id},
@@ -488,12 +531,104 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         }
     );
     button(&ui.body, "Open").emit_clicked();
-    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Empty folder"));
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "photo.jpg"));
     assert_eq!(
         received.try_recv().unwrap(),
         Method::NativeFilesystemList {
             id: "phone-a".into(),
             path: "Downloads".into()
+        }
+    );
+    button(&ui.body, "Download").emit_clicked();
+    spin(|| {
+        ui.model.borrow().transfers.iter().any(|activity| matches!(
+            &activity.event,
+            TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Queued)
+        ))
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileDownload {
+            device_id: device(true).id,
+            path: "Downloads/photo.jpg".into(),
+        }
+    );
+    let publish_download = |state| {
+        let transfer_id = match &transfer_log.lock().unwrap()[0].event {
+            TransferActivityEvent::Download { download } => download.transfer_id.clone(),
+            _ => unreachable!("fixture queued the active download"),
+        };
+        let download = FileDownload {
+            device_id: device(true).id,
+            transfer_id,
+            source_path: "Downloads/photo.jpg".into(),
+            state,
+        };
+        let mut log = transfer_log.lock().unwrap();
+        log[0] = TransferActivity {
+            sequence: 3,
+            observed_at_ms: 1_800_000_000_003,
+            event: TransferActivityEvent::Download {
+                download: download.clone(),
+            },
+        };
+        drop(log);
+        events
+            .send(ServerPayload::FileDownload { download })
+            .unwrap();
+    };
+    publish_download(FileDownloadState::Receiving);
+    spin(|| has_text(&ui.body, "Receiving…"));
+    publish_download(FileDownloadState::Completed {
+        path: "/tmp/handover-fixture/photo.jpg".into(),
+    });
+    spin(|| has_text(&ui.body, "Download again"));
+    assert!(has_text(&ui.body, "Saved"));
+    ui.navigate(Page::Sharing);
+    spin(|| !ui.scheduled.get());
+    assert!(has_text(&ui.body, "Download saved"));
+    assert!(has_text(&ui.body, "photo.jpg"));
+    assert!(has_text(&ui.body, "Pixel test"));
+    ui.navigate(Page::PhoneFiles);
+    spin(|| !ui.scheduled.get());
+    button(&ui.body, "Download again").emit_clicked();
+    spin(|| {
+        ui.model.borrow().transfers.iter().any(|activity| matches!(
+        &activity.event,
+        TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Queued)
+    ))
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileDownload {
+            device_id: device(true).id,
+            path: "Downloads/photo.jpg".into(),
+        }
+    );
+    publish_download(FileDownloadState::Failed {
+        reason: FileDownloadFailure::PermissionRequired,
+    });
+    spin(|| has_text(&ui.body, "Choose a shared folder in the phone app"));
+    ui.navigate(Page::Sharing);
+    spin(|| !ui.scheduled.get());
+    assert!(has_text(
+        &ui.body,
+        "Choose a shared folder in the phone app"
+    ));
+    ui.navigate(Page::PhoneFiles);
+    spin(|| !ui.scheduled.get());
+    button(&ui.body, "Retry").emit_clicked();
+    spin(|| {
+        ui.model.borrow().transfers.iter().any(|activity| matches!(
+        &activity.event,
+        TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Queued)
+    ))
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileDownload {
+            device_id: device(true).id,
+            path: "Downloads/photo.jpg".into(),
         }
     );
     ui.event(Event::State(Box::new(ServerPayload::Filesystem {
@@ -780,6 +915,29 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     });
     assert_eq!(ui.body.first_child().unwrap(), notification_group);
     assert_eq!(ui.devices.row_at_index(1).unwrap(), rail_row);
+    let next_track = button(&ui.body, "Next track");
+    if std::env::var_os("HANDOVER_CONTROL_TEST_BLACK_ACCENT").is_some() {
+        let label = descendants(&next_track)
+            .into_iter()
+            .find_map(|widget| widget.downcast::<gtk::Label>().ok())
+            .expect("notification action button has a label");
+        let foreground = label.color();
+        let luminance =
+            0.2126 * foreground.red() + 0.7152 * foreground.green() + 0.0722 * foreground.blue();
+        assert!(
+            luminance > 0.5,
+            "notification action label must contrast with the dark surface, got {foreground:?}"
+        );
+    }
+    next_track.emit_clicked();
+    spin(|| ui.pending.borrow().is_empty());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::NotificationInvokeAction {
+            notification_id: note(true).id,
+            action_id: "fixture-action".into(),
+        }
+    );
     let buttons = descendants(&ui.body)
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Button>().ok())
@@ -1428,7 +1586,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     // A replacement client reconstructs contacts and transfer activity from the daemon.
     let replacement = Window::new(&app);
     spin(|| {
-        replacement.model.borrow().transfers.len() == 1
+        replacement.model.borrow().transfers == *transfer_log.lock().unwrap()
             && replacement.model.borrow().contacts.len() == 1
     });
     assert!(received.try_recv().is_err());

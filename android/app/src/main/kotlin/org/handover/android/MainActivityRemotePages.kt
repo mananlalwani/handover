@@ -178,6 +178,17 @@ internal fun MainActivity.buildRemoteDesktopPage(): View {
     }
     return featurePage(
         "Remote desktop", "Browse the Linux home directory or run a configured command.",
+        panel(sectionTitle("Phone folder shared with Linux"), TextView(this).apply {
+            sharedFolderStatus = this
+            refreshSharedFolderStatus()
+            setTextColor(Color.rgb(70, 77, 94))
+        }, secondary(Button(this).apply {
+            text = "Choose shared folder"
+            setOnClickListener { chooseSharedFolder() }
+        }), secondary(Button(this).apply {
+            text = "Stop sharing"
+            setOnClickListener { stopSharingFolder(); android.widget.Toast.makeText(activity, "Folder sharing stopped", android.widget.Toast.LENGTH_SHORT).show() }
+        })),
         panel(
             sectionTitle("Browse Linux files"),
             browsePath,

@@ -75,6 +75,8 @@ pub enum Method {
     Hello,
     #[serde(rename = "transfers.list")]
     TransfersList,
+    #[serde(rename = "files.download")]
+    FileDownload { device_id: DeviceId, path: String },
     #[serde(rename = "devices.list")]
     DevicesList,
     #[serde(rename = "native.peers")]
@@ -507,6 +509,9 @@ impl ServerMessage {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerPayload {
+    FileDownload {
+        download: handover_core::FileDownload,
+    },
     TransferActivity {
         activities: Vec<handover_core::TransferActivity>,
     },
@@ -1042,6 +1047,18 @@ impl Client {
             return Err(IpcError::SnapshotTooLarge);
         }
         Ok(values)
+    }
+
+    pub async fn download_file(
+        &mut self,
+        device_id: DeviceId,
+        path: String,
+    ) -> Result<handover_core::FileDownload, IpcError> {
+        self.send(Method::FileDownload { device_id, path }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::FileDownload { download } => Ok(download),
+            payload => Err(unexpected(payload)),
+        }
     }
 
     pub async fn devices(&mut self) -> Result<Vec<Device>, IpcError> {
@@ -2565,6 +2582,34 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Request>(&json).expect("request deserializes"),
             request
+        );
+    }
+
+    #[test]
+    fn file_download_request_and_status_use_normalized_wire_shape() {
+        let request = Request::new(Method::FileDownload {
+            device_id: DeviceId::new("native:phone"),
+            path: "DCIM/photo.jpg".into(),
+        });
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            json,
+            r#"{"protocol":1,"method":"files.download","device_id":"native:phone","path":"DCIM/photo.jpg"}"#
+        );
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+
+        let response = ServerMessage::new(ServerPayload::FileDownload {
+            download: handover_core::FileDownload {
+                device_id: DeviceId::new("native:phone"),
+                transfer_id: "download-1".into(),
+                source_path: "DCIM/photo.jpg".into(),
+                state: handover_core::FileDownloadState::Queued,
+            },
+        });
+        let encoded = serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            response
         );
     }
 

@@ -86,6 +86,10 @@ where
                     ErrorCode::BackendRejected,
                     "native backend could not accept the command",
                 ),
+                NativeCommandError::Unsupported | NativeCommandError::InvalidResource => (
+                    ErrorCode::BackendRejected,
+                    "native backend rejected the command",
+                ),
             };
             warn!(device_id = %id.device_id, player_id = %id.player_id, "native media command not accepted");
             write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;

@@ -10,6 +10,8 @@ pub(crate) fn native_command_response(
             code: match error {
                 handover_native::NativeCommandError::Offline => ErrorCode::DeviceDisconnected,
                 handover_native::NativeCommandError::QueueFull => ErrorCode::BackendRejected,
+                handover_native::NativeCommandError::Unsupported => ErrorCode::BackendRejected,
+                handover_native::NativeCommandError::InvalidResource => ErrorCode::MalformedRequest,
             },
             message: format!("{operation} was not accepted"),
             conversation_id: None,

@@ -320,6 +320,74 @@ where
             .await?;
             return Ok(true);
         }
+        Method::FileDownload { device_id, path } => {
+            if let Some(peer_id) = device_id.as_str().strip_prefix("native:") {
+                let target = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_device(&device_id)
+                    .cloned();
+                match target {
+                    None => ServerPayload::Error {
+                        code: ErrorCode::UnknownDevice,
+                        message: "phone is not known".into(),
+                        conversation_id: None,
+                    },
+                    Some(device) if !device.connected || !device.paired => ServerPayload::Error {
+                        code: ErrorCode::DeviceDisconnected,
+                        message: "phone is disconnected".into(),
+                        conversation_id: None,
+                    },
+                    Some(device) if !device.capabilities.contains(&Capability::FileDownload) => {
+                        ServerPayload::Error {
+                            code: ErrorCode::BackendRejected,
+                            message: "phone does not support downloads; update the phone app"
+                                .into(),
+                            conversation_id: None,
+                        }
+                    }
+                    Some(_) => {
+                        match native_backend().map(|native| native.request_file(peer_id, path)) {
+                            Some(Ok(download)) => {
+                                apply_backend_event(
+                                    state,
+                                    events,
+                                    StateEvent::FileDownload(download.clone()),
+                                );
+                                ServerPayload::FileDownload { download }
+                            }
+                            Some(Err(error)) => ServerPayload::Error {
+                                code: match error {
+                                    handover_native::NativeCommandError::Offline => {
+                                        ErrorCode::DeviceDisconnected
+                                    }
+                                    handover_native::NativeCommandError::QueueFull
+                                    | handover_native::NativeCommandError::Unsupported => {
+                                        ErrorCode::BackendRejected
+                                    }
+                                    handover_native::NativeCommandError::InvalidResource => {
+                                        ErrorCode::MalformedRequest
+                                    }
+                                },
+                                message: error.to_string(),
+                                conversation_id: None,
+                            },
+                            None => ServerPayload::Error {
+                                code: ErrorCode::BackendUnavailable,
+                                message: "native backend unavailable".into(),
+                                conversation_id: None,
+                            },
+                        }
+                    }
+                }
+            } else {
+                ServerPayload::Error {
+                    code: ErrorCode::UnknownDevice,
+                    message: "file downloads require a native phone".into(),
+                    conversation_id: None,
+                }
+            }
+        }
         Method::DevicesList => ServerPayload::Devices {
             devices: snapshot(state).devices,
         },
@@ -509,6 +577,10 @@ where
                 Some(Ok(())) => ServerPayload::NativeAccepted,
                 Some(Err(error)) => ServerPayload::Error {
                     code: match error {
+                        handover_native::NativeCommandError::Unsupported
+                        | handover_native::NativeCommandError::InvalidResource => {
+                            ErrorCode::BackendRejected
+                        }
                         handover_native::NativeCommandError::Offline => {
                             ErrorCode::DeviceDisconnected
                         }
@@ -540,6 +612,10 @@ where
                 Some(Ok(())) => ServerPayload::NativeAccepted,
                 Some(Err(error)) => ServerPayload::Error {
                     code: match error {
+                        handover_native::NativeCommandError::Unsupported
+                        | handover_native::NativeCommandError::InvalidResource => {
+                            ErrorCode::BackendRejected
+                        }
                         handover_native::NativeCommandError::Offline => {
                             ErrorCode::DeviceDisconnected
                         }

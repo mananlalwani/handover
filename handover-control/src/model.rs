@@ -158,6 +158,39 @@ impl Model {
             ServerPayload::Filesystem { result } => {
                 self.folder = Some(result);
             }
+            ServerPayload::FileDownload { download } => {
+                let previous = self.transfers.iter().find_map(|entry| match &entry.event {
+                    TransferActivityEvent::Download { download: old }
+                        if old.device_id == download.device_id
+                            && old.transfer_id == download.transfer_id =>
+                    {
+                        Some(old)
+                    }
+                    _ => None,
+                });
+                if previous.is_some_and(|old| {
+                    old.state.is_terminal()
+                        || (matches!(old.state, FileDownloadState::Receiving)
+                            && matches!(download.state, FileDownloadState::Queued))
+                }) {
+                    return;
+                }
+                self.transfers.retain(|entry| !matches!(&entry.event, TransferActivityEvent::Download { download: old } if old.device_id == download.device_id && old.transfer_id == download.transfer_id));
+                self.transfers.insert(
+                    0,
+                    TransferActivity {
+                        sequence: 0,
+                        observed_at_ms: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            .min(u128::from(u64::MAX))
+                            as u64,
+                        event: TransferActivityEvent::Download { download },
+                    },
+                );
+                self.transfers.truncate(128);
+            }
             _ => {}
         }
     }

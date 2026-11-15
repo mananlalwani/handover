@@ -222,11 +222,20 @@ fn fresh_nonce() -> [u8; 16] {
 /// Runs the opening phase of the ceremony: both sides commit in hello, then
 /// reveal. Returns the ceremony code as the test client derives it.
 fn exchange_openings(harness: &Harness, peer: &mut TlsPeer, client: &ClientIdentity) -> String {
+    exchange_openings_with_downloads(harness, peer, client, true)
+}
+
+fn exchange_openings_with_downloads(
+    harness: &Harness,
+    peer: &mut TlsPeer,
+    client: &ClientIdentity,
+    downloads: bool,
+) -> String {
     let nonce = fresh_nonce();
     let commit = hex::encode(Sha256::digest(nonce));
     send(
         peer,
-        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","pair_commit":commit}),
+        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","pair_commit":commit,"file_downloads":downloads}),
     );
     let hello = recv(peer);
     assert_eq!(hello["type"], "hello");
@@ -1853,4 +1862,179 @@ fn native_contacts_publish_complete_generations_and_report_failures() {
     assert!(
         matches!(wait_contacts(&harness), ContactsEvent::Synced { contacts, .. } if contacts.is_empty())
     );
+}
+
+fn wait_download(harness: &Harness, id: &str) -> handover_core::FileDownload {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match harness
+            .events
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .unwrap()
+        {
+            StateEvent::FileDownload(download) if download.transfer_id == id => return download,
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn requested_download_requires_local_save_and_reports_permission_and_disconnect_failures() {
+    use handover_core::{Capability, FileDownloadFailure, FileDownloadState};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":false,"notifications":[]}),
+    );
+    let device = loop {
+        if let StateEvent::Device(DeviceEvent::Added(device)) =
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        {
+            break device;
+        }
+    };
+    assert!(device.capabilities.contains(&Capability::FileDownload));
+    for path in [
+        ".",
+        "../secret",
+        "/absolute",
+        "folder//file",
+        "folder/../file",
+        "file\n.cc",
+        "folder\\file",
+    ] {
+        assert!(matches!(
+            harness
+                .backend
+                .request_file(&client.fingerprint, path.into()),
+            Err(handover_native::NativeCommandError::InvalidResource)
+        ));
+    }
+    let queued = harness
+        .backend
+        .request_file(&client.fingerprint, "Code/original ✓.cc".into())
+        .unwrap();
+    assert_eq!(queued.state, FileDownloadState::Queued);
+    assert!(
+        harness
+            .backend
+            .request_file(&client.fingerprint, queued.source_path.clone())
+            .is_err()
+    );
+    let request = recv(&mut peer);
+    assert_eq!(request["type"], "file_request");
+    assert_eq!(request["transfer_id"], queued.transfer_id);
+    assert_eq!(request["path"], queued.source_path);
+    // A remote completion receipt cannot prove that the desktop saved anything.
+    send(
+        &mut peer,
+        serde_json::json!({"type":"share_result","protocol":1,"transfer_id":queued.transfer_id,"status":"completed"}),
+    );
+    let bytes = b"// original source\nint main() { return 0; }\n\0\xff";
+    send(
+        &mut peer,
+        serde_json::json!({"type":"share_file","protocol":1,"transfer_id":queued.transfer_id,"name":"original ✓.cc","size":bytes.len()}),
+    );
+    assert_eq!(
+        wait_download(&harness, &queued.transfer_id).state,
+        FileDownloadState::Receiving
+    );
+    peer.tls.write_all(bytes).unwrap();
+    peer.tls.flush().unwrap();
+    let completed = wait_download(&harness, &queued.transfer_id);
+    let FileDownloadState::Completed { path } = completed.state else {
+        panic!("not saved: {:?}", completed.state);
+    };
+    assert!(path.ends_with("original ✓.cc"));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert_eq!(recv(&mut peer)["status"], "completed");
+
+    let denied = harness
+        .backend
+        .request_file(&client.fingerprint, "permission.txt".into())
+        .unwrap();
+    assert_eq!(recv(&mut peer)["transfer_id"], denied.transfer_id);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_request_failure","protocol":1,"transfer_id":denied.transfer_id,"reason":"permission_required"}),
+    );
+    assert_eq!(
+        wait_download(&harness, &denied.transfer_id).state,
+        FileDownloadState::Failed {
+            reason: FileDownloadFailure::PermissionRequired
+        }
+    );
+    let abandoned = harness
+        .backend
+        .request_file(&client.fingerprint, "queued.bin".into())
+        .unwrap();
+    assert_eq!(recv(&mut peer)["transfer_id"], abandoned.transfer_id);
+    drop(peer);
+    assert_eq!(
+        wait_download(&harness, &abandoned.transfer_id).state,
+        FileDownloadState::Failed {
+            reason: FileDownloadFailure::Disconnected
+        }
+    );
+}
+
+#[test]
+fn older_phone_does_not_advertise_or_accept_requested_downloads() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    let code = exchange_openings_with_downloads(&harness, &mut peer, &client, false);
+    assert_eq!(wait_pending_code(&harness, &client.fingerprint), code);
+    harness.backend.approve(&client.fingerprint, &code).unwrap();
+    send(
+        &mut peer,
+        serde_json::json!({"type":"pair_confirm","protocol":1,"code":code}),
+    );
+    assert_eq!(recv(&mut peer)["type"], "paired");
+    let device = loop {
+        if let StateEvent::Device(DeviceEvent::Added(device)) =
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        {
+            break device;
+        }
+    };
+    assert!(
+        !device
+            .capabilities
+            .contains(&handover_core::Capability::FileDownload)
+    );
+    assert!(matches!(
+        harness
+            .backend
+            .request_file(&client.fingerprint, "file.cc".into()),
+        Err(handover_native::NativeCommandError::Unsupported)
+    ));
+}
+
+#[test]
+fn requested_download_rejects_a_different_basename_before_reading_payload() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_client(&harness, &client, &mut peer);
+    let queued = harness
+        .backend
+        .request_file(&client.fingerprint, "Code/source.cc".into())
+        .unwrap();
+    assert_eq!(recv(&mut peer)["transfer_id"], queued.transfer_id);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"share_file","protocol":1,"transfer_id":queued.transfer_id,"name":"different.bin","size":100}),
+    );
+    let failed = wait_download(&harness, &queued.transfer_id);
+    assert_eq!(
+        failed.state,
+        handover_core::FileDownloadState::Failed {
+            reason: handover_core::FileDownloadFailure::InvalidResource
+        }
+    );
+    recv_err(&mut peer);
 }

@@ -90,6 +90,10 @@ where
                     ErrorCode::BackendRejected,
                     "native backend could not accept the command",
                 ),
+                NativeCommandError::Unsupported | NativeCommandError::InvalidResource => (
+                    ErrorCode::BackendRejected,
+                    "native backend rejected the command",
+                ),
             };
             warn!(%notification_id, "native notification command not accepted");
             write_json_line(writer, &ServerMessage::protocol_error(code, message)).await?;

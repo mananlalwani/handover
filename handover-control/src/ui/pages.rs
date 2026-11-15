@@ -342,6 +342,29 @@ impl Window {
                         .map(|r| failure(r).to_string())
                         .unwrap_or_else(|| "Transfer complete".into()),
                 ),
+                TransferActivityEvent::Download { download } => {
+                    let basename = std::path::Path::new(&download.source_path)
+                        .file_name()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or(&download.source_path);
+                    let (title, detail) = match &download.state {
+                        FileDownloadState::Queued => (
+                            "Download queued",
+                            format!("{basename} · Waiting for the phone"),
+                        ),
+                        FileDownloadState::Receiving => {
+                            ("Downloading", format!("{basename} · Receiving from phone"))
+                        }
+                        FileDownloadState::Completed { path } => {
+                            ("Download saved", format!("{basename} · {path}"))
+                        }
+                        FileDownloadState::Failed { reason } => (
+                            "Download failed",
+                            format!("{basename} · {}", super::download_failure(*reason)),
+                        ),
+                    };
+                    (&download.device_id, title.into(), detail)
+                }
             };
             if !self.matches_device(id) {
                 continue;
@@ -382,6 +405,23 @@ impl Window {
                     });
                     card.append(&open);
                 }
+            }
+            if let TransferActivityEvent::Download {
+                download:
+                    FileDownload {
+                        state: FileDownloadState::Completed { path },
+                        ..
+                    },
+            } = &item.event
+                && let Some(path) = std::path::Path::new(path).parent().map(|p| p.to_path_buf())
+            {
+                let open = gtk::Button::with_label("Open containing folder");
+                open.connect_clicked(move |_| {
+                    let uri = gio::File::for_path(&path).uri();
+                    let _ =
+                        gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
+                });
+                card.append(&open);
             }
             self.body.append(&card);
         }

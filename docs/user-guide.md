@@ -186,6 +186,15 @@ file, or share a file or URL from another app to Handover. The phone must be
 connected to its paired desktop. Check Activity > Recent transfers for the
 receiver's result. A queued transfer is not a delivery confirmation.
 
+To download from the desktop, choose a shared folder in the Android app's
+Remote desktop page, then open Handover > Files > On phone on Linux. Open a folder and press
+Download beside a file. Only the chosen folder is accessible. Stop sharing in
+the Android app revokes access. Downloads keep original names and bytes, with a
+100 MiB limit per file, and appear in Downloads/Handover. Both apps need a build
+with requested-download support. Android's system picker restricts access to
+some folders, including the internal-storage and Downloads roots; choose a
+subfolder. See [Android's folder access rules](https://developer.android.com/training/data-storage/shared/documents-files).
+
 The Android app also provides presentation controls, a pointer pad, and Linux
 volume controls. These commands report acceptance of the request; they do not
 claim that the presentation or volume changed.

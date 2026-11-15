@@ -36,6 +36,22 @@ The action accepts up to 32 content-provider files per share, with the existing
 supported. URI permissions and provider behavior still need checking with the
 phone's gallery and file manager.
 
+## Requested phone downloads
+
+Install the matching Android build. In Remote desktop, choose an eligible shared subfolder.
+On Linux, open Files > On phone, list that folder, and download a source file,
+an image, an empty file, and a file with a Unicode filename. Compare names and
+byte hashes with the originals. Confirm Saved appears only after the file exists
+in Downloads/Handover. Try a provider with unknown file sizes as well.
+
+Remove the folder grant and try browsing and downloading again. Both must fail
+with an access explanation. Change the shared folder during a large transfer
+and confirm the old request stops. Disconnect during receiving and confirm there
+is no completed entry or visible partial file. Reconnect without replaying the
+request. Restart the desktop window during a download and confirm its status
+rebuilds from daemon activity. Test with the previous Android build and confirm
+Download is unavailable until that app is updated.
+
 ## Notifications and media
 
 Enable the optional client with

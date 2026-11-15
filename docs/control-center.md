@@ -100,8 +100,21 @@ Files has Transfers and On phone tabs. On phone requests a directory listing
 under the selected phone's shared root. Open a folder or enter a relative path.
 Responses from another device or a different requested path do not replace the
 current listing. Changing phones resets the folder location. Listing is an
-explicit read; opening the tab does not submit a request. The backend exposes
-folder listings, not downloads of listed files.
+explicit read; opening the tab does not submit a request.
+
+In the Android app's Remote desktop page, choose a shared folder and grant read access.
+The desktop can browse and download files only inside that folder. Stop sharing
+revokes Handover's saved grant. Android restricts selecting the entire internal
+storage or Downloads root; choose a subfolder instead. See
+[Android's folder access rules](https://developer.android.com/training/data-storage/shared/documents-files).
+
+Press Download beside a file. The request first shows as queued, then receiving.
+Saved means the desktop finished an atomic save in Downloads/Handover, preserving
+the original filename and bytes. Open containing folder reveals the result.
+The per-file limit is 100 MiB. Failed requests can be retried explicitly; Handover
+never retries automatically. Downloads continue if the control window closes.
+Their status stays in Recent transfers until the daemon restarts or its bounded
+history expires. Older Android apps need an update before Download is available.
 
 ## Calls
 
@@ -187,10 +200,9 @@ subscription session changes.
 | Pointer, click, scrolling and text input | Phone, under Remote input |
 | Messaging | Separate native Messages app |
 
-Phone directory listings remain read-only. The backend does not expose an
-operation to download listed phone files. The app does not show a nonfunctional
-download action. Real phone permissions, audio output, input effects, and call
-routing still require live device validation.
+Phone folder grants and provider behavior, audio output, input effects, and call
+routing still require live device validation. The private TLS fixture checks
+download requests, exact saved bytes, permission failures, and disconnects.
 
 ## Validation
 

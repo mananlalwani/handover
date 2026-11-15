@@ -2,6 +2,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum NativeCommandError {
+    #[error("device does not support requested downloads; update the phone app")]
+    Unsupported,
+    #[error("invalid shared file path")]
+    InvalidResource,
     #[error("native device is disconnected")]
     Offline,
     #[error("native command queue is full")]

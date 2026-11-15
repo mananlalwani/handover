@@ -30,6 +30,7 @@ pub enum Request {
     Media(MediaCommand),
     Phone(DeviceId, DeviceCommandAction, Option<bool>),
     Folder(DeviceId, String),
+    Download(DeviceId, String),
     Call(DeviceId, CallAction, Option<String>, u64),
     Mirror(bool),
     Audio,
@@ -48,6 +49,7 @@ impl Request {
             Self::Pairing => Some(0),
             Self::Contacts => Some(1),
             Self::Transfers => Some(2),
+            Self::Download(..) => Some(2),
             Self::ClipboardHistory => Some(3),
             Self::Audio => Some(4),
             Self::Tools => Some(5),
@@ -68,6 +70,7 @@ pub enum Reply {
     CallAudio(CallAudioStatus),
     Accepted,
     Share(Option<String>),
+    Download,
 }
 pub struct Failure {
     pub message: String,
@@ -136,6 +139,10 @@ async fn execute(
         Request::Folder(id, path) => {
             client.native_filesystem_list(peer_id(&id)?, path).await?;
             Ok(Reply::Accepted)
+        }
+        Request::Download(id, path) => {
+            client.download_file(id, path).await?;
+            Ok(Reply::Download)
         }
         Request::Phone(id, action, enabled) => {
             let peer = peer_id(&id)?;

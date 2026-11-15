@@ -238,6 +238,10 @@ impl Window {
         };
         let model = self.model.borrow();
         let ready = model.ready(&id) && !self.busy() && !self.folder_busy.get();
+        let can_download = model
+            .devices
+            .get(&id)
+            .is_some_and(|device| device.capabilities.contains(&Capability::FileDownload));
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let path = gtk::Entry::new();
         path.set_hexpand(true);
@@ -262,6 +266,9 @@ impl Window {
         });
         toolbar.append(&open);
         self.body.append(&toolbar);
+        if !can_download {
+            self.body.append(&text("This phone app does not support downloads yet. Update the phone app to download files.", "card-subtitle"));
+        }
         let result = model.folder.as_ref().filter(|r| {
             r.device_id == id
                 && self.folder_requested.borrow().as_ref() == Some(&(id.clone(), r.path.clone()))
@@ -270,7 +277,7 @@ impl Window {
             self.body.append(&text("Loading folder…", "card-subtitle"));
         } else if let Some(result) = result {
             if result.failure.is_some() {
-                self.body.append(&text("The phone could not list this folder. Check access on the phone and try again.", "transfer-error"));
+                self.body.append(&text("The phone could not list this folder. Choose a shared folder in the phone app, then try again.", "transfer-error"));
             } else if result.entries.is_empty() {
                 self.body.append(&empty(
                     "folder-symbolic",
@@ -319,6 +326,97 @@ impl Window {
                         });
                         row.append(&button);
                     }
+                    if !entry.directory
+                        && can_download
+                        && !entry.name.contains(['/', '\\'])
+                        && entry.name != "."
+                        && entry.name != ".."
+                    {
+                        let source = if result.path == "." {
+                            entry.name.clone()
+                        } else {
+                            format!("{}/{}", result.path, entry.name)
+                        };
+                        let download = model.transfers.iter().find_map(|activity| match &activity
+                            .event
+                        {
+                            TransferActivityEvent::Download { download }
+                                if download.device_id == id && download.source_path == source =>
+                            {
+                                Some(download.clone())
+                            }
+                            _ => None,
+                        });
+                        if let Some(download) = &download {
+                            match &download.state {
+                                FileDownloadState::Queued => {
+                                    row.append(&text("Queued…", "card-subtitle"))
+                                }
+                                FileDownloadState::Receiving => {
+                                    row.append(&text("Receiving…", "card-subtitle"))
+                                }
+                                FileDownloadState::Failed { reason } => {
+                                    row.append(&text(
+                                        &format!("Failed · {}", super::download_failure(*reason)),
+                                        "transfer-error",
+                                    ));
+                                    let retry = gtk::Button::with_label("Retry");
+                                    retry.set_sensitive(ready);
+                                    let weak = Rc::downgrade(self);
+                                    let target = id.clone();
+                                    retry.connect_clicked(move |_| {
+                                        if let Some(this) = weak.upgrade() {
+                                            this.request(Request::Download(
+                                                target.clone(),
+                                                source.clone(),
+                                            ));
+                                        }
+                                    });
+                                    row.append(&retry);
+                                }
+                                FileDownloadState::Completed { path } => {
+                                    row.append(&text("Saved", "transfer-success"));
+                                    let saved = path.clone();
+                                    let reveal = gtk::Button::with_label("Open containing folder");
+                                    reveal.connect_clicked(move |_| {
+                                        if let Some(parent) = std::path::Path::new(&saved).parent()
+                                        {
+                                            let uri = gio::File::for_path(parent).uri();
+                                            let _ = gio::AppInfo::launch_default_for_uri(
+                                                &uri,
+                                                None::<&gio::AppLaunchContext>,
+                                            );
+                                        }
+                                    });
+                                    row.append(&reveal);
+                                    let again = gtk::Button::with_label("Download again");
+                                    again.set_sensitive(ready);
+                                    let weak = Rc::downgrade(self);
+                                    let target = id.clone();
+                                    again.connect_clicked(move |_| {
+                                        if let Some(this) = weak.upgrade() {
+                                            this.request(Request::Download(
+                                                target.clone(),
+                                                source.clone(),
+                                            ));
+                                        }
+                                    });
+                                    row.append(&again);
+                                }
+                            }
+                        } else {
+                            let button = gtk::Button::with_label("Download");
+                            button.set_sensitive(ready && !self.busy());
+                            let weak = Rc::downgrade(self);
+                            let target = id.clone();
+                            button.connect_clicked(move |_| {
+                                if let Some(this) = weak.upgrade() {
+                                    this.request(Request::Download(target.clone(), source.clone()));
+                                }
+                            });
+                            row.append(&button);
+                        }
+                    }
                     list.append(&row);
                 }
                 self.body.append(&list);
@@ -327,8 +425,61 @@ impl Window {
             self.body.append(&empty(
                 "folder-symbolic",
                 "Phone folders",
-                "Browse folders shared by your phone. Files can be listed here but not downloaded.",
+                if can_download {
+                    "Browse folders shared by your phone and download files to this computer."
+                } else {
+                    "Downloads need the updated phone app with the file download capability."
+                },
             ));
+        }
+        let downloads = model
+            .transfers
+            .iter()
+            .filter_map(|activity| match &activity.event {
+                TransferActivityEvent::Download { download } if download.device_id == id => {
+                    Some(download)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !downloads.is_empty() {
+            let recent = card("Recent downloads", &model.name(&id));
+            for download in downloads {
+                let basename = std::path::Path::new(&download.source_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(&download.source_path);
+                let state = match &download.state {
+                    FileDownloadState::Queued => "Queued",
+                    FileDownloadState::Receiving => "Receiving",
+                    FileDownloadState::Completed { .. } => "Saved",
+                    FileDownloadState::Failed { reason } => match reason {
+                        FileDownloadFailure::PermissionRequired => {
+                            "Choose a shared folder in the phone app"
+                        }
+                        _ => "Failed",
+                    },
+                };
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                row.append(&text(basename, "body-copy"));
+                row.append(&text(state, "card-subtitle"));
+                if let FileDownloadState::Completed { path } = &download.state {
+                    let saved = path.clone();
+                    let reveal = gtk::Button::with_label("Open containing folder");
+                    reveal.connect_clicked(move |_| {
+                        if let Some(parent) = std::path::Path::new(&saved).parent() {
+                            let uri = gio::File::for_path(parent).uri();
+                            let _ = gio::AppInfo::launch_default_for_uri(
+                                &uri,
+                                None::<&gio::AppLaunchContext>,
+                            );
+                        }
+                    });
+                    row.append(&reveal);
+                }
+                recent.append(&row);
+            }
+            self.body.append(&recent);
         }
     }
 }

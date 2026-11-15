@@ -155,7 +155,17 @@ class NativeTransport(internal val context: Context) {
         .createMulticastLock("handover-discovery").apply { setReferenceCounted(false) }
     internal val executor: ExecutorService = Executors.newSingleThreadExecutor()
     internal val writerExecutor = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
-        ArrayBlockingQueue(32)) { _, _ -> Thread { runCatching { socket?.close() } }.start() }
+        ArrayBlockingQueue(32)) { _, _ ->
+        val overloadedSocket = socket
+        Thread { runCatching { overloadedSocket?.close() } }.start()
+        throw java.util.concurrent.RejectedExecutionException("native writer queue is full")
+    }
+    internal val fileRequestWorkers = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(8), { r -> Thread(r, "handover-file-request").apply { isDaemon = true } }, ThreadPoolExecutor.AbortPolicy())
+    internal val fileRequestAborts = java.util.concurrent.ConcurrentHashMap.newKeySet<java.io.Closeable>()
+    internal val fileRequestTemps = java.util.concurrent.ConcurrentHashMap.newKeySet<java.io.File>()
+    internal val fileRequestSlots = java.util.concurrent.Semaphore(8)
+    internal val fileRequestTimeout = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "handover-file-timeout").apply { isDaemon = true } }
     internal val transferExpiry = Executors.newSingleThreadScheduledExecutor()
     internal val pendingTransfers = ConcurrentHashMap<String, PendingTransfer>()
     internal val preferences = context.getSharedPreferences("handover_native_peers", Context.MODE_PRIVATE)
@@ -248,6 +258,16 @@ class NativeTransport(internal val context: Context) {
         socket = null
         output = null
         executor.shutdownNow()
+        val aborts = fileRequestAborts.toList()
+        fileRequestAborts.clear()
+        val temps = fileRequestTemps.toList()
+        fileRequestTemps.clear()
+        Thread {
+            aborts.forEach { runCatching { it.close() } }
+            temps.forEach { it.delete() }
+        }.apply { name = "handover-file-cleanup"; isDaemon = true; start() }
+        fileRequestWorkers.shutdownNow()
+        fileRequestTimeout.shutdownNow()
         writerExecutor.shutdownNow()
         failPendingTransfers(TRANSFER_DISCONNECTED)
         transferExpiry.shutdownNow()
@@ -556,7 +576,7 @@ class NativeTransport(internal val context: Context) {
 
 
 
-    internal fun hello() = JSONObject().put("type", "hello").put("protocol", 1)
+    internal fun hello() = JSONObject().put("type", "hello").put("protocol", 1).put("file_downloads", true)
         .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
         .apply {
             serverFingerprint?.let { put("trusted_server_id", it) }

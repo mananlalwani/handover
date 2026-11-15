@@ -1337,6 +1337,7 @@ fn print_message(payload: ServerPayload) {
         | ServerPayload::NativePeers { .. }
         | ServerPayload::NativePending { .. }
         | ServerPayload::ClipboardHistory { .. }
+        | ServerPayload::FileDownload { .. }
         | ServerPayload::NativeAccepted => {}
         ServerPayload::MessageSearch { .. }
         | ServerPayload::MessagePreviews { .. }
