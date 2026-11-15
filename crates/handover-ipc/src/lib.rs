@@ -125,6 +125,8 @@ pub enum Method {
         device_id: DeviceId,
         action: handover_core::CallAction,
         address: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_generation: Option<u64>,
     },
     #[serde(rename = "native.call")]
     NativeCall {
@@ -1278,10 +1280,24 @@ impl Client {
         action: handover_core::CallAction,
         address: Option<String>,
     ) -> Result<(), IpcError> {
+        self.call_control_observed(device_id, action, address, None)
+            .await
+    }
+
+    /// Bind a control to the call state the user actually saw. Legacy clients
+    /// can omit the generation; new clients should carry the observed value.
+    pub async fn call_control_observed(
+        &mut self,
+        device_id: DeviceId,
+        action: handover_core::CallAction,
+        address: Option<String>,
+        expected_generation: Option<u64>,
+    ) -> Result<(), IpcError> {
         self.send(Method::CallsControl {
             device_id,
             action,
             address,
+            expected_generation,
         })
         .await?;
         match self.receive().await?.payload {
@@ -2464,6 +2480,31 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn call_control_accepts_legacy_requests_and_preserves_observed_generation() {
+        let legacy = serde_json::json!({"protocol": PROTOCOL_VERSION, "method":"calls.control", "device_id":"phone", "action":"answer", "address":null});
+        assert!(matches!(
+            serde_json::from_value::<Request>(legacy.clone())
+                .unwrap()
+                .method,
+            Method::CallsControl {
+                expected_generation: None,
+                ..
+            }
+        ));
+        let mut guarded = legacy;
+        guarded["expected_generation"] = serde_json::json!(17);
+        let request = serde_json::from_value::<Request>(guarded.clone()).unwrap();
+        assert!(matches!(
+            request.method,
+            Method::CallsControl {
+                expected_generation: Some(17),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(request).unwrap(), guarded);
+    }
 
     fn device() -> Device {
         Device {

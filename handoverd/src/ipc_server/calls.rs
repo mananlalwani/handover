@@ -5,6 +5,7 @@ pub(crate) fn route_call(
     device_id: DeviceId,
     action: handover_core::CallAction,
     address: Option<String>,
+    expected_generation: Option<u64>,
 ) -> ServerPayload {
     let current = snapshot(state);
     let call = current
@@ -23,7 +24,10 @@ pub(crate) fn route_call(
             _ => address.is_none(),
         };
     let generation = call.map(|call| call.generation);
-    if !allowed {
+    if !allowed
+        || expected_generation
+            .is_some_and(|generation| call.is_none_or(|c| c.generation != generation))
+    {
         return ServerPayload::Error {
             code: ErrorCode::BackendRejected,
             message: "call action unavailable in current phone state or invalid address".into(),
@@ -45,5 +49,44 @@ pub(crate) fn route_call(
             message: "call backend unavailable".into(),
             conversation_id: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use handover_core::{
+        CallAction, CallEvent, CallPhase, CallState, Device, DeviceEvent, StateEvent,
+    };
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn call_control_rejects_an_action_from_a_previous_call_generation() {
+        let id = DeviceId::new("native:fixture");
+        let mut store = StateStore::default();
+        store.apply(StateEvent::Device(DeviceEvent::Added(Device {
+            id: id.clone(),
+            name: "Fixture".into(),
+            connected: true,
+            paired: true,
+            battery: None,
+            connectivity: None,
+            capabilities: BTreeSet::new(),
+        })));
+        store.apply(StateEvent::Call(CallEvent::Updated(CallState {
+            device_id: id.clone(),
+            phase: CallPhase::Ringing,
+            controls: BTreeSet::from([CallAction::Answer]),
+            generation: 9,
+        })));
+        let state = Arc::new(RwLock::new(store));
+        assert!(matches!(
+            route_call(&state, id, CallAction::Answer, None, Some(8)),
+            ServerPayload::Error {
+                code: ErrorCode::BackendRejected,
+                ..
+            }
+        ));
+        assert_eq!(state.read().unwrap().snapshot().calls[0].generation, 9);
     }
 }

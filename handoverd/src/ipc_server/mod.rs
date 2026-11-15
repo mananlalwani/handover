@@ -475,6 +475,7 @@ where
                     DeviceId::new(format!("native:{id}")),
                     action,
                     address,
+                    None,
                 ),
                 None => ServerPayload::Error {
                     code: ErrorCode::BackendRejected,
@@ -487,7 +488,8 @@ where
             device_id,
             action,
             address,
-        } => route_call(state, device_id, action, address),
+            expected_generation,
+        } => route_call(state, device_id, action, address, expected_generation),
         Method::NotificationsList => {
             write_notifications_response(writer, snapshot(state).notifications).await?;
             return Ok(true);
