@@ -155,6 +155,17 @@ def isolated_accounts(archive, previous):
                                f"XDG_CACHE_HOME={account.pw_dir}/.cache"]
                 command("loginctl", "enable-linger", user)
                 command("systemctl", "start", f"user@{uid}.service")
+                # Hosted runners may export their own XDG paths globally. The
+                # manager needs this account's login environment too, not just
+                # the installer process launched below.
+                command("runuser", "-u", user, "--", "env", *environment,
+                        "systemctl", "--user", "set-environment", *environment)
+                manager_environment = output("runuser", "-u", user, "--", "env", *environment,
+                                             "systemctl", "--user", "show-environment")
+                exported = dict(line.split("=", 1) for line in manager_environment.splitlines() if "=" in line)
+                for assignment in environment:
+                    key, value = assignment.split("=", 1)
+                    assert exported.get(key) == value, f"user manager did not receive {key}"
                 args = ["runuser", "-u", user, "--", "env", *environment,
                         "python3", str(runner), "--account-case", case, "--archive", str(current)]
                 if baseline:
