@@ -10,6 +10,8 @@ pub struct Model {
     pub media: BTreeMap<MediaSessionId, MediaSession>,
     pub calls: BTreeMap<DeviceId, CallState>,
     pub contacts: Vec<Contact>,
+    pub folder: Option<FilesystemResult>,
+    pub clipboard_mirror: Option<bool>,
     pub clipboard_history: Option<Vec<handover_ipc::ClipboardHistoryEntry>>,
     pub transfers: Vec<TransferActivity>,
     pub peers: Vec<NativePeer>,
@@ -77,7 +79,67 @@ impl Model {
             ServerPayload::ContactsSyncFailed { .. } => {
                 self.notice = "Contact sync failed. The previous address book is kept.".into()
             }
-            ServerPayload::DeviceCommandResult { .. } | ServerPayload::CallCommandResult { .. } => {
+            ServerPayload::DeviceCommandResult { result } => {
+                self.notice = format!(
+                    "{}: {} request {}{}",
+                    self.name(&result.device_id),
+                    match result.action {
+                        DeviceCommandAction::Ping => "ping",
+                        DeviceCommandAction::Ring => "ring",
+                        DeviceCommandAction::Lock => "lock",
+                        DeviceCommandAction::Clipboard => "clipboard",
+                        DeviceCommandAction::Notification => "notification",
+                        DeviceCommandAction::Media => "media",
+                        DeviceCommandAction::Screensaver => "desktop sleep",
+                        DeviceCommandAction::KeepAwake => "awake mode",
+                        DeviceCommandAction::Tethering => "hotspot settings",
+                    },
+                    if result.accepted {
+                        "accepted by phone"
+                    } else {
+                        "rejected by phone"
+                    },
+                    result
+                        .failure
+                        .map(|f| match f {
+                            DeviceCommandFailure::PermissionDenied =>
+                                " · Permission denied".to_owned(),
+                            DeviceCommandFailure::Unavailable => " · Unavailable".to_owned(),
+                            DeviceCommandFailure::Rejected => " · Rejected".to_owned(),
+                        })
+                        .unwrap_or_default()
+                );
+            }
+            ServerPayload::CallCommandResult { result } => {
+                self.notice = format!(
+                    "{}: call {} {}{}",
+                    self.name(&result.device_id),
+                    result.action.as_str(),
+                    if result.accepted {
+                        "accepted by phone"
+                    } else {
+                        "rejected by phone"
+                    },
+                    result
+                        .failure
+                        .map(|f| match f {
+                            CallCommandFailure::PermissionDenied =>
+                                " · Permission denied".to_owned(),
+                            CallCommandFailure::StaleState => " · Call changed".to_owned(),
+                            CallCommandFailure::EmergencyNumber =>
+                                " · Use the phone to dial this number".to_owned(),
+                            CallCommandFailure::InvalidAddress =>
+                                " · Invalid phone number".to_owned(),
+                            CallCommandFailure::WrongPhase =>
+                                " · Action unavailable in this call".to_owned(),
+                            CallCommandFailure::Unsupported => " · Unsupported".to_owned(),
+                            CallCommandFailure::Rejected => " · Rejected".to_owned(),
+                        })
+                        .unwrap_or_default()
+                );
+            }
+            ServerPayload::Filesystem { result } => {
+                self.folder = Some(result);
             }
             _ => {}
         }

@@ -232,15 +232,12 @@ and upgrade checks; they do not block the app implementation.
 
 ## 7. Native control center
 
-The native Linux control center follows the Quickshell reference client's
-grouped sidebar, page headings, device selector, and blue-gray palette. Overview
-shows reported devices; task views cover notifications, transfers, contacts,
-clipboard history, and media. File selection
-supports review, drag
-and drop, and independent reported outcomes without resending unknown requests.
-It brings device status, code-comparison pairing,
-notification actions and replies, file and link sharing, reviewed clipboard text, synced
-contacts, and phone media controls into one daemon client. Ordinary
+The native Linux control center uses the Messages app's visual style and groups
+controls by task. A persistent phone selection scopes Phone, Notifications,
+Calls, Files, Contacts, and Media. Clipboard history is computer-wide.
+File selection supports review, drag and drop, and independent reported outcomes without resending unknown requests.
+It brings device status, code-comparison pairing, notification actions and
+replies, file and link sharing, reviewed clipboard text, synced contacts, and phone media controls into one daemon client. Ordinary
 `handover-gui` launches prefer the new app; explicit QML and send-picker entry
 points remain available. See the [control center guide](control-center.md).
 
@@ -253,8 +250,12 @@ reply effects still need live validation.
 
 Recent transfer observations are retained by the daemon for its current session,
 with a maximum of 128 records. Clients reconstruct this list through public IPC.
-It is not a durable transfer archive. Contacts photos, calling controls, and
-additional device actions remain follow-up interface work.
+It is not a durable transfer archive. Calls, phone folder listings, device ring,
+lock, awake requests, hotspot settings, and clipboard mirroring now have native
+controls. Call requests can carry the observed generation to reject stale
+controls. Laptop audio routing, remote input, configured commands, contact
+pictures, and local call-audio observations remain interface work; see the guide's
+coverage table.
 
 ## Limits to keep explicit
 

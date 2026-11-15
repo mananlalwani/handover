@@ -69,87 +69,53 @@ impl Window {
     }
     pub(super) fn overview(self: &Rc<Self>) {
         let model = self.model.borrow();
-        let panel = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        panel.add_css_class("content-panel");
-        panel.append(&text("Your devices", "list-heading"));
-        if model.devices.is_empty() {
-            panel.append(&empty(
-                "phone-symbolic",
-                "No phones yet",
-                "Open Handover on your phone and connect to this computer.",
-            ));
-        }
-        for device in model.devices.values() {
-            let row = gtk::Box::new(gtk::Orientation::Vertical, 10);
-            row.add_css_class("overview-device");
-            let title = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let ready = model.ready(&device.id);
-            title.append(&text(
-                "●",
-                if ready {
-                    "connected-label"
-                } else {
-                    "card-subtitle"
-                },
-            ));
-            let name = text(&device.name, "card-title");
-            name.set_hexpand(true);
-            title.append(&name);
-            let battery = device
-                .battery
-                .map(|b| {
-                    format!(
-                        " · {}%{}",
-                        b.percentage(),
-                        if ready { "" } else { " last known" }
-                    )
-                })
-                .unwrap_or_default();
-            title.append(&text(
-                &format!("{}{battery}", if ready { "Connected" } else { "Offline" }),
-                if ready {
-                    "connected-label"
-                } else {
-                    "card-subtitle"
-                },
-            ));
-            row.append(&title);
-            let detail = if !device.paired {
-                "Waiting for pairing approval"
-            } else if !ready {
-                "Open Handover on the phone to reconnect."
+        let selected = self.selected.borrow().clone();
+        let Some(device) = selected.as_ref().and_then(|id| model.devices.get(id)) else {
+            let panel = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            panel.add_css_class("detail-list");
+            for device in model.devices.values() {
+                let button = gtk::Button::with_label(&device.name);
+                let weak = Rc::downgrade(self);
+                let id = device.id.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.select_device(Some(id.clone()));
+                        this.render();
+                    }
+                });
+                panel.append(&button);
+            }
+            self.body.append(&panel);
+            if model.devices.is_empty() {
+                self.body.append(&empty(
+                    "phone-symbolic",
+                    "Connect your phone",
+                    "Open Handover on Android and pair it with this computer in Device settings.",
+                ));
+            }
+            return;
+        };
+        let hero = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+        hero.add_css_class("phone-identity");
+        let icon = gtk::Image::from_icon_name("phone-symbolic");
+        icon.set_pixel_size(40);
+        hero.append(&icon);
+        let labels = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        labels.append(&text(&device.name, "device-heading"));
+        labels.append(&text(
+            if model.ready(&device.id) {
+                "Connected to this computer"
             } else {
-                match device.connectivity.map(|n| n.transport) {
-                    Some(ConnectivityTransport::Wifi) => "Phone network: Wi-Fi",
-                    Some(ConnectivityTransport::Ethernet) => "Phone network: Ethernet",
-                    Some(ConnectivityTransport::Cellular) => "Phone network: Cellular",
-                    Some(ConnectivityTransport::Bluetooth) => "Phone network: Bluetooth",
-                    Some(ConnectivityTransport::Other) => "Phone network: Other network",
-                    Some(ConnectivityTransport::None) => "Phone network: No network",
-                    None => "Phone network not reported",
-                }
-            };
-            row.append(&text(detail, "body-copy"));
-            if let Some(call) = model.calls.get(&device.id) {
-                match call.phase {
-                    CallPhase::Ringing => row.append(&text("Incoming call", "body-copy")),
-                    CallPhase::OffHook => row.append(&text("Call in progress", "body-copy")),
-                    _ => {}
-                }
-            }
-            row.append(&self.share_actions(&device.id));
-            panel.append(&row);
-        }
-        let pairing = gtk::Button::with_label("Devices & pairing");
-        pairing.set_halign(gtk::Align::Start);
-        let weak = Rc::downgrade(self);
-        pairing.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
-                this.navigate(Page::Connection);
-            }
-        });
-        panel.append(&pairing);
-        self.body.append(&panel);
+                "Offline · Open Handover on the phone to reconnect"
+            },
+            "card-subtitle",
+        ));
+        hero.append(&labels);
+        self.body.append(&hero);
+        self.body.append(&text("Device controls", "list-heading"));
+        self.body.append(&self.phone_controls(&device.id));
+        self.body.append(&text("Send to phone", "list-heading"));
+        self.body.append(&self.share_actions(&device.id));
     }
     fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::Box {
         let model = self.model.borrow();
@@ -179,7 +145,7 @@ impl Window {
             button.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
                     if kind == 0 {
-                        *this.selected.borrow_mut() = Some(id.clone());
+                        this.select_device(Some(id.clone()));
                         this.navigate(Page::Sharing);
                         this.choose_files();
                     } else {
@@ -303,6 +269,7 @@ impl Window {
         }
     }
     pub(super) fn sharing(self: &Rc<Self>) {
+        self.file_tabs();
         let model = self.model.borrow();
         if let Some(id) = self.selected.borrow().as_ref() {
             self.body.append(&self.share_actions(id));
@@ -811,5 +778,7 @@ pub(super) fn failure(value: ShareFailure) -> &'static str {
 fn toolbar_text(value: &str, class: &str) -> gtk::Label {
     let label = text(value, class);
     label.set_wrap(false);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_tooltip_text(Some(value));
     label
 }

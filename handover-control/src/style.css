@@ -1,81 +1,69 @@
-/* Match the Quickshell client's palette and navigation hierarchy. */
-@define-color window_bg_color #111720;
-@define-color window_fg_color #edf1f7;
-@define-color view_bg_color #1b2532;
-@define-color view_fg_color #edf1f7;
-@define-color card_bg_color #1b2532;
-@define-color card_fg_color #edf1f7;
-@define-color popover_bg_color #1b2532;
-@define-color popover_fg_color #edf1f7;
-@define-color headerbar_bg_color #151d28;
-@define-color headerbar_fg_color #edf1f7;
-@define-color accent_bg_color #355c88;
-@define-color accent_fg_color #ffffff;
-@define-color accent_color #9bc5f4;
-@define-color success_color #91c9a6;
-@define-color error_color #ffb4ab;
-@define-color warning_color #e8c29d;
-window.control { font-family: sans-serif; font-size: 13px; background: #111720; color: #edf1f7; }
-.control button { border-radius: 8px; box-shadow: none; background: #232d3b; border: 1px solid #354154; padding: 8px 14px; font-size: 13px; font-weight: 400; }
-.control button:hover { background: #2c3747; }
-.control button:active { background: #35465c; }
-.control button:disabled { background: #202733; color: #697586; border-color: #2b3544; }
-.control button:focus-visible { outline: 2px solid #9bc5f4; outline-offset: 1px; }
-.control button.suggested-action { background: #355c88; border-color: #5d85b1; color: white; }
-.control button.flat { background: transparent; border-color: transparent; padding: 6px; }
-.control button.flat:hover { background: #2c3747; }
-.control button.circular { padding: 8px; }
-.control searchentry, .control entry { border-radius: 8px; background: #131b26; color: #edf1f7; border: 1px solid #354154; box-shadow: none; padding: 7px 10px; }
-.control textview, .control textview text { background: #131b26; color: #edf1f7; }
-.navigation-rail { background: #151d28; padding: 16px; }
-.brand { font-size: 25px; font-weight: 600; letter-spacing: -.8px; margin: 8px 0 20px; }
-.nav-group { color: #8291a6; font-size: 10px; font-weight: 600; letter-spacing: 1.2px; margin: 16px 12px 8px; }
-.control .nav-button { background: transparent; border: 1px solid transparent; color: #aab7c8; padding: 8px 12px; min-height: 20px; }
-.control .nav-button:hover { background: #202c3c; }
-.control .nav-button:checked { background: #2b405b; color: #ffffff; font-weight: 600; }
-.service-status { font-size: 11px; color: #aab7c8; margin-top: 18px; }
-.service-status.connected { color: #91c9a6; }
-.window-toolbar { min-height: 32px; padding-right: 6px; }
-.control windowcontrols button { border: 0; background: transparent; padding: 4px; }
-.control windowcontrols button:hover { background: #2c3747; }
-.page-header { padding: 0 28px 18px; }
-.page-title { font-size: 26px; font-weight: 600; }
-.page-description { font-size: 13px; color: #91a1b7; }
-.device-selector > button { background: #263344; border-color: #354154; padding: 8px 12px; }
-.connected-label { color: #91c9a6; font-size: 11px; }
-.card-subtitle { color: #aab7c8; font-size: 12px; }
-.filter-toolbar { padding: 0 28px; }
-.content-panel { background: #1b2532; border-radius: 12px; padding: 20px; }
-.overview-device { border-bottom: 1px solid #2d394a; padding-bottom: 18px; }
-.card { background: #1b2532; border: 0; border-radius: 12px; padding: 20px; box-shadow: none; }
-.card-title { font-size: 16px; font-weight: 600; }
-.list-heading { font-size: 17px; font-weight: 600; }
-.body-copy { font-size: 13px; line-height: 1.4; color: #d5dde8; }
-.detail-list { background: #1b2532; border-radius: 12px; padding: 8px 20px; }
-.notification-row { padding: 14px 0; border-bottom: 1px solid #2d394a; }
+window.control { font-family: "Inter", "Noto Sans", sans-serif; font-size: 13px; }
+.navigation-rail { background: mix(@window_bg_color, @view_bg_color, .25); border-right: 1px solid alpha(@window_fg_color, .06); padding: 14px 14px 18px; }
+.brand { font-size: 19px; font-weight: 600; margin: 9px 8px 22px; }
+.device-selector { margin: 0 2px 4px; }
+.device-selector > button { background: alpha(@window_fg_color, .045); border: 1px solid alpha(@window_fg_color, .05); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 500; box-shadow: none; }
+.navigation-rail .connected-label, .navigation-rail .card-subtitle { font-size: 11px; margin: 0 10px 22px; }
+.control button.nav-button { background: transparent; color: @window_fg_color; border: 0; box-shadow: none; border-radius: 8px; padding: 10px; min-height: 20px; font-weight: 400; }
+.control button.nav-button:hover { background: alpha(@window_fg_color, .055); }
+.control button.nav-button:checked { background: alpha(@accent_bg_color, .13); box-shadow: inset 2px 0 @accent_bg_color; }
+.control button.nav-button:checked .nav-label { font-weight: 600; }
+.nav-button image { opacity: .7; }
+.nav-label { font-size: 13px; }
+.navigation-rail separator { margin: 12px 10px; opacity: .45; }
+.service-status { font-size: 11px; opacity: .65; margin: 12px 8px 0; }
+.page-header { min-height: 58px; padding: 12px 20px; border-bottom: 1px solid alpha(@window_fg_color, .07); }
+.page-title { font-size: 18px; font-weight: 600; }
+.page-description { font-size: 11px; opacity: .6; }
+.control windowcontrols { margin-left: 8px; }
+.control windowcontrols button { border-radius: 5px; min-height: 24px; min-width: 24px; padding: 0; background: transparent; box-shadow: none; }
+.filter-toolbar { padding: 12px 24px 0; }
+.control searchentry { border-radius: 10px; min-height: 32px; background: alpha(@window_fg_color, .045); box-shadow: none; border: 1px solid alpha(@window_fg_color, .05); }
+.control entry { border-radius: 8px; box-shadow: none; }
+.control button { border-radius: 7px; box-shadow: none; font-weight: 400; padding: 6px 12px; }
+.control button.flat { background: transparent; }
+.control button.flat:hover { background: alpha(@window_fg_color, .065); }
+.control button:focus-visible { outline: 2px solid alpha(@accent_bg_color, .65); outline-offset: 2px; }
+.detail-list { background: @view_bg_color; border: 1px solid alpha(@window_fg_color, .08); border-radius: 10px; }
+.card { background: @view_bg_color; border: 1px solid alpha(@window_fg_color, .08); border-radius: 10px; padding: 18px; box-shadow: none; }
+.card-title { font-size: 15px; font-weight: 600; }
+.card-subtitle { opacity: .62; font-size: 12px; }
+.body-copy { font-size: 13px; line-height: 1.4; }
+.list-heading { font-size: 12px; font-weight: 600; opacity: .7; margin-top: 12px; }
+.phone-identity { margin: 12px 0 18px; }
+.phone-identity image { opacity: .65; padding-right: 4px; }
+.device-heading { font-size: 23px; font-weight: 600; }
+.settings-row { padding: 14px 16px; border-bottom: 1px solid alpha(@window_fg_color, .07); }
+.settings-row:last-child { border-bottom: 0; }
+.row-title { font-size: 13px; font-weight: 500; }
+.notification-row { padding: 14px 16px; border-bottom: 1px solid alpha(@window_fg_color, .07); }
 .notification-row:last-child { border-bottom: 0; }
 .notification-title { font-size: 14px; font-weight: 600; }
-.contact-row { background: transparent; border-radius: 0; border-bottom: 1px solid #2d394a; padding: 14px 0; }
+.contact-row { border: 0; border-radius: 0; background: transparent; border-bottom: 1px solid alpha(@window_fg_color, .07); padding: 12px 16px; }
 .contact-row:last-child { border-bottom: 0; }
-.contact-row .card-title { font-size: 14px; }
-.transfer-row .card-title { font-size: 14px; }
-.action-label { font-size: 13px; }
-.nav-label { font-size: 13px; }
-.device-status { font-size: 11px; color: #91a1b7; }
-.device-list row { padding: 10px; margin: 2px; border-radius: 8px; }
-.empty-state { padding: 40px 16px; }
-.empty-title { font-size: 17px; font-weight: 600; }
-.status-banner { background: #2d2925; border-radius: 10px; margin: 12px 28px 20px; padding: 8px 12px; }
-.status-strip { color: #e8c29d; font-size: 13px; }
-.pair-code { font-family: monospace; font-size: 30px; font-weight: 600; letter-spacing: 5px; padding: 12px; }
+.contact-row .card-title, .transfer-row .card-title { font-size: 14px; }
+.transfer-row { padding: 14px 16px; }
+.share-action { background: alpha(@window_fg_color, .045); }
+.action-label { font-size: 12px; }
+.empty-state { padding: 48px 16px; }
+.empty-title { font-size: 18px; font-weight: 500; }
+.status-banner { background: alpha(@accent_bg_color, .07); border-top: 1px solid alpha(@window_fg_color, .07); padding: 8px 16px; }
+.status-strip { font-size: 12px; }
+.pair-code { font-family: monospace; font-size: 28px; font-weight: 600; letter-spacing: 5px; padding: 12px; }
 .media-title { font-size: 20px; font-weight: 600; }
-.file-composer { background: #1b2532; border-radius: 12px; padding: 20px; }
-.file-drop { border: 1px dashed #53647a; border-radius: 8px; padding: 16px; }
-.file-drop image { color: #91a1b7; }
-.drop-title { font-size: 14px; }
-.file-list { border-top: 1px solid #2d394a; }
-.file-row { padding: 12px 0; border-bottom: 1px solid #2d394a; }
-.file-drop.drop-active { border-color: #9bc5f4; background: #2b405b; }
-.transfer-success { color: #91c9a6; }
-.transfer-error { color: #ffb4ab; }
-.transfer-warning { color: #e8c29d; }
+.device-list row { padding: 10px; margin: 2px; border-radius: 8px; }
+.device-status { font-size: 11px; opacity: .65; }
+.connected-label, .transfer-success { color: @success_color; }
+.transfer-error { color: @error_color; }
+.transfer-warning { color: @warning_color; }
+.file-composer { background: @view_bg_color; border: 1px solid alpha(@window_fg_color, .08); border-radius: 10px; padding: 16px; }
+.file-drop { border: 1px dashed alpha(@window_fg_color, .2); border-radius: 8px; padding: 14px; }
+.file-drop image { opacity: .6; }
+.drop-title { font-size: 13px; }
+.file-list { border-top: 1px solid alpha(@window_fg_color, .07); }
+.file-row { padding: 12px 0; border-bottom: 1px solid alpha(@window_fg_color, .07); }
+.file-drop.drop-active { border-color: @accent_color; background: alpha(@accent_bg_color, .07); }
+.section-tabs { padding: 3px; border-radius: 8px; background: alpha(@window_fg_color, .055); }
+.control .section-tabs button { background: transparent; font-size: 12px; min-height: 26px; padding: 3px 14px; }
+.control .section-tabs button.selected { background: @view_bg_color; box-shadow: 0 1px 3px alpha(@window_fg_color, .1); }
+.call-state { font-size: 17px; font-weight: 500; margin: 12px 0; }

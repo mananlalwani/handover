@@ -16,12 +16,15 @@ mod clipboard;
 mod files;
 mod notification_reply;
 mod pages;
+mod phone;
 #[cfg(test)]
 mod tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Page {
     Overview,
+    Calls,
+    PhoneFiles,
     Notifications,
     Sharing,
     Contacts,
@@ -32,9 +35,11 @@ pub(super) enum Page {
 impl Page {
     fn name(self) -> &'static str {
         match self {
-            Self::Overview => "Overview",
+            Self::Overview => "Phone",
+            Self::Calls => "Calls",
+            Self::PhoneFiles => "Phone folders",
             Self::Notifications => "Notifications",
-            Self::Sharing => "Send & transfers",
+            Self::Sharing => "Files",
             Self::Contacts => "Contacts",
             Self::Clipboard => "Clipboard",
             Self::Media => "Media",
@@ -43,7 +48,9 @@ impl Page {
     }
     fn description(self) -> &'static str {
         match self {
-            Self::Overview => "Your phones and connection",
+            Self::Overview => "Connection and device controls",
+            Self::Calls => "Calls on your phone",
+            Self::PhoneFiles => "Folders shared by your phone",
             Self::Notifications => "Notifications from your phones",
             Self::Sharing => "Send a file or link to your phone",
             Self::Contacts => "Contacts synced from your phone",
@@ -57,6 +64,11 @@ pub struct Window {
     pub window: gtk::ApplicationWindow,
     model: RefCell<Model>,
     file_queue: RefCell<Vec<files::PickedFile>>,
+    dial_address: RefCell<String>,
+    folder_path: RefCell<String>,
+    folder_requested: RefCell<Option<(DeviceId, String)>>,
+    folder_busy: Cell<bool>,
+    folder_generation: Cell<u64>,
     reply_drafts: RefCell<BTreeMap<NotificationId, notification_reply::Draft>>,
     reply_editor: RefCell<Option<Rc<notification_reply::Editor>>>,
     selected: RefCell<Option<DeviceId>>,
@@ -109,7 +121,6 @@ impl Window {
             .default_width(1120)
             .default_height(780)
             .build();
-        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         window.add_css_class("control");
         // The top toolbar owns window controls and dragging.
         window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
@@ -148,40 +159,52 @@ impl Window {
         let rail = gtk::Box::new(gtk::Orientation::Vertical, 4);
         rail.set_width_request(204);
         rail.add_css_class("navigation-rail");
-        let brand = text("handover", "brand");
+        let brand = text("Handover", "brand");
         let brand_handle = gtk::WindowHandle::new();
         brand_handle.set_child(Some(&brand));
         rail.append(&brand_handle);
+        rail.append(&device_picker);
+        rail.append(&phone_pane);
         let navigation = gtk::Box::new(gtk::Orientation::Vertical, 4);
         let mut tabs = Vec::new();
         let mut first = None::<gtk::ToggleButton>;
-        for (group, pages) in [
+        for (page, icon) in [
+            (Page::Overview, "phone-symbolic"),
             (
-                "Workspace",
-                vec![Page::Overview, Page::Notifications, Page::Media],
+                Page::Notifications,
+                "preferences-system-notifications-symbolic",
             ),
-            ("Sharing", vec![Page::Sharing, Page::Clipboard]),
-            ("Tools", vec![Page::Contacts, Page::Connection]),
+            (Page::Calls, "call-start-symbolic"),
+            (Page::Sharing, "folder-symbolic"),
+            (Page::Clipboard, "edit-paste-symbolic"),
+            (Page::Contacts, "system-users-symbolic"),
+            (Page::Media, "multimedia-player-symbolic"),
+            (Page::Connection, "preferences-system-symbolic"),
         ] {
-            navigation.append(&text(&group.to_uppercase(), "nav-group"));
-            for page in pages {
-                let tab = gtk::ToggleButton::with_label(page.name());
-                if let Some(first) = &first {
-                    tab.set_group(Some(first));
-                } else {
-                    first = Some(tab.clone());
-                }
-                tab.add_css_class("nav-button");
-                if let Some(label) = tab.child().and_downcast::<gtk::Label>() {
-                    label.set_xalign(0.0);
-                }
-                navigation.append(&tab);
-                tabs.push((page, tab));
-                if page == Page::Overview {
-                    navigation.append(&messages);
-                }
+            let tab = gtk::ToggleButton::new();
+            if let Some(first) = &first {
+                tab.set_group(Some(first));
+            } else {
+                first = Some(tab.clone());
             }
+            tab.add_css_class("nav-button");
+            let label = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            label.append(&gtk::Image::from_icon_name(icon));
+            label.append(&text(
+                if page == Page::Connection {
+                    "Device settings"
+                } else {
+                    page.name()
+                },
+                "nav-label",
+            ));
+            tab.set_child(Some(&label));
+            tab.update_property(&[gtk::accessible::Property::Label(page.name())]);
+            navigation.append(&tab);
+            tabs.push((page, tab));
         }
+        navigation.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        navigation.append(&messages);
         let nav_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -193,15 +216,6 @@ impl Window {
         tabs[0].1.set_active(true);
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         main.set_hexpand(true);
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        top.add_css_class("window-toolbar");
-        let drag_space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        drag_space.set_hexpand(true);
-        top.append(&drag_space);
-        top.append(&gtk::WindowControls::new(gtk::PackType::End));
-        let handle = gtk::WindowHandle::new();
-        handle.set_child(Some(&top));
-        main.append(&handle);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 20);
         header.add_css_class("page-header");
         let titles = gtk::Box::new(gtk::Orientation::Vertical, 5);
@@ -211,12 +225,9 @@ impl Window {
         titles.append(&heading);
         titles.append(&description);
         header.append(&titles);
-        let device_context = gtk::Box::new(gtk::Orientation::Vertical, 5);
-        device_context.set_width_request(210);
-        device_context.append(&device_picker);
-        device_context.append(&phone_pane);
-        header.append(&device_context);
-        main.append(&header);
+        let handle = gtk::WindowHandle::new();
+        handle.set_child(Some(&header));
+        main.append(&handle);
         let filters = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         filters.add_css_class("filter-toolbar");
         let search = gtk::SearchEntry::new();
@@ -227,6 +238,7 @@ impl Window {
         refresh.add_css_class("flat");
         refresh.set_tooltip_text(Some("Refresh"));
         header.append(&refresh);
+        header.append(&gtk::WindowControls::new(gtk::PackType::End));
         main.append(&filters);
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
         body.set_margin_start(28);
@@ -262,6 +274,11 @@ impl Window {
             window,
             model: RefCell::new(Model::default()),
             file_queue: RefCell::new(Vec::new()),
+            dial_address: RefCell::new(String::new()),
+            folder_path: RefCell::new(".".into()),
+            folder_requested: RefCell::new(None),
+            folder_busy: Cell::new(false),
+            folder_generation: Cell::new(0),
             reply_drafts: RefCell::new(BTreeMap::new()),
             reply_editor: RefCell::new(None),
             selected: RefCell::new(None),
@@ -331,7 +348,7 @@ impl Window {
                     .get(row.index() as usize)
                     .cloned()
                     .flatten();
-                *this.selected.borrow_mut() = selected;
+                this.select_device(selected);
                 this.device_popover.popdown();
                 this.scroll.vadjustment().set_value(0.0);
                 this.render();
@@ -439,6 +456,15 @@ impl Window {
         dialog.present();
         glib::Propagation::Stop
     }
+    fn select_device(&self, selected: Option<DeviceId>) {
+        if *self.selected.borrow() != selected {
+            self.folder_path.replace(".".into());
+            self.folder_requested.borrow_mut().take();
+            self.folder_busy.set(false);
+            self.model.borrow_mut().folder = None;
+        }
+        self.selected.replace(selected);
+    }
     fn navigate(self: &Rc<Self>, page: Page) {
         self.page.set(page);
         self.search.set_text("");
@@ -529,6 +555,8 @@ impl Window {
                     model.peers.clear();
                     model.pairing.clear();
                     model.clipboard_history = None;
+                    model.clipboard_mirror = None;
+                    model.folder = None;
                 }
                 if !self.selection_initialized.replace(true) {
                     let model = self.model.borrow();
@@ -553,12 +581,21 @@ impl Window {
                 }
             }
             Event::Disconnected => {
+                self.folder_busy.set(false);
                 let mut model = self.model.borrow_mut();
                 model.connected = false;
                 model.pairing.clear();
                 model.notice = "Connection lost. Reconnecting…".into();
             }
             Event::State(payload) => {
+                if let ServerPayload::Filesystem { result } = payload.as_ref() {
+                    if self.folder_requested.borrow().as_ref()
+                        != Some(&(result.device_id.clone(), result.path.clone()))
+                    {
+                        return;
+                    }
+                    self.folder_busy.set(false);
+                }
                 rebuild = self.affects_page(&payload);
                 if let ServerPayload::ShareResult { result } = payload.as_ref() {
                     self.file_result(result);
@@ -606,6 +643,9 @@ impl Window {
             }
             Event::Reply(id, result) => {
                 let request = self.pending.borrow_mut().remove(&id);
+                if matches!(request, Some(Request::Folder(..))) && result.is_err() {
+                    self.folder_busy.set(false);
+                }
                 if let Some(request) = &request {
                     self.file_reply(request, &result);
                     self.notification_reply_result(request, &result);
@@ -633,8 +673,10 @@ impl Window {
                             })
                             .collect();
                     }
-                    Ok(Reply::ClipboardHistory(entries)) => {
-                        self.model.borrow_mut().clipboard_history = Some(entries);
+                    Ok(Reply::ClipboardHistory(entries, mirror)) => {
+                        let mut model = self.model.borrow_mut();
+                        model.clipboard_history = Some(entries);
+                        model.clipboard_mirror = Some(mirror);
                     }
                     Ok(Reply::Transfers(activities)) => {
                         for activity in &activities {
@@ -656,9 +698,16 @@ impl Window {
                         self.model.borrow_mut().notice.clear();
                         if matches!(
                             request,
-                            Some(Request::PinClipboard(..) | Request::ClearClipboard(..))
+                            Some(
+                                Request::PinClipboard(..)
+                                    | Request::ClearClipboard(..)
+                                    | Request::Mirror(..)
+                            )
                         ) {
                             self.request(Request::ClipboardHistory);
+                        }
+                        if matches!(request, Some(Request::Phone(..) | Request::Call(..))) {
+                            self.transient_notice("Request queued for the phone.");
                         }
                         if matches!(request, Some(Request::NotificationReply(..))) {
                             self.transient_notice(
@@ -729,8 +778,9 @@ impl Window {
             | ServerPayload::MediaUpdated { .. }
             | ServerPayload::MediaRemoved { .. } => page == Page::Media,
             ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. } => {
-                page == Page::Overview
+                matches!(page, Page::Overview | Page::Calls)
             }
+            ServerPayload::Filesystem { .. } => page == Page::PhoneFiles,
             ServerPayload::ContactsSynced { .. } | ServerPayload::ContactsRemoved { .. } => {
                 page == Page::Contacts
             }
@@ -829,8 +879,20 @@ impl Window {
             .unwrap_or(0);
         self.devices
             .select_row(self.devices.row_at_index(index as i32).as_ref());
-        self.heading.set_label(self.page.get().name());
+        self.heading
+            .set_label(if self.page.get() == Page::PhoneFiles {
+                "Files"
+            } else {
+                self.page.get().name()
+            });
+        for (page, tab) in &self.tabs {
+            tab.set_active(
+                *page == self.page.get()
+                    || (*page == Page::Sharing && self.page.get() == Page::PhoneFiles),
+            );
+        }
         self.description.set_label(self.page.get().description());
+        self.service_status.set_visible(!model.connected);
         self.service_status.set_label(if model.connected {
             "●  Service connected"
         } else {
@@ -897,6 +959,8 @@ impl Window {
         }
         match self.page.get() {
             Page::Overview => self.overview(),
+            Page::Calls => self.calls(),
+            Page::PhoneFiles => self.phone_files(),
             Page::Notifications => self.notifications(),
             Page::Sharing => self.sharing(),
             Page::Contacts => self.contacts(),

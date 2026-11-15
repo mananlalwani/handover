@@ -28,6 +28,10 @@ pub enum Request {
     Clipboard(DeviceId, String),
     SyncContacts(DeviceId),
     Media(MediaCommand),
+    Phone(DeviceId, DeviceCommandAction, Option<bool>),
+    Folder(DeviceId, String),
+    Call(DeviceId, CallAction, Option<String>, u64),
+    Mirror(bool),
 }
 impl Request {
     pub fn read_key(&self) -> Option<u8> {
@@ -44,7 +48,7 @@ pub enum Reply {
     Pairing(Vec<NativePeer>, Vec<NativePendingPeer>),
     Contacts(Vec<Contact>),
     Transfers(Vec<TransferActivity>),
-    ClipboardHistory(Vec<handover_ipc::ClipboardHistoryEntry>),
+    ClipboardHistory(Vec<handover_ipc::ClipboardHistoryEntry>, bool),
     Accepted,
     Share(Option<String>),
 }
@@ -86,7 +90,10 @@ async fn execute(
         )),
         Request::Contacts => Ok(Reply::Contacts(client.contacts().await?)),
         Request::Transfers => Ok(Reply::Transfers(client.transfer_activity().await?)),
-        Request::ClipboardHistory => Ok(Reply::ClipboardHistory(client.clipboard_history().await?)),
+        Request::ClipboardHistory => Ok(Reply::ClipboardHistory(
+            client.clipboard_history().await?,
+            client.clipboard_mirror_status().await?,
+        )),
         Request::PinClipboard(id, pinned) => {
             client.set_clipboard_history_pin(id, pinned).await?;
             Ok(Reply::Accepted)
@@ -97,6 +104,42 @@ async fn execute(
         }
         Request::NotificationReply(id, text) => {
             client.reply_to_notification(id, text).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::Mirror(enabled) => {
+            client.set_clipboard_mirror(enabled).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::Call(id, action, address, generation) => {
+            client
+                .call_control_observed(id, action, address, Some(generation))
+                .await?;
+            Ok(Reply::Accepted)
+        }
+        Request::Folder(id, path) => {
+            client.native_filesystem_list(peer_id(&id)?, path).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::Phone(id, action, enabled) => {
+            let peer = peer_id(&id)?;
+            match action {
+                DeviceCommandAction::Ring => client.native_ring(peer).await?,
+                DeviceCommandAction::Ping => client.native_ping(peer).await?,
+                DeviceCommandAction::Lock => client.native_lock(peer).await?,
+                DeviceCommandAction::KeepAwake => {
+                    client
+                        .native_keep_awake(peer, enabled.unwrap_or(false))
+                        .await?
+                }
+                DeviceCommandAction::Tethering => client.native_tethering(peer).await?,
+                _ => {
+                    return Err(handover_ipc::IpcError::Server {
+                        code: handover_ipc::ErrorCode::UnsupportedCapability,
+                        message: "Unsupported phone control".into(),
+                        conversation_id: None,
+                    });
+                }
+            }
             Ok(Reply::Accepted)
         }
         Request::Pair(id, code) => {
@@ -243,4 +286,15 @@ fn rejection(code: handover_ipc::ErrorCode) -> &'static str {
         ErrorCode::BackendUnavailable => "The device service is unavailable.",
         _ => "The request was rejected. Check the device and try again.",
     }
+}
+
+fn peer_id(id: &DeviceId) -> Result<String, handover_ipc::IpcError> {
+    id.as_str()
+        .strip_prefix("native:")
+        .map(str::to_owned)
+        .ok_or_else(|| handover_ipc::IpcError::Server {
+            code: handover_ipc::ErrorCode::UnsupportedCapability,
+            message: "Unsupported device".into(),
+            conversation_id: None,
+        })
 }

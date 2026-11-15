@@ -3,6 +3,26 @@ use super::*;
 impl Window {
     pub(super) fn clipboard_history(self: &Rc<Self>) {
         let model = self.model.borrow();
+        if let Some(enabled) = model.clipboard_mirror {
+            let mirror = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            mirror.add_css_class("settings-row");
+            let label = text(
+                if enabled {
+                    "Clipboard mirroring is on"
+                } else {
+                    "Clipboard mirroring is off"
+                },
+                "body-copy",
+            );
+            label.set_hexpand(true);
+            mirror.append(&label);
+            mirror.append(&self.button(
+                if enabled { "Turn off" } else { "Turn on" },
+                model.connected,
+                Request::Mirror(!enabled),
+            ));
+            self.body.append(&mirror);
+        }
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let scope = text("History on this computer · All devices", "card-subtitle");
         scope.set_hexpand(true);

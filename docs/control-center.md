@@ -11,15 +11,16 @@ installer.
 
 ## Phone and task views
 
-The native window follows the Quickshell reference client's blue-gray palette,
-grouped sidebar, page headings, and device selector. Overview shows reported
-device connection, battery, network, and active call state. Workspace, Sharing,
-and Tools group the implemented task views. Messages opens the separate native
-Messages app. Devices & pairing opens trust and pairing controls.
+The window uses the native Messages app's neutral colors, sidebar selection,
+header sizing, and spacing. Select a phone once in the sidebar. Its scope stays
+visible as you move between Phone, Notifications, Calls, Files, Clipboard,
+Contacts, and Media. Device settings contains trust and pairing. Messages opens
+the separate native Messages app.
 
-The selected phone and its reported status appear beside the page heading.
-Offline battery values are labeled as last known. Send actions are on Overview
-and Send & transfers. Clipboard has a Send text action and computer-wide history.
+Phone groups device controls, including ringing, screen lock, awake-mode
+requests, and hotspot settings. Controls submit requests; they do not show an
+invented lock, awake, or hotspot state. Offline battery values are labeled as
+last known. File transfers and phone folder browsing share the Files view.
 
 The app selects the only connected paired device when there is one. Use the
 phone-name menu to switch devices or view all devices. Selection changes preserve
@@ -32,8 +33,8 @@ notification or contact view and keyboard focus.
 
 ## Devices and pairing
 
-Open Devices & pairing to review trusted devices and pending requests. Open
-Handover on Android and connect to the computer, then refresh Devices. Compare
+Open Device settings to review trusted devices and pending requests. Open
+Handover on Android and connect to the computer, then press Refresh. Compare
 the eight-digit code with the phone, check that the codes match, and approve.
 Reading a request never approves it. Forget device requires confirmation and
 removes saved trust; pairing will be required again. Fingerprints and manual
@@ -62,9 +63,9 @@ The control center does not change those phone preferences.
 
 ## Files, links, and clipboard
 
-Choose Send file on Overview, use Choose files in Send & transfers, or drop
-local files anywhere on the control center. Selection opens Send & transfers for review
-and sends nothing. Keep up to eight files in the selection, choose a connected phone, then
+Choose Send file on Phone, use Choose files in Files, or drop local files
+anywhere on the control center. Selection opens Files for review and sends
+nothing. Keep up to eight files in the selection, choose a connected phone, then
 press Send. Each file is a separate tracked transfer. Duplicate selections are
 ignored, and an oversized selection is rejected without partially adding it.
 Original filenames and bytes go through the existing file-sharing API; the app
@@ -92,6 +93,24 @@ observations may be absent. Completed incoming files have an explicit Open
 containing folder action. The control center never opens received paths or URLs
 automatically. Forgetting a device clears its activity metadata, not received files.
 
+## Phone folders
+
+Files has Transfers and On phone tabs. On phone requests a directory listing
+under the selected phone's shared root. Open a folder or enter a relative path.
+Responses from another device or a different requested path do not replace the
+current listing. Changing phones resets the folder location. Listing is an
+explicit read; opening the tab does not submit a request. The backend exposes
+folder listings, not downloads of listed files.
+
+## Calls
+
+Calls shows the phone's reported call phase and only offers Answer, Decline, and
+Hang up when reported as supported. Call requires a supported Place control and
+a valid ordinary phone number. Dial text survives view updates. The request
+carries the call generation the user saw, so the daemon rejects it if that call
+has changed before submission. Queued or phone-accepted controls do not confirm
+that a call connected. Use matching daemon and client binaries for this guard.
+
 ## Clipboard history
 
 Clipboard shows the daemon's saved text history for this computer, across all
@@ -102,19 +121,34 @@ clearing refresh from the daemon after acceptance.
 
 Clear history asks first and keeps pinned entries by default. Include pinned
 entries only with the checkbox. A disconnected daemon disables history changes;
-already loaded text remains available to copy. Opening this page does not enable
-clipboard mirroring or change Android permissions.
+already loaded text remains available to copy. Mirroring has an explicit Turn on
+or Turn off button based on the daemon's reported setting. Opening the page does
+not change it. A successful change refreshes its reported state.
 
 ## Contacts and media
 
 Contacts reads synced address books. Select a connected phone and use the sync
 button to request a refresh, which still needs Android contact permission.
 Search by name, phone number, or email and copy an address. The view shows up to
-100 matches. Contact photos and calling controls are not yet part of this view.
+100 matches. Contact photos and direct contact-to-call actions are not yet part of this view.
 
 Media shows reported phone players and supported Previous, Play, Pause,
 Play/Pause, and Next controls. The central control follows the reported playback
 state. Commands do not optimistically change that state.
+
+## Remaining interface gaps
+
+The native app does not yet expose every control in the QML client. These gaps
+remain explicit instead of appearing as nonfunctional buttons.
+
+| Capability | Native status |
+| --- | --- |
+| Laptop audio streaming and source/output/player routing | Not exposed; phone playback controls work |
+| Remote input and configured desktop commands | Not exposed |
+| Contact pictures and call shortcuts | Not exposed; contact search and copy work |
+| Local HFP call-audio observations | Not exposed; phone call controls work |
+| Desktop awake-policy overrides | Not exposed; daemon policy is unchanged |
+| Phone file downloads | No backend download operation; directory listings work |
 
 ## Validation
 
@@ -122,7 +156,8 @@ Run `python3 scripts/test-handover-control.py` for the private-display GTK and I
 fixture. `--dark`, `--width`, `--page`, and `--screenshot` support layout checks.
 The runner requires Xvfb and dbus-daemon; screenshots also need ImageMagick.
 Fictional devices and a private session bus exercise device selection,
+phone controls, call-generation guards, phone folder navigation and isolation,
 notification actions, reply drafts and lost acknowledgements, clipboard search,
-copy, pinning and clearing, pairing comparison, drag-and-drop review, independent
+copy, mirroring, pinning and clearing, pairing comparison, drag-and-drop review, independent
 file outcomes, lost replies, contact copy, media controls, and reconnect without command
 replay. Physical-phone effects need separate live validation.

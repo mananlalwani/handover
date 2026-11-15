@@ -16,7 +16,11 @@ use tokio::{
 
 fn device(online: bool) -> Device {
     Device {
-        id: DeviceId::new(if online { "phone-a" } else { "phone-b" }),
+        id: DeviceId::new(if online {
+            "native:phone-a"
+        } else {
+            "native:phone-b"
+        }),
         name: if online {
             "Pixel test"
         } else {
@@ -74,7 +78,12 @@ fn baseline() -> ServerPayload {
                 MediaControl::Next,
             ]),
         }],
-        calls: vec![],
+        calls: vec![CallState {
+            device_id: device(true).id,
+            phase: CallPhase::Ringing,
+            controls: BTreeSet::from([CallAction::Answer, CallAction::Decline]),
+            generation: 7,
+        }],
         messaging_accounts: vec![],
         conversations: vec![],
         typing_states: vec![],
@@ -145,6 +154,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         },
     ]));
     let worker_history = history.clone();
+    let mirror = Arc::new(AtomicBool::new(false));
+    let worker_mirror = mirror.clone();
     let (mutations, received) = mpsc::channel::<Method>();
     let command_gate = Arc::new(tokio::sync::Notify::new());
     let worker_gate = command_gate.clone();
@@ -162,7 +173,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             let listener=UnixListener::bind(path).unwrap();ready.send(()).unwrap();
             loop {
                 let (socket,_)=listener.accept().await.unwrap();if worker_offline.load(Ordering::SeqCst){drop(socket);continue;}
-                let history=worker_history.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
+                let mirror=worker_mirror.clone();let history=worker_history.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
                 tokio::spawn(async move {
                     let mut socket=BufReader::new(socket);
                     while let Ok(Some(request))=read_json_line::<_,IpcRequest>(&mut socket).await {
@@ -176,6 +187,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                     _=reset.changed()=>break,
                                 }}return;
                             },
+                            Method::ClipboardMirrorStatus=>ServerPayload::ClipboardMirror {enabled:mirror.load(Ordering::SeqCst)},
                             Method::ClipboardHistoryList=>ServerPayload::ClipboardHistory {entries:history.lock().unwrap().clone()},
                             Method::NativePeers=>ServerPayload::NativePeers {peers:vec![]},
                             Method::NativePending=>ServerPayload::NativePending {pending:vec![handover_ipc::NativePendingPeer {id:"pending-test".into(),name:"New phone".into(),code:"12345678".into()}]},
@@ -184,6 +196,9 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                             method=>{
                                 mutations.send(method.clone()).unwrap();
                                 match method {
+                                    Method::ClipboardMirror {enable}=>{mirror.store(enable,Ordering::SeqCst);ServerPayload::NativeAccepted},
+                                    Method::CallsControl {..}=>ServerPayload::CallQueued {request_id:"fixture-call".into()},
+                                    Method::NativeFilesystemList {path,..}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult {device_id:device(true).id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else{vec![]},failure:None}});ServerPayload::NativeAccepted},
                                     Method::NotificationDismiss {notification_id}=>{let _=events.send(ServerPayload::NotificationRemoved {notification_id:notification_id.clone()});ServerPayload::CommandCompleted {notification_id}},
                                     Method::NotificationReply {text,..} if text=="lost reply"=>return,
                                     Method::NotificationReply {text,..} if text=="rejected reply"=>ServerPayload::Error {code:handover_ipc::ErrorCode::NotificationNotFound,message:"fixture rejection".into(),conversation_id:None},
@@ -235,6 +250,107 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         !ui.status_bar.is_visible(),
         "a healthy connection needs no permanent banner"
     );
+    // Device actions are explicit requests, and acceptance does not invent device state.
+    assert_eq!(ui.page.get(), Page::Overview);
+    button(&ui.body, "Ring").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::NativeRing {
+            id: "phone-a".into()
+        }
+    );
+    assert!(ui.model.borrow().notice.contains("queued"));
+    ui.navigate(Page::Calls);
+    assert!(has_text(&ui.body, "Incoming call"));
+    assert!(
+        !descendants(&ui.body)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Button>().ok())
+            .any(|b| b.label().as_deref() == Some("Call"))
+    );
+    button(&ui.body, "Answer").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::CallsControl {
+            device_id: device(true).id,
+            action: CallAction::Answer,
+            address: None,
+            expected_generation: Some(7)
+        }
+    );
+    assert!(
+        has_text(&ui.body, "Incoming call"),
+        "queued answer does not claim a call connected"
+    );
+    ui.event(Event::State(Box::new(ServerPayload::CallUpdated {
+        call: CallState {
+            device_id: device(true).id,
+            phase: CallPhase::Idle,
+            controls: BTreeSet::from([CallAction::Place]),
+            generation: 8,
+        },
+    })));
+    spin(|| !ui.scheduled.get());
+    assert!(has_text(&ui.body, "No active call"));
+    let dial = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Entry>().ok())
+        .unwrap();
+    dial.set_text("*123#");
+    assert!(!button(&ui.body, "Call").is_sensitive());
+    dial.set_text("+12025550111");
+    button(&ui.body, "Call").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::CallsControl {
+            device_id: device(true).id,
+            action: CallAction::Place,
+            address: Some("+12025550111".into()),
+            expected_generation: Some(8)
+        }
+    );
+    ui.navigate(Page::Sharing);
+    button(&ui.body, "On phone").emit_clicked();
+    assert_eq!(ui.page.get(), Page::PhoneFiles);
+    assert!(
+        received.try_recv().is_err(),
+        "opening phone folders does not submit a request"
+    );
+    button(&ui.body, "Open folder").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "readme.txt"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::NativeFilesystemList {
+            id: "phone-a".into(),
+            path: ".".into()
+        }
+    );
+    button(&ui.body, "Open").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Empty folder"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::NativeFilesystemList {
+            id: "phone-a".into(),
+            path: "Downloads".into()
+        }
+    );
+    ui.event(Event::State(Box::new(ServerPayload::Filesystem {
+        result: FilesystemResult {
+            device_id: device(false).id,
+            request_id: "unrelated".into(),
+            path: "Downloads".into(),
+            entries: vec![],
+            failure: None,
+        },
+    })));
+    assert_eq!(
+        ui.model.borrow().folder.as_ref().unwrap().device_id,
+        device(true).id
+    );
+    ui.model.borrow_mut().notice.clear();
     ui.navigate(Page::Notifications);
     spin(|| !ui.scheduled.get());
     // Reply drafts live independently of rebuilt notification rows and never send on open.
@@ -358,6 +474,19 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     ui.navigate(Page::Clipboard);
     spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Fictional clipboard entry"));
     assert!(has_text(&ui.body, "All devices"));
+    assert!(has_text(&ui.body, "Clipboard mirroring is off"));
+    button(&ui.body, "Turn on").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Clipboard mirroring is on"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::ClipboardMirror { enable: true }
+    );
+    button(&ui.body, "Turn off").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Clipboard mirroring is off"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::ClipboardMirror { enable: false }
+    );
     let row = button(&ui.body, "Pin").parent().unwrap();
     button(&row, "Copy").emit_clicked();
     let (copied, copied_rx) = mpsc::channel();
@@ -867,6 +996,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     replacement.window.close();
     let page = match std::env::var("HANDOVER_CONTROL_TEST_PAGE").as_deref() {
         Ok("overview") => Page::Overview,
+        Ok("calls") => Page::Calls,
+        Ok("phone-files") => Page::PhoneFiles,
         Ok("notifications") => Page::Notifications,
         Ok("sharing") => Page::Sharing,
         Ok("contacts") => Page::Contacts,
