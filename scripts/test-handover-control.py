@@ -44,7 +44,7 @@ def main():
                         help="save the synthetic control center to this PNG path")
     parser.add_argument("--dark", action="store_true", help="use the native dark appearance")
     parser.add_argument("--width", type=int, default=1120, help="fixture window width in pixels")
-    parser.add_argument("--page",choices=["overview","notifications","sharing","contacts","media","connection"],default="overview")
+    parser.add_argument("--page",choices=["overview","notifications","sharing","contacts","media","connection"],default="notifications")
     args = parser.parse_args()
     if args.screenshot and not shutil.which("import"):
         raise SystemExit("ImageMagick import is required for --screenshot")

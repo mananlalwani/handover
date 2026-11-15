@@ -1,5 +1,5 @@
 use crate::{
-    connection::{self, Command, Event, Reply, Request},
+    connection::{self, Command, Event, Failure, Reply, Request},
     model::Model,
 };
 use adw::prelude::*;
@@ -12,13 +12,13 @@ use std::{
     rc::Rc,
 };
 
+mod files;
 mod pages;
 #[cfg(test)]
 mod tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Page {
-    Overview,
     Notifications,
     Sharing,
     Contacts,
@@ -28,30 +28,34 @@ pub(super) enum Page {
 impl Page {
     fn name(self) -> &'static str {
         match self {
-            Self::Overview => "Overview",
             Self::Notifications => "Notifications",
-            Self::Sharing => "Sharing",
+            Self::Sharing => "Files",
             Self::Contacts => "Contacts",
             Self::Media => "Media",
-            Self::Connection => "Connection",
+            Self::Connection => "Devices",
         }
     }
 }
 pub struct Window {
     pub window: gtk::ApplicationWindow,
     model: RefCell<Model>,
+    file_queue: RefCell<Vec<files::PickedFile>>,
     selected: RefCell<Option<DeviceId>>,
     selection_initialized: Cell<bool>,
     page: Cell<Page>,
     devices: gtk::ListBox,
-    navigation: gtk::ListBox,
+    tabs: Vec<(Page, gtk::ToggleButton)>,
+    device_picker: gtk::MenuButton,
+    device_name: gtk::Label,
+    device_popover: gtk::Popover,
+    phone_pane: gtk::Box,
+    phone_state: RefCell<Option<(Option<Device>, bool, bool)>>,
     rail_state: RefCell<Option<(bool, Vec<Device>)>>,
     device_rows: RefCell<Vec<Option<DeviceId>>>,
     body: gtk::Box,
     scroll: gtk::ScrolledWindow,
     body_dirty: Cell<bool>,
     heading: gtk::Label,
-    context: gtk::Label,
     status_bar: gtk::Box,
     status: gtk::Label,
     search: gtk::SearchEntry,
@@ -61,6 +65,9 @@ pub struct Window {
     refresh_again: RefCell<BTreeSet<u8>>,
     next: Cell<u64>,
     notice_generation: Cell<u64>,
+    progress_refresh: Cell<bool>,
+    close_confirmed: Cell<bool>,
+    close_prompt: Cell<bool>,
     rendering: Cell<bool>,
     scheduled: Cell<bool>,
 }
@@ -78,81 +85,97 @@ impl Window {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title("Handover")
-            .default_width(1060)
-            .default_height(740)
+            .default_width(990)
+            .default_height(700)
             .build();
         window.add_css_class("control");
         // The page header owns window controls and dragging; no second empty title bar.
         window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-        let rail = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        rail.set_width_request(210);
-        rail.add_css_class("device-rail");
-        let brand = gtk::Label::new(Some("Handover"));
-        brand.set_xalign(0.0);
-        brand.add_css_class("brand");
-        rail.append(&brand);
-        let caption = text("Devices", "section-caption");
-        rail.append(&caption);
+        let rail = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        rail.set_width_request(228);
+        rail.add_css_class("phone-pane");
+        let brand = text("Handover", "brand");
+        let brand_handle = gtk::WindowHandle::new();
+        brand_handle.set_child(Some(&brand));
+        rail.append(&brand_handle);
         let devices = gtk::ListBox::new();
-        rail.append(&devices);
-        let divider = gtk::Separator::new(gtk::Orientation::Horizontal);
-        divider.set_margin_top(14);
-        divider.set_margin_bottom(14);
-        divider.set_margin_start(10);
-        divider.set_margin_end(10);
-        rail.append(&divider);
-        let navigation = gtk::ListBox::new();
-        rail.append(&navigation);
-        let pages = [
-            Page::Overview,
-            Page::Notifications,
-            Page::Sharing,
-            Page::Contacts,
-            Page::Media,
-            Page::Connection,
-        ];
-        for (page, icon) in pages.into_iter().zip([
-            "view-grid-symbolic",
-            "preferences-system-notifications-symbolic",
-            "folder-download-symbolic",
-            "avatar-default-symbolic",
-            "multimedia-player-symbolic",
-            "preferences-system-symbolic",
-        ]) {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            row.append(&gtk::Image::from_icon_name(icon));
-            row.append(&text(page.name(), "nav-label"));
-            navigation.append(&row);
-        }
-        navigation.select_row(navigation.row_at_index(0).as_ref());
+        devices.add_css_class("device-list");
+        let device_popover = gtk::Popover::new();
+        device_popover.set_child(Some(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .min_content_width(235)
+                .max_content_height(320)
+                .propagate_natural_height(true)
+                .child(&devices)
+                .build(),
+        ));
+        let device_name = text("Choose a device", "device-title");
+        device_name.set_wrap(false);
+        device_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        device_name.set_hexpand(true);
+        device_name.set_max_width_chars(20);
+        let device_label = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        device_label.append(&device_name);
+        device_label.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+        let device_picker = gtk::MenuButton::builder()
+            .popover(&device_popover)
+            .child(&device_label)
+            .build();
+        device_picker.add_css_class("device-selector");
+        rail.append(&device_picker);
+        let phone_pane = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        phone_pane.set_margin_top(20);
+        rail.append(&phone_pane);
         let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         spacer.set_vexpand(true);
         rail.append(&spacer);
         let messages = gtk::Button::with_label("Messages ↗");
         messages.add_css_class("flat");
         rail.append(&messages);
+        let manage = gtk::Button::with_label("Devices & pairing");
+        manage.add_css_class("flat");
+        rail.append(&manage);
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         main.set_hexpand(true);
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        top.add_css_class("app-toolbar");
+        let navigation = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        navigation.set_hexpand(true);
+        let mut tabs = Vec::new();
+        let mut first = None::<gtk::ToggleButton>;
+        for page in [
+            Page::Notifications,
+            Page::Sharing,
+            Page::Contacts,
+            Page::Media,
+        ] {
+            let tab = gtk::ToggleButton::with_label(page.name());
+            if let Some(first) = &first {
+                tab.set_group(Some(first));
+            } else {
+                first = Some(tab.clone());
+            }
+            tab.add_css_class("view-tab");
+            navigation.append(&tab);
+            tabs.push((page, tab));
+        }
+        tabs[0].1.set_active(true);
+        top.append(&navigation);
+        top.append(&gtk::WindowControls::new(gtk::PackType::End));
+        let handle = gtk::WindowHandle::new();
+        handle.set_child(Some(&top));
+        main.append(&handle);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         header.add_css_class("page-header");
-        let heading = gtk::Label::new(Some("Overview"));
-        heading.set_xalign(0.0);
+        let heading = text("Notifications", "page-title");
         heading.set_hexpand(true);
-        heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        heading.add_css_class("page-title");
-        let title = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        title.set_hexpand(true);
-        let context = text("", "card-subtitle");
-        title.append(&heading);
-        title.append(&context);
-        header.append(&title);
+        header.append(&heading);
         let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh.set_tooltip_text(Some("Refresh current view"));
+        refresh.add_css_class("flat");
+        refresh.set_tooltip_text(Some("Refresh"));
         header.append(&refresh);
-        header.append(&gtk::WindowControls::new(gtk::PackType::End));
-        let handle = gtk::WindowHandle::new();
-        handle.set_child(Some(&header));
-        main.append(&handle);
+        main.append(&header);
         let search = gtk::SearchEntry::new();
         search.set_placeholder_text(Some("Search this view"));
         search.set_margin_top(12);
@@ -192,18 +215,23 @@ impl Window {
         let this = Rc::new(Self {
             window,
             model: RefCell::new(Model::default()),
+            file_queue: RefCell::new(Vec::new()),
             selected: RefCell::new(None),
             selection_initialized: Cell::new(false),
-            page: Cell::new(Page::Overview),
+            page: Cell::new(Page::Notifications),
             devices,
-            navigation: navigation.clone(),
+            tabs,
+            device_picker,
+            device_name,
+            device_popover,
+            phone_pane,
+            phone_state: RefCell::new(None),
             rail_state: RefCell::new(None),
             device_rows: RefCell::new(vec![]),
             body,
             scroll: scroll.clone(),
             body_dirty: Cell::new(true),
             heading,
-            context,
             status_bar,
             status,
             search,
@@ -213,6 +241,9 @@ impl Window {
             refresh_again: RefCell::new(BTreeSet::new()),
             next: Cell::new(0),
             notice_generation: Cell::new(0),
+            progress_refresh: Cell::new(false),
+            close_confirmed: Cell::new(false),
+            close_prompt: Cell::new(false),
             rendering: Cell::new(false),
             scheduled: Cell::new(false),
         });
@@ -225,13 +256,23 @@ impl Window {
                 this.event(event);
             }
         });
-        let weak = Rc::downgrade(&this);
-        navigation.connect_row_selected(move |_, row| {
-            if let (Some(this), Some(row)) = (weak.upgrade(), row) {
-                let page = pages[row.index() as usize];
-                if !this.rendering.get() && this.page.get() != page {
+        for (page, tab) in &this.tabs {
+            let page = *page;
+            let weak = Rc::downgrade(&this);
+            tab.connect_toggled(move |tab| {
+                if let Some(this) = weak.upgrade()
+                    && tab.is_active()
+                    && !this.rendering.get()
+                    && this.page.get() != page
+                {
                     this.navigate(page);
                 }
+            });
+        }
+        let weak = Rc::downgrade(&this);
+        manage.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.navigate(Page::Connection);
             }
         });
         let weak = Rc::downgrade(&this);
@@ -247,6 +288,7 @@ impl Window {
                     .cloned()
                     .flatten();
                 *this.selected.borrow_mut() = selected;
+                this.device_popover.popdown();
                 this.scroll.vadjustment().set_value(0.0);
                 this.render();
             }
@@ -290,25 +332,77 @@ impl Window {
             }
             glib::Propagation::Proceed
         });
+        let weak = Rc::downgrade(&this);
+        this.window.connect_close_request(move |_| {
+            weak.upgrade()
+                .map_or(glib::Propagation::Proceed, |this| this.confirm_close())
+        });
+        let file_drop = gtk::DropTarget::new(
+            gtk::gdk::FileList::static_type(),
+            gtk::gdk::DragAction::COPY,
+        );
+        let weak = Rc::downgrade(&this);
+        file_drop.connect_drop(move |_, value, _, _| {
+            if let (Some(this), Ok(files)) = (weak.upgrade(), value.get::<gtk::gdk::FileList>()) {
+                this.add_files(files.files())
+            } else {
+                false
+            }
+        });
+        this.window.add_controller(file_drop);
         this.window.add_controller(keys);
         this.render();
         this
+    }
+    fn confirm_close(self: &Rc<Self>) -> glib::Propagation {
+        let needs_review = self.file_queue.borrow().iter().any(|file| {
+            matches!(
+                file.status,
+                files::FileStatus::Ready
+                    | files::FileStatus::Submitting { .. }
+                    | files::FileStatus::Unconfirmed { .. }
+            )
+        });
+        if self.close_confirmed.get() || !needs_review {
+            return glib::Propagation::Proceed;
+        }
+        if self.close_prompt.replace(true) {
+            return glib::Propagation::Stop;
+        }
+        let dialog = adw::MessageDialog::new(
+            Some(&self.window),
+            Some("Close file selection?"),
+            Some(
+                "Unsent selections will be discarded. Closing does not cancel submitted transfers.",
+            ),
+        );
+        dialog.set_application(self.window.application().as_ref());
+        dialog.add_response("keep", "Keep open");
+        dialog.add_response("close", "Close");
+        dialog.set_close_response("keep");
+        dialog.set_default_response(Some("keep"));
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(None, move |dialog, response| {
+            if let Some(this) = weak.upgrade() {
+                this.close_prompt.set(false);
+                if response == "close" {
+                    this.close_confirmed.set(true);
+                    this.window.close();
+                }
+            }
+            dialog.close();
+        });
+        dialog.present();
+        glib::Propagation::Stop
     }
     fn navigate(self: &Rc<Self>, page: Page) {
         self.page.set(page);
         self.search.set_text("");
         self.scroll.vadjustment().set_value(0.0);
-        let index = match page {
-            Page::Overview => 0,
-            Page::Notifications => 1,
-            Page::Sharing => 2,
-            Page::Contacts => 3,
-            Page::Media => 4,
-            Page::Connection => 5,
-        };
         self.rendering.set(true);
-        self.navigation
-            .select_row(self.navigation.row_at_index(index).as_ref());
+        for (candidate, tab) in &self.tabs {
+            tab.set_active(*candidate == page);
+        }
         self.rendering.set(false);
         self.refresh_page();
         self.render();
@@ -417,6 +511,12 @@ impl Window {
             }
             Event::State(payload) => {
                 rebuild = self.affects_page(&payload);
+                if let ServerPayload::ShareResult { result } = payload.as_ref() {
+                    self.file_result(result);
+                    if self.page.get() == Page::Sharing {
+                        rebuild = true;
+                    }
+                }
                 let snapshot = matches!(*payload, ServerPayload::Snapshot { .. });
                 let transfers = matches!(
                     *payload,
@@ -428,8 +528,24 @@ impl Window {
                     *payload,
                     ServerPayload::ContactsSynced { .. } | ServerPayload::ContactsRemoved { .. }
                 );
+                let progress = matches!(payload.as_ref(), ServerPayload::ShareProgress { .. });
                 self.model.borrow_mut().apply(*payload);
-                if transfers || snapshot {
+                if progress {
+                    if self.page.get() == Page::Sharing && !self.progress_refresh.replace(true) {
+                        let weak = Rc::downgrade(self);
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(250),
+                            move || {
+                                if let Some(this) = weak.upgrade() {
+                                    this.progress_refresh.set(false);
+                                    if this.model.borrow().connected {
+                                        this.request(Request::Transfers);
+                                    }
+                                }
+                            },
+                        );
+                    }
+                } else if transfers || snapshot {
                     self.request(Request::Transfers);
                 }
                 if contacts || snapshot {
@@ -441,10 +557,13 @@ impl Window {
             }
             Event::Reply(id, result) => {
                 let request = self.pending.borrow_mut().remove(&id);
+                if let Some(request) = &request {
+                    self.file_reply(request, &result);
+                }
                 let key = request.as_ref().and_then(Request::read_key);
                 rebuild = match key {
-                    Some(0) => matches!(self.page.get(), Page::Connection | Page::Overview),
-                    Some(1) => matches!(self.page.get(), Page::Contacts | Page::Overview),
+                    Some(0) => self.page.get() == Page::Connection,
+                    Some(1) => self.page.get() == Page::Contacts,
                     Some(2) => self.page.get() == Page::Sharing,
                     _ => true,
                 };
@@ -464,20 +583,28 @@ impl Window {
                             .collect();
                     }
                     Ok(Reply::Transfers(activities)) => {
+                        for activity in &activities {
+                            if let TransferActivityEvent::Result { result } = &activity.event {
+                                self.file_result(result);
+                            }
+                        }
                         self.model.borrow_mut().transfers = activities
                     }
-                    Ok(Reply::Share(id)) => self.transient_notice(if id.is_some() {
-                        "Transfer accepted"
-                    } else {
-                        "Share accepted · No tracking available"
-                    }),
+                    Ok(Reply::Share(id)) => {
+                        self.request(Request::Transfers);
+                        self.transient_notice(if id.is_some() {
+                            "Transfer accepted"
+                        } else {
+                            "Share accepted · No tracking available"
+                        });
+                    }
                     Ok(Reply::Accepted) => {
                         self.model.borrow_mut().notice.clear();
                         if matches!(request, Some(Request::Pair(..) | Request::Forget(..))) {
                             self.request(Request::Pairing);
                         }
                     }
-                    Err(message) => self.model.borrow_mut().notice = message,
+                    Err(failure) => self.model.borrow_mut().notice = failure.message,
                 }
                 if let Some(key) = key
                     && self.refresh_again.borrow_mut().remove(&key)
@@ -518,32 +645,25 @@ impl Window {
             ServerPayload::Snapshot { .. }
             | ServerPayload::DeviceAdded { .. }
             | ServerPayload::DeviceRemoved { .. } => true,
-            ServerPayload::DeviceUpdated { device } => {
-                page == Page::Overview
-                    || self
-                        .model
-                        .borrow()
-                        .devices
-                        .get(&device.id)
-                        .is_none_or(|old| {
-                            old.connected != device.connected
-                                || old.paired != device.paired
-                                || old.capabilities != device.capabilities
-                        })
-            }
+            ServerPayload::DeviceUpdated { device } => self
+                .model
+                .borrow()
+                .devices
+                .get(&device.id)
+                .is_none_or(|old| {
+                    old.connected != device.connected
+                        || old.paired != device.paired
+                        || old.capabilities != device.capabilities
+                }),
             ServerPayload::NotificationAdded { .. }
             | ServerPayload::NotificationUpdated { .. }
-            | ServerPayload::NotificationRemoved { .. } => {
-                matches!(page, Page::Overview | Page::Notifications)
-            }
+            | ServerPayload::NotificationRemoved { .. } => page == Page::Notifications,
             ServerPayload::MediaAdded { .. }
             | ServerPayload::MediaUpdated { .. }
-            | ServerPayload::MediaRemoved { .. } => matches!(page, Page::Overview | Page::Media),
-            ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. } => {
-                page == Page::Overview
-            }
+            | ServerPayload::MediaRemoved { .. } => page == Page::Media,
+            ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. } => false,
             ServerPayload::ContactsSynced { .. } | ServerPayload::ContactsRemoved { .. } => {
-                matches!(page, Page::Overview | Page::Contacts)
+                page == Page::Contacts
             }
             _ => false,
         }
@@ -641,9 +761,25 @@ impl Window {
         self.devices
             .select_row(self.devices.row_at_index(index as i32).as_ref());
         self.heading.set_label(self.page.get().name());
-        let context = self.selected.borrow().as_ref().map(|id| model.name(id));
-        self.context.set_label(context.as_deref().unwrap_or(""));
-        self.context.set_visible(context.is_some());
+        let selected = self
+            .selected
+            .borrow()
+            .as_ref()
+            .and_then(|id| model.devices.get(id))
+            .cloned();
+        self.device_name.set_label(
+            selected
+                .as_ref()
+                .map(|d| d.name.as_str())
+                .unwrap_or("All devices"),
+        );
+        self.device_picker
+            .set_tooltip_text(selected.as_ref().map(|device| device.name.as_str()));
+        let phone_state = (selected.clone(), model.connected, self.busy());
+        let phone_changed = self.phone_state.borrow().as_ref() != Some(&phone_state);
+        if phone_changed {
+            *self.phone_state.borrow_mut() = Some(phone_state);
+        }
         self.status_bar
             .set_visible(!model.connected || !model.notice.is_empty());
         self.status.set_label(if model.notice.is_empty() {
@@ -652,6 +788,9 @@ impl Window {
             &model.notice
         });
         drop(model);
+        if phone_changed {
+            self.render_phone();
+        }
         self.refresh
             .set_visible(matches!(self.page.get(), Page::Connection | Page::Sharing));
         self.search
@@ -672,7 +811,6 @@ impl Window {
             self.body.remove(&child);
         }
         match self.page.get() {
-            Page::Overview => self.overview(),
             Page::Notifications => self.notifications(),
             Page::Sharing => self.sharing(),
             Page::Contacts => self.contacts(),

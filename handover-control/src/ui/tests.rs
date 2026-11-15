@@ -131,6 +131,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     let (events, _) = broadcast::channel::<ServerPayload>(32);
     let worker_events = events.clone();
     let (mutations, received) = mpsc::channel::<Method>();
+    let command_gate = Arc::new(tokio::sync::Notify::new());
+    let worker_gate = command_gate.clone();
     let offline = Arc::new(AtomicBool::new(false));
     let worker_offline = offline.clone();
     let (reset, watcher) = watch::channel(0u64);
@@ -145,7 +147,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             let listener=UnixListener::bind(path).unwrap();ready.send(()).unwrap();
             loop {
                 let (socket,_)=listener.accept().await.unwrap();if worker_offline.load(Ordering::SeqCst){drop(socket);continue;}
-                let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();
+                let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
                 tokio::spawn(async move {
                     let mut socket=BufReader::new(socket);
                     while let Ok(Some(request))=read_json_line::<_,IpcRequest>(&mut socket).await {
@@ -168,7 +170,10 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                 match method {
                                     Method::NotificationDismiss {notification_id}=>{let _=events.send(ServerPayload::NotificationRemoved {notification_id:notification_id.clone()});ServerPayload::CommandCompleted {notification_id}},
                                     Method::MediaControl {command}=>ServerPayload::MediaAccepted {id:command.id().clone()},
+                                    Method::ShareFile {file_url,..} if file_url.ends_with("unknown.txt")=>return,
+                                    Method::ShareFile {device_id,file_url}=>ServerPayload::ShareAccepted {device_id,transfer_id:Some(if file_url.ends_with("example.cc"){"code-transfer"}else{"photo-transfer"}.into())},
                                     Method::ShareUrl {device_id,..}=>ServerPayload::ShareAccepted {device_id,transfer_id:Some("fixture-share".into())},
+                                    Method::ClipboardSend {text,..} if text=="slow command"=>{gate.notified().await;ServerPayload::NativeAccepted},
                                     Method::ClipboardSend {..}=>return, // Simulate a lost acknowledgement after consuming the mutation.
                                     Method::NativePair {..}|Method::ContactsSync {..}=>ServerPayload::NativeAccepted,
                                     _=>ServerPayload::NativeAccepted,
@@ -200,9 +205,9 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             && ui.model.borrow().contacts.len() == 1
             && ui.model.borrow().pairing.len() == 1
             && ui.pending.borrow().is_empty()
-            && has_text(&ui.body, "81%")
+            && has_text(&ui.phone_pane, "81%")
     });
-    assert!(has_text(&ui.body, "81%"));
+    assert!(has_text(&ui.phone_pane, "81%"));
     assert!(received.try_recv().is_err());
     assert_eq!(*ui.selected.borrow(), Some(device(true).id));
     assert!(
@@ -269,17 +274,21 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             code: "12345678".into()
         }
     );
-    // Overview shortcuts select the correct device and keep the sidebar in sync.
-    ui.navigate(Page::Overview);
-    button(&ui.body, "Contacts").emit_clicked();
+    // A task tab changes the main view without losing the selected phone.
+    ui.devices.select_row(ui.devices.row_at_index(1).as_ref());
+    ui.tabs
+        .iter()
+        .find(|(page, _)| *page == Page::Contacts)
+        .unwrap()
+        .1
+        .set_active(true);
     assert_eq!(ui.page.get(), Page::Contacts);
-    assert_eq!(ui.navigation.selected_row().unwrap().index(), 3);
     assert_eq!(*ui.selected.borrow(), Some(device(true).id));
     // Only this explicit dialog submission sends a URL.
     *ui.selected.borrow_mut() = Some(device(true).id);
     ui.page.set(Page::Sharing);
     ui.render();
-    button(&ui.body, "Send link").emit_clicked();
+    button(&ui.phone_pane, "Send link").emit_clicked();
     let dialog = app
         .windows()
         .into_iter()
@@ -303,7 +312,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     assert!(has_text(&ui.body, "Received by phone"));
     // Review clipboard contents explicitly, then lose the reply after the fixture consumes the command.
     ui.window.clipboard().set_text("Fictional clipboard text");
-    button(&ui.body, "Send clipboard text").emit_clicked();
+    button(&ui.phone_pane, "Send clipboard text").emit_clicked();
     let dialog = app
         .windows()
         .into_iter()
@@ -324,6 +333,154 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         matches!(received.try_recv().unwrap(),Method::ClipboardSend {text,..} if text=="Fictional clipboard text")
     );
     assert!(ui.model.borrow().notice.contains("outcome is unknown"));
+    // Dropping on the window opens Files for review. It never sends until the explicit Send action.
+    ui.navigate(Page::Notifications);
+    let code_path = root.join("example.cc");
+    std::fs::write(&code_path, "int main() { return 0; }\n").unwrap();
+    let photo_path = root.join("photo.png");
+    std::fs::write(&photo_path, b"fixture-file").unwrap();
+    let chosen = [
+        gio::File::for_path(&code_path),
+        gio::File::for_path(&photo_path),
+    ];
+    let controllers = ui.window.observe_controllers();
+    let drop_target = (0..controllers.n_items())
+        .find_map(|n| controllers.item(n).and_downcast::<gtk::DropTarget>())
+        .unwrap();
+    let payload = glib::BoxedValue(gtk::gdk::FileList::from_array(&chosen).to_value()).to_value();
+    assert!(drop_target.emit_by_name::<bool>("drop", &[&payload, &0.0f64, &0.0f64]));
+    spin(|| has_text(&ui.body, "example.cc"));
+    assert_eq!(ui.page.get(), Page::Sharing);
+    assert_eq!(ui.file_queue.borrow().len(), 2);
+    assert!(received.try_recv().is_err());
+    // Recipient changes preserve the selection and gate Send by actual capabilities and connection.
+    ui.devices.select_row(ui.devices.row_at_index(2).as_ref());
+    assert!(!button(&ui.body, "Send selected files").is_sensitive());
+    assert_eq!(ui.file_queue.borrow().len(), 2);
+    ui.devices.select_row(ui.devices.row_at_index(1).as_ref());
+    button(&ui.body, "Send selected files").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty());
+    let mut sent = Vec::new();
+    for _ in 0..2 {
+        match received.try_recv().unwrap() {
+            Method::ShareFile {
+                device_id,
+                file_url,
+            } => {
+                assert_eq!(device_id, device(true).id);
+                sent.push(file_url);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(sent.contains(&chosen[0].uri().to_string()));
+    assert!(sent.contains(&chosen[1].uri().to_string()));
+    assert!(
+        ui.file_queue
+            .borrow()
+            .iter()
+            .all(|file| matches!(file.status, files::FileStatus::Accepted { .. })),
+        "command acceptance must not claim receipt"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&code_path).unwrap(),
+        "int main() { return 0; }\n"
+    );
+    events
+        .send(ServerPayload::ShareResult {
+            result: ShareResult {
+                device_id: device(true).id,
+                transfer_id: "code-transfer".into(),
+                status: ShareStatus::Completed,
+                reason: None,
+            },
+        })
+        .unwrap();
+    events
+        .send(ServerPayload::ShareResult {
+            result: ShareResult {
+                device_id: device(true).id,
+                transfer_id: "photo-transfer".into(),
+                status: ShareStatus::Failed,
+                reason: Some(ShareFailure::Storage),
+            },
+        })
+        .unwrap();
+    spin(|| {
+        matches!(
+            ui.file_queue.borrow()[0].status,
+            files::FileStatus::Received { .. }
+        ) && matches!(
+            ui.file_queue.borrow()[1].status,
+            files::FileStatus::Failed { .. }
+        )
+    });
+    assert!(!button(&ui.body, "Send selected files").is_sensitive());
+    // Duplicate drops and oversized selections do not add files or send partial selections.
+    assert!(!ui.add_files(chosen.to_vec()));
+    assert_eq!(ui.file_queue.borrow().len(), 2);
+    let oversized = (0..9)
+        .map(|n| gio::File::for_path(root.join(format!("extra-{n}.txt"))))
+        .collect();
+    assert!(!ui.add_files(oversized));
+    assert_eq!(ui.file_queue.borrow().len(), 2);
+    assert!(received.try_recv().is_err());
+    // Closing an unsent selection offers Keep open rather than silently losing it.
+    let unsent = gio::File::for_path(root.join("unsent.txt"));
+    std::fs::write(root.join("unsent.txt"), "not sent").unwrap();
+    assert!(ui.add_files(vec![unsent.clone()]));
+    ui.window.close();
+    assert!(ui.close_prompt.get());
+    let prompt = app
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::MessageDialog>().ok())
+        .unwrap();
+    prompt.response("keep");
+    assert!(!prompt.is_visible());
+    assert!(ui.window.is_visible());
+    assert_eq!(ui.file_queue.borrow().len(), 3);
+    let name = descendants(&ui.body)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Label>().ok())
+        .find(|label| label.text() == "unsent.txt")
+        .unwrap();
+    let row = name.parent().unwrap().parent().unwrap();
+    button(
+        &row,
+        "Remove from list; submitted transfers are not cancelled",
+    )
+    .emit_clicked();
+    assert_eq!(ui.file_queue.borrow().len(), 2);
+    // A consumed file request with a lost reply stays unconfirmed and is not automatically resent.
+    let unknown = gio::File::for_path(root.join("unknown.txt"));
+    std::fs::write(root.join("unknown.txt"), "uncertain fixture").unwrap();
+    assert!(ui.add_files(vec![unknown.clone()]));
+    button(&ui.body, "Send selected files").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && matches!(
+                ui.file_queue.borrow()[2].status,
+                files::FileStatus::Unconfirmed { .. }
+            )
+    });
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::ShareFile {file_url,..} if file_url==unknown.uri())
+    );
+    assert!(received.try_recv().is_err());
+    assert!(!button(&ui.body, "Send selected files").is_sensitive());
+    let name = descendants(&ui.body)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Label>().ok())
+        .find(|label| label.text() == "unknown.txt")
+        .unwrap();
+    let row = name.parent().unwrap().parent().unwrap();
+    button(
+        &row,
+        "Remove from list; submitted transfers are not cancelled",
+    )
+    .emit_clicked();
+    assert_eq!(ui.file_queue.borrow().len(), 2);
     // Contact search, copying, and returned snapshots are views of daemon-owned data.
     ui.page.set(Page::Contacts);
     ui.search.set_text("Alex");
@@ -356,6 +513,46 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         ui.model.borrow().media.values().next().unwrap().playback,
         PlaybackState::Playing
     );
+    // A slow command reply must not block the subscription's live device updates.
+    spin(|| ui.pending.borrow().is_empty());
+    ui.request(Request::Clipboard(device(true).id, "slow command".into()));
+    let mut admitted = false;
+    spin(|| {
+        if let Ok(Method::ClipboardSend { text, .. }) = received.try_recv() {
+            assert_eq!(text, "slow command");
+            admitted = true;
+        }
+        admitted
+    });
+    let mut changed = device(true);
+    changed.battery = Some(BatteryState::new(79, true).unwrap());
+    events
+        .send(ServerPayload::DeviceUpdated { device: changed })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline
+        && ui.model.borrow().devices[&device(true).id]
+            .battery
+            .unwrap()
+            .percentage()
+            != 79
+    {
+        while glib::MainContext::default().pending() {
+            glib::MainContext::default().iteration(false);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let responsive = ui.model.borrow().devices[&device(true).id]
+        .battery
+        .unwrap()
+        .percentage()
+        == 79;
+    command_gate.notify_one();
+    assert!(
+        responsive,
+        "live subscription updates were blocked by a pending command reply"
+    );
+    spin(|| ui.pending.borrow().is_empty());
     // A replacement snapshot replaces the whole inventory, including removed notifications.
     let snapshot = ServerPayload::Snapshot {
         devices: vec![device(true)],
@@ -369,13 +566,35 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     };
     events.send(snapshot).unwrap();
     spin(|| ui.model.borrow().notifications.is_empty());
+    // Work waiting behind an in-flight command is rejected when its subscription is lost.
+    spin(|| ui.pending.borrow().is_empty());
+    ui.request(Request::Clipboard(device(true).id, "slow command".into()));
+    let mut admitted = false;
+    spin(|| {
+        if let Ok(Method::ClipboardSend { text, .. }) = received.try_recv() {
+            assert_eq!(text, "slow command");
+            admitted = true;
+        }
+        admitted
+    });
+    ui.request(Request::Clipboard(
+        device(true).id,
+        "stale queued command".into(),
+    ));
     offline.store(true, Ordering::SeqCst);
     reset.send(1).unwrap();
     spin(|| !ui.model.borrow().connected);
+    command_gate.notify_one();
+    spin(|| ui.pending.borrow().is_empty());
+    assert!(ui.model.borrow().notice.contains("Nothing was submitted"));
+    assert!(
+        received.try_recv().is_err(),
+        "queued work must not start after session loss"
+    );
     ui.page.set(Page::Sharing);
     ui.render();
-    assert!(!button(&ui.body, "Send file").is_sensitive());
-    assert!(!button(&ui.body, "Send link").is_sensitive());
+    assert!(!button(&ui.phone_pane, "Send file").is_sensitive());
+    assert!(!button(&ui.phone_pane, "Send link").is_sensitive());
     offline.store(false, Ordering::SeqCst);
     spin(|| ui.model.borrow().connected && ui.pending.borrow().is_empty());
     assert!(
@@ -396,7 +615,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         Ok("contacts") => Page::Contacts,
         Ok("media") => Page::Media,
         Ok("connection") => Page::Connection,
-        _ => Page::Overview,
+        _ => Page::Notifications,
     };
     ui.navigate(page);
     if let Some(path) = std::env::var_os("HANDOVER_CONTROL_TEST_SCREENSHOT") {

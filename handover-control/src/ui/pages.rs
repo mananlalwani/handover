@@ -6,208 +6,112 @@ impl Window {
         button.set_sensitive(ready && !self.busy());
         let weak = Rc::downgrade(self);
         button.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
+            if let Some(this) = weak.upgrade()
+                && !this.busy()
+            {
                 this.request(request.clone());
             }
         });
         button
     }
-    pub(super) fn overview(self: &Rc<Self>) {
+    pub(super) fn render_phone(self: &Rc<Self>) {
+        while let Some(child) = self.phone_pane.first_child() {
+            self.phone_pane.remove(&child);
+        }
         let model = self.model.borrow();
-        if model.devices.is_empty() {
-            self.body.append(&empty(
-                "phone-symbolic",
+        let selected = self.selected.borrow();
+        let Some(device) = selected.as_ref().and_then(|id| model.devices.get(id)) else {
+            let image = gtk::Image::from_icon_name("computer-symbolic");
+            image.set_pixel_size(42);
+            image.set_halign(gtk::Align::Start);
+            self.phone_pane.append(&image);
+            self.phone_pane.append(&text(
                 if model.connected {
-                    "No devices"
+                    "All devices"
                 } else {
                     "Connecting…"
                 },
-                if model.connected {
-                    "Open Handover on your phone to connect."
-                } else {
-                    ""
-                },
+                "phone-heading",
             ));
-            let weak = Rc::downgrade(self);
-            let button = gtk::Button::with_label("Add a device");
-            button.set_halign(gtk::Align::Center);
-            button.connect_clicked(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    this.navigate(Page::Connection);
-                }
-            });
-            button.set_visible(model.connected);
-            self.body.append(&button);
+            self.phone_pane.append(&text(
+                "Choose a phone above to send files or use its controls.",
+                "card-subtitle",
+            ));
             return;
-        }
-        for device in model
-            .devices
-            .values()
-            .filter(|d| self.matches_device(&d.id))
-        {
-            let connected = model.ready(&device.id);
-            let panel = gtk::Box::new(gtk::Orientation::Vertical, 20);
-            panel.add_css_class("device-panel");
-            let header = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-            let icon = gtk::Image::from_icon_name("phone-symbolic");
-            icon.set_pixel_size(38);
-            icon.add_css_class("device-icon");
-            header.append(&icon);
-            let identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
-            identity.set_hexpand(true);
-            identity.append(&text(&device.name, "device-name"));
-            let status = text(
-                if connected {
-                    "Connected"
-                } else if !device.paired {
-                    "Not paired"
-                } else {
-                    "Offline"
-                },
-                if connected {
-                    "connected-label"
-                } else {
-                    "card-subtitle"
-                },
-            );
-            identity.append(&status);
-            if let Some(network) = device.connectivity
-                && connected
-            {
-                let transport = match network.transport {
-                    ConnectivityTransport::Wifi => "Wi-Fi",
-                    ConnectivityTransport::Ethernet => "Ethernet",
-                    ConnectivityTransport::Cellular => "Cellular",
-                    ConnectivityTransport::Bluetooth => "Bluetooth",
-                    ConnectivityTransport::Other => "Other network",
-                    ConnectivityTransport::None => "No network",
-                };
-                identity.append(&text(
-                    &format!(
-                        "{transport}{}",
-                        if network.metered { " · Metered" } else { "" }
-                    ),
-                    "card-subtitle",
-                ));
-            }
-            header.append(&identity);
-            if let Some(battery) = device.battery {
-                let level = gtk::Box::new(gtk::Orientation::Vertical, 3);
-                level.set_halign(gtk::Align::End);
-                level.append(&text(
-                    &format!("{}%", battery.percentage()),
-                    "battery-value",
-                ));
-                level.append(&text(
-                    if !connected {
-                        "Last known"
+        };
+        let icon = gtk::Image::from_icon_name("phone-symbolic");
+        icon.set_pixel_size(48);
+        icon.set_halign(gtk::Align::Start);
+        icon.add_css_class("phone-symbol");
+        self.phone_pane.append(&icon);
+        let ready = model.ready(&device.id);
+        self.phone_pane.append(&text(
+            if ready {
+                "Connected"
+            } else if !device.paired {
+                "Not paired"
+            } else {
+                "Offline"
+            },
+            if ready {
+                "connected-label"
+            } else {
+                "card-subtitle"
+            },
+        ));
+        if let Some(battery) = device.battery {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+            row.append(&gtk::Image::from_icon_name(if battery.charging {
+                "battery-good-charging-symbolic"
+            } else {
+                "battery-good-symbolic"
+            }));
+            row.append(&text(
+                &format!(
+                    "{}%{}",
+                    battery.percentage(),
+                    if !ready {
+                        " · Last known"
                     } else if battery.charging {
-                        "Charging"
+                        " · Charging"
                     } else {
-                        "Battery"
-                    },
-                    "card-subtitle",
-                ));
-                let bar = gtk::ProgressBar::new();
-                bar.set_fraction(f64::from(battery.percentage()) / 100.0);
-                bar.set_width_request(70);
-                bar.add_css_class("battery-bar");
-                level.append(&bar);
-                header.append(&level);
-            }
-            panel.append(&header);
-            panel.append(&self.share_actions(&device.id));
-            let links = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            links.add_css_class("detail-list");
-            let count = model
-                .notifications
-                .keys()
-                .filter(|id| id.device_id == device.id)
-                .count();
-            let contacts = model
-                .contacts
-                .iter()
-                .filter(|c| c.device_id == device.id)
-                .count();
-            let media = model.media.values().find(|p| p.id.device_id == device.id);
-            for (title, description, icon, page) in [
-                (
-                    "Notifications",
-                    format!("{count}"),
-                    "preferences-system-notifications-symbolic",
-                    Page::Notifications,
-                ),
-                (
-                    "Contacts",
-                    if contacts == 0 {
-                        "Address book".into()
-                    } else {
-                        contacts.to_string()
-                    },
-                    "avatar-default-symbolic",
-                    Page::Contacts,
-                ),
-                (
-                    "Media",
-                    media
-                        .and_then(|p| p.title.clone())
-                        .unwrap_or_else(|| "No active players".into()),
-                    "multimedia-player-symbolic",
-                    Page::Media,
-                ),
-            ] {
-                let row = gtk::Button::new();
-                row.set_tooltip_text(Some(title));
-                row.add_css_class("detail-row");
-                row.add_css_class("flat");
-                let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-                content.append(&gtk::Image::from_icon_name(icon));
-                let title = text(title, "body-copy");
-                title.set_hexpand(true);
-                content.append(&title);
-                let value = text(&description, "card-subtitle");
-                value.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                value.set_max_width_chars(24);
-                value.set_wrap(false);
-                content.append(&value);
-                content.append(&gtk::Image::from_icon_name("go-next-symbolic"));
-                row.set_child(Some(&content));
-                let weak = Rc::downgrade(self);
-                let id = device.id.clone();
-                row.connect_clicked(move |_| {
-                    if let Some(this) = weak.upgrade() {
-                        *this.selected.borrow_mut() = Some(id.clone());
-                        this.navigate(page);
+                        ""
                     }
-                });
-                links.append(&row);
-            }
-            if let Some(call) = model.calls.get(&device.id)
-                && matches!(call.phase, CallPhase::Ringing | CallPhase::OffHook)
-            {
-                links.append(&text(
-                    if call.phase == CallPhase::Ringing {
-                        "Incoming call"
-                    } else {
-                        "Call in progress"
-                    },
-                    "call-status",
-                ));
-            }
-            panel.append(&links);
-            self.body.append(&panel);
+                ),
+                "phone-stat",
+            ));
+            self.phone_pane.append(&row);
         }
-        if !model.pairing.is_empty() {
-            let button =
-                gtk::Button::with_label(&format!("{} device waiting to pair", model.pairing.len()));
-            button.add_css_class("flat");
-            let weak = Rc::downgrade(self);
-            button.connect_clicked(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    this.navigate(Page::Connection);
-                }
-            });
-            self.body.append(&button);
+        if ready && let Some(network) = device.connectivity {
+            let name = match network.transport {
+                ConnectivityTransport::Wifi => "Wi-Fi",
+                ConnectivityTransport::Ethernet => "Ethernet",
+                ConnectivityTransport::Cellular => "Cellular",
+                ConnectivityTransport::Bluetooth => "Bluetooth",
+                ConnectivityTransport::Other => "Other network",
+                ConnectivityTransport::None => "No network",
+            };
+            self.phone_pane.append(&text(
+                &format!("{name}{}", if network.metered { " · Metered" } else { "" }),
+                "card-subtitle",
+            ));
+        }
+        let divider = gtk::Separator::new(gtk::Orientation::Horizontal);
+        divider.set_margin_top(8);
+        divider.set_margin_bottom(4);
+        self.phone_pane.append(&divider);
+        self.phone_pane.append(&self.share_actions(&device.id));
+        if let Some(call) = model.calls.get(&device.id)
+            && matches!(call.phase, CallPhase::Ringing | CallPhase::OffHook)
+        {
+            self.phone_pane.append(&text(
+                if call.phase == CallPhase::Ringing {
+                    "Incoming call"
+                } else {
+                    "Call in progress"
+                },
+                "phone-stat",
+            ));
         }
     }
     fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::FlowBox {
@@ -220,11 +124,11 @@ impl Window {
                 .is_some_and(|d| d.capabilities.contains(&Capability::FileTransfer));
         let actions = gtk::FlowBox::new();
         actions.set_selection_mode(gtk::SelectionMode::None);
-        actions.set_max_children_per_line(3);
+        actions.set_max_children_per_line(1);
         actions.set_min_children_per_line(1);
         actions.set_column_spacing(8);
         actions.set_row_spacing(8);
-        actions.set_homogeneous(true);
+        actions.set_homogeneous(false);
         for (label, icon, kind) in [
             ("Send file", "folder-open-symbolic", 0),
             ("Send link", "insert-link-symbolic", 1),
@@ -244,7 +148,9 @@ impl Window {
             button.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
                     if kind == 0 {
-                        this.choose_file_to(id.clone());
+                        *this.selected.borrow_mut() = Some(id.clone());
+                        this.navigate(Page::Sharing);
+                        this.choose_files();
                     } else {
                         this.text_dialog_to(id.clone(), kind - 1);
                     }
@@ -353,17 +259,7 @@ impl Window {
     }
     pub(super) fn sharing(self: &Rc<Self>) {
         let model = self.model.borrow();
-        if let Some(id) = self.selected.borrow().clone() {
-            self.body.append(&self.share_actions(&id));
-        } else {
-            self.body.append(&text("Send to", "list-heading"));
-            for device in model.devices.values() {
-                let row = gtk::Box::new(gtk::Orientation::Vertical, 8);
-                row.append(&text(&device.name, "notification-title"));
-                row.append(&self.share_actions(&device.id));
-                self.body.append(&row);
-            }
-        }
+        self.body.append(&self.file_composer());
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         heading.append(&text("Recent transfers", "list-heading"));
         let note = text("This session", "card-subtitle");
@@ -452,32 +348,9 @@ impl Window {
             self.body.append(&card);
         }
         if count == 0 {
-            self.body.append(&empty(
-                "folder-download-symbolic",
-                "No recent transfers",
-                "Send a file or link to get started.",
-            ));
+            self.body
+                .append(&text("No recent transfers", "card-subtitle"));
         }
-    }
-    fn choose_file_to(self: &Rc<Self>, id: DeviceId) {
-        let dialog = gtk::FileDialog::builder()
-            .title(format!("Send to {}", self.model.borrow().name(&id)))
-            .build();
-        let weak = Rc::downgrade(self);
-        dialog.open(
-            Some(&self.window),
-            None::<&gio::Cancellable>,
-            move |result| {
-                if let (Some(this), Ok(file)) = (weak.upgrade(), result) {
-                    if file.path().is_none() {
-                        this.model.borrow_mut().notice = "Choose a local file.".into();
-                        this.schedule();
-                        return;
-                    }
-                    this.request(Request::SendFile(id, file.uri().to_string()));
-                }
-            },
-        );
     }
     fn text_dialog_to(self: &Rc<Self>, id: DeviceId, kind: u8) {
         let dialog = adw::MessageDialog::new(
@@ -874,7 +747,7 @@ impl Window {
         self.body.append(&help);
     }
 }
-fn failure(value: ShareFailure) -> &'static str {
+pub(super) fn failure(value: ShareFailure) -> &'static str {
     match value {
         ShareFailure::InvalidResource => "Invalid resource",
         ShareFailure::SizeLimit => "Size limit",

@@ -232,7 +232,10 @@ and upgrade checks; they do not block the app implementation.
 
 ## 7. Native control center
 
-The native Linux control center now brings device status, code-comparison pairing,
+The native Linux control center has a persistent phone pane and task views for
+notifications, files, contacts, and media. File selection supports review, drag
+and drop, and independent reported outcomes without resending unknown requests.
+It brings device status, code-comparison pairing,
 notification actions, file and link sharing, reviewed clipboard text, synced
 contacts, and phone media controls into one daemon client. Ordinary
 `handover-gui` launches prefer the new app; explicit QML and send-picker entry

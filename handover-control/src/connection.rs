@@ -1,6 +1,13 @@
 use handover_core::*;
 use handover_ipc::{Client, NativePeer, NativePendingPeer, ServerPayload};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -35,11 +42,26 @@ pub enum Reply {
     Accepted,
     Share(Option<String>),
 }
+pub struct Failure {
+    pub message: String,
+    pub uncertain: bool,
+}
+impl Failure {
+    fn known(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            uncertain: false,
+        }
+    }
+    fn unknown() -> Self {
+        Self {message:"No confirmation received. The outcome is unknown; check the device before trying again.".into(),uncertain:true}
+    }
+}
 pub enum Event {
     Connected(Box<ServerPayload>),
     Disconnected,
     State(Box<ServerPayload>),
-    Reply(u64, Result<Reply, String>),
+    Reply(u64, Result<Reply, Failure>),
 }
 pub struct Command {
     pub id: u64,
@@ -93,8 +115,27 @@ async fn execute(
     }
 }
 
+async fn run_request(path: &std::path::Path, request: Request) -> Result<Reply, Failure> {
+    let mutation = request.read_key().is_none();
+    match tokio::time::timeout(Duration::from_secs(12), execute(path, request)).await {
+        Ok(Ok(reply)) => Ok(reply),
+        Ok(Err(handover_ipc::IpcError::Server {
+            code: handover_ipc::ErrorCode::SendOutcomeUnknown,
+            ..
+        })) => Err(Failure::unknown()),
+        Ok(Err(handover_ipc::IpcError::Server { code, .. })) => {
+            Err(Failure::known(rejection(code)))
+        }
+        _ => Err(if mutation {
+            Failure::unknown()
+        } else {
+            Failure::known("Could not refresh this view. Reopen it or reconnect to try again.")
+        }),
+    }
+}
+
 pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<Event>) {
-    let (commands, mut incoming) = mpsc::channel::<Command>(8);
+    let (commands, mut incoming) = mpsc::channel::<Command>(16);
     let (events, receiver) = async_channel::bounded(32);
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -103,36 +144,50 @@ pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<E
             .build()
             .expect("control center runtime");
         runtime.block_on(async move {
+            let session=Arc::new(AtomicU64::new(0));
+            let (execution,mut requests)=mpsc::channel::<(u64,Command)>(16);
+            let worker_session=session.clone();let worker_events=events.clone();let worker_path=path.clone();
+            tokio::spawn(async move {
+                while let Some((generation,command))=requests.recv().await {
+                    // Queued work from a lost subscription is rejected, never replayed in a new session.
+                    let read=command.request.read_key().is_some();
+                    let mut result=if worker_session.load(Ordering::Acquire)==generation {
+                        run_request(&worker_path,command.request).await
+                    }else{Err(Failure::known("Connection changed. Nothing was submitted."))};
+                    if read&&worker_session.load(Ordering::Acquire)!=generation {result=Err(Failure::known("Connection changed. Refresh this view to try again."));}
+                    if worker_events.send(Event::Reply(command.id,result)).await.is_err(){break;}
+                }
+            });
+            let mut generation=0u64;
             loop {
                 let connection=tokio::time::timeout(Duration::from_secs(5),async {
                     Client::connect_to(path.clone()).await?.subscribe_control_center().await
                 }).await;
                 let Ok(Ok(mut subscription))=connection else {
-                    if events.send(Event::Disconnected).await.is_err() {return;}
+                    if events.send(Event::Disconnected).await.is_err(){return;}
                     let delay=tokio::time::sleep(Duration::from_secs(2));tokio::pin!(delay);
                     loop {tokio::select! {
                         _=&mut delay=>break,
                         command=incoming.recv()=>match command {
-                            Some(command)=>{if events.send(Event::Reply(command.id,Err("Handover is offline. Nothing was submitted.".into()))).await.is_err(){return;}},
+                            Some(command)=>{if events.send(Event::Reply(command.id,Err(Failure::known("Handover is offline. Nothing was submitted.")))).await.is_err(){return;}},
                             None=>return,
                         }
                     }}
                     continue;
                 };
-                while let Ok(command)=incoming.try_recv() {
-                    if events.send(Event::Reply(command.id,Err("Connection changed. Nothing was submitted.".into()))).await.is_err(){return;}
-                }
+                while let Ok(command)=incoming.try_recv(){if events.send(Event::Reply(command.id,Err(Failure::known("Connection changed. Nothing was submitted.")))).await.is_err(){return;}}
+                let Some(next)=generation.checked_add(1) else{return;};generation=next;session.store(generation,Ordering::Release);
                 let baseline=ServerPayload::Snapshot {
-                    devices:std::mem::take(&mut subscription.devices),notifications:std::mem::take(&mut subscription.notifications),
-                    media_sessions:std::mem::take(&mut subscription.media_sessions),calls:std::mem::take(&mut subscription.calls),
-                    messaging_accounts:vec![],conversations:vec![],typing_states:vec![],read_states:vec![],
+                    devices:std::mem::take(&mut subscription.devices),notifications:std::mem::take(&mut subscription.notifications),media_sessions:std::mem::take(&mut subscription.media_sessions),calls:std::mem::take(&mut subscription.calls),messaging_accounts:vec![],conversations:vec![],typing_states:vec![],read_states:vec![],
                 };
                 if events.send(Event::Connected(Box::new(baseline))).await.is_err(){return;}
                 let (updates,mut update)=mpsc::channel(8);
+                let reader_session=session.clone();
                 let reader=tokio::spawn(async move {
                     loop {
                         let message=subscription.next_message().await;
                         let stopped=message.is_err();
+                        if stopped {reader_session.store(0,Ordering::Release);}
                         if updates.send(message).await.is_err()||stopped {break;}
                     }
                 });
@@ -142,17 +197,14 @@ pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<E
                         _=>break,
                     },
                     command=incoming.recv()=>{
-                        let Some(command)=command else {reader.abort();return;};
-                        let mutation=command.request.read_key().is_none();
-                        let result=match tokio::time::timeout(Duration::from_secs(12),execute(&path,command.request)).await {
-                            Ok(Ok(reply))=>Ok(reply),
-                            Ok(Err(handover_ipc::IpcError::Server {code,..}))=>Err(rejection(code).into()),
-                            _=>Err(if mutation {"No confirmation received. The outcome is unknown; check the device before trying again."} else {"Could not refresh this view. Reopen it or reconnect to try again."}.into()),
-                        };
-                        if events.send(Event::Reply(command.id,result)).await.is_err(){reader.abort();return;}
+                        let Some(command)=command else{reader.abort();return;};
+                        if let Err(error)=execution.try_send((generation,command)) {
+                            let (_,command)=error.into_inner();
+                            if events.send(Event::Reply(command.id,Err(Failure::known("Handover is busy. Nothing was submitted; try again shortly.")))).await.is_err(){reader.abort();return;}
+                        }
                     }
                 }}
-                reader.abort();
+                session.store(0,Ordering::Release);reader.abort();
                 if events.send(Event::Disconnected).await.is_err(){return;}
             }
         });
