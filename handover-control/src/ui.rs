@@ -12,7 +12,9 @@ use std::{
     rc::Rc,
 };
 
+mod clipboard;
 mod files;
+mod notification_reply;
 mod pages;
 #[cfg(test)]
 mod tests;
@@ -22,6 +24,7 @@ pub(super) enum Page {
     Notifications,
     Sharing,
     Contacts,
+    Clipboard,
     Media,
     Connection,
 }
@@ -31,6 +34,7 @@ impl Page {
             Self::Notifications => "Notifications",
             Self::Sharing => "Files",
             Self::Contacts => "Contacts",
+            Self::Clipboard => "Clipboard",
             Self::Media => "Media",
             Self::Connection => "Devices",
         }
@@ -40,6 +44,8 @@ pub struct Window {
     pub window: gtk::ApplicationWindow,
     model: RefCell<Model>,
     file_queue: RefCell<Vec<files::PickedFile>>,
+    reply_drafts: RefCell<BTreeMap<NotificationId, notification_reply::Draft>>,
+    reply_editor: RefCell<Option<Rc<notification_reply::Editor>>>,
     selected: RefCell<Option<DeviceId>>,
     selection_initialized: Cell<bool>,
     page: Cell<Page>,
@@ -148,6 +154,7 @@ impl Window {
             Page::Notifications,
             Page::Sharing,
             Page::Contacts,
+            Page::Clipboard,
             Page::Media,
         ] {
             let tab = gtk::ToggleButton::with_label(page.name());
@@ -216,6 +223,8 @@ impl Window {
             window,
             model: RefCell::new(Model::default()),
             file_queue: RefCell::new(Vec::new()),
+            reply_drafts: RefCell::new(BTreeMap::new()),
+            reply_editor: RefCell::new(None),
             selected: RefCell::new(None),
             selection_initialized: Cell::new(false),
             page: Cell::new(Page::Notifications),
@@ -363,7 +372,7 @@ impl Window {
                     | files::FileStatus::Unconfirmed { .. }
             )
         });
-        if self.close_confirmed.get() || !needs_review {
+        if self.close_confirmed.get() || (!needs_review && self.reply_drafts.borrow().is_empty()) {
             return glib::Propagation::Proceed;
         }
         if self.close_prompt.replace(true) {
@@ -371,9 +380,9 @@ impl Window {
         }
         let dialog = adw::MessageDialog::new(
             Some(&self.window),
-            Some("Close file selection?"),
+            Some("Close Handover?"),
             Some(
-                "Unsent selections will be discarded. Closing does not cancel submitted transfers.",
+                "Unsent file selections and notification reply drafts will be discarded. Closing does not cancel submitted commands.",
             ),
         );
         dialog.set_application(self.window.application().as_ref());
@@ -469,6 +478,7 @@ impl Window {
             Page::Connection => self.request(Request::Pairing),
             Page::Sharing => self.request(Request::Transfers),
             Page::Contacts => self.request(Request::Contacts),
+            Page::Clipboard => self.request(Request::ClipboardHistory),
             _ => {}
         }
     }
@@ -483,6 +493,7 @@ impl Window {
                     model.notice.clear();
                     model.peers.clear();
                     model.pairing.clear();
+                    model.clipboard_history = None;
                 }
                 if !self.selection_initialized.replace(true) {
                     let model = self.model.borrow();
@@ -502,6 +513,9 @@ impl Window {
                 self.request(Request::Pairing);
                 self.request(Request::Contacts);
                 self.request(Request::Transfers);
+                if self.page.get() == Page::Clipboard {
+                    self.request(Request::ClipboardHistory);
+                }
             }
             Event::Disconnected => {
                 let mut model = self.model.borrow_mut();
@@ -559,12 +573,14 @@ impl Window {
                 let request = self.pending.borrow_mut().remove(&id);
                 if let Some(request) = &request {
                     self.file_reply(request, &result);
+                    self.notification_reply_result(request, &result);
                 }
                 let key = request.as_ref().and_then(Request::read_key);
                 rebuild = match key {
                     Some(0) => self.page.get() == Page::Connection,
                     Some(1) => self.page.get() == Page::Contacts,
                     Some(2) => self.page.get() == Page::Sharing,
+                    Some(3) => self.page.get() == Page::Clipboard,
                     _ => true,
                 };
                 match result {
@@ -581,6 +597,9 @@ impl Window {
                                 c
                             })
                             .collect();
+                    }
+                    Ok(Reply::ClipboardHistory(entries)) => {
+                        self.model.borrow_mut().clipboard_history = Some(entries);
                     }
                     Ok(Reply::Transfers(activities)) => {
                         for activity in &activities {
@@ -600,6 +619,17 @@ impl Window {
                     }
                     Ok(Reply::Accepted) => {
                         self.model.borrow_mut().notice.clear();
+                        if matches!(
+                            request,
+                            Some(Request::PinClipboard(..) | Request::ClearClipboard(..))
+                        ) {
+                            self.request(Request::ClipboardHistory);
+                        }
+                        if matches!(request, Some(Request::NotificationReply(..))) {
+                            self.transient_notice(
+                                "Reply accepted. Check the conversation for delivery.",
+                            );
+                        }
                         if matches!(request, Some(Request::Pair(..) | Request::Forget(..))) {
                             self.request(Request::Pairing);
                         }
@@ -612,7 +642,8 @@ impl Window {
                     self.request(match key {
                         0 => Request::Pairing,
                         1 => Request::Contacts,
-                        _ => Request::Transfers,
+                        2 => Request::Transfers,
+                        _ => Request::ClipboardHistory,
                     });
                 }
             }
@@ -788,20 +819,25 @@ impl Window {
             &model.notice
         });
         drop(model);
+        self.refresh_notification_reply();
         if phone_changed {
             self.render_phone();
         }
-        self.refresh
-            .set_visible(matches!(self.page.get(), Page::Connection | Page::Sharing));
+        self.refresh.set_visible(matches!(
+            self.page.get(),
+            Page::Connection | Page::Sharing | Page::Clipboard
+        ));
         self.search
             .set_placeholder_text(Some(if self.page.get() == Page::Contacts {
                 "Search contacts"
+            } else if self.page.get() == Page::Clipboard {
+                "Search clipboard history"
             } else {
                 "Search notifications"
             }));
         self.search.set_visible(matches!(
             self.page.get(),
-            Page::Notifications | Page::Contacts
+            Page::Notifications | Page::Contacts | Page::Clipboard
         ));
         if !rebuild {
             self.rendering.set(false);
@@ -814,6 +850,7 @@ impl Window {
             Page::Notifications => self.notifications(),
             Page::Sharing => self.sharing(),
             Page::Contacts => self.contacts(),
+            Page::Clipboard => self.clipboard_history(),
             Page::Media => self.media(),
             Page::Connection => self.pairing(),
         }

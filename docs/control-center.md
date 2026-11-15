@@ -12,8 +12,8 @@ installer.
 ## Phone and task views
 
 The phone pane stays visible while you switch between Notifications, Files,
-Contacts, and Media. It shows reported connection, battery, and network state,
-with actions for files, links, and clipboard text. Offline battery values are
+Contacts, Clipboard, and Media. It shows reported connection, battery, and
+network state, with actions for files, links, and clipboard text. Offline battery values are
 labeled as last known. Messages opens the separate native Messages app.
 
 The app selects the only connected paired device when there is one. Use the
@@ -40,7 +40,17 @@ Notifications groups current forwarded notifications by app and supports search.
 The close button requests dismissal on the phone and appears only for clearable
 notifications. Other buttons come from reported phone actions. Commands are
 disabled for disconnected devices. Acceptance alone does not change phone state.
-The control center itself does not create desktop popups or expose inline reply.
+Reply opens a text editor only when the notification reports reply support.
+Enter adds a new line; Send reply submits. Drafts stay in this window when a
+notification updates, the phone disconnects, or the editor closes. Use Reply
+drafts to recover or discard them, including drafts for removed notifications.
+Removed notifications cannot receive replies. Closing Handover with drafts asks
+before discarding them.
+
+A lost acknowledgement keeps the text and displays the unknown outcome. The app
+never resends automatically. An accepted reply clears its draft but does not
+claim delivery or dismiss the notification. The control center itself does not
+create desktop popups.
 
 Choose which apps forward notifications in the Android app's Notifications page.
 The control center does not change those phone preferences.
@@ -77,6 +87,19 @@ observations may be absent. Completed incoming files have an explicit Open
 containing folder action. The control center never opens received paths or URLs
 automatically. Forgetting a device clears its activity metadata, not received files.
 
+## Clipboard history
+
+Clipboard shows the daemon's saved text history for this computer, across all
+devices. The selected phone does not filter it. Opening the page or pressing
+Refresh reads the current history. Search filters text, Copy puts the complete
+entry on the desktop clipboard, and Pin keeps an entry in history. Pinning and
+clearing refresh from the daemon after acceptance.
+
+Clear history asks first and keeps pinned entries by default. Include pinned
+entries only with the checkbox. A disconnected daemon disables history changes;
+already loaded text remains available to copy. Opening this page does not enable
+clipboard mirroring or change Android permissions.
+
 ## Contacts and media
 
 Contacts reads synced address books. Select a connected phone and use the sync
@@ -94,6 +117,7 @@ Run `python3 scripts/test-handover-control.py` for the private-display GTK and I
 fixture. `--dark`, `--width`, `--page`, and `--screenshot` support layout checks.
 The runner requires Xvfb and dbus-daemon; screenshots also need ImageMagick.
 Fictional devices and a private session bus exercise device selection,
-notification actions, pairing comparison, drag-and-drop review, independent file
-outcomes, lost replies, contact copy, media controls, and reconnect without command
+notification actions, reply drafts and lost acknowledgements, clipboard search,
+copy, pinning and clearing, pairing comparison, drag-and-drop review, independent
+file outcomes, lost replies, contact copy, media controls, and reconnect without command
 replay. Physical-phone effects need separate live validation.

@@ -49,7 +49,7 @@ fn note(online: bool) -> Notification {
         icon_path: None,
         clearable: true,
         actions: vec![],
-        reply_supported: false,
+        reply_supported: online,
     }
 }
 fn baseline() -> ServerPayload {
@@ -130,6 +130,21 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let (events, _) = broadcast::channel::<ServerPayload>(32);
     let worker_events = events.clone();
+    let history = Arc::new(std::sync::Mutex::new(vec![
+        handover_ipc::ClipboardHistoryEntry {
+            id: 1,
+            text: "Fictional clipboard entry".into(),
+            pinned: false,
+            created_at_ms: 1_800_000_000_000,
+        },
+        handover_ipc::ClipboardHistoryEntry {
+            id: 2,
+            text: "Pinned clipboard entry".into(),
+            pinned: true,
+            created_at_ms: 1_800_000_000_001,
+        },
+    ]));
+    let worker_history = history.clone();
     let (mutations, received) = mpsc::channel::<Method>();
     let command_gate = Arc::new(tokio::sync::Notify::new());
     let worker_gate = command_gate.clone();
@@ -147,7 +162,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             let listener=UnixListener::bind(path).unwrap();ready.send(()).unwrap();
             loop {
                 let (socket,_)=listener.accept().await.unwrap();if worker_offline.load(Ordering::SeqCst){drop(socket);continue;}
-                let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
+                let history=worker_history.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
                 tokio::spawn(async move {
                     let mut socket=BufReader::new(socket);
                     while let Ok(Some(request))=read_json_line::<_,IpcRequest>(&mut socket).await {
@@ -161,6 +176,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                     _=reset.changed()=>break,
                                 }}return;
                             },
+                            Method::ClipboardHistoryList=>ServerPayload::ClipboardHistory {entries:history.lock().unwrap().clone()},
                             Method::NativePeers=>ServerPayload::NativePeers {peers:vec![]},
                             Method::NativePending=>ServerPayload::NativePending {pending:vec![handover_ipc::NativePendingPeer {id:"pending-test".into(),name:"New phone".into(),code:"12345678".into()}]},
                             Method::ContactsList=>ServerPayload::Contacts {contacts:vec![Contact {device_id:device(true).id,local_id:"alex".into(),display_name:"Alex Example".into(),phones:vec!["+1 312 555 0100".into()],emails:vec![],photo:None}]},
@@ -169,6 +185,11 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                 mutations.send(method.clone()).unwrap();
                                 match method {
                                     Method::NotificationDismiss {notification_id}=>{let _=events.send(ServerPayload::NotificationRemoved {notification_id:notification_id.clone()});ServerPayload::CommandCompleted {notification_id}},
+                                    Method::NotificationReply {text,..} if text=="lost reply"=>return,
+                                    Method::NotificationReply {text,..} if text=="rejected reply"=>ServerPayload::Error {code:handover_ipc::ErrorCode::NotificationNotFound,message:"fixture rejection".into(),conversation_id:None},
+                                    Method::NotificationReply {notification_id,..}=>ServerPayload::CommandCompleted {notification_id},
+                                    Method::ClipboardHistoryPin {id,pinned}=>{history.lock().unwrap().iter_mut().find(|e|e.id==id).unwrap().pinned=pinned;ServerPayload::NativeAccepted},
+                                    Method::ClipboardHistoryClear {include_pinned}=>{history.lock().unwrap().retain(|e|e.pinned&&!include_pinned);ServerPayload::NativeAccepted},
                                     Method::MediaControl {command}=>ServerPayload::MediaAccepted {id:command.id().clone()},
                                     Method::ShareFile {file_url,..} if file_url.ends_with("unknown.txt")=>return,
                                     Method::ShareFile {device_id,file_url}=>ServerPayload::ShareAccepted {device_id,transfer_id:Some(if file_url.ends_with("example.cc"){"code-transfer"}else{"photo-transfer"}.into())},
@@ -214,6 +235,239 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         !ui.status_bar.is_visible(),
         "a healthy connection needs no permanent banner"
     );
+    // Reply drafts live independently of rebuilt notification rows and never send on open.
+    button(&ui.body, "Reply…").emit_clicked();
+    let editor = ui.reply_editor.borrow().clone().unwrap();
+    editor.input.buffer().set_text("Reply with a\nsecond line");
+    assert!(received.try_recv().is_err());
+    let mut disconnected_phone = device(true);
+    disconnected_phone.connected = false;
+    ui.event(Event::State(Box::new(ServerPayload::DeviceUpdated {
+        device: disconnected_phone,
+    })));
+    spin(|| !ui.scheduled.get());
+    assert!(!editor.send.is_sensitive());
+    assert_eq!(
+        ui.reply_drafts.borrow()[&note(true).id].text,
+        "Reply with a\nsecond line"
+    );
+    ui.event(Event::State(Box::new(ServerPayload::DeviceUpdated {
+        device: device(true),
+    })));
+    spin(|| !ui.scheduled.get());
+    assert!(editor.send.is_sensitive());
+    ui.event(Event::State(Box::new(ServerPayload::NotificationUpdated {
+        notification: note(true),
+    })));
+    spin(|| !ui.scheduled.get());
+    assert_eq!(
+        ui.reply_editor.borrow().as_ref().unwrap().input,
+        editor.input
+    );
+    editor.window.close();
+    ui.window.close();
+    let close_dialog = app
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::MessageDialog>().ok())
+        .unwrap();
+    close_dialog.response("keep");
+    assert!(!ui.close_confirmed.get());
+    assert!(ui.window.is_visible());
+    assert!(!ui.reply_drafts.borrow().is_empty());
+    button(&ui.body, "Reply…").emit_clicked();
+    let editor = ui.reply_editor.borrow().clone().unwrap();
+    let buffer = editor.input.buffer();
+    assert_eq!(
+        buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+        "Reply with a\nsecond line"
+    );
+    editor.send.emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && ui.reply_editor.borrow().is_none());
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::NotificationReply {
+            notification_id: note(true).id,
+            text: "Reply with a\nsecond line".into()
+        }
+    );
+    assert!(ui.reply_drafts.borrow().is_empty());
+    assert!(
+        ui.model.borrow().notifications.contains_key(&note(true).id),
+        "acceptance does not dismiss the notification"
+    );
+    button(&ui.body, "Reply…").emit_clicked();
+    let editor = ui.reply_editor.borrow().clone().unwrap();
+    editor.input.buffer().set_text("rejected reply");
+    editor.send.emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&editor.window, "no longer available"));
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::NotificationReply {text,..} if text=="rejected reply")
+    );
+    assert_eq!(
+        ui.reply_drafts.borrow()[&note(true).id].text,
+        "rejected reply"
+    );
+    editor.input.buffer().set_text("lost reply");
+    editor.send.emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&editor.window, "outcome is unknown"));
+    assert!(
+        matches!(received.try_recv().unwrap(), Method::NotificationReply {text,..} if text=="lost reply")
+    );
+    assert_eq!(ui.reply_drafts.borrow()[&note(true).id].text, "lost reply");
+    editor.window.close();
+    button(&ui.body, "Reply…").emit_clicked();
+    let editor = ui.reply_editor.borrow().clone().unwrap();
+    assert!(has_text(&editor.window, "outcome is unknown"));
+    ui.event(Event::State(Box::new(ServerPayload::NotificationRemoved {
+        notification_id: note(true).id,
+    })));
+    spin(|| !ui.scheduled.get());
+    assert!(
+        !editor.send.is_sensitive(),
+        "removed notifications cannot receive a saved draft"
+    );
+    assert!(
+        received.try_recv().is_err(),
+        "reopening or receiving updates must not resend"
+    );
+    editor.window.close();
+    spin(|| !ui.scheduled.get());
+    assert!(has_text(&ui.body, "Reply drafts (1)"));
+    let draft_menu = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::MenuButton>().ok())
+        .unwrap();
+    let popover = draft_menu.popover().unwrap();
+    draft_menu.popup();
+    button(&popover, "Reply draft for Unavailable notification").emit_clicked();
+    let editor = ui.reply_editor.borrow().clone().unwrap();
+    assert!(!editor.send.is_sensitive());
+    assert!(has_text(&editor.window, "outcome is unknown"));
+    button(&editor.window, "Discard draft").emit_clicked();
+    assert!(ui.reply_drafts.borrow().is_empty());
+    ui.event(Event::State(Box::new(ServerPayload::NotificationAdded {
+        notification: note(true),
+    })));
+    spin(|| !ui.scheduled.get());
+    ui.model.borrow_mut().notice.clear();
+    ui.render();
+    // Clipboard history is host-wide. Pin and clear reflect fresh daemon reads.
+    ui.navigate(Page::Clipboard);
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "Fictional clipboard entry"));
+    assert!(has_text(&ui.body, "All devices"));
+    let row = button(&ui.body, "Pin").parent().unwrap();
+    button(&row, "Copy").emit_clicked();
+    let (copied, copied_rx) = mpsc::channel();
+    ui.window
+        .clipboard()
+        .read_text_async(None::<&gio::Cancellable>, move |result| {
+            copied.send(result.unwrap().unwrap().to_string()).unwrap();
+        });
+    let mut value = None;
+    spin(|| {
+        if let Ok(text) = copied_rx.try_recv() {
+            value = Some(text);
+        }
+        value.is_some()
+    });
+    assert_eq!(value.unwrap(), "Fictional clipboard entry");
+    assert!(
+        received.try_recv().is_err(),
+        "copying does not send to a phone"
+    );
+    button(&ui.body, "Pin").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && ui
+                .model
+                .borrow()
+                .clipboard_history
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|e| e.pinned)
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::ClipboardHistoryPin {
+            id: 1,
+            pinned: true
+        }
+    );
+    ui.search.set_text("Fictional");
+    spin(|| !ui.scheduled.get() && !has_text(&ui.body, "Pinned clipboard entry"));
+    button(&ui.body, "Unpin").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && !ui
+                .model
+                .borrow()
+                .clipboard_history
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|e| e.id == 1)
+                .unwrap()
+                .pinned
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::ClipboardHistoryPin {
+            id: 1,
+            pinned: false
+        }
+    );
+    ui.search.set_text("");
+    spin(|| !ui.scheduled.get() && has_text(&ui.body, "Pinned clipboard entry"));
+    button(&ui.body, "Clear history…").emit_clicked();
+    let dialog = app
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::MessageDialog>().ok())
+        .unwrap();
+    assert!(received.try_recv().is_err());
+    dialog.response("cancel");
+    assert_eq!(history.lock().unwrap().len(), 2);
+    button(&ui.body, "Clear history…").emit_clicked();
+    let dialog = app
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::MessageDialog>().ok())
+        .unwrap();
+    dialog.response("clear");
+    spin(|| {
+        ui.pending.borrow().is_empty()
+            && ui.model.borrow().clipboard_history.as_ref().unwrap().len() == 1
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::ClipboardHistoryClear {
+            include_pinned: false
+        }
+    );
+    assert_eq!(history.lock().unwrap()[0].id, 2);
+    button(&ui.body, "Clear history…").emit_clicked();
+    let dialog = app
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<adw::MessageDialog>().ok())
+        .unwrap();
+    descendants(&dialog)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::CheckButton>().ok())
+        .unwrap()
+        .set_active(true);
+    dialog.response("clear");
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "No clipboard history"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::ClipboardHistoryClear {
+            include_pinned: true
+        }
+    );
+    ui.navigate(Page::Notifications);
+    spin(|| !ui.scheduled.get());
     // Actions are gated by actual device connection, not the presence of an old notification.
     ui.selected.borrow_mut().take();
     ui.page.set(Page::Notifications);
@@ -613,6 +867,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         Ok("notifications") => Page::Notifications,
         Ok("sharing") => Page::Sharing,
         Ok("contacts") => Page::Contacts,
+        Ok("clipboard") => Page::Clipboard,
         Ok("media") => Page::Media,
         Ok("connection") => Page::Connection,
         _ => Page::Notifications,

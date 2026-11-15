@@ -10,6 +10,7 @@ pub struct Model {
     pub media: BTreeMap<MediaSessionId, MediaSession>,
     pub calls: BTreeMap<DeviceId, CallState>,
     pub contacts: Vec<Contact>,
+    pub clipboard_history: Option<Vec<handover_ipc::ClipboardHistoryEntry>>,
     pub transfers: Vec<TransferActivity>,
     pub peers: Vec<NativePeer>,
     pub pairing: Vec<NativePendingPeer>,

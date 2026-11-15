@@ -15,6 +15,10 @@ pub enum Request {
     Pairing,
     Contacts,
     Transfers,
+    ClipboardHistory,
+    PinClipboard(u64, bool),
+    ClearClipboard(bool),
+    NotificationReply(NotificationId, String),
     Pair(String, String),
     Forget(String),
     Dismiss(NotificationId),
@@ -31,6 +35,7 @@ impl Request {
             Self::Pairing => Some(0),
             Self::Contacts => Some(1),
             Self::Transfers => Some(2),
+            Self::ClipboardHistory => Some(3),
             _ => None,
         }
     }
@@ -39,6 +44,7 @@ pub enum Reply {
     Pairing(Vec<NativePeer>, Vec<NativePendingPeer>),
     Contacts(Vec<Contact>),
     Transfers(Vec<TransferActivity>),
+    ClipboardHistory(Vec<handover_ipc::ClipboardHistoryEntry>),
     Accepted,
     Share(Option<String>),
 }
@@ -80,6 +86,19 @@ async fn execute(
         )),
         Request::Contacts => Ok(Reply::Contacts(client.contacts().await?)),
         Request::Transfers => Ok(Reply::Transfers(client.transfer_activity().await?)),
+        Request::ClipboardHistory => Ok(Reply::ClipboardHistory(client.clipboard_history().await?)),
+        Request::PinClipboard(id, pinned) => {
+            client.set_clipboard_history_pin(id, pinned).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::ClearClipboard(include_pinned) => {
+            client.clear_clipboard_history(include_pinned).await?;
+            Ok(Reply::Accepted)
+        }
+        Request::NotificationReply(id, text) => {
+            client.reply_to_notification(id, text).await?;
+            Ok(Reply::Accepted)
+        }
         Request::Pair(id, code) => {
             client.native_pair(id, code).await?;
             Ok(Reply::Accepted)

@@ -1,7 +1,12 @@
 use super::*;
 
 impl Window {
-    fn button(self: &Rc<Self>, label: &str, ready: bool, request: Request) -> gtk::Button {
+    pub(super) fn button(
+        self: &Rc<Self>,
+        label: &str,
+        ready: bool,
+        request: Request,
+    ) -> gtk::Button {
         let button = gtk::Button::with_label(label);
         button.set_sensitive(ready && !self.busy());
         let weak = Rc::downgrade(self);
@@ -161,6 +166,7 @@ impl Window {
         actions
     }
     pub(super) fn notifications(self: &Rc<Self>) {
+        self.notification_drafts();
         let model = self.model.borrow();
         let query = self.search.text().to_lowercase();
         let mut notes = model
@@ -247,6 +253,19 @@ impl Window {
                     actions.append(&button);
                 }
                 item.append(&actions);
+            }
+            if note.reply_supported {
+                let reply = gtk::Button::with_label("Reply…");
+                reply.set_halign(gtk::Align::Start);
+                reply.set_sensitive(model.ready(&note.id.device_id) && !self.busy());
+                let weak = Rc::downgrade(self);
+                let id = note.id.clone();
+                reply.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.open_notification_reply(id.clone());
+                    }
+                });
+                item.append(&reply);
             }
             group.append(&item);
         }

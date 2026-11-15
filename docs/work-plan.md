@@ -233,13 +233,21 @@ and upgrade checks; they do not block the app implementation.
 ## 7. Native control center
 
 The native Linux control center has a persistent phone pane and task views for
-notifications, files, contacts, and media. File selection supports review, drag
+notifications, files, contacts, clipboard history, and media. File selection
+supports review, drag
 and drop, and independent reported outcomes without resending unknown requests.
 It brings device status, code-comparison pairing,
-notification actions, file and link sharing, reviewed clipboard text, synced
+notification actions and replies, file and link sharing, reviewed clipboard text, synced
 contacts, and phone media controls into one daemon client. Ordinary
 `handover-gui` launches prefer the new app; explicit QML and send-picker entry
 points remain available. See the [control center guide](control-center.md).
+
+Notification reply drafts stay in the window across updates and disconnects.
+Removed notifications cannot receive a draft, but its text remains recoverable.
+Lost acknowledgements never trigger automatic resends. Clipboard history reads
+the daemon's computer-wide history and supports search, copy, pinning, and
+confirmed clearing with pinned entries preserved by default. Physical-phone
+reply effects still need live validation.
 
 Recent transfer observations are retained by the daemon for its current session,
 with a maximum of 128 records. Clients reconstruct this list through public IPC.
