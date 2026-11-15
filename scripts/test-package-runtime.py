@@ -129,6 +129,10 @@ def isolated_accounts(archive, previous):
     with tempfile.TemporaryDirectory(prefix="handover-package-runtime-") as temporary:
         stage = Path(temporary)
         stage.chmod(0o755)
+        # CI images can put entire toolchains in /etc/skel. Disposable test
+        # accounts need an empty home, not copies of the runner's tooling.
+        skeleton = stage / "empty-home"
+        skeleton.mkdir(mode=0o755)
         runner = stage / "test-package-runtime.py"
         shutil.copyfile(__file__, runner)
         runner.chmod(0o644)
@@ -142,7 +146,7 @@ def isolated_accounts(archive, previous):
             baseline.chmod(0o644)
         for case in (("clean", "reinstall", "upgrade") if previous else ("clean", "reinstall")):
             user = "hpkg-" + uuid.uuid4().hex[:12]
-            command("useradd", "--create-home", "--shell", "/bin/sh", user)
+            command("useradd", "--create-home", "--skel", str(skeleton), "--shell", "/bin/sh", user)
             uid = None
             try:
                 account = pwd.getpwnam(user)
