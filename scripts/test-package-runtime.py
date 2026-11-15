@@ -162,6 +162,21 @@ def isolated_accounts(archive, previous):
                 try:
                     command(*args)
                 except (subprocess.SubprocessError, AssertionError):
+                    # Keep the permission boundary visible before account cleanup.
+                    for path in (Path(f"/run/user/{uid}"), Path(f"/run/user/{uid}/handover"),
+                                 Path(f"/run/user/{uid}/handover/handoverd.sock")):
+                        try:
+                            metadata = path.lstat()
+                            print(f"IPC metadata: {path} uid={metadata.st_uid} gid={metadata.st_gid} "
+                                  f"mode={metadata.st_mode & 0o777:o}", flush=True)
+                        except OSError as error:
+                            print(f"IPC metadata: {path}: {error}", flush=True)
+                    manager = subprocess.run(["runuser", "-u", user, "--", "env", *environment,
+                                              "systemctl", "--user", "show-environment"],
+                                             capture_output=True, text=True, timeout=15, check=False)
+                    for line in manager.stdout.splitlines():
+                        if line.startswith("XDG_RUNTIME_DIR="):
+                            print(f"User manager: {line}", flush=True)
                     subprocess.run(["runuser", "-u", user, "--", "env", *environment,
                                     "journalctl", "--user", "-u", "handoverd.service", "--no-pager", "-n", "80"],
                                    timeout=15, check=False)

@@ -106,8 +106,16 @@ impl IpcServer {
         events: broadcast::Sender<StateEvent>,
     ) -> Result<Self, ServerError> {
         let directory = runtime_directory()?;
-        tokio::fs::create_dir_all(&directory).await?;
-        tokio::fs::set_permissions(&directory, Permissions::from_mode(0o700)).await?;
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|error| {
+                std::io::Error::new(error.kind(), format!("creating IPC directory: {error}"))
+            })?;
+        tokio::fs::set_permissions(&directory, Permissions::from_mode(0o700))
+            .await
+            .map_err(|error| {
+                std::io::Error::new(error.kind(), format!("securing IPC directory: {error}"))
+            })?;
         Self::bind_at(socket_path()?, state, events, None).await
     }
 
@@ -123,8 +131,14 @@ impl IpcServer {
         messaging: Option<MessagingHub>,
     ) -> Result<Self, ServerError> {
         remove_stale_socket(&path).await?;
-        let listener = UnixListener::bind(&path)?;
-        tokio::fs::set_permissions(&path, Permissions::from_mode(0o600)).await?;
+        let listener = UnixListener::bind(&path).map_err(|error| {
+            std::io::Error::new(error.kind(), format!("binding IPC socket: {error}"))
+        })?;
+        tokio::fs::set_permissions(&path, Permissions::from_mode(0o600))
+            .await
+            .map_err(|error| {
+                std::io::Error::new(error.kind(), format!("securing IPC socket: {error}"))
+            })?;
         Ok(Self {
             listener,
             socket_path: path,
