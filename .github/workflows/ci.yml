@@ -137,7 +137,15 @@ jobs:
       - name: Install package build and validation tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config libssl-dev libgtk-4-dev libadwaita-1-dev dbus-user-session iproute2
+          sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config libssl-dev libgtk-4-dev libadwaita-1-dev dbus-user-session iproute2 strace
+      - name: Diagnose account creation
+        run: |
+          probe_user="hpkg-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
+          result=0
+          sudo timeout --kill-after=3 12 strace -f -tt -T -e trace=file,process,network -o "$RUNNER_TEMP/useradd.trace" useradd --create-home --shell /bin/sh "$probe_user" || result=$?
+          sudo tail -n 45 "$RUNNER_TEMP/useradd.trace"
+          sudo timeout --kill-after=3 8 userdel --remove "$probe_user" || true
+          exit "$result"
       - run: ./scripts/dist.sh
       - name: Fetch the fixed upgrade baseline
         run: |
