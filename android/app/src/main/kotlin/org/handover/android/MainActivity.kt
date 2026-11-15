@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.widget.Button
@@ -57,9 +58,34 @@ class MainActivity : android.app.Activity() {
     private var reconnectPromptShown = false
     internal var sharedFolderStatus: TextView? = null
     internal fun refreshSharedFolderStatus() {
-        sharedFolderStatus?.text = if (getSharedPreferences("handover_native_peers", MODE_PRIVATE).contains("shared_folder_tree"))
-            "A folder is selected. Linux can request files within it."
-        else "Choose one folder to let Linux request files from it."
+        val prefs = getSharedPreferences("handover_native_peers", MODE_PRIVATE)
+        sharedFolderStatus?.text = when {
+            prefs.getBoolean("shared_storage_all", false) && hasAllPhoneFilesAccess() ->
+                "All accessible phone storage is shared with your paired computer. Access is read-only."
+            prefs.getBoolean("shared_storage_all", false) ->
+                "Allow all-files access in Android settings to share phone storage."
+            prefs.contains("shared_folder_tree") -> "A folder is selected. Linux can request files within it."
+            else -> "Share phone storage or choose a single folder."
+        }
+    }
+
+    internal fun shareAllPhoneFiles() {
+        if (Build.VERSION.SDK_INT < 30) {
+            android.widget.Toast.makeText(this, "All-files access requires Android 11 or newer. You can share a folder instead.", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val prefs = getSharedPreferences("handover_native_peers", MODE_PRIVATE)
+        prefs.edit().putBoolean("shared_storage_all", true).putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
+        refreshSharedFolderStatus()
+        if (hasAllPhoneFilesAccess()) return
+        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
+        try { startActivity(intent) }
+        catch (_: android.content.ActivityNotFoundException) {
+            try { startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+            catch (_: android.content.ActivityNotFoundException) {
+                android.widget.Toast.makeText(this, "This device does not provide the all-files access settings screen.", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     internal fun chooseSharedFolder() {
@@ -69,7 +95,7 @@ class MainActivity : android.app.Activity() {
     internal fun stopSharingFolder() {
         val prefs = getSharedPreferences("handover_native_peers", MODE_PRIVATE)
         val previous = prefs.getString("shared_folder_tree", null)
-        prefs.edit().remove("shared_folder_tree").putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
+        prefs.edit().remove("shared_folder_tree").remove("shared_storage_all").putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
         refreshSharedFolderStatus()
         previous?.let { raw ->
             runCatching { contentResolver.releasePersistableUriPermission(Uri.parse(raw), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -86,7 +112,7 @@ class MainActivity : android.app.Activity() {
             }
             val prefs = getSharedPreferences("handover_native_peers", MODE_PRIVATE)
             val previous = prefs.getString("shared_folder_tree", null)
-            prefs.edit().putString("shared_folder_tree", uri.toString()).putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
+            prefs.edit().putString("shared_folder_tree", uri.toString()).remove("shared_storage_all").putLong("shared_folder_epoch", prefs.getLong("shared_folder_epoch", 0L) + 1).apply()
             refreshSharedFolderStatus()
             previous?.takeIf { it != uri.toString() }?.let {
                 runCatching { contentResolver.releasePersistableUriPermission(Uri.parse(it), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -159,7 +185,7 @@ class MainActivity : android.app.Activity() {
             append("App notifications: ${if (notifications) "granted" else "not granted"}\n")
             append("Local network: $localNetwork\n")
             append("Battery optimization: ${if (battery) "unrestricted" else "optimized"}\n")
-            append("Files/photos: system picker (on demand)\n")
+            append("All-files permission: ${if (hasAllPhoneFilesAccess()) "granted" else "not granted"}\n")
             append("Media controls: notification access\n")
             append("Call state: ${permissionLabel(android.Manifest.permission.READ_PHONE_STATE)}\n")
             append("Place calls: ${permissionLabel(android.Manifest.permission.CALL_PHONE)}\n")
@@ -652,6 +678,7 @@ class MainActivity : android.app.Activity() {
 
     override fun onResume() {
         super.onResume()
+        refreshSharedFolderStatus()
         refreshStatus()
         HandoverForegroundService.refreshCallsIfRunning()
     }

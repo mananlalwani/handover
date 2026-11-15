@@ -25,7 +25,7 @@ mod tools;
 
 pub(super) fn download_failure(reason: FileDownloadFailure) -> &'static str {
     match reason {
-        FileDownloadFailure::PermissionRequired => "Choose a shared folder in the phone app",
+        FileDownloadFailure::PermissionRequired => "Enable file sharing in the phone app",
         FileDownloadFailure::InvalidResource => "The phone rejected this file path",
         FileDownloadFailure::SizeLimit => "The file is too large to download",
         FileDownloadFailure::Unavailable => "The file is unavailable on the phone",

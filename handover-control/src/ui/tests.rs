@@ -608,13 +608,10 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     publish_download(FileDownloadState::Failed {
         reason: FileDownloadFailure::PermissionRequired,
     });
-    spin(|| has_text(&ui.body, "Choose a shared folder in the phone app"));
+    spin(|| has_text(&ui.body, "Enable file sharing in the phone app"));
     ui.navigate(Page::Sharing);
     spin(|| !ui.scheduled.get());
-    assert!(has_text(
-        &ui.body,
-        "Choose a shared folder in the phone app"
-    ));
+    assert!(has_text(&ui.body, "Enable file sharing in the phone app"));
     ui.navigate(Page::PhoneFiles);
     spin(|| !ui.scheduled.get());
     button(&ui.body, "Retry").emit_clicked();

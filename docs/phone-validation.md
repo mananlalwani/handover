@@ -38,7 +38,16 @@ phone's gallery and file manager.
 
 ## Requested phone downloads
 
-Install the matching Android build. In Remote desktop, choose an eligible shared subfolder.
+Install the matching Android build. In Remote desktop, select Share all phone
+storage and allow Android's all-files permission. On Linux, verify Internal
+storage and mounted SD or USB volumes appear. Browse Downloads and DCIM. Stop
+sharing, and separately revoke the system permission, then confirm new requests
+fail. Test reconnect and app restart without another per-file phone approval.
+Protected app data must remain inaccessible. The emulator fixture covers the
+permission gate, exact file bytes, read-only path confinement, and stop sharing;
+physical removable-storage mounts still need a phone check.
+
+Also test Share one folder instead with an eligible subfolder.
 On Linux, open Files > On phone, list that folder, and download a source file,
 an image, an empty file, and a file with a Unicode filename. Compare names and
 byte hashes with the originals. Confirm Saved appears only after the file exists

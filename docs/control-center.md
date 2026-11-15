@@ -102,11 +102,22 @@ Responses from another device or a different requested path do not replace the
 current listing. Changing phones resets the folder location. Listing is an
 explicit read; opening the tab does not submit a request.
 
-In the Android app's Remote desktop page, choose a shared folder and grant read access.
-The desktop can browse and download files only inside that folder. Stop sharing
-revokes Handover's saved grant. Android restricts selecting the entire internal
-storage or Downloads root; choose a subfolder instead. See
-[Android's folder access rules](https://developer.android.com/training/data-storage/shared/documents-files).
+In the Android app's Remote desktop page, select Share all phone storage and
+allow all-files access in Android settings once. On Android 11 or newer, the
+Linux root listing then shows Internal storage and any mounted removable
+volumes. Browse Downloads, DCIM, documents, and other shared-storage folders
+without approving each file on the phone. The transfer service only lists and
+reads files; it does not expose remote writes or deletes.
+
+Android still blocks other apps' private data and protected system files.
+[Android's all-files access documentation](https://developer.android.com/training/data-storage/manage-all-files)
+explains these limits. This does not grant root access.
+
+Share one folder instead keeps the narrower system folder picker available,
+including on older Android versions. Its persisted read grant survives restarts.
+Stop sharing disables both modes immediately, even if the system all-files
+permission remains enabled. Revoking that permission also stops broad access.
+Switching modes invalidates pending requests against the previous storage root.
 
 Press Download beside a file. The request first shows as queued, then receiving.
 Saved means the desktop finished an atomic save in Downloads/Handover, preserving

@@ -277,7 +277,12 @@ impl Window {
             self.body.append(&text("Loading folder…", "card-subtitle"));
         } else if let Some(result) = result {
             if result.failure.is_some() {
-                self.body.append(&text("The phone could not list this folder. Choose a shared folder in the phone app, then try again.", "transfer-error"));
+                let detail = if result.failure.as_deref() == Some("permission_required") {
+                    "Enable file sharing in the phone app, then try again."
+                } else {
+                    "This folder is unavailable. Android may restrict access, or it may have moved."
+                };
+                self.body.append(&text(detail, "transfer-error"));
             } else if result.entries.is_empty() {
                 self.body.append(&empty(
                     "folder-symbolic",
@@ -455,7 +460,7 @@ impl Window {
                     FileDownloadState::Completed { .. } => "Saved",
                     FileDownloadState::Failed { reason } => match reason {
                         FileDownloadFailure::PermissionRequired => {
-                            "Choose a shared folder in the phone app"
+                            "Enable file sharing in the phone app"
                         }
                         _ => "Failed",
                     },

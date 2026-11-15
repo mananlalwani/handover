@@ -33,6 +33,17 @@ internal fun safeTreePathParts(path: String): List<String> {
     }
 }
 
+private data class PhoneFileScope(val allStorage: Boolean, val tree: Uri?, val epoch: Long)
+private fun NativeTransport.phoneFileScope() = PhoneFileScope(
+    preferences.getBoolean("shared_storage_all", false), selectedShareTree(), preferences.getLong("shared_folder_epoch", 0),
+)
+private fun NativeTransport.checkPhoneFileScope(scope: PhoneFileScope) {
+    if (phoneFileScope() != scope) throw SecurityException("file sharing changed")
+    if (scope.allStorage) {
+        if (!hasAllPhoneFilesAccess()) throw SecurityException("all-files permission required")
+    } else if (scope.tree == null) throw SecurityException("folder permission required")
+}
+
 private val documentColumns = arrayOf(
     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -83,6 +94,38 @@ private fun resolveTreePath(resolver: ContentResolver, root: Uri, path: String, 
     return current
 }
 
+private fun NativeTransport.listSharedPhoneDirectory(scope: PhoneFileScope, path: String, cancellation: CancellationSignal, active: () -> Unit): List<PhoneFileEntry> {
+    checkPhoneFileScope(scope)
+    if (scope.allStorage) return LocalPhoneStorage(phoneStorageRoots(context)).list(path, active)
+    val root = scope.tree ?: throw SecurityException()
+    val target = resolveTreePath(context.contentResolver, root, path, cancellation, active)
+    require(target.directory)
+    val children = DocumentsContract.buildChildDocumentsUriUsingTree(root, DocumentsContract.getDocumentId(target.uri))
+    val entries = mutableListOf<PhoneFileEntry>()
+    context.contentResolver.query(children, documentColumns, null, null, null, cancellation)?.use { cursor ->
+        var scanned = 0
+        while (scanned++ < 512 && cursor.moveToNext()) {
+            active()
+            val item = document(cursor, root)
+            if (item.virtual || runCatching { safeTreePathParts(item.name).single() }.isFailure) continue
+            entries += PhoneFileEntry(item.name, item.directory, item.size)
+        }
+    } ?: throw FileNotFoundException()
+    return entries
+}
+
+private fun NativeTransport.openSharedPhoneFile(scope: PhoneFileScope, path: String, cancellation: CancellationSignal, active: () -> Unit): PhoneFileSource {
+    active()
+    checkPhoneFileScope(scope)
+    if (scope.allStorage) return LocalPhoneStorage(phoneStorageRoots(context)).open(path)
+    val root = scope.tree ?: throw SecurityException()
+    val item = resolveTreePath(context.contentResolver, root, path, cancellation, active)
+    require(!item.directory && !item.virtual && item.name == safeTreePathParts(path).last())
+    val descriptor = context.contentResolver.openAssetFileDescriptor(item.uri, "r", cancellation) ?: throw FileNotFoundException()
+    return try { PhoneFileSource(item.name, item.size, item.uri, descriptor.createInputStream()) }
+    catch (error: Exception) { descriptor.close(); throw error }
+}
+
 /** The JSON reply always uses the captured session, even if reconnect races the writer. */
 private fun NativeTransport.folderReply(socket: javax.net.ssl.SSLSocket, output: java.io.BufferedOutputStream, reply: JSONObject) {
     enqueue {
@@ -97,8 +140,7 @@ private fun NativeTransport.folderReply(socket: javax.net.ssl.SSLSocket, output:
 internal fun NativeTransport.handleDirectoryRequest(requestId: String, path: String) {
     val capturedSocket = socket ?: return
     val capturedOutput = output ?: return
-    val root = selectedShareTree()
-    val epoch = preferences.getLong("shared_folder_epoch", 0)
+    val scope = phoneFileScope()
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
     val cancellation = CancellationSignal()
     val abort = Closeable { cancellation.cancel() }
@@ -107,32 +149,23 @@ internal fun NativeTransport.handleDirectoryRequest(requestId: String, path: Str
     fun active() {
         if (System.nanoTime() >= deadline) throw SocketTimeoutException()
         if (socket !== capturedSocket || output !== capturedOutput) throw IOException()
-        if (selectedShareTree() != root || preferences.getLong("shared_folder_epoch", 0) != epoch) throw SecurityException()
+        checkPhoneFileScope(scope)
     }
     fun failed(reason: String) = JSONObject().put("type", "filesystem_failure").put("protocol", 1)
         .put("request_id", requestId).put("path", path).put("reason", reason)
     try {
         fileRequestWorkers.execute {
             val response = try {
-                if (root == null) throw SecurityException()
-                val target = resolveTreePath(context.contentResolver, root, path, cancellation, ::active)
-                require(target.directory)
-                val children = DocumentsContract.buildChildDocumentsUriUsingTree(root, DocumentsContract.getDocumentId(target.uri))
                 val entries = JSONArray()
                 var bytes = 0
-                context.contentResolver.query(children, documentColumns, null, null, null, cancellation)?.use { cursor ->
-                    var scanned = 0
-                    while (scanned++ < 512 && cursor.moveToNext()) {
-                        active()
-                        val item = document(cursor, root)
-                        if (item.virtual || runCatching { safeTreePathParts(item.name).single() }.isFailure) continue
-                        val entry = JSONObject().put("name", item.name).put("directory", item.directory)
-                        item.size?.let { if (!item.directory) entry.put("size", it) }
-                        bytes += entry.toString().toByteArray(Charsets.UTF_8).size + 1
-                        if (bytes > 48 * 1024) break
-                        entries.put(entry)
-                    }
-                } ?: throw FileNotFoundException()
+                for (item in listSharedPhoneDirectory(scope, path, cancellation, ::active)) {
+                    active()
+                    val entry = JSONObject().put("name", item.name).put("directory", item.directory)
+                    item.size?.let { if (!item.directory) entry.put("size", it) }
+                    bytes += entry.toString().toByteArray(Charsets.UTF_8).size + 1
+                    if (bytes > 48 * 1024) break
+                    entries.put(entry)
+                }
                 active()
                 JSONObject().put("type", "filesystem_entries").put("protocol", 1)
                     .put("request_id", requestId).put("path", path).put("entries", entries)
@@ -143,7 +176,7 @@ internal fun NativeTransport.handleDirectoryRequest(requestId: String, path: Str
             enqueue {
                 synchronized(outputLock) {
                     if (socket === capturedSocket && output === capturedOutput) {
-                        val safeReply = if (selectedShareTree() != root || preferences.getLong("shared_folder_epoch", 0) != epoch) failed("permission_required") else response
+                        val safeReply = if (runCatching { checkPhoneFileScope(scope) }.isFailure) failed("permission_required") else response
                         runCatching { write(capturedOutput, safeReply) }.onFailure { runCatching { capturedSocket.close() } }
                     }
                 }
@@ -177,8 +210,7 @@ internal fun NativeTransport.handleFileRequest(message: JSONObject) {
     if (!isTransferId(id)) return
     val capturedSocket = socket ?: return
     val capturedOutput = output ?: return
-    val root = selectedShareTree()
-    val epoch = preferences.getLong("shared_folder_epoch", 0)
+    val scope = phoneFileScope()
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
     val cancellation = CancellationSignal()
     val source = AtomicReference<Closeable?>()
@@ -186,11 +218,11 @@ internal fun NativeTransport.handleFileRequest(message: JSONObject) {
     fun active() {
         if (System.nanoTime() >= deadline) throw SocketTimeoutException()
         if (socket !== capturedSocket || output !== capturedOutput) throw IOException()
-        if (selectedShareTree() != root || preferences.getLong("shared_folder_epoch", 0) != epoch) throw SecurityException()
+        checkPhoneFileScope(scope)
     }
     fun fail(reason: String) = folderReply(capturedSocket, capturedOutput,
         JSONObject().put("type", "file_request_failure").put("protocol", 1).put("transfer_id", id).put("reason", reason))
-    if (root == null) { fail("permission_required"); return }
+    if (runCatching { checkPhoneFileScope(scope) }.isFailure) { fail("permission_required"); return }
     if (runCatching { require(safeTreePathParts(path).isNotEmpty()) }.isFailure) { fail("invalid_resource"); return }
     if (!fileRequestSlots.tryAcquire()) { fail("unavailable"); return }
     val abort = Closeable {
@@ -206,24 +238,20 @@ internal fun NativeTransport.handleFileRequest(message: JSONObject) {
             var temp: File? = null
             var handedToWriter = false
             try {
-                val item = resolveTreePath(context.contentResolver, root, path, cancellation, ::active)
-                require(!item.directory && !item.virtual && item.name == safeTreePathParts(path).last())
-                if ((item.size ?: 0) > MAX_FILE_BYTES) throw FileTooLarge()
-                active()
-                temp = File.createTempFile("phone-download-", ".part", context.cacheDir)
-                fileRequestTemps.add(temp)
-                active()
-                val descriptor = context.contentResolver.openAssetFileDescriptor(item.uri, "r", cancellation) ?: throw FileNotFoundException()
-                val total = descriptor.use {
-                    source.set(it)
-                    it.createInputStream().use { input ->
-                        temp.outputStream().use { out -> copyBounded(input, out, MAX_FILE_BYTES, ::active) }
-                    }
+                val item = openSharedPhoneFile(scope, path, cancellation, ::active)
+                source.set(item)
+                val total = item.use {
+                    require(item.name == safeTreePathParts(path).last())
+                    if ((item.size ?: 0) > MAX_FILE_BYTES) throw FileTooLarge()
+                    active()
+                    temp = File.createTempFile("phone-download-", ".part", context.cacheDir)
+                    fileRequestTemps.add(temp)
+                    temp.outputStream().use { out -> copyBounded(item.input, out, MAX_FILE_BYTES, ::active) }
                 }
                 source.set(null)
                 if (item.size != null && total != item.size) throw IOException("size changed")
                 active()
-                val staged = temp
+                val staged = requireNotNull(temp)
                 handedToWriter = enqueue {
                     var registered = false
                     try {

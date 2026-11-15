@@ -300,7 +300,7 @@ metadata cleanup.
 
 ## Requested phone files
 
-`files.download` takes `device_id` and a relative `path` under the folder shared
+`files.download` takes `device_id` and a relative `path` under the file root shared
 by that device. The device must be connected, paired, and advertise the normalized
 `file_download` capability. The native adapter learns support from the current
 phone connection; saved pairing records never imply support.
@@ -324,6 +324,9 @@ The native wire uses an optional `hello.file_downloads` boolean and
 an existing `share_file` header and original bytes with the same transfer ID,
 or `file_request_failure` before the header. The existing mutual TLS, filename,
 size, timeout, quota, and atomic-receive rules apply. The phone resolves exact
-names inside its persisted system folder grant. Document-provider identifiers
-and tree URIs never enter normalized IPC. New folder failures echo `path` so a
+names inside its persisted system folder grant, or inside mounted shared-storage
+volumes when all-files sharing is enabled and Android grants access. Broad mode
+exposes volume labels at the relative root. Local paths use read-only held
+directory descriptors and reject symlinks at every segment. Document-provider
+identifiers, tree URIs, and Android absolute paths never enter normalized IPC. New folder failures echo `path` so a
 failure can be attached to the requested location.
