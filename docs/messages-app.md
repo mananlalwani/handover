@@ -242,7 +242,8 @@ generic, a recognized image filename selects the preview UI; the decoder still
 validates the file contents.
 
 HEIC/HEIF and AVIF need a HEIF-capable image loader. The Arch development package
-depends on `libheif`. On Ubuntu, install `heif-gdk-pixbuf` and
+depends on `libheif`. On Ubuntu, install `heif-gdk-pixbuf` with
+`libheif-plugin-libde265` for HEIC and `libheif-plugin-aomdec` for AVIF, plus
 `webp-pixbuf-loader`; JPEG XL needs `libjxl-gdk-pixbuf` where available.
 See Ubuntu's [HEIF loader](https://packages.ubuntu.com/noble/heif-gdk-pixbuf)
 and [JPEG XL loader](https://packages.ubuntu.com/resolute/libjxl-gdk-pixbuf).

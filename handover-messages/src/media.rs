@@ -735,6 +735,28 @@ struct Decoded {
     stride: usize,
     alpha: bool,
 }
+// The Ubuntu HEIF loader can return false without setting GError when a codec
+// is missing or input is incomplete. The generated binding asserts that these
+// agree; inspect both results so a bad image remains a decode failure.
+fn close_image_loader(loader: &gdk_pixbuf::PixbufLoader) -> Result<(), ()> {
+    unsafe {
+        let mut error = std::ptr::null_mut();
+        let success = gdk_pixbuf::ffi::gdk_pixbuf_loader_close(
+            glib::object::ObjectType::as_ptr(loader),
+            &mut error,
+        );
+        let has_error = !error.is_null();
+        if has_error {
+            glib::ffi::g_error_free(error);
+        }
+        if success == glib::ffi::GFALSE || has_error {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
     if edge <= 0 {
         return Err(());
@@ -794,15 +816,15 @@ fn decode(source: &Source, edge: i32) -> Result<Decoded, ()> {
         }
         read += count;
         if read as u64 > FILE_BYTES {
-            let _ = loader.close();
+            let _ = close_image_loader(&loader);
             return Err(());
         }
         if loader.write(&buffer[..count]).is_err() || invalid.get() {
-            let _ = loader.close();
+            let _ = close_image_loader(&loader);
             return Err(());
         }
     }
-    loader.close().map_err(|_| ())?;
+    close_image_loader(&loader)?;
     let original = loader.pixbuf().ok_or(())?;
     if invalid.get() || !valid_dimensions(original.width(), original.height()) {
         return Err(());
@@ -997,6 +1019,23 @@ mod tests {
         ("avif", "image/avif"),
         ("jxl", "image/jxl"),
     ];
+
+    #[test]
+    fn incomplete_raster_files_are_rejected_without_panicking() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty-image");
+        std::fs::write(&path, []).unwrap();
+        for (_, mime) in FORMATS {
+            assert!(
+                decode(
+                    &Source::File(path.to_string_lossy().into(), (*mime).into()),
+                    16
+                )
+                .is_err(),
+                "empty {mime}"
+            );
+        }
+    }
 
     #[test]
     fn installed_raster_loaders_decode_real_files_and_scale_viewer_textures() {

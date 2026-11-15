@@ -235,6 +235,13 @@ def check_window(scenario, resource="/tmp/a #?%\n✓.txt"):
                                     send_to(conn, type="clipboard_mirror", enabled=False)
                                 elif method == "clipboard.history_list":
                                     send_to(conn, type="clipboard_history", entries=[])
+                                elif method == "audio.controls":
+                                    send_to(conn, type="audio_controls", snapshot=dict(
+                                        settings=dict(source=dict(kind="all"), output="phone",
+                                                      playback=dict(kind="automatic")),
+                                        applications=[], players=[], revision=1,
+                                        observed_at_ms=0, applications_available=False,
+                                        players_available=False, settings_available=True))
                                 elif method == "messages.outgoing":
                                     send_to(conn, type="outgoing_operations", operations=[], done=True)
                                 elif method == "calls.audio":
