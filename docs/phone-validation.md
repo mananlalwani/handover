@@ -61,6 +61,14 @@ request. Restart the desktop window during a download and confirm its status
 rebuilds from daemon activity. Test with the previous Android build and confirm
 Download is unavailable until that app is updated.
 
+With matching builds, download a file larger than 100 MiB, select several files,
+and download a folder containing nested and empty folders. Browse more than 512
+entries with Load more. Compare the final bytes and filenames. Disconnect during
+a large download, restart the daemon, and confirm it remains paused until Resume.
+Change the source before resuming and confirm it fails rather than splicing bytes.
+Cancel during preparation, receiving, and verification. No cancelled or paused
+request may appear as Saved or expose a completed partial file.
+
 ## Notifications and media
 
 Enable the optional client with
@@ -91,6 +99,24 @@ Start laptop audio with `handoverctl audio start "Phone"`. Listen on the phone
 speaker or connected headphones. Confirm audible playback, then stop it and check
 that desktop output returns. The existing TLS/Opus fixture proves decoding, not
 audibility or Bluetooth latency.
+
+## Phone volume and Bluetooth calls
+
+Refresh phone volume from Linux. Change media, alarm, ringtone, and call streams
+where Android permits it and compare the reported level with Android. Exercise
+Do Not Disturb and fixed-volume restrictions. Disconnect before a result and
+confirm the outcome is unconfirmed rather than accepted or changed.
+
+Pair a test phone with Linux Bluetooth. In Calls choose its endpoint and explicit
+microphone and speakers. Arm it while idle and confirm no microphone capture.
+During an active call, check sound in both directions and verify changing local
+audio defaults does not redirect the chosen route. Hang up, disconnect, stop
+routing, restart the daemon, and terminate it abruptly. Confirm its microphone
+capture ends in each case. Never auto-arm after restart. Check profile recovery
+without changing a profile that another app has selected or is using.
+
+The private process fixture verifies ownership, abrupt-parent cleanup, and actual
+PipeWire link evidence. It does not establish physical Bluetooth audibility.
 
 ## Recovery
 

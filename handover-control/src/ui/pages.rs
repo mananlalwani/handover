@@ -352,9 +352,29 @@ impl Window {
                             "Download queued",
                             format!("{basename} · Waiting for the phone"),
                         ),
+                        FileDownloadState::Preparing {
+                            processed_bytes,
+                            total_bytes,
+                        } => (
+                            "Checking source",
+                            format!(
+                                "{basename} · {}{} bytes checked",
+                                processed_bytes,
+                                total_bytes.map(|n| format!(" of {n}")).unwrap_or_default()
+                            ),
+                        ),
                         FileDownloadState::Receiving => {
                             ("Downloading", format!("{basename} · Receiving from phone"))
                         }
+                        FileDownloadState::Verifying => (
+                            "Verifying download",
+                            format!("{basename} · Checking received files"),
+                        ),
+                        FileDownloadState::Paused { reason } => (
+                            "Download paused",
+                            format!("{basename} · {}", super::download_failure(*reason)),
+                        ),
+                        FileDownloadState::Cancelled => ("Download cancelled", basename.to_owned()),
                         FileDownloadState::Completed { path } => {
                             ("Download saved", format!("{basename} · {path}"))
                         }
@@ -369,6 +389,12 @@ impl Window {
             if !self.matches_device(id) {
                 continue;
             }
+            if let TransferActivityEvent::Received { share } = &item.event
+                && let SharedResource::File { path } = &share.resource
+                && model.transfers.iter().any(|other| matches!(&other.event,
+                    TransferActivityEvent::Download { download } if download.device_id == share.device_id
+                        && matches!(&download.state, FileDownloadState::Completed { path: saved } if saved == path)))
+            { continue; }
             count += 1;
             let time = glib::DateTime::from_unix_local(
                 (item.observed_at_ms / 1000).min(i64::MAX as u64) as i64,
@@ -384,6 +410,59 @@ impl Window {
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             label.set_selectable(true);
             card.append(&label);
+            if let TransferActivityEvent::Download { download } = &item.event {
+                let p = &download.progress;
+                let mut progress = Vec::new();
+                if p.total_bytes.is_some() || p.received_bytes > 0 {
+                    progress.push(match p.total_bytes {
+                        Some(total) => format!("{} / {} bytes", p.received_bytes, total),
+                        None => format!("{} bytes", p.received_bytes),
+                    });
+                }
+                if p.total_files.is_some() || p.completed_files > 0 {
+                    progress.push(match p.total_files {
+                        Some(total) => format!("{} / {} files", p.completed_files, total),
+                        None => format!("{} files", p.completed_files),
+                    });
+                }
+                if !progress.is_empty() {
+                    card.append(&text(&progress.join(" · "), "card-subtitle"));
+                }
+                if let FileDownloadState::Paused { reason } = &download.state {
+                    card.append(&text(
+                        &format!("Paused: {}", super::download_failure(*reason)),
+                        "card-subtitle",
+                    ));
+                }
+                for control in [DownloadControl::Resume, DownloadControl::Cancel] {
+                    if download.controls.contains(&control) {
+                        let label = if control == DownloadControl::Resume {
+                            "Resume"
+                        } else {
+                            "Cancel"
+                        };
+                        let button = gtk::Button::with_label(label);
+                        button.set_sensitive(if control == DownloadControl::Resume {
+                            model.ready(id)
+                        } else {
+                            model.connected
+                        });
+                        let weak = Rc::downgrade(self);
+                        let device = download.device_id.clone();
+                        let transfer = download.transfer_id.clone();
+                        button.connect_clicked(move |_| {
+                            if let Some(this) = weak.upgrade() {
+                                this.request(Request::DownloadControl(
+                                    device.clone(),
+                                    transfer.clone(),
+                                    control,
+                                ));
+                            }
+                        });
+                        card.append(&button);
+                    }
+                }
+            }
             // Paths are not opened automatically. The user chooses whether to reveal a received file.
             if let TransferActivityEvent::Received {
                 share:
@@ -410,14 +489,26 @@ impl Window {
                 download:
                     FileDownload {
                         state: FileDownloadState::Completed { path },
+                        kind,
                         ..
                     },
             } = &item.event
                 && let Some(path) = std::path::Path::new(path).parent().map(|p| p.to_path_buf())
             {
-                let open = gtk::Button::with_label("Open containing folder");
+                let target = if *kind == FileDownloadKind::Directory {
+                    path.clone()
+                } else {
+                    path.parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .to_path_buf()
+                };
+                let open = gtk::Button::with_label(if *kind == FileDownloadKind::Directory {
+                    "Open folder"
+                } else {
+                    "Open containing folder"
+                });
                 open.connect_clicked(move |_| {
-                    let uri = gio::File::for_path(&path).uri();
+                    let uri = gio::File::for_path(&target).uri();
                     let _ =
                         gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
                 });
@@ -637,6 +728,9 @@ impl Window {
     pub(super) fn media(self: &Rc<Self>) {
         self.laptop_audio();
         self.body.append(&text("Phone playback", "list-heading"));
+        if let Some(id) = self.selected.borrow().clone() {
+            self.body.append(&self.phone_volume_panel(&id));
+        }
         let model = self.model.borrow();
         let mut count = 0;
         for session in model

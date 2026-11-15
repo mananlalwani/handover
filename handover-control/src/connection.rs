@@ -29,7 +29,14 @@ pub enum Request {
     SyncContacts(DeviceId),
     Media(MediaCommand),
     Phone(DeviceId, DeviceCommandAction, Option<bool>),
-    Folder(DeviceId, String),
+    FolderPage(DeviceId, String, Option<String>),
+    DownloadMany(DeviceId, Vec<(String, FileDownloadKind)>),
+    DownloadControl(DeviceId, String, handover_core::DownloadControl),
+    Volumes,
+    RefreshVolume(DeviceId),
+    SetVolume(DeviceId, VolumeKind, u32),
+    CallAudioControls,
+    ConfigureCallAudio(u64, Option<CallAudioSelection>),
     Download(DeviceId, String),
     Call(DeviceId, CallAction, Option<String>, u64),
     Mirror(bool),
@@ -49,11 +56,13 @@ impl Request {
             Self::Pairing => Some(0),
             Self::Contacts => Some(1),
             Self::Transfers => Some(2),
-            Self::Download(..) => Some(2),
+
             Self::ClipboardHistory => Some(3),
             Self::Audio => Some(4),
             Self::Tools => Some(5),
             Self::CallAudio => Some(6),
+            Self::Volumes => Some(7),
+            Self::CallAudioControls => Some(8),
             _ => None,
         }
     }
@@ -68,6 +77,12 @@ pub enum Reply {
     Tools(Vec<CustomCommandEntry>),
     CommandResult(CustomCommandResult),
     CallAudio(CallAudioStatus),
+    CallAudioControls(Box<handover_core::CallAudioControls>),
+    Volumes(Vec<DeviceVolumeState>),
+    VolumeQueued(String),
+    FolderQueued(String),
+    Downloads(Vec<FileDownload>, Vec<String>),
+    DownloadUpdated(FileDownload),
     Accepted,
     Share(Option<String>),
     Download,
@@ -136,10 +151,46 @@ async fn execute(
                 .await?;
             Ok(Reply::Accepted)
         }
-        Request::Folder(id, path) => {
-            client.native_filesystem_list(peer_id(&id)?, path).await?;
+        Request::FolderPage(id, path, cursor) => Ok(Reply::FolderQueued(
+            client.filesystem_page(id, path, cursor).await?,
+        )),
+        Request::DownloadControl(id, transfer_id, control) => Ok(Reply::DownloadUpdated(
+            client.control_download(id, transfer_id, control).await?,
+        )),
+        Request::DownloadMany(id, items) => {
+            let mut accepted = Vec::new();
+            let mut errors = Vec::new();
+            for (path, kind) in items.into_iter().take(32) {
+                match client
+                    .download_resource(id.clone(), path.clone(), kind)
+                    .await
+                {
+                    Ok(download) => accepted.push(download),
+                    Err(handover_ipc::IpcError::Server { message, .. }) => {
+                        errors.push(format!("{path}: {message}"))
+                    }
+                    Err(_) => {
+                        errors.push(format!("No confirmation for {path}. Remaining selections were not submitted; check Recent transfers before trying again."));
+                        break;
+                    }
+                }
+            }
+            Ok(Reply::Downloads(accepted, errors))
+        }
+        Request::Volumes => Ok(Reply::Volumes(client.device_volumes().await?)),
+        Request::RefreshVolume(id) => {
+            client.refresh_device_volume(id).await?;
             Ok(Reply::Accepted)
         }
+        Request::SetVolume(id, kind, level) => Ok(Reply::VolumeQueued(
+            client.set_device_volume(id, kind, level).await?,
+        )),
+        Request::CallAudioControls => Ok(Reply::CallAudioControls(Box::new(
+            client.call_audio_controls().await?,
+        ))),
+        Request::ConfigureCallAudio(revision, selection) => Ok(Reply::CallAudioControls(Box::new(
+            client.configure_call_audio(revision, selection).await?,
+        ))),
         Request::Download(id, path) => {
             client.download_file(id, path).await?;
             Ok(Reply::Download)
@@ -229,7 +280,12 @@ async fn execute(
 
 async fn run_request(path: &std::path::Path, request: Request) -> Result<Reply, Failure> {
     let mutation = request.read_key().is_none();
-    match tokio::time::timeout(Duration::from_secs(12), execute(path, request)).await {
+    let timeout_seconds = match &request {
+        Request::DownloadMany(..) => 60,
+        Request::ConfigureCallAudio(..) => 30,
+        _ => 12,
+    };
+    match tokio::time::timeout(Duration::from_secs(timeout_seconds), execute(path, request)).await {
         Ok(Ok(reply)) => Ok(reply),
         Ok(Err(handover_ipc::IpcError::Server {
             code: handover_ipc::ErrorCode::SendOutcomeUnknown,

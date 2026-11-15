@@ -7,8 +7,17 @@ Handover is pre-1.0. Public interfaces may change.
 - Native contact sync supports complete generations of up to 4,096 contacts,
   8 MiB, and 256 chunks. Failed or incomplete generations preserve the last
   complete list. Older Android builds can send an unmarked truncated list.
-- Native media controls do not include phone volume. The phone can control
-  Linux volume.
+- Phone volume controls require matching Android and Linux builds. Android can
+  restrict ringtone changes under Do Not Disturb and disable volume changes on
+  fixed-volume devices. Handover displays the phone's reported levels.
+- Desktop call audio requires a paired Bluetooth phone exposing a duplex HFP
+  gateway profile, PipeWire, `pactl`, `pw-loopback`, `pw-dump`, and BlueZ. Select the
+  Bluetooth endpoint, microphone, and speakers explicitly in Calls. Physical
+  call audibility and Bluetooth recovery still need validation with a phone.
+- Phone downloads support files up to 8 GiB, folders up to 10,000 entries, and
+  16 GiB of reserved partial data. Interrupted downloads need an explicit Resume.
+  Linux-to-phone sends and older Android download peers retain the 100 MiB limit.
+  Android's protected app data remains inaccessible.
 - The optional desktop MPRIS bridge exports sessions with a known playback
   state and the phone's advertised Play, Pause, Play/Pause, Next, and Previous controls.
   Unknown playback sessions are omitted. Position is the latest phone report,

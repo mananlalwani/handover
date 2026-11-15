@@ -19,6 +19,8 @@ mod files;
 mod notification_reply;
 mod pages;
 mod phone;
+mod phone_audio;
+mod phone_files;
 #[cfg(test)]
 mod tests;
 mod tools;
@@ -33,6 +35,7 @@ pub(super) fn download_failure(reason: FileDownloadFailure) -> &'static str {
         FileDownloadFailure::Interrupted => "The download was interrupted",
         FileDownloadFailure::TimedOut => "The phone did not respond in time",
         FileDownloadFailure::Disconnected => "The phone disconnected during the download",
+        FileDownloadFailure::SourceChanged => "The source file changed. Download it again.",
     }
 }
 
@@ -76,16 +79,26 @@ impl Page {
         }
     }
 }
+type CallAudioDraft = (DeviceId, (String, String, String));
+
 pub struct Window {
     pub window: gtk::ApplicationWindow,
     model: RefCell<Model>,
     file_queue: RefCell<Vec<files::PickedFile>>,
     dial_address: RefCell<String>,
     remote_drafts: RefCell<BTreeMap<DeviceId, String>>,
+    volume_drafts: RefCell<BTreeMap<(DeviceId, VolumeKind), u32>>,
+    call_audio_draft: RefCell<Option<CallAudioDraft>>,
     audio_source_draft: RefCell<Option<AudioSourceSelection>>,
     audio_diagnostics: RefCell<Option<(DeviceId, gtk::Label, gtk::Label)>>,
     expanded_sections: RefCell<BTreeSet<&'static str>>,
     folder_path: RefCell<String>,
+    folder_cursor: RefCell<Option<String>>,
+    folder_entries: RefCell<Vec<FilesystemEntry>>,
+    file_selection: RefCell<BTreeMap<String, FileDownloadKind>>,
+    folder_request_id: RefCell<Option<String>>,
+    folder_pending_cursor: RefCell<Option<String>>,
+    folder_early_result: RefCell<BTreeMap<String, FilesystemResult>>,
     folder_requested: RefCell<Option<(DeviceId, String)>>,
     folder_busy: Cell<bool>,
     folder_generation: Cell<u64>,
@@ -296,10 +309,18 @@ impl Window {
             file_queue: RefCell::new(Vec::new()),
             dial_address: RefCell::new(String::new()),
             remote_drafts: RefCell::new(BTreeMap::new()),
+            volume_drafts: RefCell::new(BTreeMap::new()),
+            call_audio_draft: RefCell::new(None),
             audio_source_draft: RefCell::new(None),
             audio_diagnostics: RefCell::new(None),
             expanded_sections: RefCell::new(BTreeSet::new()),
             folder_path: RefCell::new(".".into()),
+            folder_cursor: RefCell::new(None),
+            folder_entries: RefCell::new(Vec::new()),
+            file_selection: RefCell::new(BTreeMap::new()),
+            folder_request_id: RefCell::new(None),
+            folder_pending_cursor: RefCell::new(None),
+            folder_early_result: RefCell::new(BTreeMap::new()),
             folder_requested: RefCell::new(None),
             folder_busy: Cell::new(false),
             folder_generation: Cell::new(0),
@@ -487,6 +508,11 @@ impl Window {
     }
     fn select_device(&self, selected: Option<DeviceId>) {
         if *self.selected.borrow() != selected {
+            self.folder_entries.borrow_mut().clear();
+            self.folder_cursor.borrow_mut().take();
+            self.file_selection.borrow_mut().clear();
+            self.folder_request_id.borrow_mut().take();
+            self.folder_early_result.borrow_mut().clear();
             self.folder_path.replace(".".into());
             self.folder_requested.borrow_mut().take();
             self.folder_busy.set(false);
@@ -571,8 +597,15 @@ impl Window {
                     self.request(Request::Tools);
                 }
             }
-            Page::Media => self.request(Request::Audio),
-            Page::Calls => self.request(Request::CallAudio),
+            Page::Media => {
+                self.request(Request::Audio);
+                self.request(Request::Volumes);
+            }
+            Page::Calls => {
+                self.request(Request::CallAudio);
+                self.request(Request::CallAudioControls);
+                self.request(Request::Volumes);
+            }
             Page::Sharing => self.request(Request::Transfers),
             Page::Contacts => self.request(Request::Contacts),
             Page::Clipboard => self.request(Request::ClipboardHistory),
@@ -617,9 +650,13 @@ impl Window {
                 self.request(Request::Pairing);
                 self.request(Request::Contacts);
                 self.request(Request::Transfers);
+                self.request(Request::Volumes);
                 match self.page.get() {
                     Page::Media => self.request(Request::Audio),
-                    Page::Calls => self.request(Request::CallAudio),
+                    Page::Calls => {
+                        self.request(Request::CallAudio);
+                        self.request(Request::CallAudioControls);
+                    }
                     Page::Connection => self.request(Request::Tools),
                     _ => {}
                 }
@@ -635,12 +672,18 @@ impl Window {
             }
             Event::State(payload) => {
                 if let ServerPayload::Filesystem { result } = payload.as_ref() {
-                    if self.folder_requested.borrow().as_ref()
-                        != Some(&(result.device_id.clone(), result.path.clone()))
-                    {
-                        return;
-                    }
-                    self.folder_busy.set(false);
+                    self.accept_folder_result(result.clone());
+                    self.schedule();
+                    return;
+                }
+                if let ServerPayload::DeviceVolume { state } = payload.as_ref() {
+                    self.volume_drafts.borrow_mut().retain(|(id, kind), level| {
+                        id != &state.device_id
+                            || !state
+                                .streams
+                                .iter()
+                                .any(|s| s.kind == *kind && s.level == *level)
+                    });
                 }
                 rebuild = self.affects_page(&payload);
                 if let ServerPayload::ShareResult { result } = payload.as_ref() {
@@ -698,7 +741,7 @@ impl Window {
             }
             Event::Reply(id, result) => {
                 let request = self.pending.borrow_mut().remove(&id);
-                if matches!(request, Some(Request::Folder(..))) && result.is_err() {
+                if matches!(request, Some(Request::FolderPage(..))) && result.is_err() {
                     self.folder_busy.set(false);
                 }
                 if let Some(request) = &request {
@@ -749,6 +792,48 @@ impl Window {
                             self.audio_source_draft.borrow_mut().take();
                         }
                     }
+                    Ok(Reply::FolderQueued(id)) => self.folder_submitted(id),
+                    Ok(Reply::Volumes(states)) => {
+                        self.model.borrow_mut().volumes = states
+                            .into_iter()
+                            .map(|s| (s.device_id.clone(), s))
+                            .collect();
+                    }
+                    Ok(Reply::VolumeQueued(request_id)) => {
+                        if !self.model.borrow().volume_results.contains_key(&request_id) {
+                            self.transient_notice(
+                                "Volume request queued. Waiting for the phone's report.",
+                            );
+                        }
+                    }
+                    Ok(Reply::CallAudioControls(controls)) => {
+                        self.model.borrow_mut().observe_call_audio(*controls)
+                    }
+                    Ok(Reply::DownloadUpdated(download)) => {
+                        self.model
+                            .borrow_mut()
+                            .apply(ServerPayload::FileDownload { download });
+                        self.request(Request::Transfers);
+                    }
+                    Ok(Reply::Downloads(downloads, errors)) => {
+                        let count = downloads.len();
+                        for download in downloads {
+                            if self.selected.borrow().as_ref() == Some(&download.device_id) {
+                                self.file_selection
+                                    .borrow_mut()
+                                    .remove(&download.source_path);
+                            }
+                            self.model
+                                .borrow_mut()
+                                .apply(ServerPayload::FileDownload { download });
+                        }
+                        self.request(Request::Transfers);
+                        self.transient_notice(&if errors.is_empty() {
+                            format!("{count} downloads queued")
+                        } else {
+                            format!("{count} downloads queued. {}", errors.join("; "))
+                        });
+                    }
                     Ok(Reply::CallAudio(status)) => {
                         self.model.borrow_mut().call_audio = Some(status)
                     }
@@ -775,9 +860,7 @@ impl Window {
                     Ok(Reply::Download) => {
                         self.model.borrow_mut().notice.clear();
                         self.request(Request::Transfers);
-                        self.transient_notice(
-                            "Download request accepted · Check the phone for completion",
-                        );
+                        self.transient_notice("Download queued. Progress is shown in Files.");
                     }
                     Ok(Reply::Accepted) => {
                         self.model.borrow_mut().notice.clear();
@@ -892,6 +975,10 @@ impl Window {
             ServerPayload::CallUpdated { .. } | ServerPayload::CallRemoved { .. } => {
                 matches!(page, Page::Overview | Page::Calls)
             }
+            ServerPayload::DeviceVolume { .. } | ServerPayload::DeviceVolumeResult { .. } => {
+                matches!(page, Page::Media | Page::Calls)
+            }
+            ServerPayload::CallAudioControls { .. } => page == Page::Calls,
             ServerPayload::Filesystem { .. } => page == Page::PhoneFiles,
             ServerPayload::FileDownload { .. } => matches!(page, Page::PhoneFiles | Page::Sharing),
             ServerPayload::AudioStreamUpdated { status } => {

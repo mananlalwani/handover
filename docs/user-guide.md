@@ -190,8 +190,11 @@ To browse phone files entirely from Linux, select Share all phone storage in the
 Android app's Remote desktop page and allow all-files access once. This mode
 requires Android 11 or newer. Linux's Files > On phone view then lists Internal
 storage and mounted removable volumes, including Downloads, photos, and
-documents. Select a file and press Download. Downloads keep original names and
-bytes, with a 100 MiB limit per file, and appear in Downloads/Handover.
+documents. Download files or whole folders, or select several entries together.
+Matching builds keep original names and bytes for files up to 8 GiB, with a
+10,000-entry folder limit. Saved files appear in Downloads/Handover. Progress,
+Cancel, and explicit Resume are available in Files. Paused downloads survive a
+daemon restart. Older phone builds retain the 100 MiB single-file limit.
 
 Android protects other apps' private data and system files even with this
 permission. See [Android's all-files access rules](https://developer.android.com/training/data-storage/manage-all-files).
@@ -201,6 +204,13 @@ file access in either mode. Both apps need requested-download support.
 The Android app also provides presentation controls, a pointer pad, and Linux
 volume controls. These commands report acceptance of the request; they do not
 claim that the presentation or volume changed.
+
+On Linux, Media and Calls can adjust the phone's reported media, ringtone, alarm,
+and call volume where Android permits it. Calls also offers explicit Bluetooth
+phone, microphone, and speaker selection for PipeWire call audio. Arm the route
+with Use laptop for calls; the microphone stays off until the selected phone
+reports an active call. Stop using laptop disarms it. See the
+[control center guide](control-center.md#calls) for requirements and limitations.
 
 ## Privacy and security
 

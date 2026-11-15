@@ -1,5 +1,6 @@
 //! Read-only local audio inspection. Never changes profiles, defaults or links.
 //! This is host-wide, not an inferred association with a native phone identity.
+pub(crate) use crate::call_audio_control::{configure, controls};
 use handover_core::CallAudioStatus;
 use serde_json::Value;
 use std::process::Stdio;
@@ -51,7 +52,12 @@ fn normalize(cards: &Value, sources: &Value, sinks: &Value) -> CallAudioStatus {
     };
     let gateways: Vec<_> = cards
         .iter()
-        .filter(|card| card["active_profile"] == "audio-gateway")
+        .filter(|card| {
+            matches!(
+                card["active_profile"].as_str(),
+                Some("audio-gateway" | "headset_audio_gateway" | "headset-audio-gateway")
+            )
+        })
         .collect();
     let duplex = gateways.iter().any(|card| {
         let Some(index) = card["index"].as_u64() else {

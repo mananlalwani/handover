@@ -18,7 +18,7 @@ impl ActivityLog {
         self.entries
             .retain(|entry| device_id(&entry.event) != device);
     }
-    pub(crate) fn record(&mut self, event: TransferActivityEvent) {
+    pub(crate) fn record(&mut self, event: TransferActivityEvent) -> bool {
         if let TransferActivityEvent::Download { download } = &event {
             let key = (&download.device_id, download.transfer_id.as_str());
             if let Some(old) = self
@@ -27,16 +27,20 @@ impl ActivityLog {
                 .find(|old| download_key(&old.event) == Some(key))
             {
                 if old.event == event {
-                    return;
+                    return false;
                 }
                 if let TransferActivityEvent::Download { download: previous } = &old.event {
-                    if previous.state.is_terminal() {
-                        return;
+                    if download.revision < previous.revision {
+                        return false;
                     }
-                    if matches!(previous.state, FileDownloadState::Receiving)
+                    if previous.state.is_terminal() {
+                        return false;
+                    }
+                    if download.revision == previous.revision
+                        && matches!(previous.state, FileDownloadState::Receiving)
                         && matches!(download.state, FileDownloadState::Queued)
                     {
-                        return;
+                        return false;
                     }
                 }
             }
@@ -50,13 +54,13 @@ impl ActivityLog {
                         && outgoing(&old.event) == Some((device, id))
                 })
             {
-                return;
+                return false;
             }
             self.entries
                 .retain(|old| outgoing(&old.event) != Some((device, id)));
         }
         let Some(sequence) = self.sequence.checked_add(1) else {
-            return;
+            return false;
         };
         self.sequence = sequence;
         self.entries.push_front(TransferActivity {
@@ -79,6 +83,7 @@ impl ActivityLog {
                 self.entries.pop_back();
             }
         }
+        true
     }
 }
 fn device_id(event: &TransferActivityEvent) -> &DeviceId {
@@ -122,6 +127,10 @@ mod tests {
                 device_id: device_id.clone(),
                 transfer_id: "download-1".into(),
                 source_path: "DCIM/photo.jpg".into(),
+                revision: 0,
+                kind: handover_core::FileDownloadKind::File,
+                progress: Default::default(),
+                controls: Default::default(),
                 state,
             },
         };
@@ -138,6 +147,42 @@ mod tests {
         assert_eq!(log.snapshot().len(), 1);
         assert!(
             matches!(&log.snapshot()[0].event, TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Completed { .. }))
+        );
+    }
+    #[test]
+    fn newer_download_revisions_win_over_late_receipts() {
+        let mut log = ActivityLog::default();
+        let make = |revision, state| TransferActivityEvent::Download {
+            download: FileDownload {
+                device_id: DeviceId::new("native:phone"),
+                transfer_id: "versioned".into(),
+                source_path: "photo.jpg".into(),
+                revision,
+                kind: Default::default(),
+                progress: Default::default(),
+                controls: Default::default(),
+                state,
+            },
+        };
+        assert!(log.record(make(3, FileDownloadState::Receiving)));
+        assert!(!log.record(make(1, FileDownloadState::Queued)));
+        assert!(log.record(make(
+            4,
+            FileDownloadState::Paused {
+                reason: handover_core::FileDownloadFailure::Disconnected
+            }
+        )));
+        assert!(!log.record(make(
+            2,
+            FileDownloadState::Preparing {
+                processed_bytes: 0,
+                total_bytes: None
+            }
+        )));
+        assert!(log.record(make(5, FileDownloadState::Queued)));
+        assert_eq!(log.snapshot().len(), 1);
+        assert!(
+            matches!(&log.snapshot()[0].event, TransferActivityEvent::Download { download } if download.revision == 5)
         );
     }
     #[test]

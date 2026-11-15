@@ -64,7 +64,7 @@ internal class LocalPhoneStorage(private val roots: Map<String, File>) {
         } catch (error: Exception) { current.close(); throw error }
     }
 
-    fun list(path: String, active: () -> Unit): List<PhoneFileEntry> {
+    fun list(path: String, limit: Int = 512, active: () -> Unit): List<PhoneFileEntry> {
         active()
         if (path == ".") return roots.keys.sorted().map { PhoneFileEntry(it, true, null) }
         return resolve(path).use { directory ->
@@ -74,7 +74,7 @@ internal class LocalPhoneStorage(private val roots: Map<String, File>) {
                 var scanned = 0
                 for (child in children) {
                     active()
-                    if (scanned++ >= 512) break
+                    if (scanned++ >= limit) break
                     val name = child.fileName.toString()
                     if (runCatching { safeTreePathParts(name).single() }.isFailure) continue
                     val stat = try { Os.lstat(child.toString()) } catch (_: android.system.ErrnoException) { continue }

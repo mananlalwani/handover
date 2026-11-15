@@ -85,6 +85,7 @@ pub(crate) fn fit_history_page(
 #[derive(Default)]
 pub(crate) struct SubscriptionFlags {
     audio: bool,
+    phone_audio: bool,
     shares: bool,
     media: bool,
     messages: bool,
@@ -237,6 +238,20 @@ where
 
     let audio_enable = matches!(request.method, Method::AudioStart { .. });
     let response = match request.method {
+        Method::PhoneAudioSubscribe => {
+            flags.phone_audio = true;
+            if subscription.is_none() {
+                *subscription = Some(events.subscribe());
+            }
+            ServerPayload::CallAudioControls {
+                controls: state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .call_audio_controls
+                    .clone()
+                    .unwrap_or_default(),
+            }
+        }
         Method::AudioSubscribe => {
             flags.audio = true;
             if subscription.is_none() {
@@ -320,7 +335,11 @@ where
             .await?;
             return Ok(true);
         }
-        Method::FileDownload { device_id, path } => {
+        Method::FileDownload {
+            device_id,
+            path,
+            kind,
+        } => {
             if let Some(peer_id) = device_id.as_str().strip_prefix("native:") {
                 let target = state
                     .read()
@@ -347,7 +366,13 @@ where
                         }
                     }
                     Some(_) => {
-                        match native_backend().map(|native| native.request_file(peer_id, path)) {
+                        match native_backend().map(|native| {
+                            if kind == handover_core::FileDownloadKind::File {
+                                native.request_file(peer_id, path)
+                            } else {
+                                native.request_download(peer_id, path, kind)
+                            }
+                        }) {
                             Some(Ok(download)) => {
                                 apply_backend_event(
                                     state,
@@ -388,6 +413,109 @@ where
                 }
             }
         }
+        Method::FileList {
+            device_id,
+            path,
+            cursor,
+        } => {
+            match device_id.as_str().strip_prefix("native:").and_then(|peer| {
+                native_backend().map(|n| n.filesystem_list_page(peer, path, cursor))
+            }) {
+                Some(Ok(request_id)) => ServerPayload::FilesystemQueued { request_id },
+                Some(Err(error)) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: error.to_string(),
+                    conversation_id: None,
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "File browsing is unavailable".into(),
+                    conversation_id: None,
+                },
+            }
+        }
+        Method::FileDownloadControl {
+            device_id,
+            transfer_id,
+            control,
+        } => {
+            match device_id.as_str().strip_prefix("native:").and_then(|peer| {
+                native_backend().map(|n| n.control_download(peer, &transfer_id, control))
+            }) {
+                Some(Ok(download)) => {
+                    apply_backend_event(state, events, StateEvent::FileDownload(download.clone()));
+                    ServerPayload::FileDownload { download }
+                }
+                Some(Err(error)) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: error.to_string(),
+                    conversation_id: None,
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "Download controls are unavailable".into(),
+                    conversation_id: None,
+                },
+            }
+        }
+        Method::DeviceVolumes => ServerPayload::DeviceVolumes {
+            states: state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .volumes
+                .values()
+                .cloned()
+                .collect(),
+        },
+        Method::DeviceVolumeRefresh { device_id } => native_command_response(
+            device_id
+                .as_str()
+                .strip_prefix("native:")
+                .and_then(|peer| native_backend().map(|n| n.request_volume(peer))),
+            "phone volume refresh",
+        ),
+        Method::DeviceVolumeSet {
+            device_id,
+            kind,
+            level,
+        } => {
+            match device_id
+                .as_str()
+                .strip_prefix("native:")
+                .and_then(|peer| native_backend().map(|n| n.set_volume(peer, kind, level)))
+            {
+                Some(Ok(request_id)) => ServerPayload::DeviceVolumeQueued { request_id },
+                Some(Err(error)) => ServerPayload::Error {
+                    code: ErrorCode::BackendRejected,
+                    message: error.to_string(),
+                    conversation_id: None,
+                },
+                None => ServerPayload::Error {
+                    code: ErrorCode::BackendUnavailable,
+                    message: "Phone volume controls are unavailable".into(),
+                    conversation_id: None,
+                },
+            }
+        }
+        Method::CallAudioControls => match crate::call_audio::controls().await {
+            Ok(controls) => ServerPayload::CallAudioControls { controls },
+            Err(message) => ServerPayload::Error {
+                code: ErrorCode::BackendUnavailable,
+                message,
+                conversation_id: None,
+            },
+        },
+        Method::CallAudioConfigure {
+            expected_revision,
+            selection,
+        } => match crate::call_audio::configure(expected_revision, selection).await {
+            Ok(controls) => ServerPayload::CallAudioControls { controls },
+            Err(message) => ServerPayload::Error {
+                code: ErrorCode::BackendRejected,
+                message,
+                conversation_id: None,
+            },
+        },
         Method::DevicesList => ServerPayload::Devices {
             devices: snapshot(state).devices,
         },

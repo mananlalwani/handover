@@ -17,6 +17,8 @@ pub(crate) struct StateStore {
     notifications: BTreeMap<NotificationId, Notification>,
     media_sessions: BTreeMap<MediaSessionId, MediaSession>,
     calls: BTreeMap<DeviceId, CallState>,
+    pub(crate) call_audio_controls: Option<handover_core::CallAudioControls>,
+    pub(crate) volumes: BTreeMap<DeviceId, handover_core::DeviceVolumeState>,
     contacts: BTreeMap<DeviceId, Vec<Contact>>,
     messaging: MessagingStore,
     pub(crate) transfer_activity: crate::transfer_activity::ActivityLog,
@@ -46,6 +48,30 @@ impl StateStore {
             StateEvent::DeviceCommandResult(result) => ApplyOutcome {
                 changed: true,
                 changes: vec![StateChange::DeviceCommandResult(result)],
+            },
+            StateEvent::CallAudioControls(controls) => {
+                self.call_audio_controls = Some(controls.clone());
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::CallAudioControls(controls)],
+                }
+            }
+            StateEvent::DeviceVolume(state) => {
+                if !self.devices.contains_key(&state.device_id) {
+                    return ApplyOutcome::unchanged();
+                }
+                if self.volumes.get(&state.device_id) == Some(&state) {
+                    return ApplyOutcome::unchanged();
+                }
+                self.volumes.insert(state.device_id.clone(), state.clone());
+                ApplyOutcome {
+                    changed: true,
+                    changes: vec![StateChange::DeviceVolume(state)],
+                }
+            }
+            StateEvent::DeviceVolumeResult(result) => ApplyOutcome {
+                changed: true,
+                changes: vec![StateChange::DeviceVolumeResult(result)],
             },
             StateEvent::ShareReceived(share) => {
                 self.transfer_activity
@@ -81,10 +107,14 @@ impl StateStore {
                 if !self.devices.contains_key(&download.device_id) {
                     return ApplyOutcome::unchanged();
                 }
-                self.transfer_activity
+                if !self
+                    .transfer_activity
                     .record(handover_core::TransferActivityEvent::Download {
                         download: download.clone(),
-                    });
+                    })
+                {
+                    return ApplyOutcome::unchanged();
+                }
                 ApplyOutcome {
                     changed: true,
                     changes: vec![StateChange::FileDownload(download)],
@@ -268,9 +298,13 @@ impl StateStore {
 
     fn apply_device(&mut self, event: DeviceEvent) -> ApplyOutcome {
         match &event {
-            DeviceEvent::Removed(id) => self.transfer_activity.remove_device(id),
+            DeviceEvent::Removed(id) => {
+                self.transfer_activity.remove_device(id);
+                self.volumes.remove(id);
+            }
             DeviceEvent::Updated(device) if !device.paired => {
-                self.transfer_activity.remove_device(&device.id)
+                self.transfer_activity.remove_device(&device.id);
+                self.volumes.remove(&device.id);
             }
             _ => {}
         }
@@ -342,6 +376,9 @@ impl StateStore {
         }
     }
 
+    pub(crate) fn get_call(&self, id: &DeviceId) -> Option<&CallState> {
+        self.calls.get(id)
+    }
     pub(crate) fn get_device(&self, id: &DeviceId) -> Option<&Device> {
         self.devices.get(id)
     }
@@ -464,6 +501,9 @@ pub(crate) enum StateChange {
     CallRemoved(DeviceId),
     CallCommandResult(handover_core::CallCommandResult),
     DeviceCommandResult(handover_core::DeviceCommandResult),
+    CallAudioControls(handover_core::CallAudioControls),
+    DeviceVolume(handover_core::DeviceVolumeState),
+    DeviceVolumeResult(handover_core::DeviceVolumeResult),
     ShareReceived(ReceivedShare),
     ShareProgress(ShareProgress),
     ShareResult(ShareResult),

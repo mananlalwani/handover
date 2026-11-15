@@ -1,4 +1,6 @@
 mod call_audio;
+mod call_audio_backend;
+mod call_audio_control;
 mod clipboard;
 mod clipboard_history;
 mod clipboard_mirror;
@@ -142,6 +144,7 @@ async fn main() {
         warn!(%error, "could not persist restored outgoing operations");
     }
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
+    call_audio_control::start(state.clone(), events.clone());
     tokio::spawn(outgoing::run_expiry(Arc::clone(&state), events.clone()));
     let mirror = Arc::new(clipboard_mirror::Mirror::new(
         clipboard_mirror::enabled_from_env(
@@ -164,6 +167,9 @@ async fn main() {
                     &events,
                     StateEvent::Device(DeviceEvent::Added(device)),
                 );
+            }
+            for download in native.restored_downloads() {
+                apply_backend_event(&state, &events, StateEvent::FileDownload(download));
             }
             let _ = NATIVE.set(native.clone());
             let native_state = Arc::clone(&state);
@@ -227,6 +233,7 @@ async fn main() {
     if let Some(native) = native_backend() {
         native.stop_all_audio();
     }
+    call_audio_control::shutdown().await;
     messaging_hub.shutdown().await;
     if let Err(error) = outgoing::persist(&state).await {
         warn!(%error, "could not flush outgoing operations");
@@ -392,6 +399,7 @@ fn apply_backend_event(
             );
         }
     }
+    let call_audio_event = matches!(&event, StateEvent::Call(_) | StateEvent::Device(_));
     let messaging_event = matches!(event, StateEvent::Messaging(_) | StateEvent::Contacts(_));
     let outgoing_event = matches!(
         &event,
@@ -407,6 +415,9 @@ fn apply_backend_event(
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .apply(event.clone());
+    if call_audio_event {
+        call_audio_control::notify();
+    }
     for change in outcome.changes {
         log_change(change);
     }
@@ -497,6 +508,9 @@ fn log_change(change: StateChange) {
             failure = ?result.failure,
             "phone call command result"
         ),
+        StateChange::DeviceVolume(_)
+        | StateChange::DeviceVolumeResult(_)
+        | StateChange::CallAudioControls(_) => {}
         StateChange::DeviceCommandResult(result) => info!(
             device_id = %result.device_id,
             request_id = %result.request_id,

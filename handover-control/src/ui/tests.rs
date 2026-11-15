@@ -41,6 +41,39 @@ fn audio_fixture() -> AudioControlsSnapshot {
         settings_available: true,
     }
 }
+fn volume_state(level: u32) -> DeviceVolumeState {
+    DeviceVolumeState {
+        device_id: device(true).id,
+        streams: vec![DeviceVolumeStream {
+            kind: VolumeKind::Media,
+            min_level: 0,
+            max_level: 15,
+            level,
+            muted: false,
+            adjustable: true,
+        }],
+    }
+}
+fn call_audio_fixture() -> CallAudioControls {
+    CallAudioControls {
+        revision: 4,
+        observed: true,
+        endpoints: vec![CallAudioChoice {
+            id: "phone-headset".into(),
+            label: "Phone headset".into(),
+        }],
+        inputs: vec![CallAudioChoice {
+            id: "laptop-mic".into(),
+            label: "Laptop microphone".into(),
+        }],
+        outputs: vec![CallAudioChoice {
+            id: "laptop-speakers".into(),
+            label: "Laptop speakers".into(),
+        }],
+        route: None,
+        notice: None,
+    }
+}
 fn check(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::CheckButton {
     descendants(root)
         .into_iter()
@@ -78,6 +111,8 @@ fn device(online: bool) -> Device {
             Capability::Battery,
             Capability::FileTransfer,
             Capability::FileDownload,
+            Capability::FileManagement,
+            Capability::VolumeControl,
             Capability::Notifications,
             Capability::Media,
         ]),
@@ -180,6 +215,32 @@ fn has_text(root: &impl IsA<gtk::Widget>, value: &str) -> bool {
 }
 
 #[test]
+fn higher_download_revision_can_requeue_after_receiving() {
+    let mut model = Model::default();
+    let mut download = FileDownload {
+        device_id: DeviceId::new("native:phone-a"),
+        transfer_id: "revisioned-download".into(),
+        source_path: "large/archive".into(),
+        revision: 7,
+        kind: FileDownloadKind::Directory,
+        progress: DownloadProgress::default(),
+        controls: BTreeSet::from([DownloadControl::Cancel]),
+        state: FileDownloadState::Receiving,
+    };
+    model.apply(ServerPayload::FileDownload {
+        download: download.clone(),
+    });
+    download.revision = 8;
+    download.state = FileDownloadState::Queued;
+    model.apply(ServerPayload::FileDownload { download });
+    assert!(matches!(
+        model.transfers.first().map(|activity| &activity.event),
+        Some(TransferActivityEvent::Download { download })
+            if download.revision == 8 && matches!(download.state, FileDownloadState::Queued)
+    ));
+}
+
+#[test]
 #[ignore = "requires the private display and IPC fixture runner"]
 fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     gtk::init().unwrap();
@@ -236,6 +297,10 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     let audio_stream = Arc::new(std::sync::Mutex::new(AudioStreamStatus::idle(
         device(true).id,
     )));
+    let volumes = Arc::new(std::sync::Mutex::new(vec![volume_state(5)]));
+    let worker_volumes = volumes.clone();
+    let call_audio_controls = Arc::new(std::sync::Mutex::new(call_audio_fixture()));
+    let worker_call_audio_controls = call_audio_controls.clone();
     let reject_audio = Arc::new(AtomicBool::new(false));
     let slow_audio = Arc::new(AtomicBool::new(false));
     let audio_gate = Arc::new(tokio::sync::Notify::new());
@@ -263,7 +328,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             let listener=UnixListener::bind(path).unwrap();ready.send(()).unwrap();
             loop {
                 let (socket,_)=listener.accept().await.unwrap();if worker_offline.load(Ordering::SeqCst){drop(socket);continue;}
-                let read_audio_available=worker_read_audio_available.clone();let audio=worker_audio.clone();let audio_stream=worker_stream.clone();let reject=worker_reject.clone();let slow=worker_slow.clone();let audio_gate=worker_audio_gate.clone();
+                let read_audio_available=worker_read_audio_available.clone();let audio=worker_audio.clone();let audio_stream=worker_stream.clone();let reject=worker_reject.clone();let slow=worker_slow.clone();let audio_gate=worker_audio_gate.clone();let volumes=worker_volumes.clone();let call_audio_controls=worker_call_audio_controls.clone();
                 let mirror=worker_mirror.clone();let history=worker_history.clone();let transfer_log=worker_transfer_log.clone();let download_counter=worker_download_counter.clone();let events=worker_events.clone();let mutations=mutations.clone();let mut reset=watcher.clone();let gate=worker_gate.clone();
                 tokio::spawn(async move {
                     let mut socket=BufReader::new(socket);
@@ -275,6 +340,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                 write_json_line(socket.get_mut(),&ServerMessage::new(baseline())).await.unwrap();
                                 let request=read_json_line::<_,IpcRequest>(&mut socket).await.unwrap().unwrap();assert!(matches!(request.method,Method::AudioSubscribe));
                                 let streams=vec![audio_stream.lock().unwrap().clone()];write_json_line(socket.get_mut(),&ServerMessage::new(ServerPayload::AudioStreams {streams})).await.unwrap();
+                                let request=read_json_line::<_,IpcRequest>(&mut socket).await.unwrap().unwrap();assert!(matches!(request.method,Method::PhoneAudioSubscribe));
+                                let controls=call_audio_controls.lock().unwrap().clone();write_json_line(socket.get_mut(),&ServerMessage::new(ServerPayload::CallAudioControls {controls})).await.unwrap();
                                 loop {tokio::select! {
                                     update=updates.recv()=>{let Ok(update)=update else {break;};if write_json_line(socket.get_mut(),&ServerMessage::new(update)).await.is_err(){break;}},
                                     _=reset.changed()=>break,
@@ -285,6 +352,8 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                             Method::AudioList=>ServerPayload::AudioStreams {streams:vec![audio_stream.lock().unwrap().clone()]},
                             Method::CustomCommands=>ServerPayload::CustomCommands {commands:vec![CustomCommandEntry {name:"fixture-command".into(),argv:vec!["/bin/true".into()]}]},
                             Method::CallsAudio=>ServerPayload::CallAudio {status:CallAudioStatus {observed:true,gateway_ready:true,duplex_running:false}},
+                            Method::DeviceVolumes=>ServerPayload::DeviceVolumes {states:volumes.lock().unwrap().clone()},
+                            Method::CallAudioControls=>ServerPayload::CallAudioControls {controls:call_audio_controls.lock().unwrap().clone()},
                             Method::ClipboardMirrorStatus=>ServerPayload::ClipboardMirror {enabled:mirror.load(Ordering::SeqCst)},
                             Method::ClipboardHistoryList=>ServerPayload::ClipboardHistory {entries:history.lock().unwrap().clone()},
                             Method::NativePeers=>ServerPayload::NativePeers {peers:vec![]},
@@ -306,16 +375,49 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                     Method::RemoteInputSend {text:Some(text),..} if text=="lost input"=>return,
                                     Method::ClipboardMirror {enable}=>{mirror.store(enable,Ordering::SeqCst);ServerPayload::NativeAccepted},
                                     Method::CallsControl {..}=>ServerPayload::CallQueued {request_id:"fixture-call".into()},
-                                    Method::NativeFilesystemList {path,..}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult {device_id:device(true).id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else{vec![FilesystemEntry {name:"photo.jpg".into(),directory:false,size:Some(240)}]},failure:None}});ServerPayload::NativeAccepted},
-                                    Method::FileDownload {device_id,path}=>{
+                                    Method::DeviceVolumeRefresh {..}=>ServerPayload::NativeAccepted,
+                                    Method::DeviceVolumeSet {device_id,kind,level}=>{
+                                        let request_id=if level==11{"fixture-volume-failed"}else{"fixture-volume-accepted"};
+                                        let accepted=level!=11;
+                                        let result=DeviceVolumeResult {device_id:device_id.clone(),request_id:request_id.into(),accepted,failure:if accepted{None}else{Some(DeviceVolumeFailure::Unavailable)}};
+                                        let _=events.send(ServerPayload::DeviceVolumeResult {result});
+                                        if accepted {
+                                            let mut states=volumes.lock().unwrap();
+                                            if let Some(state)=states.iter_mut().find(|s|s.device_id==device_id)
+                                                && let Some(stream)=state.streams.iter_mut().find(|s|s.kind==kind)
+                                            {stream.level=level;}
+                                            if let Some(state)=states.iter().find(|s|s.device_id==device_id).cloned(){let _=events.send(ServerPayload::DeviceVolume {state});}
+                                        }
+                                        ServerPayload::DeviceVolumeQueued {request_id:request_id.into()}
+                                    },
+                                    Method::CallAudioConfigure {expected_revision,selection}=>{
+                                        let mut controls=call_audio_controls.lock().unwrap();
+                                        assert_eq!(expected_revision,controls.revision);
+                                        controls.revision+=1;
+                                        controls.route=selection.map(|selected|CallAudioRoute {device_id:selected.device_id,endpoint_id:selected.endpoint_id,input_id:selected.input_id,output_id:selected.output_id,state:CallAudioRouteState::WaitingForCall});
+                                        let snapshot=controls.clone();drop(controls);
+                                        let _=events.send(ServerPayload::CallAudioControls {controls:snapshot.clone()});
+                                        ServerPayload::CallAudioControls {controls:snapshot}
+                                    },
+                                    Method::FileList {device_id,path,cursor}=>{let _=events.send(ServerPayload::Filesystem {result:FilesystemResult { cursor_next: if path=="." && cursor.is_none(){Some("page-2".into())}else{None},device_id,request_id:"fixture-folder".into(),path:path.clone(),entries:if path=="." && cursor.is_none() {vec![FilesystemEntry {name:"Downloads".into(),directory:true,size:None},FilesystemEntry {name:"readme.txt".into(),directory:false,size:Some(120)}]}else if path=="." {vec![FilesystemEntry{name:"archive.zip".into(),directory:false,size:Some(360)}]}else{vec![FilesystemEntry {name:"photo.jpg".into(),directory:false,size:Some(240)}]},failure:None}});ServerPayload::FilesystemQueued {request_id:"fixture-folder".into()}},
+                                    Method::FileDownload {device_id,path,kind}=>{
                                         let sequence=download_counter.fetch_add(1,Ordering::SeqCst)+1;
-                                        let download=FileDownload {device_id,transfer_id:format!("fixture-download-{sequence}"),source_path:path,state:FileDownloadState::Queued};
+                                        let download=FileDownload {device_id,transfer_id:format!("fixture-download-{sequence}"),source_path:path, revision: 0, kind, progress: Default::default(), controls: BTreeSet::from([DownloadControl::Cancel]),state:FileDownloadState::Queued};
                                         let mut log=transfer_log.lock().unwrap();
                                         log.retain(|activity| !matches!(&activity.event,TransferActivityEvent::Download {download:old} if old.device_id==download.device_id && old.transfer_id==download.transfer_id));
                                         log.insert(0,TransferActivity {sequence:2,observed_at_ms:1_800_000_000_002,event:TransferActivityEvent::Download {download:download.clone()}});
                                         let payload=ServerPayload::FileDownload {download};
                                         let _=events.send(payload.clone());
                                         payload
+                                    },
+                                    Method::FileDownloadControl {device_id,transfer_id,control}=>{
+                                        let mut current=transfer_log.lock().unwrap().iter().find_map(|item| match &item.event {TransferActivityEvent::Download {download} if download.device_id==device_id && download.transfer_id==transfer_id=>Some(download.clone()),_=>None}).unwrap();
+                                        assert!(current.controls.contains(&control));
+                                        match control {DownloadControl::Resume=>{current.state=FileDownloadState::Receiving;current.controls=BTreeSet::from([DownloadControl::Cancel]);},DownloadControl::Cancel=>{current.state=FileDownloadState::Cancelled;current.controls.clear();}}
+                                        let mut log=transfer_log.lock().unwrap();
+                                        if let Some(item)=log.iter_mut().find(|item|matches!(&item.event,TransferActivityEvent::Download {download} if download.device_id==device_id&&download.transfer_id==transfer_id)){item.event=TransferActivityEvent::Download {download:current.clone()};}
+                                        drop(log);
+                                        let payload=ServerPayload::FileDownload {download:current};let _=events.send(payload.clone());payload
                                     },
                                     Method::NotificationDismiss {notification_id}=>{let _=events.send(ServerPayload::NotificationRemoved {notification_id:notification_id.clone()});ServerPayload::CommandCompleted {notification_id}},
                                     Method::NotificationInvokeAction {notification_id,action_id}=>{assert_eq!(action_id,"fixture-action");ServerPayload::CommandCompleted {notification_id}},
@@ -465,6 +567,103 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     expand(&ui.body, "Call audio on this computer");
     spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "HFP profile selected"));
     assert!(has_text(&ui.body, "Incoming call"));
+    spin(|| {
+        ui.model.borrow().volumes.contains_key(&device(true).id)
+            && ui.model.borrow().call_audio_controls.is_some()
+    });
+    let scale = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Scale>().ok())
+        .unwrap();
+    scale.set_value(8.0);
+    button(&ui.body, "Apply").emit_clicked();
+    spin(|| ui.model.borrow().volumes[&device(true).id].streams[0].level == 8);
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::DeviceVolumeSet {
+            device_id: device(true).id,
+            kind: VolumeKind::Media,
+            level: 8
+        }
+    );
+    assert!(
+        !ui.volume_drafts
+            .borrow()
+            .contains_key(&(device(true).id, VolumeKind::Media)),
+        "phone's reported level clears the matching draft"
+    );
+    let scale = descendants(&ui.body)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Scale>().ok())
+        .unwrap();
+    scale.set_value(11.0);
+    button(&ui.body, "Apply").emit_clicked();
+    spin(|| {
+        ui.model
+            .borrow()
+            .notice
+            .contains("could not change this volume")
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::DeviceVolumeSet {
+            device_id: device(true).id,
+            kind: VolumeKind::Media,
+            level: 11
+        }
+    );
+    assert_eq!(
+        ui.volume_drafts
+            .borrow()
+            .get(&(device(true).id, VolumeKind::Media)),
+        Some(&11),
+        "failure keeps the user's unconfirmed volume choice"
+    );
+
+    let dropdowns = descendants(&ui.body)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::DropDown>().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(dropdowns.len(), 3);
+    for dropdown in &dropdowns {
+        dropdown.set_selected(1);
+    }
+    button(&ui.body, "Use laptop for calls").emit_clicked();
+    spin(|| {
+        ui.model
+            .borrow()
+            .call_audio_controls
+            .as_ref()
+            .is_some_and(|c| {
+                c.route
+                    .as_ref()
+                    .is_some_and(|r| matches!(r.state, CallAudioRouteState::WaitingForCall))
+            })
+    });
+    assert!(
+        matches!(received.try_recv().unwrap(),Method::CallAudioConfigure {expected_revision:4,selection:Some(selection)} if selection.endpoint_id=="phone-headset"&&selection.input_id=="laptop-mic"&&selection.output_id=="laptop-speakers")
+    );
+    spin(|| {
+        descendants(&ui.body)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Button>().ok())
+            .any(|b| b.label().as_deref() == Some("Stop using laptop"))
+    });
+    button(&ui.body, "Stop using laptop").emit_clicked();
+    spin(|| {
+        ui.model
+            .borrow()
+            .call_audio_controls
+            .as_ref()
+            .is_some_and(|c| c.revision == 6 && c.route.is_none())
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::CallAudioConfigure {
+            expected_revision: 5,
+            selection: None
+        }
+    );
     assert!(
         !descendants(&ui.body)
             .into_iter()
@@ -525,43 +724,95 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "readme.txt"));
     assert_eq!(
         received.try_recv().unwrap(),
-        Method::NativeFilesystemList {
-            id: "phone-a".into(),
-            path: ".".into()
+        Method::FileList {
+            device_id: device(true).id,
+            path: ".".into(),
+            cursor: None
+        }
+    );
+    let directory_selection = descendants(&ui.body)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::CheckButton>().ok())
+        .next()
+        .unwrap();
+    directory_selection.set_active(true);
+    button(&ui.body, "Download selected").emit_clicked();
+    spin(|| {
+        ui.pending.borrow().is_empty()&&ui.model.borrow().transfers.iter().any(|a|matches!(&a.event,TransferActivityEvent::Download {download} if download.source_path=="Downloads"&&download.kind==FileDownloadKind::Directory))
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileDownload {
+            device_id: device(true).id,
+            path: "Downloads".into(),
+            kind: FileDownloadKind::Directory
+        }
+    );
+    button(&ui.body, "Load more").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "archive.zip"));
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileList {
+            device_id: device(true).id,
+            path: ".".into(),
+            cursor: Some("page-2".into())
         }
     );
     button(&ui.body, "Open").emit_clicked();
     spin(|| ui.pending.borrow().is_empty() && has_text(&ui.body, "photo.jpg"));
     assert_eq!(
         received.try_recv().unwrap(),
-        Method::NativeFilesystemList {
-            id: "phone-a".into(),
-            path: "Downloads".into()
+        Method::FileList {
+            device_id: device(true).id,
+            path: "Downloads".into(),
+            cursor: None
         }
     );
     button(&ui.body, "Download").emit_clicked();
+    let expected_file_request = Method::FileDownload {
+        device_id: device(true).id,
+        path: "Downloads/photo.jpg".into(),
+        kind: FileDownloadKind::File,
+    };
+    let mut file_request = None;
+    spin(|| {
+        if file_request.is_none() {
+            file_request = received.try_recv().ok();
+        }
+        file_request.is_some()
+    });
+    assert_eq!(file_request.unwrap(), expected_file_request);
     spin(|| {
         ui.model.borrow().transfers.iter().any(|activity| matches!(
-            &activity.event,
-            TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Queued)
-        ))
+        &activity.event,
+        TransferActivityEvent::Download { download } if download.source_path == "Downloads/photo.jpg" && matches!(download.state, FileDownloadState::Queued)
+    ))
     });
-    assert_eq!(
-        received.try_recv().unwrap(),
-        Method::FileDownload {
-            device_id: device(true).id,
-            path: "Downloads/photo.jpg".into(),
-        }
-    );
     let publish_download = |state| {
         let transfer_id = match &transfer_log.lock().unwrap()[0].event {
             TransferActivityEvent::Download { download } => download.transfer_id.clone(),
             _ => unreachable!("fixture queued the active download"),
         };
+        let controls = if matches!(&state, FileDownloadState::Paused { .. }) {
+            BTreeSet::from([DownloadControl::Cancel, DownloadControl::Resume])
+        } else if matches!(
+            &state,
+            FileDownloadState::Failed { .. }
+                | FileDownloadState::Cancelled
+                | FileDownloadState::Completed { .. }
+        ) {
+            BTreeSet::new()
+        } else {
+            BTreeSet::from([DownloadControl::Cancel])
+        };
         let download = FileDownload {
             device_id: device(true).id,
             transfer_id,
             source_path: "Downloads/photo.jpg".into(),
+            revision: 0,
+            kind: handover_core::FileDownloadKind::File,
+            progress: Default::default(),
+            controls,
             state,
         };
         let mut log = transfer_log.lock().unwrap();
@@ -578,7 +829,39 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             .unwrap();
     };
     publish_download(FileDownloadState::Receiving);
-    spin(|| has_text(&ui.body, "Receiving…"));
+    spin(|| has_text(&ui.body, "Receiving"));
+    publish_download(FileDownloadState::Paused {
+        reason: FileDownloadFailure::Disconnected,
+    });
+    spin(|| has_text(&ui.body, "Paused") && button(&ui.body, "Resume").is_sensitive());
+    let transfer_id = match &transfer_log.lock().unwrap()[0].event {
+        TransferActivityEvent::Download { download } => download.transfer_id.clone(),
+        _ => unreachable!(),
+    };
+    button(&ui.body, "Resume").emit_clicked();
+    spin(|| {
+        ui.model.borrow().transfers.iter().any(|a|matches!(&a.event,TransferActivityEvent::Download {download} if matches!(download.state,FileDownloadState::Receiving)))
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileDownloadControl {
+            device_id: device(true).id,
+            transfer_id: transfer_id.clone(),
+            control: DownloadControl::Resume
+        }
+    );
+    button(&ui.body, "Cancel").emit_clicked();
+    spin(|| {
+        ui.model.borrow().transfers.iter().any(|a|matches!(&a.event,TransferActivityEvent::Download {download} if matches!(download.state,FileDownloadState::Cancelled)))
+    });
+    assert_eq!(
+        received.try_recv().unwrap(),
+        Method::FileDownloadControl {
+            device_id: device(true).id,
+            transfer_id,
+            control: DownloadControl::Cancel
+        }
+    );
     publish_download(FileDownloadState::Completed {
         path: "/tmp/handover-fixture/photo.jpg".into(),
     });
@@ -595,7 +878,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     spin(|| {
         ui.model.borrow().transfers.iter().any(|activity| matches!(
         &activity.event,
-        TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Queued)
+        TransferActivityEvent::Download { download } if download.source_path == "Downloads/photo.jpg" && matches!(download.state, FileDownloadState::Queued)
     ))
     });
     assert_eq!(
@@ -603,6 +886,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         Method::FileDownload {
             device_id: device(true).id,
             path: "Downloads/photo.jpg".into(),
+            kind: FileDownloadKind::File,
         }
     );
     publish_download(FileDownloadState::Failed {
@@ -618,7 +902,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     spin(|| {
         ui.model.borrow().transfers.iter().any(|activity| matches!(
         &activity.event,
-        TransferActivityEvent::Download { download } if matches!(download.state, FileDownloadState::Queued)
+        TransferActivityEvent::Download { download } if download.source_path == "Downloads/photo.jpg" && matches!(download.state, FileDownloadState::Queued)
     ))
     });
     assert_eq!(
@@ -626,10 +910,12 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         Method::FileDownload {
             device_id: device(true).id,
             path: "Downloads/photo.jpg".into(),
+            kind: FileDownloadKind::File,
         }
     );
     ui.event(Event::State(Box::new(ServerPayload::Filesystem {
         result: FilesystemResult {
+            cursor_next: None,
             device_id: device(false).id,
             request_id: "unrelated".into(),
             path: "Downloads".into(),

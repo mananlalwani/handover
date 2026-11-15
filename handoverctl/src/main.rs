@@ -1095,6 +1095,12 @@ fn print_notification_table(devices: &[Device], notifications: &[Notification]) 
 
 fn print_message(payload: ServerPayload) {
     match payload {
+        ServerPayload::FilesystemQueued { .. }
+        | ServerPayload::DeviceVolumes { .. }
+        | ServerPayload::DeviceVolume { .. }
+        | ServerPayload::DeviceVolumeQueued { .. }
+        | ServerPayload::DeviceVolumeResult { .. }
+        | ServerPayload::CallAudioControls { .. } => {}
         ServerPayload::ArchiveSettings {
             limit_mib,
             used_bytes,

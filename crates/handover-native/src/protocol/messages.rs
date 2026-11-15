@@ -205,6 +205,10 @@ pub(crate) enum Message {
         protocol: u32,
         #[serde(default)]
         file_downloads: bool,
+        #[serde(default)]
+        files_v2: bool,
+        #[serde(default)]
+        volume_control: bool,
         id: String,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -486,6 +490,66 @@ pub(crate) enum Message {
     /// Browse a bounded directory on the authenticated peer. Paths are
     /// interpreted by the receiving platform and never cross the trust
     /// boundary as executable input.
+    FileOpenV2 {
+        protocol: u32,
+        transfer_id: String,
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_version: Option<String>,
+    },
+    FilePreparingV2 {
+        protocol: u32,
+        transfer_id: String,
+        processed_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    FileInfoV2 {
+        protocol: u32,
+        transfer_id: String,
+        name: String,
+        size: u64,
+        version: String,
+    },
+    FileReadV2 {
+        protocol: u32,
+        transfer_id: String,
+        offset: u64,
+        size: u32,
+    },
+    FileChunkV2 {
+        protocol: u32,
+        transfer_id: String,
+        offset: u64,
+        data: String,
+    },
+    FileCloseV2 {
+        protocol: u32,
+        transfer_id: String,
+    },
+    FileErrorV2 {
+        protocol: u32,
+        transfer_id: String,
+        reason: handover_core::FileDownloadFailure,
+    },
+    VolumeRequest {
+        protocol: u32,
+    },
+    VolumeSet {
+        protocol: u32,
+        request_id: String,
+        kind: handover_core::VolumeKind,
+        level: u32,
+    },
+    VolumeState {
+        protocol: u32,
+        streams: Vec<handover_core::DeviceVolumeStream>,
+    },
+    VolumeResult {
+        protocol: u32,
+        request_id: String,
+        accepted: bool,
+        failure: Option<handover_core::DeviceVolumeFailure>,
+    },
     FileRequest {
         protocol: u32,
         transfer_id: String,
@@ -498,11 +562,17 @@ pub(crate) enum Message {
     },
     FilesystemList {
         protocol: u32,
+        #[serde(default)]
+        paged: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
         request_id: String,
         path: String,
     },
     FilesystemEntries {
         protocol: u32,
+        #[serde(default)]
+        cursor_next: Option<String>,
         request_id: String,
         path: String,
         entries: Vec<WireFileEntry>,
@@ -653,6 +723,17 @@ impl Message {
             | Self::KeepAwake { protocol, .. }
             | Self::ScreensaverControl { protocol, .. }
             | Self::TetheringSettings { protocol, .. }
+            | Self::FileOpenV2 { protocol, .. }
+            | Self::FilePreparingV2 { protocol, .. }
+            | Self::FileInfoV2 { protocol, .. }
+            | Self::FileReadV2 { protocol, .. }
+            | Self::FileChunkV2 { protocol, .. }
+            | Self::FileCloseV2 { protocol, .. }
+            | Self::FileErrorV2 { protocol, .. }
+            | Self::VolumeRequest { protocol, .. }
+            | Self::VolumeSet { protocol, .. }
+            | Self::VolumeState { protocol, .. }
+            | Self::VolumeResult { protocol, .. }
             | Self::FileRequest { protocol, .. }
             | Self::FileRequestFailure { protocol, .. }
             | Self::FilesystemList { protocol, .. }

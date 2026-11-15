@@ -41,6 +41,7 @@ pub(crate) async fn handle_client(
                         match event {
                             Ok(event) if matches!(event, StateEvent::ShareReceived(_) | StateEvent::ShareProgress(_) | StateEvent::ShareResult(_) | StateEvent::FileDownload(_)) && !flags.shares => {}
                             Ok(event) if matches!(event, StateEvent::AudioStream(_) | StateEvent::AudioControlsUpdated(_)) && !flags.audio => {}
+                            Ok(event) if matches!(event, StateEvent::DeviceVolume(_) | StateEvent::DeviceVolumeResult(_) | StateEvent::CallAudioControls(_)) && !flags.phone_audio => {}
                             Ok(event) if matches!(event, StateEvent::Media(_)) && !flags.media => {}
                             Ok(event) if matches!(event, StateEvent::Messaging(_)) && !flags.messages => {}
                             Ok(event) => write_json_line(&mut writer, &message_from_event(event)).await?,
@@ -63,6 +64,14 @@ pub(crate) async fn handle_client(
                                     if let Some(snapshot) = native_backend().and_then(|native| native.cached_audio_controls()) {
                                         write_json_line(&mut writer, &ServerMessage::new(ServerPayload::AudioControlsUpdated { snapshot })).await?;
                                     }
+                                }
+                                if flags.phone_audio {
+                                    let (states, controls) = {
+                                        let store = state.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        (store.volumes.values().cloned().collect(), store.call_audio_controls.clone().unwrap_or_default())
+                                    };
+                                    write_json_line(&mut writer, &ServerMessage::new(ServerPayload::DeviceVolumes { states })).await?;
+                                    write_json_line(&mut writer, &ServerMessage::new(ServerPayload::CallAudioControls { controls })).await?;
                                 }
                                 if flags.messages {
                                     let operations = state.read().unwrap_or_else(std::sync::PoisonError::into_inner)

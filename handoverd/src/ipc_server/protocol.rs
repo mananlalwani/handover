@@ -310,6 +310,15 @@ pub(crate) fn message_from_event(event: StateEvent) -> ServerMessage {
         StateEvent::DeviceCommandResult(result) => {
             ServerMessage::new(ServerPayload::DeviceCommandResult { result })
         }
+        StateEvent::CallAudioControls(controls) => {
+            ServerMessage::new(ServerPayload::CallAudioControls { controls })
+        }
+        StateEvent::DeviceVolume(state) => {
+            ServerMessage::new(ServerPayload::DeviceVolume { state })
+        }
+        StateEvent::DeviceVolumeResult(result) => {
+            ServerMessage::new(ServerPayload::DeviceVolumeResult { result })
+        }
         StateEvent::Messaging(event) => ServerMessage::from_messaging_event(event),
         StateEvent::ShareReceived(share) => {
             ServerMessage::new(ServerPayload::ShareReceived { share })

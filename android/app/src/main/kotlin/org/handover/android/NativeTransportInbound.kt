@@ -114,8 +114,11 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
                     .also(::send)
                 return
             }
-            handleDirectoryRequest(requestId, path)
+            if (message.optBoolean("paged", false)) fileTransfers.handle(message) else handleDirectoryRequest(requestId, path)
         }
+        "file_open_v2", "file_read_v2", "file_close_v2" -> { if (serverFingerprint != null) fileTransfers.handle(message) }
+        "volume_request" -> { if (serverFingerprint != null && volumeControlServer) sendPhoneVolumeState() }
+        "volume_set" -> { if (serverFingerprint != null && volumeControlServer) handlePhoneVolumeSet(message) }
         "file_request" -> { if (serverFingerprint != null) handleFileRequest(message) }
         "filesystem_entries", "filesystem_failure", "custom_command_list", "custom_command_result" -> {
             broadcast(ACTION_REMOTE_RESULT, message)
@@ -127,6 +130,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
                 socket?.close()
                 return
             }
+            volumeControlServer = message.optBoolean("volume_control", false)
             serverId = advertisedId.takeIf { it.isNotEmpty() }
             if (serverFingerprint != null) {
                 approvalGranted = true
@@ -173,6 +177,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             send(JSONObject().put("type", "audio_ready").put("protocol", 1).put("realtime", true).put("managed", true)
                 .put("pause_request", preferences.getString("audio_pause_request", null)))
             sendBattery()
+            if (volumeControlServer) sendPhoneVolumeState()
             publishConnectivity()
             // Proactively share the current notification list; the server
             // also requests it, so a lost frame is recovered on request.

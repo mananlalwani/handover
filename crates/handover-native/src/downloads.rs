@@ -14,6 +14,18 @@ impl NativeBackend {
         peer_id: &str,
         path: String,
     ) -> Result<FileDownload, NativeCommandError> {
+        if self
+            .inner
+            .lock()
+            .unwrap()
+            .peers
+            .peers
+            .get(peer_id)
+            .is_some_and(|p| p.files_v2)
+        {
+            return self.request_download(peer_id, path, handover_core::FileDownloadKind::File);
+        }
+
         if path == "."
             || !safe_browse_path(&path)
             || path
@@ -51,6 +63,10 @@ impl NativeBackend {
             device_id: DeviceId::new(format!("native:{peer_id}")),
             transfer_id: transfer_id.clone(),
             source_path: path.clone(),
+            revision: 0,
+            kind: handover_core::FileDownloadKind::File,
+            progress: Default::default(),
+            controls: Default::default(),
             state: FileDownloadState::Queued,
         };
         inner
@@ -149,6 +165,10 @@ mod tests {
             device_id: DeviceId::new("native:phone"),
             transfer_id: id.into(),
             source_path: "Code/untouched.cc".into(),
+            revision: 0,
+            kind: handover_core::FileDownloadKind::File,
+            progress: Default::default(),
+            controls: Default::default(),
             state: FileDownloadState::Queued,
         };
         {

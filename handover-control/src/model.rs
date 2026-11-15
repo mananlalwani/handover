@@ -10,6 +10,9 @@ pub struct Model {
     pub media: BTreeMap<MediaSessionId, MediaSession>,
     pub calls: BTreeMap<DeviceId, CallState>,
     pub call_audio: Option<CallAudioStatus>,
+    pub call_audio_controls: Option<CallAudioControls>,
+    pub volume_results: BTreeMap<String, DeviceVolumeResult>,
+    pub volumes: BTreeMap<DeviceId, DeviceVolumeState>,
     pub audio_controls: Option<AudioControlsSnapshot>,
     pub audio_error: Option<String>,
     pub audio_streams: BTreeMap<DeviceId, AudioStreamStatus>,
@@ -55,6 +58,8 @@ impl Model {
             }
             ServerPayload::DeviceRemoved { device_id } => {
                 self.devices.remove(&device_id);
+                self.volumes.remove(&device_id);
+                self.volume_results.retain(|_, r| r.device_id != device_id);
                 self.notifications.retain(|id, _| id.device_id != device_id);
                 self.contacts.retain(|c| c.device_id != device_id);
                 self.media.retain(|id, _| id.device_id != device_id);
@@ -155,6 +160,28 @@ impl Model {
                         .unwrap_or_default()
                 );
             }
+            ServerPayload::DeviceVolumes { states } => {
+                self.volumes = states
+                    .into_iter()
+                    .map(|s| (s.device_id.clone(), s))
+                    .collect();
+            }
+            ServerPayload::DeviceVolume { state } => {
+                self.volumes.insert(state.device_id.clone(), state);
+            }
+            ServerPayload::DeviceVolumeResult { result } => {
+                if self.volume_results.len() >= 16 {
+                    self.volume_results.pop_first();
+                }
+                self.volume_results
+                    .insert(result.request_id.clone(), result.clone());
+                self.notice = if result.accepted {
+                    "Phone accepted the volume request".into()
+                } else {
+                    match result.failure { Some(DeviceVolumeFailure::Unconfirmed) => "The volume request was not confirmed. Check the phone's reported level before trying again.".into(), Some(DeviceVolumeFailure::PermissionRequired) => "Android blocked this volume change. Check Do Not Disturb access on the phone.".into(), _ => "The phone could not change this volume.".into() }
+                };
+            }
+            ServerPayload::CallAudioControls { controls } => self.observe_call_audio(controls),
             ServerPayload::Filesystem { result } => {
                 self.folder = Some(result);
             }
@@ -169,8 +196,10 @@ impl Model {
                     _ => None,
                 });
                 if previous.is_some_and(|old| {
-                    old.state.is_terminal()
-                        || (matches!(old.state, FileDownloadState::Receiving)
+                    download.revision < old.revision
+                        || old.state.is_terminal()
+                        || (download.revision == old.revision
+                            && matches!(old.state, FileDownloadState::Receiving)
                             && matches!(download.state, FileDownloadState::Queued))
                 }) {
                     return;
@@ -192,6 +221,15 @@ impl Model {
                 self.transfers.truncate(128);
             }
             _ => {}
+        }
+    }
+    pub fn observe_call_audio(&mut self, controls: CallAudioControls) {
+        if self
+            .call_audio_controls
+            .as_ref()
+            .is_none_or(|old| controls.revision >= old.revision)
+        {
+            self.call_audio_controls = Some(controls);
         }
     }
     pub fn observe_audio_controls(&mut self, snapshot: AudioControlsSnapshot) {

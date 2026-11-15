@@ -305,19 +305,40 @@ by that device. The device must be connected, paired, and advertise the normaliz
 `file_download` capability. The native adapter learns support from the current
 phone connection; saved pairing records never imply support.
 
-The response and subscribed event are `file_download` with a `download` record
-containing `device_id`, `transfer_id`, `source_path`, and `state`. The state is
-tagged by `status`: `queued`, `receiving`, `completed` with a local `path`, or
-`failed` with a normalized `reason`. Queue acceptance never proves transfer or
-storage. Only the desktop's atomic save produces `completed`. Failures include
-`permission_required`, `invalid_resource`, `size_limit`, `unavailable`, `storage`,
-`interrupted`, `timed_out`, and `disconnected`. Requests are not replayed or retried.
+The response and subscribed event are `file_download` with a `download` record.
+It contains `device_id`, `transfer_id`, `source_path`, `revision`, `kind`,
+`progress`, `controls`, and `state`. `kind` defaults to `file`; `directory` requires
+`file_management`. State `status` is `queued`, `preparing` with actual
+`processed_bytes` and optional `total_bytes`, `receiving`, `verifying`, `paused`
+with `reason`, `cancelled`, `completed` with a local `path`, or `failed` with
+`reason`. Queue acceptance never proves transfer or storage. Only an atomic save
+produces `completed`. `source_changed` rejects a different source version.
 
-Events require `shares:true`. `transfers.list` also retains these records as
-`event.kind:download` with `download`. Coalesce by device and transfer ID; terminal
-states win over late acceptance or receiving events. Active requests survive
-terminal-history eviction within the 128-record session log. Daemon restart
-clears the log. Fetch it after subscription recovery or reopening a client.
+`progress` contains `received_bytes`, optional `total_bytes`, `completed_files`,
+and optional `total_files`. `controls` advertises valid `cancel` and `resume`
+actions. `files.control` takes `device_id`, `transfer_id`, and `control`,
+and returns the updated `file_download`. Resume creates a fresh backend attempt
+under the same public transfer ID. It never replays automatically.
+
+`files.list` takes `device_id`, relative `path`, and optional opaque `cursor`.
+Its `filesystem_queued` response contains `request_id`; the subscribed
+`filesystem` result must match that ID, device, and path. `cursor_next` indicates
+another page. Cursors expire and are tied to the original storage permission
+scope. Clients must discard them after switching devices or folders.
+
+Download events require `shares:true`. `transfers.list` retains them as
+`event.kind:download` with `download`. Coalesce by device and transfer ID; ignore
+lower revisions and preserve terminal state. Legacy records default to revision
+zero. Active records survive terminal-history eviction in the bounded session
+log. Daemon restart restores unfinished download checkpoints as paused, without
+replaying requests. Completed session history is not durable.
+
+The optional native `hello.files_v2` negotiation enables paged listings and
+chunked read-only downloads. Phone source hashing, positioned reads, cancellation,
+source-version validation, and local hash verification stay below normalized
+IPC. Limits are 8 GiB per file, 10,000 folder entries, 32 unfinished jobs, two
+active jobs, and 16 GiB of reserved partial data. Legacy peers keep the older
+single-file path described below.
 
 The native wire uses an optional `hello.file_downloads` boolean and
 `file_request` with protocol 1, transfer ID, and relative path. Android returns
@@ -330,3 +351,31 @@ exposes volume labels at the relative root. Local paths use read-only held
 directory descriptors and reject symlinks at every segment. Document-provider
 identifiers, tree URIs, and Android absolute paths never enter normalized IPC. New folder failures echo `path` so a
 failure can be attached to the requested location.
+
+
+## Phone volume and call audio
+
+`phone.audio.subscribe` opts a connection into phone volume and call-routing
+updates and returns current `call_audio_controls`. Older subscriptions do not
+receive these new event types. Read `volume.list` for initial levels. After
+subscription lag, the daemon sends replacement volume and routing state.
+
+`volume.list` returns `device_volumes` with observed stream states. `volume.refresh`
+takes `device_id`; `volume.set` takes `device_id`, `kind`, and integer `level`.
+Refresh returns command acceptance; set returns `device_volume_queued` with
+`request_id`. The phone must advertise
+`volume_control`. Stream kinds are `media`, `ringtone`, `alarm`, and `call`.
+Each reports `min_level`, `max_level`, `level`, `muted`, and `adjustable`.
+`device_volume` events update actual levels. `device_volume_result` matches the
+request ID with acceptance or failure, without synthesizing a changed level.
+Disconnect or expiry yields `unconfirmed` for unresolved commands.
+
+`calls.audio.controls` returns `call_audio_controls` with its revision, observed
+choices, current route, and optional notice. `calls.audio.configure` takes
+`expected_revision` and optional `selection`; null disarms the route. Selection
+contains its expected revision, `device_id`, and opaque `endpoint_id`, `input_id`,
+and `output_id`. Stale revisions fail. The daemon owns route lifetimes and emits
+updated `call_audio_controls`. States are `waiting_for_call`, `routing` with
+`duplex_running`, and `failed` with an explanation. Backend card names, Bluetooth
+addresses, and PipeWire node names are not public identifiers. Routing does not
+prove a physical call is audible.

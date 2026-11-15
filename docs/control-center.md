@@ -119,13 +119,23 @@ Stop sharing disables both modes immediately, even if the system all-files
 permission remains enabled. Revoking that permission also stops broad access.
 Switching modes invalidates pending requests against the previous storage root.
 
-Press Download beside a file. The request first shows as queued, then receiving.
-Saved means the desktop finished an atomic save in Downloads/Handover, preserving
-the original filename and bytes. Open containing folder reveals the result.
-The per-file limit is 100 MiB. Failed requests can be retried explicitly; Handover
-never retries automatically. Downloads continue if the control window closes.
-Their status stays in Recent transfers until the daemon restarts or its bounded
-history expires. Older Android apps need an update before Download is available.
+Press Download beside a file or folder, or select several entries and download
+up to 32 together. Load more reads the next directory page. With matching builds,
+folders preserve their directory structure, empty folders, filenames, and bytes.
+Downloads accept files up to 8 GiB and folders up to 10,000 entries. Handover limits
+reserved partial data to 16 GiB and runs at most two downloads at once.
+
+Preparing reports bytes the phone has hashed. Receiving reports bytes written on
+Linux. Verifying checks the completed file against the phone's SHA-256 hash.
+Saved appears after the whole requested file or folder moves atomically into
+Downloads/Handover. Partial files remain in a private staging directory.
+
+Cancel stops a request and removes its partial data. Disconnects and timeouts
+pause downloads. Reconnect and press Resume to continue with a new attempt; the
+phone must still expose the same source bytes. Changed files fail instead of
+mixing versions. Paused checkpoints survive daemon restart. Requests never resume
+automatically. Closing the desktop window leaves daemon downloads running.
+Older download-capable phones retain single-file downloads with a 100 MiB limit.
 
 ## Calls
 
@@ -135,6 +145,23 @@ a valid ordinary phone number. Dial text survives view updates. The request
 carries the call generation the user saw, so the daemon rejects it if that call
 has changed before submission. Queued or phone-accepted controls do not confirm
 that a call connected. Use matching daemon and client binaries for this guard.
+
+To use the laptop's microphone and speakers, pair the phone with Linux Bluetooth
+and select its connected endpoint, a local microphone, and local speakers in
+Calls. Use laptop for calls arms that explicit selection. Handover starts the two
+PipeWire routes only while that phone reports an active call. Waiting for call
+leaves the microphone off. Stop using laptop removes Handover's routes. Call end,
+disconnection, or daemon exit stops them too. Global audio defaults do not change.
+The previous Bluetooth profile is restored when safe; an interrupted restoration
+is retried from the daemon's private recovery journal. Restart never arms a mic.
+
+Routing status requires the selected PipeWire links to be active in both
+directions. It does not prove audibility on a physical phone. Missing Bluetooth
+profiles or host tools produce an unavailable state instead of a guessed route.
+
+Media and Calls also show reported phone volume streams. Adjust a slider and
+press Apply. The phone's actual report updates the displayed level. Acceptance
+alone does not prove a change. Refresh volume requests another phone report.
 
 ## Clipboard history
 

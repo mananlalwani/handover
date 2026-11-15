@@ -76,7 +76,46 @@ pub enum Method {
     #[serde(rename = "transfers.list")]
     TransfersList,
     #[serde(rename = "files.download")]
-    FileDownload { device_id: DeviceId, path: String },
+    FileDownload {
+        device_id: DeviceId,
+        path: String,
+        #[serde(
+            default,
+            skip_serializing_if = "handover_core::FileDownloadKind::is_file"
+        )]
+        kind: handover_core::FileDownloadKind,
+    },
+    #[serde(rename = "files.list")]
+    FileList {
+        device_id: DeviceId,
+        path: String,
+        cursor: Option<String>,
+    },
+    #[serde(rename = "files.control")]
+    FileDownloadControl {
+        device_id: DeviceId,
+        transfer_id: String,
+        control: handover_core::DownloadControl,
+    },
+    #[serde(rename = "volume.list")]
+    DeviceVolumes,
+    #[serde(rename = "volume.refresh")]
+    DeviceVolumeRefresh { device_id: DeviceId },
+    #[serde(rename = "volume.set")]
+    DeviceVolumeSet {
+        device_id: DeviceId,
+        kind: handover_core::VolumeKind,
+        level: u32,
+    },
+    #[serde(rename = "phone.audio.subscribe")]
+    PhoneAudioSubscribe,
+    #[serde(rename = "calls.audio.controls")]
+    CallAudioControls,
+    #[serde(rename = "calls.audio.configure")]
+    CallAudioConfigure {
+        expected_revision: u64,
+        selection: Option<handover_core::CallAudioSelection>,
+    },
     #[serde(rename = "devices.list")]
     DevicesList,
     #[serde(rename = "native.peers")]
@@ -509,6 +548,25 @@ impl ServerMessage {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerPayload {
+    FilesystemQueued {
+        request_id: String,
+    },
+    DeviceVolumes {
+        states: Vec<handover_core::DeviceVolumeState>,
+    },
+    DeviceVolume {
+        state: handover_core::DeviceVolumeState,
+    },
+    DeviceVolumeQueued {
+        request_id: String,
+    },
+    DeviceVolumeResult {
+        result: handover_core::DeviceVolumeResult,
+    },
+    CallAudioControls {
+        controls: handover_core::CallAudioControls,
+    },
+
     FileDownload {
         download: handover_core::FileDownload,
     },
@@ -1054,13 +1112,119 @@ impl Client {
         device_id: DeviceId,
         path: String,
     ) -> Result<handover_core::FileDownload, IpcError> {
-        self.send(Method::FileDownload { device_id, path }).await?;
+        self.download_resource(device_id, path, handover_core::FileDownloadKind::File)
+            .await
+    }
+
+    pub async fn download_resource(
+        &mut self,
+        device_id: DeviceId,
+        path: String,
+        kind: handover_core::FileDownloadKind,
+    ) -> Result<handover_core::FileDownload, IpcError> {
+        self.send(Method::FileDownload {
+            device_id,
+            path,
+            kind,
+        })
+        .await?;
         match self.receive().await?.payload {
             ServerPayload::FileDownload { download } => Ok(download),
             payload => Err(unexpected(payload)),
         }
     }
 
+    pub async fn filesystem_page(
+        &mut self,
+        device_id: DeviceId,
+        path: String,
+        cursor: Option<String>,
+    ) -> Result<String, IpcError> {
+        self.send(Method::FileList {
+            device_id,
+            path,
+            cursor,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::FilesystemQueued { request_id } => Ok(request_id),
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn control_download(
+        &mut self,
+        device_id: DeviceId,
+        transfer_id: String,
+        control: handover_core::DownloadControl,
+    ) -> Result<handover_core::FileDownload, IpcError> {
+        self.send(Method::FileDownloadControl {
+            device_id,
+            transfer_id,
+            control,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::FileDownload { download } => Ok(download),
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn device_volumes(
+        &mut self,
+    ) -> Result<Vec<handover_core::DeviceVolumeState>, IpcError> {
+        self.send(Method::DeviceVolumes).await?;
+        match self.receive().await?.payload {
+            ServerPayload::DeviceVolumes { states } => Ok(states),
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn refresh_device_volume(&mut self, device_id: DeviceId) -> Result<(), IpcError> {
+        self.send(Method::DeviceVolumeRefresh { device_id }).await?;
+        match self.receive().await?.payload {
+            ServerPayload::NativeAccepted => Ok(()),
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn set_device_volume(
+        &mut self,
+        device_id: DeviceId,
+        kind: handover_core::VolumeKind,
+        level: u32,
+    ) -> Result<String, IpcError> {
+        self.send(Method::DeviceVolumeSet {
+            device_id,
+            kind,
+            level,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::DeviceVolumeQueued { request_id } => Ok(request_id),
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn call_audio_controls(
+        &mut self,
+    ) -> Result<handover_core::CallAudioControls, IpcError> {
+        self.send(Method::CallAudioControls).await?;
+        match self.receive().await?.payload {
+            ServerPayload::CallAudioControls { controls } => Ok(controls),
+            payload => Err(unexpected(payload)),
+        }
+    }
+    pub async fn configure_call_audio(
+        &mut self,
+        expected_revision: u64,
+        selection: Option<handover_core::CallAudioSelection>,
+    ) -> Result<handover_core::CallAudioControls, IpcError> {
+        self.send(Method::CallAudioConfigure {
+            expected_revision,
+            selection,
+        })
+        .await?;
+        match self.receive().await?.payload {
+            ServerPayload::CallAudioControls { controls } => Ok(controls),
+            payload => Err(unexpected(payload)),
+        }
+    }
     pub async fn devices(&mut self) -> Result<Vec<Device>, IpcError> {
         self.send(Method::DevicesList).await?;
         match self.receive().await?.payload {
@@ -1664,6 +1828,11 @@ impl Client {
         write_json_line(
             &mut subscription._writer,
             &Request::new(Method::AudioSubscribe),
+        )
+        .await?;
+        write_json_line(
+            &mut subscription._writer,
+            &Request::new(Method::PhoneAudioSubscribe),
         )
         .await?;
         Ok(subscription)
@@ -2590,6 +2759,7 @@ mod tests {
         let request = Request::new(Method::FileDownload {
             device_id: DeviceId::new("native:phone"),
             path: "DCIM/photo.jpg".into(),
+            kind: handover_core::FileDownloadKind::File,
         });
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(
@@ -2603,6 +2773,10 @@ mod tests {
                 device_id: DeviceId::new("native:phone"),
                 transfer_id: "download-1".into(),
                 source_path: "DCIM/photo.jpg".into(),
+                revision: 0,
+                kind: handover_core::FileDownloadKind::File,
+                progress: Default::default(),
+                controls: Default::default(),
                 state: handover_core::FileDownloadState::Queued,
             },
         });

@@ -74,6 +74,7 @@ fn connect(port: u16, identity: &ClientIdentity) -> TlsPeer {
     builder.set_verify_callback(SslVerifyMode::PEER, |_preverified, _context| true);
     let connector = builder.build();
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_nodelay(true).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -153,6 +154,7 @@ fn generated_malformed_frames_are_rejected_over_tls() {
 }
 
 struct Harness {
+    directory: std::path::PathBuf,
     backend: NativeBackend,
     port: u16,
     events: mpsc::Receiver<StateEvent>,
@@ -160,7 +162,8 @@ struct Harness {
 
 fn harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let backend = NativeBackend::open(dir.path().to_path_buf()).unwrap();
+    let directory = dir.path().to_path_buf();
+    let backend = NativeBackend::open(directory.clone()).unwrap();
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let (tx, rx) = mpsc::channel();
@@ -174,6 +177,7 @@ fn harness() -> Harness {
     // Keep the state directory alive for the duration of the test.
     std::mem::forget(dir);
     Harness {
+        directory,
         backend,
         port,
         events: rx,
@@ -231,11 +235,22 @@ fn exchange_openings_with_downloads(
     client: &ClientIdentity,
     downloads: bool,
 ) -> String {
+    exchange_openings_with_features(harness, peer, client, downloads, false, false)
+}
+
+fn exchange_openings_with_features(
+    harness: &Harness,
+    peer: &mut TlsPeer,
+    client: &ClientIdentity,
+    downloads: bool,
+    files_v2: bool,
+    volume_control: bool,
+) -> String {
     let nonce = fresh_nonce();
     let commit = hex::encode(Sha256::digest(nonce));
     send(
         peer,
-        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","pair_commit":commit,"file_downloads":downloads}),
+        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","pair_commit":commit,"file_downloads":downloads,"files_v2":files_v2,"volume_control":volume_control}),
     );
     let hello = recv(peer);
     assert_eq!(hello["type"], "hello");
@@ -1655,8 +1670,10 @@ fn session_teardown_with_reentrant_callback_completes() {
         });
         let _ = server.serve(listener, event);
     });
+    let directory = dir.path().to_path_buf();
     std::mem::forget(dir);
     let harness = Harness {
+        directory,
         backend,
         port,
         events: rx,
@@ -2037,4 +2054,548 @@ fn requested_download_rejects_a_different_basename_before_reading_payload() {
         }
     );
     recv_err(&mut peer);
+}
+
+fn pair_advanced(harness: &Harness, client: &ClientIdentity, peer: &mut TlsPeer) {
+    let code = exchange_openings_with_features(harness, peer, client, true, true, false);
+    assert_eq!(wait_pending_code(harness, &client.fingerprint), code);
+    harness.backend.approve(&client.fingerprint, &code).unwrap();
+    send(
+        peer,
+        serde_json::json!({"type":"pair_confirm","protocol":1,"code":code}),
+    );
+    assert_eq!(recv(peer)["type"], "paired");
+    for expected in [
+        "notifications_request",
+        "call_request",
+        "media_request",
+        "contacts_request",
+    ] {
+        assert_eq!(recv(peer)["type"], expected);
+    }
+    send(
+        peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":false,"notifications":[]}),
+    );
+}
+fn terminal_download(harness: &Harness, id: &str) -> handover_core::FileDownload {
+    loop {
+        let download = wait_download(harness, id);
+        if download.state.is_terminal()
+            || matches!(
+                download.state,
+                handover_core::FileDownloadState::Paused { .. }
+            )
+        {
+            return download;
+        }
+    }
+}
+fn serve_v2_file(peer: &mut TlsPeer, open: serde_json::Value, bytes: &[u8], out_of_order: bool) {
+    serve_v2_file_from(peer, open, bytes, out_of_order, 0)
+}
+fn serve_v2_file_from(
+    peer: &mut TlsPeer,
+    open: serde_json::Value,
+    bytes: &[u8],
+    out_of_order: bool,
+    start: usize,
+) {
+    use base64::Engine;
+    assert_eq!(open["type"], "file_open_v2");
+    let id = open["transfer_id"].as_str().unwrap();
+    let name = open["path"].as_str().unwrap().rsplit('/').next().unwrap();
+    send(
+        peer,
+        serde_json::json!({"type":"file_info_v2","protocol":1,"transfer_id":id,"name":name,"size":bytes.len(),"version":hex::encode(Sha256::digest(bytes))}),
+    );
+    let mut sent = start;
+    while sent < bytes.len() {
+        let mut reads = Vec::new();
+        let count = if out_of_order {
+            4.min((bytes.len() - sent).div_ceil(32768))
+        } else {
+            1
+        };
+        for _ in 0..count {
+            let request = recv(peer);
+            assert_eq!(request["type"], "file_read_v2");
+            reads.push(request);
+        }
+        if out_of_order {
+            reads.reverse();
+        }
+        for request in reads {
+            let offset = request["offset"].as_u64().unwrap() as usize;
+            let size = request["size"].as_u64().unwrap() as usize;
+            send(
+                peer,
+                serde_json::json!({"type":"file_chunk_v2","protocol":1,"transfer_id":id,"offset":offset,"data":base64::engine::general_purpose::STANDARD.encode(&bytes[offset..offset+size])}),
+            );
+            sent += size;
+        }
+    }
+    let closed = recv(peer);
+    assert_eq!(closed["type"], "file_close_v2");
+    assert_eq!(closed["transfer_id"], id);
+}
+#[test]
+fn chunked_download_verifies_original_bytes_with_out_of_order_chunks() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_advanced(&harness, &client, &mut peer);
+    let download = harness
+        .backend
+        .request_file(
+            &client.fingerprint,
+            "Internal storage/Code/original ✓.cc".into(),
+        )
+        .unwrap();
+    let bytes: Vec<_> = (0..(4 * 32768 + 333)).map(|i| (i % 251) as u8).collect();
+    let open = recv(&mut peer);
+    serve_v2_file(&mut peer, open, &bytes, true);
+    let completed = terminal_download(&harness, &download.transfer_id);
+    let handover_core::FileDownloadState::Completed { path } = completed.state else {
+        panic!("download did not finish: {:?}", completed.state);
+    };
+    assert!(path.ends_with("original ✓.cc"));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert_eq!(completed.progress.received_bytes, bytes.len() as u64);
+    assert_eq!(completed.progress.completed_files, 1);
+}
+#[test]
+fn chunked_download_saves_a_file_above_the_legacy_limit_with_its_original_hash() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_advanced(&harness, &client, &mut peer);
+    let download = harness
+        .backend
+        .request_file(&client.fingerprint, "Internal storage/large.cc".into())
+        .unwrap();
+    let bytes: Vec<u8> = (0..(101 * 1024 * 1024 + 17))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let expected = Sha256::digest(&bytes);
+    let open = recv(&mut peer);
+    serve_v2_file(&mut peer, open, &bytes, true);
+    let completed = terminal_download(&harness, &download.transfer_id);
+    let handover_core::FileDownloadState::Completed { path } = completed.state else {
+        panic!("large download did not finish: {:?}", completed.state);
+    };
+    assert!(path.ends_with("large.cc"));
+    let mut file = std::fs::File::open(path).unwrap();
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 65536];
+    loop {
+        let count = file.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    assert_eq!(hash.finalize(), expected);
+    assert_eq!(completed.progress.received_bytes, bytes.len() as u64);
+}
+#[test]
+fn directory_download_walks_pages_and_keeps_empty_directories_and_original_files() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_advanced(&harness, &client, &mut peer);
+    let download = harness
+        .backend
+        .request_download(
+            &client.fingerprint,
+            "Internal storage/Photos".into(),
+            handover_core::FileDownloadKind::Directory,
+        )
+        .unwrap();
+    let first = recv(&mut peer);
+    assert_eq!(first["type"], "filesystem_list");
+    assert_eq!(first["paged"], true);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"filesystem_entries","protocol":1,"request_id":first["request_id"],"path":first["path"],"cursor_next":"page2","entries":[{"name":"empty","directory":true},{"name":"one.cc","directory":false,"size":3}]}),
+    );
+    let second = recv(&mut peer);
+    assert_eq!(second["cursor"], "page2");
+    send(
+        &mut peer,
+        serde_json::json!({"type":"filesystem_entries","protocol":1,"request_id":second["request_id"],"path":second["path"],"entries":[{"name":"two.heic","directory":false,"size":4}]}),
+    );
+    let nested = recv(&mut peer);
+    assert!(nested["path"].as_str().unwrap().ends_with("/empty"));
+    send(
+        &mut peer,
+        serde_json::json!({"type":"filesystem_entries","protocol":1,"request_id":nested["request_id"],"path":nested["path"],"entries":[]}),
+    );
+    let open = recv(&mut peer);
+    serve_v2_file(&mut peer, open, b"one", false);
+    let open = recv(&mut peer);
+    serve_v2_file(&mut peer, open, b"two!", false);
+    let completed = terminal_download(&harness, &download.transfer_id);
+    let handover_core::FileDownloadState::Completed { path } = completed.state else {
+        panic!("folder did not finish: {:?}", completed.state);
+    };
+    let root = std::path::Path::new(&path);
+    assert!(root.join("empty").is_dir());
+    assert_eq!(std::fs::read(root.join("one.cc")).unwrap(), b"one");
+    assert_eq!(std::fs::read(root.join("two.heic")).unwrap(), b"two!");
+    assert_eq!(completed.progress.total_files, Some(2));
+    assert_eq!(completed.progress.completed_files, 2);
+}
+#[test]
+fn resumed_folder_listing_discards_directories_from_the_abandoned_manifest() {
+    use handover_core::{DownloadControl, FileDownloadKind, FileDownloadState};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_advanced(&harness, &client, &mut peer);
+    let download = harness
+        .backend
+        .request_download(
+            &client.fingerprint,
+            "Internal storage/Folder".into(),
+            FileDownloadKind::Directory,
+        )
+        .unwrap();
+    let first = recv(&mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"filesystem_entries","protocol":1,"request_id":first["request_id"],"path":first["path"],"cursor_next":"next-page","entries":[{"name":"removed-later","directory":true}]}),
+    );
+    let next = recv(&mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"filesystem_failure","protocol":1,"request_id":next["request_id"],"path":next["path"],"reason":"unavailable"}),
+    );
+    assert!(matches!(
+        terminal_download(&harness, &download.transfer_id).state,
+        FileDownloadState::Paused { .. }
+    ));
+    harness
+        .backend
+        .control_download(
+            &client.fingerprint,
+            &download.transfer_id,
+            DownloadControl::Resume,
+        )
+        .unwrap();
+    let resumed = loop {
+        let frame = recv(&mut peer);
+        if frame["type"] == "filesystem_list" {
+            break frame;
+        }
+    };
+    assert!(resumed.get("cursor").is_none());
+    send(
+        &mut peer,
+        serde_json::json!({"type":"filesystem_entries","protocol":1,"request_id":resumed["request_id"],"path":resumed["path"],"entries":[{"name":"current.cc","directory":false,"size":3}]}),
+    );
+    let open = recv(&mut peer);
+    serve_v2_file(&mut peer, open, b"now", false);
+    let FileDownloadState::Completed { path } =
+        terminal_download(&harness, &download.transfer_id).state
+    else {
+        panic!("resumed folder did not complete");
+    };
+    assert!(!std::path::Path::new(&path).join("removed-later").exists());
+    assert_eq!(
+        std::fs::read(std::path::Path::new(&path).join("current.cc")).unwrap(),
+        b"now"
+    );
+}
+#[test]
+fn large_download_can_be_cancelled_and_late_chunks_cannot_recreate_it() {
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_advanced(&harness, &client, &mut peer);
+    let download = harness
+        .backend
+        .request_file(&client.fingerprint, "Internal storage/large.bin".into())
+        .unwrap();
+    let open = recv(&mut peer);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_info_v2","protocol":1,"transfer_id":open["transfer_id"],"name":"large.bin","size":101*1024*1024,"version":"a".repeat(64)}),
+    );
+    let first = recv(&mut peer);
+    assert_eq!(first["type"], "file_read_v2");
+    let cancelled = harness
+        .backend
+        .control_download(
+            &client.fingerprint,
+            &download.transfer_id,
+            handover_core::DownloadControl::Cancel,
+        )
+        .unwrap();
+    assert_eq!(cancelled.state, handover_core::FileDownloadState::Cancelled);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_chunk_v2","protocol":1,"transfer_id":open["transfer_id"],"offset":0,"data":"aWdub3JlZA=="}),
+    );
+    send(&mut peer, serde_json::json!({"type":"ping","protocol":1}));
+    loop {
+        let frame = recv(&mut peer);
+        if frame["type"] == "pong" {
+            break;
+        }
+    }
+    assert_eq!(
+        harness
+            .backend
+            .restored_downloads()
+            .into_iter()
+            .find(|d| d.transfer_id == download.transfer_id)
+            .unwrap()
+            .state,
+        handover_core::FileDownloadState::Cancelled
+    );
+}
+
+#[test]
+fn partial_download_resumes_from_a_durable_checkpoint_after_daemon_restart() {
+    use base64::Engine;
+    use handover_core::{DownloadControl, FileDownloadState};
+    let first = harness();
+    let client = test_identity();
+    let mut peer = connect(first.port, &client);
+    pair_advanced(&first, &client, &mut peer);
+    let download = first
+        .backend
+        .request_file(&client.fingerprint, "Internal storage/resume.bin".into())
+        .unwrap();
+    let open = recv(&mut peer);
+    let bytes: Vec<_> = (0..100_123).map(|i| (i % 239) as u8).collect();
+    let version = hex::encode(Sha256::digest(&bytes));
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_info_v2","protocol":1,"transfer_id":open["transfer_id"],"name":"resume.bin","size":bytes.len(),"version":version}),
+    );
+    let chunk = recv(&mut peer);
+    assert_eq!(chunk["offset"], 0);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_chunk_v2","protocol":1,"transfer_id":open["transfer_id"],"offset":0,"data":base64::engine::general_purpose::STANDARD.encode(&bytes[..32768])}),
+    );
+    loop {
+        let state = wait_download(&first, &download.transfer_id);
+        if state.progress.received_bytes >= 32768 {
+            break;
+        }
+    }
+    drop(peer);
+    let paused = terminal_download(&first, &download.transfer_id);
+    assert!(matches!(paused.state, FileDownloadState::Paused { .. }));
+    assert_eq!(paused.progress.received_bytes, 32768);
+    let backend = NativeBackend::open(first.directory.clone()).unwrap();
+    let restored = backend.restored_downloads();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].transfer_id, download.transfer_id);
+    assert_eq!(restored[0].progress.received_bytes, 32768);
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    let server = backend.clone();
+    std::thread::spawn(move || {
+        let _ = server.serve(
+            listener,
+            Arc::new(move |event| {
+                let _ = tx.send(event);
+            }),
+        );
+    });
+    let second = Harness {
+        directory: first.directory.clone(),
+        backend,
+        port,
+        events: rx,
+    };
+    let mut peer = connect(port, &client);
+    send(
+        &mut peer,
+        serde_json::json!({"type":"hello","protocol":1,"id":client.fingerprint,"name":"Test Phone","trusted_server_id":second.backend.identity(),"file_downloads":true,"files_v2":true}),
+    );
+    assert_eq!(recv(&mut peer)["type"], "hello");
+    assert_eq!(recv(&mut peer)["type"], "paired");
+    for kind in [
+        "notifications_request",
+        "call_request",
+        "media_request",
+        "contacts_request",
+    ] {
+        assert_eq!(recv(&mut peer)["type"], kind);
+    }
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":false,"notifications":[]}),
+    );
+    second
+        .backend
+        .control_download(
+            &client.fingerprint,
+            &download.transfer_id,
+            DownloadControl::Resume,
+        )
+        .unwrap();
+    let resumed = recv(&mut peer);
+    assert_eq!(resumed["expected_version"], version);
+    assert_ne!(resumed["transfer_id"], open["transfer_id"]);
+    serve_v2_file_from(&mut peer, resumed, &bytes, false, 32768);
+    let complete = terminal_download(&second, &download.transfer_id);
+    let FileDownloadState::Completed { path } = complete.state else {
+        panic!("resume did not complete: {:?}", complete.state);
+    };
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+#[test]
+fn changed_source_cannot_be_spliced_onto_partial_bytes() {
+    use base64::Engine;
+    use handover_core::{DownloadControl, FileDownloadFailure, FileDownloadState};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    pair_advanced(&harness, &client, &mut peer);
+    let download = harness
+        .backend
+        .request_file(&client.fingerprint, "Internal storage/changed.bin".into())
+        .unwrap();
+    let open = recv(&mut peer);
+    let bytes = vec![7u8; 65536];
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_info_v2","protocol":1,"transfer_id":open["transfer_id"],"name":"changed.bin","size":bytes.len(),"version":hex::encode(Sha256::digest(&bytes))}),
+    );
+    assert_eq!(recv(&mut peer)["type"], "file_read_v2");
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_chunk_v2","protocol":1,"transfer_id":open["transfer_id"],"offset":0,"data":base64::engine::general_purpose::STANDARD.encode(&bytes[..32768])}),
+    );
+    loop {
+        let state = wait_download(&harness, &download.transfer_id);
+        if state.progress.received_bytes >= 32768 {
+            break;
+        }
+    }
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_error_v2","protocol":1,"transfer_id":open["transfer_id"],"reason":"interrupted"}),
+    );
+    let paused = terminal_download(&harness, &download.transfer_id);
+    assert!(matches!(paused.state, FileDownloadState::Paused { .. }));
+    harness
+        .backend
+        .control_download(
+            &client.fingerprint,
+            &download.transfer_id,
+            DownloadControl::Resume,
+        )
+        .unwrap();
+    let resumed = loop {
+        let next = recv(&mut peer);
+        if next["type"] == "file_open_v2" {
+            break next;
+        }
+    };
+    send(
+        &mut peer,
+        serde_json::json!({"type":"file_info_v2","protocol":1,"transfer_id":resumed["transfer_id"],"name":"changed.bin","size":bytes.len(),"version":"0".repeat(64)}),
+    );
+    assert_eq!(
+        terminal_download(&harness, &download.transfer_id).state,
+        FileDownloadState::Failed {
+            reason: FileDownloadFailure::SourceChanged
+        }
+    );
+}
+
+#[test]
+fn volume_commands_use_real_reports_and_match_results_without_optimistic_state() {
+    use handover_core::{DeviceVolumeFailure, VolumeKind};
+    let harness = harness();
+    let client = test_identity();
+    let mut peer = connect(harness.port, &client);
+    let code = exchange_openings_with_features(&harness, &mut peer, &client, true, false, true);
+    assert_eq!(wait_pending_code(&harness, &client.fingerprint), code);
+    harness.backend.approve(&client.fingerprint, &code).unwrap();
+    send(
+        &mut peer,
+        serde_json::json!({"type":"pair_confirm","protocol":1,"code":code}),
+    );
+    assert_eq!(recv(&mut peer)["type"], "paired");
+    assert_eq!(recv(&mut peer)["type"], "volume_request");
+    for expected in [
+        "notifications_request",
+        "call_request",
+        "media_request",
+        "contacts_request",
+    ] {
+        assert_eq!(recv(&mut peer)["type"], expected);
+    }
+    send(
+        &mut peer,
+        serde_json::json!({"type":"notifications_sync","protocol":1,"enabled":false,"notifications":[]}),
+    );
+    let state = |level| serde_json::json!({"type":"volume_state","protocol":1,"streams":[{"kind":"media","min_level":0,"max_level":15,"level":level,"muted":false,"adjustable":true}]});
+    send(&mut peer, state(4));
+    loop {
+        if let StateEvent::DeviceVolume(state) =
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        {
+            assert_eq!(state.streams[0].level, 4);
+            break;
+        }
+    }
+    let request = harness
+        .backend
+        .set_volume(&client.fingerprint, VolumeKind::Media, 7)
+        .unwrap();
+    let command = recv(&mut peer);
+    assert_eq!(command["type"], "volume_set");
+    assert_eq!(command["request_id"], request);
+    assert_eq!(command["kind"], "media");
+    assert_eq!(command["level"], 7);
+    assert_eq!(
+        harness.backend.volume_states()[0].streams[0].level,
+        4,
+        "queue acceptance must not invent a new volume"
+    );
+    send(
+        &mut peer,
+        serde_json::json!({"type":"volume_result","protocol":1,"request_id":request,"accepted":true}),
+    );
+    send(&mut peer, state(7));
+    loop {
+        if let StateEvent::DeviceVolume(state) =
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        {
+            assert_eq!(state.streams[0].level, 7);
+            break;
+        }
+    }
+    assert!(
+        harness
+            .backend
+            .set_volume(&client.fingerprint, VolumeKind::Media, 16)
+            .is_err()
+    );
+    let lost = harness
+        .backend
+        .set_volume(&client.fingerprint, VolumeKind::Media, 6)
+        .unwrap();
+    assert_eq!(recv(&mut peer)["request_id"], lost);
+    drop(peer);
+    loop {
+        if let StateEvent::DeviceVolumeResult(result) =
+            harness.events.recv_timeout(Duration::from_secs(5)).unwrap()
+            && result.request_id == lost
+        {
+            assert!(!result.accepted);
+            assert_eq!(result.failure, Some(DeviceVolumeFailure::Unconfirmed));
+            break;
+        }
+    }
 }

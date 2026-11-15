@@ -2,7 +2,8 @@
 
 mod transfer_activity;
 pub use transfer_activity::{
-    FileDownload, FileDownloadFailure, FileDownloadState, TransferActivity, TransferActivityEvent,
+    DownloadControl, DownloadProgress, FileDownload, FileDownloadFailure, FileDownloadKind,
+    FileDownloadState, TransferActivity, TransferActivityEvent,
 };
 
 use std::collections::BTreeSet;
@@ -134,6 +135,8 @@ pub enum Capability {
     Connectivity,
     FileTransfer,
     FileDownload,
+    FileManagement,
+    VolumeControl,
     Media,
     Notifications,
 }
@@ -380,6 +383,8 @@ pub struct FilesystemResult {
     pub device_id: DeviceId,
     pub request_id: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_next: Option<String>,
     pub entries: Vec<FilesystemEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
@@ -529,6 +534,9 @@ pub enum StateEvent {
     Call(CallEvent),
     CallCommandResult(CallCommandResult),
     DeviceCommandResult(DeviceCommandResult),
+    DeviceVolume(DeviceVolumeState),
+    DeviceVolumeResult(DeviceVolumeResult),
+    CallAudioControls(CallAudioControls),
     FileDownload(FileDownload),
     ShareReceived(ReceivedShare),
     ShareProgress(ShareProgress),
@@ -542,6 +550,11 @@ pub enum StateEvent {
     Filesystem(FilesystemResult),
     Contacts(ContactsEvent),
 }
+
+mod phone_volume;
+pub use phone_volume::*;
+mod call_audio_controls;
+pub use call_audio_controls::*;
 
 mod audio;
 pub use audio::*;

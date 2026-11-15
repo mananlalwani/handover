@@ -7,10 +7,12 @@ mod audio_rtc;
 mod contacts;
 mod discovery;
 mod downloads;
+mod downloads_v2;
 mod errors;
 mod identity;
 mod limits;
 mod pairing;
+mod phone_volume;
 mod protocol;
 mod services;
 mod session;
@@ -53,6 +55,10 @@ pub struct Peer {
     /// Negotiated for this connection only; never restored from persisted trust.
     #[serde(skip)]
     pub file_downloads: bool,
+    #[serde(skip)]
+    pub files_v2: bool,
+    #[serde(skip)]
+    pub volume_control: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,6 +101,8 @@ pub(crate) struct Runtime {
     // Queued Linux-to-phone notification commands, drained by the owning
     // session thread. Bounded per peer; IPC reports acceptance, not delivery.
     pub(crate) outbox: BTreeMap<String, Vec<Message>>,
+    pub(crate) volume_states: BTreeMap<String, handover_core::DeviceVolumeState>,
+    pub(crate) volume_requests: BTreeMap<String, BTreeMap<String, Instant>>,
     pub(crate) pending_downloads: BTreeMap<String, BTreeMap<String, downloads::PendingDownload>>,
     pub(crate) pending_shares: BTreeMap<String, BTreeMap<String, Instant>>,
     // Latest call-state generation reported by each peer. A queued call
@@ -149,8 +157,12 @@ pub(crate) fn release_source(inner: &mut Runtime, source: IpAddr) {
     }
 }
 
+type EventSink = Arc<dyn Fn(StateEvent) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct NativeBackend {
+    pub(crate) download_events: Arc<std::sync::OnceLock<EventSink>>,
+    pub(crate) downloads_v2: Arc<Mutex<downloads_v2::DownloadManager>>,
     pub(crate) audio_output: Arc<Mutex<audio_output::OutputRouter>>,
     pub(crate) inner: Arc<Mutex<Runtime>>,
     pub(crate) directory: PathBuf,
@@ -214,6 +226,22 @@ impl Drop for Session<'_> {
                 };
                 pending_events.push(StateEvent::FileDownload(pending.download));
             }
+            inner.volume_states.remove(&self.peer.id);
+            for request_id in inner
+                .volume_requests
+                .remove(&self.peer.id)
+                .unwrap_or_default()
+                .into_keys()
+            {
+                pending_events.push(StateEvent::DeviceVolumeResult(
+                    handover_core::DeviceVolumeResult {
+                        device_id: DeviceId::new(format!("native:{}", self.peer.id)),
+                        request_id,
+                        accepted: false,
+                        failure: Some(handover_core::DeviceVolumeFailure::Unconfirmed),
+                    },
+                ));
+            }
             let removed_keys = inner.notif_keys.remove(&self.peer.id).unwrap_or_default();
             inner.notif_enabled.remove(&self.peer.id);
             let removed_players = inner
@@ -264,6 +292,13 @@ impl Drop for Session<'_> {
             pending_events.push(StateEvent::Device(event));
             pending_events
         };
+        let mut pending_events = pending_events;
+        pending_events.extend(
+            self.backend
+                .pause_downloads_for_peer(&self.peer.id)
+                .into_iter()
+                .map(StateEvent::FileDownload),
+        );
         for event in pending_events {
             (self.event)(event);
         }
@@ -343,6 +378,8 @@ impl NativeBackend {
             PeerFile::default()
         };
         Ok(Self {
+            download_events: Arc::new(std::sync::OnceLock::new()),
+            downloads_v2: Arc::new(Mutex::new(downloads_v2::DownloadManager::default())),
             audio_output: Arc::new(Mutex::new(audio_output::OutputRouter::new(&directory))),
             inner: Arc::new(Mutex::new(Runtime {
                 audio: BTreeMap::new(),
@@ -359,6 +396,8 @@ impl NativeBackend {
                 media_enabled: BTreeMap::new(),
                 media_players: BTreeMap::new(),
                 outbox: BTreeMap::new(),
+                volume_states: BTreeMap::new(),
+                volume_requests: BTreeMap::new(),
                 pending_downloads: BTreeMap::new(),
                 pending_shares: BTreeMap::new(),
                 call_generations: BTreeMap::new(),
@@ -489,6 +528,8 @@ impl NativeBackend {
         if let Some(stream) = inner.active.remove(id) {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
+        drop(inner);
+        self.forget_downloads_for_peer(id);
         Ok(removed)
     }
 
@@ -873,6 +914,8 @@ impl NativeBackend {
                 protocol: WIRE_VERSION,
                 request_id: request_id.clone(),
                 path,
+                paged: false,
+                cursor: None,
             },
         )?;
         Ok(request_id)
@@ -1246,6 +1289,7 @@ impl NativeBackend {
         listener: TcpListener,
         event: Arc<dyn Fn(StateEvent) + Send + Sync>,
     ) -> Result<(), NativeError> {
+        let _ = self.download_events.set(event.clone());
         for incoming in listener.incoming() {
             let stream = match incoming {
                 Ok(stream) => stream,
@@ -1290,6 +1334,12 @@ pub(crate) fn device(
     let mut capabilities = BTreeSet::from([Capability::Battery, Capability::FileTransfer]);
     if connected && peer.file_downloads {
         capabilities.insert(Capability::FileDownload);
+    }
+    if connected && peer.files_v2 {
+        capabilities.insert(Capability::FileManagement);
+    }
+    if connected && peer.volume_control {
+        capabilities.insert(Capability::VolumeControl);
     }
     if notifications_supported {
         capabilities.insert(Capability::Notifications);
@@ -1932,6 +1982,8 @@ mod tests {
             name: "Pixel Test".into(),
             fingerprint: "fingerprint".into(),
             file_downloads: false,
+            files_v2: false,
+            volume_control: false,
         };
         fs::write(
             dir.path().join("peers.json"),
@@ -1956,6 +2008,8 @@ mod tests {
             name: "Pixel Test".into(),
             fingerprint: "fingerprint".into(),
             file_downloads: false,
+            files_v2: false,
+            volume_control: false,
         }
     }
 

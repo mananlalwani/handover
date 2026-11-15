@@ -44,6 +44,16 @@ private fun NativeTransport.checkPhoneFileScope(scope: PhoneFileScope) {
     } else if (scope.tree == null) throw SecurityException("folder permission required")
 }
 
+/** Captures the sharing grant; later operations cannot silently switch roots or modes. */
+internal class PhoneFilesAccess(private val transport: NativeTransport) {
+    private val scope = transport.phoneFileScope()
+    fun check() = transport.checkPhoneFileScope(scope)
+    fun open(path: String, cancellation: CancellationSignal, active: () -> Unit): PhoneFileSource =
+        transport.openSharedPhoneFile(scope, path, cancellation, active)
+    fun list(path: String, cancellation: CancellationSignal, active: () -> Unit, limit: Int = 512): List<PhoneFileEntry> =
+        transport.listSharedPhoneDirectory(scope, path, cancellation, active, limit)
+}
+
 private val documentColumns = arrayOf(
     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -81,7 +91,7 @@ private fun resolveTreePath(resolver: ContentResolver, root: Uri, path: String, 
             var scanned = 0
             while (cursor.moveToNext()) {
                 active()
-                if (++scanned > 8192) throw IOException("directory exceeds scan bound")
+                if (++scanned > 100_000) throw IOException("directory exceeds scan bound")
                 if (cursor.getString(cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)) == part) {
                     require(matched == null)
                     matched = document(cursor, root)
@@ -94,9 +104,9 @@ private fun resolveTreePath(resolver: ContentResolver, root: Uri, path: String, 
     return current
 }
 
-private fun NativeTransport.listSharedPhoneDirectory(scope: PhoneFileScope, path: String, cancellation: CancellationSignal, active: () -> Unit): List<PhoneFileEntry> {
+private fun NativeTransport.listSharedPhoneDirectory(scope: PhoneFileScope, path: String, cancellation: CancellationSignal, active: () -> Unit, limit: Int = 512): List<PhoneFileEntry> {
     checkPhoneFileScope(scope)
-    if (scope.allStorage) return LocalPhoneStorage(phoneStorageRoots(context)).list(path, active)
+    if (scope.allStorage) return LocalPhoneStorage(phoneStorageRoots(context)).list(path, limit, active)
     val root = scope.tree ?: throw SecurityException()
     val target = resolveTreePath(context.contentResolver, root, path, cancellation, active)
     require(target.directory)
@@ -104,7 +114,7 @@ private fun NativeTransport.listSharedPhoneDirectory(scope: PhoneFileScope, path
     val entries = mutableListOf<PhoneFileEntry>()
     context.contentResolver.query(children, documentColumns, null, null, null, cancellation)?.use { cursor ->
         var scanned = 0
-        while (scanned++ < 512 && cursor.moveToNext()) {
+        while (scanned++ < limit && cursor.moveToNext()) {
             active()
             val item = document(cursor, root)
             if (item.virtual || runCatching { safeTreePathParts(item.name).single() }.isFailure) continue

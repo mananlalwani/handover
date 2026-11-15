@@ -34,6 +34,8 @@ impl NativeBackend {
     ) -> Result<(), NativeError> {
         // TLS and the first hello are unauthenticated. Keep each socket read
         // bounded while the admission controls cap concurrent attempts.
+        // Small control frames must not stall the chunk request window behind delayed ACKs.
+        stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(PREAUTH_READ_TIMEOUT))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         let mut builder = SslAcceptor::mozilla_modern_v5(SslMethod::tls())?;
@@ -71,6 +73,8 @@ impl NativeBackend {
             trusted_server_id,
             pair_commit,
             file_downloads,
+            files_v2,
+            volume_control,
         } = hello
         else {
             return Err(NativeError::InvalidFrame);
@@ -93,6 +97,8 @@ impl NativeBackend {
                 name: "Linux desktop".into(),
                 trusted_server_id: None,
                 file_downloads: false,
+                files_v2: true,
+                volume_control: true,
                 pair_commit: Some(hex::encode(Sha256::digest(nonce))),
             },
         )?;
@@ -101,6 +107,8 @@ impl NativeBackend {
             name: name.clone(),
             fingerprint: peer_fp.clone(),
             file_downloads,
+            files_v2,
+            volume_control,
         };
         if trusted_server_id.as_deref() == Some(self.id.as_str())
             && !self.inner.lock().unwrap().peers.peers.contains_key(&id)
@@ -285,6 +293,14 @@ impl NativeBackend {
         // The device event emits without the lock held: callbacks may call
         // back into the backend.
         event(StateEvent::Device(DeviceEvent::Added(added)));
+        if peer.volume_control {
+            write_frame(
+                &mut tls,
+                &Message::VolumeRequest {
+                    protocol: WIRE_VERSION,
+                },
+            )?;
+        }
         // Ask a freshly paired phone for its current notification list. The
         // phone also syncs proactively after `paired`; the request covers a
         // daemon restart where the phone never saw the pairing transition.
@@ -350,6 +366,8 @@ impl NativeBackend {
                 }
                 snapshot_retry_sent = true;
             }
+            self.expire_volume_requests(&id, event);
+            self.expire_downloads_v2(&id, event);
             for download in self.expire_downloads(&id, Instant::now()) {
                 event(StateEvent::FileDownload(download));
             }
@@ -764,6 +782,72 @@ impl NativeBackend {
                         }));
                     }
                 }
+                Ok(
+                    message @ (Message::FilePreparingV2 { .. }
+                    | Message::FileInfoV2 { .. }
+                    | Message::FileChunkV2 { .. }
+                    | Message::FileErrorV2 { .. }),
+                ) => {
+                    self.handle_download_v2(&id, message, event)?;
+                    last_received = Instant::now();
+                }
+                Ok(Message::VolumeState {
+                    protocol: WIRE_VERSION,
+                    streams,
+                }) => {
+                    let kinds: std::collections::BTreeSet<_> =
+                        streams.iter().map(|s| s.kind).collect();
+                    if !peer.volume_control
+                        || streams.len() > 4
+                        || kinds.len() != streams.len()
+                        || streams.iter().any(|s| {
+                            s.max_level > 10_000 || s.min_level > s.level || s.level > s.max_level
+                        })
+                    {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    let state = handover_core::DeviceVolumeState {
+                        device_id: DeviceId::new(format!("native:{id}")),
+                        streams,
+                    };
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .volume_states
+                        .insert(id.clone(), state.clone());
+                    event(StateEvent::DeviceVolume(state));
+                    last_received = Instant::now();
+                }
+                Ok(Message::VolumeResult {
+                    protocol: WIRE_VERSION,
+                    request_id,
+                    accepted,
+                    failure,
+                }) => {
+                    if !valid_transfer_id(&request_id) || accepted == failure.is_some() {
+                        return Err(NativeError::InvalidFrame);
+                    }
+                    if self
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .volume_requests
+                        .entry(id.clone())
+                        .or_default()
+                        .remove(&request_id)
+                        .is_some()
+                    {
+                        event(StateEvent::DeviceVolumeResult(
+                            handover_core::DeviceVolumeResult {
+                                device_id: DeviceId::new(format!("native:{id}")),
+                                request_id,
+                                accepted,
+                                failure,
+                            },
+                        ));
+                    }
+                    last_received = Instant::now();
+                }
                 Ok(Message::FileRequestFailure {
                     protocol: WIRE_VERSION,
                     transfer_id,
@@ -785,6 +869,7 @@ impl NativeBackend {
                     protocol: WIRE_VERSION,
                     request_id,
                     path,
+                    ..
                 }) => {
                     if !valid_transfer_id(&request_id) {
                         return Err(NativeError::InvalidFrame);
@@ -795,6 +880,7 @@ impl NativeBackend {
                             request_id,
                             path,
                             entries,
+                            cursor_next: None,
                         },
                         Err(_) => Message::FilesystemFailure {
                             protocol: WIRE_VERSION,
@@ -858,6 +944,7 @@ impl NativeBackend {
                     request_id,
                     path,
                     entries,
+                    cursor_next,
                 }) => {
                     if !valid_transfer_id(&request_id)
                         || !safe_browse_path(&path)
@@ -874,7 +961,23 @@ impl NativeBackend {
                             size: entry.size,
                         })
                         .collect();
+                    if self.owns_download_listing(&id, &request_id) {
+                        self.download_listing(
+                            &id,
+                            &request_id,
+                            &path,
+                            crate::downloads_v2::DownloadListing {
+                                entries,
+                                cursor: cursor_next,
+                                failure: None,
+                            },
+                            event,
+                        )?;
+                        last_received = Instant::now();
+                        continue;
+                    }
                     event(StateEvent::Filesystem(FilesystemResult {
+                        cursor_next,
                         device_id: DeviceId::new(format!("native:{id}")),
                         request_id,
                         path,
@@ -895,7 +998,28 @@ impl NativeBackend {
                     {
                         return Err(NativeError::InvalidFrame);
                     }
+                    if self.owns_download_listing(&id, &request_id) {
+                        let reason = if reason == "permission_required" {
+                            handover_core::FileDownloadFailure::PermissionRequired
+                        } else {
+                            handover_core::FileDownloadFailure::Unavailable
+                        };
+                        self.download_listing(
+                            &id,
+                            &request_id,
+                            path.as_deref().unwrap_or("."),
+                            crate::downloads_v2::DownloadListing {
+                                entries: Vec::new(),
+                                cursor: None,
+                                failure: Some(reason),
+                            },
+                            event,
+                        )?;
+                        last_received = Instant::now();
+                        continue;
+                    }
                     event(StateEvent::Filesystem(FilesystemResult {
+                        cursor_next: None,
                         device_id: DeviceId::new(format!("native:{id}")),
                         request_id,
                         path: path.unwrap_or_else(|| ".".into()),

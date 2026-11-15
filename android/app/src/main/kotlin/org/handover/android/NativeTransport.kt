@@ -160,6 +160,8 @@ class NativeTransport(internal val context: Context) {
         Thread { runCatching { overloadedSocket?.close() } }.start()
         throw java.util.concurrent.RejectedExecutionException("native writer queue is full")
     }
+    internal val fileTransfers by lazy { PhoneFileTransfers(this) }
+    @Volatile internal var volumeControlServer = false
     internal val fileRequestWorkers = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(8), { r -> Thread(r, "handover-file-request").apply { isDaemon = true } }, ThreadPoolExecutor.AbortPolicy())
     internal val fileRequestAborts = java.util.concurrent.ConcurrentHashMap.newKeySet<java.io.Closeable>()
@@ -263,6 +265,7 @@ class NativeTransport(internal val context: Context) {
         val temps = fileRequestTemps.toList()
         fileRequestTemps.clear()
         Thread {
+            fileTransfers.close()
             aborts.forEach { runCatching { it.close() } }
             temps.forEach { it.delete() }
         }.apply { name = "handover-file-cleanup"; isDaemon = true; start() }
@@ -494,6 +497,7 @@ class NativeTransport(internal val context: Context) {
                 val raw = Socket().apply { connect(InetSocketAddress(target.first, target.second), 5_000) }
                 val ssl = sslContext().socketFactory.createSocket(raw, target.first.hostAddress, target.second, true) as SSLSocket
                 ssl.enabledProtocols = arrayOf("TLSv1.3")
+                ssl.tcpNoDelay = true
                 ssl.soTimeout = SOCKET_READ_TIMEOUT_MS.toInt()
                 ssl.startHandshake()
                 socket = ssl
@@ -516,6 +520,8 @@ class NativeTransport(internal val context: Context) {
                 Log.w(TAG, "LAN connection failed: ${error.javaClass.simpleName}")
                 // Discovery remains active; retry the resolved endpoint after a bounded delay.
             } finally {
+                fileTransfers.closeSession(socket)
+                volumeControlServer = false
                 stopLaptopAudio()
                 contactsChunkedSupported = false
                 broadcast(ACTION_CONNECTION_STATE, JSONObject().put("state", "offline"))
@@ -576,7 +582,7 @@ class NativeTransport(internal val context: Context) {
 
 
 
-    internal fun hello() = JSONObject().put("type", "hello").put("protocol", 1).put("file_downloads", true)
+    internal fun hello() = JSONObject().put("type", "hello").put("protocol", 1).put("file_downloads", true).put("files_v2", true).put("volume_control", true)
         .put("id", identity.deviceId).put("name", Build.MODEL ?: "Android device")
         .apply {
             serverFingerprint?.let { put("trusted_server_id", it) }
