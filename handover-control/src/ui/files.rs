@@ -95,16 +95,16 @@ impl Window {
     pub(super) fn file_composer(self: &Rc<Self>) -> gtk::Box {
         let area = gtk::Box::new(gtk::Orientation::Vertical, 14);
         area.add_css_class("file-composer");
-        let drop_area = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let drop_area = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         drop_area.add_css_class("file-drop");
         let icon = gtk::Image::from_icon_name("folder-download-symbolic");
-        icon.set_pixel_size(32);
+        icon.set_pixel_size(22);
         drop_area.append(&icon);
         let label = text("Drop files here", "drop-title");
-        label.set_xalign(0.5);
+        label.set_hexpand(true);
         drop_area.append(&label);
         let choose = gtk::Button::with_label("Choose files…");
-        choose.set_halign(gtk::Align::Center);
+        choose.set_halign(gtk::Align::End);
         let weak = Rc::downgrade(self);
         choose.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {

@@ -91,19 +91,12 @@ impl Window {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title("Handover")
-            .default_width(990)
-            .default_height(700)
+            .default_width(900)
+            .default_height(620)
             .build();
         window.add_css_class("control");
-        // The page header owns window controls and dragging; no second empty title bar.
+        // The top toolbar owns window controls and dragging.
         window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-        let rail = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        rail.set_width_request(228);
-        rail.add_css_class("phone-pane");
-        let brand = text("Handover", "brand");
-        let brand_handle = gtk::WindowHandle::new();
-        brand_handle.set_child(Some(&brand));
-        rail.append(&brand_handle);
         let devices = gtk::ListBox::new();
         devices.add_css_class("device-list");
         let device_popover = gtk::Popover::new();
@@ -119,8 +112,8 @@ impl Window {
         let device_name = text("Choose a device", "device-title");
         device_name.set_wrap(false);
         device_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        device_name.set_hexpand(true);
-        device_name.set_max_width_chars(20);
+        device_name.set_hexpand(false);
+        device_name.set_max_width_chars(16);
         let device_label = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         device_label.append(&device_name);
         device_label.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
@@ -129,19 +122,16 @@ impl Window {
             .child(&device_label)
             .build();
         device_picker.add_css_class("device-selector");
-        rail.append(&device_picker);
-        let phone_pane = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        phone_pane.set_margin_top(20);
-        rail.append(&phone_pane);
-        let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        spacer.set_vexpand(true);
-        rail.append(&spacer);
-        let messages = gtk::Button::with_label("Messages ↗");
+        let phone_pane = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        phone_pane.add_css_class("device-toolbar");
+        let messages = gtk::Button::from_icon_name("mail-message-new-symbolic");
+        messages.set_tooltip_text(Some("Open Messages"));
+        messages.update_property(&[gtk::accessible::Property::Label("Open Messages")]);
         messages.add_css_class("flat");
-        rail.append(&messages);
-        let manage = gtk::Button::with_label("Devices & pairing");
+        let manage = gtk::Button::from_icon_name("preferences-system-symbolic");
+        manage.set_tooltip_text(Some("Devices & pairing"));
+        manage.update_property(&[gtk::accessible::Property::Label("Devices & pairing")]);
         manage.add_css_class("flat");
-        rail.append(&manage);
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         main.set_hexpand(true);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -168,11 +158,16 @@ impl Window {
             tabs.push((page, tab));
         }
         tabs[0].1.set_active(true);
+        top.append(&device_picker);
+        top.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         top.append(&navigation);
+        top.append(&messages);
+        top.append(&manage);
         top.append(&gtk::WindowControls::new(gtk::PackType::End));
         let handle = gtk::WindowHandle::new();
         handle.set_child(Some(&top));
         main.append(&handle);
+        main.append(&phone_pane);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         header.add_css_class("page-header");
         let heading = text("Notifications", "page-title");
@@ -182,18 +177,16 @@ impl Window {
         refresh.add_css_class("flat");
         refresh.set_tooltip_text(Some("Refresh"));
         header.append(&refresh);
-        main.append(&header);
         let search = gtk::SearchEntry::new();
         search.set_placeholder_text(Some("Search this view"));
-        search.set_margin_top(12);
-        search.set_margin_start(24);
-        search.set_margin_end(24);
-        main.append(&search);
-        let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        body.set_margin_start(24);
-        body.set_margin_end(24);
-        body.set_margin_top(22);
-        body.set_margin_bottom(22);
+        search.set_width_request(230);
+        header.append(&search);
+        main.append(&header);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        body.set_margin_start(16);
+        body.set_margin_end(16);
+        body.set_margin_top(12);
+        body.set_margin_bottom(16);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -213,10 +206,7 @@ impl Window {
         dismiss_status.set_tooltip_text(Some("Dismiss notice"));
         status_bar.append(&dismiss_status);
         main.append(&status_bar);
-        let layout = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        layout.append(&rail);
-        layout.append(&main);
-        window.set_child(Some(&layout));
+        window.set_child(Some(&main));
         let (commands, events) =
             connection::start(handover_ipc::socket_path().expect("Handover runtime directory"));
         let this = Rc::new(Self {

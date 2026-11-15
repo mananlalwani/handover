@@ -26,11 +26,7 @@ impl Window {
         let model = self.model.borrow();
         let selected = self.selected.borrow();
         let Some(device) = selected.as_ref().and_then(|id| model.devices.get(id)) else {
-            let image = gtk::Image::from_icon_name("computer-symbolic");
-            image.set_pixel_size(42);
-            image.set_halign(gtk::Align::Start);
-            self.phone_pane.append(&image);
-            self.phone_pane.append(&text(
+            self.phone_pane.append(&toolbar_text(
                 if model.connected {
                     "All devices"
                 } else {
@@ -38,19 +34,14 @@ impl Window {
                 },
                 "phone-heading",
             ));
-            self.phone_pane.append(&text(
-                "Choose a phone above to send files or use its controls.",
+            self.phone_pane.append(&toolbar_text(
+                "Choose a phone to send files or use device controls.",
                 "card-subtitle",
             ));
             return;
         };
-        let icon = gtk::Image::from_icon_name("phone-symbolic");
-        icon.set_pixel_size(48);
-        icon.set_halign(gtk::Align::Start);
-        icon.add_css_class("phone-symbol");
-        self.phone_pane.append(&icon);
         let ready = model.ready(&device.id);
-        self.phone_pane.append(&text(
+        self.phone_pane.append(&toolbar_text(
             if ready {
                 "Connected"
             } else if !device.paired {
@@ -71,7 +62,7 @@ impl Window {
             } else {
                 "battery-good-symbolic"
             }));
-            row.append(&text(
+            row.append(&toolbar_text(
                 &format!(
                     "{}%{}",
                     battery.percentage(),
@@ -96,20 +87,15 @@ impl Window {
                 ConnectivityTransport::Other => "Other network",
                 ConnectivityTransport::None => "No network",
             };
-            self.phone_pane.append(&text(
+            self.phone_pane.append(&toolbar_text(
                 &format!("{name}{}", if network.metered { " · Metered" } else { "" }),
                 "card-subtitle",
             ));
         }
-        let divider = gtk::Separator::new(gtk::Orientation::Horizontal);
-        divider.set_margin_top(8);
-        divider.set_margin_bottom(4);
-        self.phone_pane.append(&divider);
-        self.phone_pane.append(&self.share_actions(&device.id));
         if let Some(call) = model.calls.get(&device.id)
             && matches!(call.phase, CallPhase::Ringing | CallPhase::OffHook)
         {
-            self.phone_pane.append(&text(
+            self.phone_pane.append(&toolbar_text(
                 if call.phase == CallPhase::Ringing {
                     "Incoming call"
                 } else {
@@ -118,8 +104,12 @@ impl Window {
                 "phone-stat",
             ));
         }
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        self.phone_pane.append(&spacer);
+        self.phone_pane.append(&self.share_actions(&device.id));
     }
-    fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::FlowBox {
+    fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::Box {
         let model = self.model.borrow();
         let ready = model.ready(id);
         let files = ready
@@ -127,23 +117,17 @@ impl Window {
                 .devices
                 .get(id)
                 .is_some_and(|d| d.capabilities.contains(&Capability::FileTransfer));
-        let actions = gtk::FlowBox::new();
-        actions.set_selection_mode(gtk::SelectionMode::None);
-        actions.set_max_children_per_line(1);
-        actions.set_min_children_per_line(1);
-        actions.set_column_spacing(8);
-        actions.set_row_spacing(8);
-        actions.set_homogeneous(false);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         for (label, icon, kind) in [
             ("Send file", "folder-open-symbolic", 0),
             ("Send link", "insert-link-symbolic", 1),
             ("Send clipboard text", "edit-paste-symbolic", 2),
         ] {
             let button = gtk::Button::with_label(label);
-            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             content.set_halign(gtk::Align::Center);
             content.append(&gtk::Image::from_icon_name(icon));
-            content.append(&text(label, "action-label"));
+            content.append(&toolbar_text(label, "action-label"));
             button.set_child(Some(&content));
             button.set_tooltip_text(Some(label));
             button.add_css_class("share-action");
@@ -161,7 +145,7 @@ impl Window {
                     }
                 }
             });
-            actions.insert(&button, -1);
+            actions.append(&button);
         }
         actions
     }
@@ -777,4 +761,10 @@ pub(super) fn failure(value: ShareFailure) -> &'static str {
         ShareFailure::Disconnected => "Disconnected",
         ShareFailure::Transport => "Connection failure",
     }
+}
+
+fn toolbar_text(value: &str, class: &str) -> gtk::Label {
+    let label = text(value, class);
+    label.set_wrap(false);
+    label
 }
