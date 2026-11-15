@@ -11,7 +11,10 @@ It needs GTK 4.10 and libadwaita 1.4 or newer. Install matching binaries with
 
 ## Devices and connection
 
-Choose All devices or a device in the left rail. Overview shows reported pairing,
+The app opens the only connected paired device when there is one. Choose All
+devices or another device in the left rail. Overview has file, link, and clipboard
+actions for each phone, plus shortcuts to its notifications, contacts, and media.
+It shows reported pairing,
 connection, battery, network, notification, contact, and call state. Battery values
 on offline devices are labeled as last reported. A daemon disconnect disables
 commands and retains the last view until a replacement snapshot arrives.
@@ -29,7 +32,9 @@ Notifications shows current forwarded phone notifications, filtered by device
 and search. It does not create desktop popups. Dismiss on phone appears only for
 clearable notifications; other buttons come from reported phone actions. Actions
 are disabled when the device or daemon is disconnected. Acceptance does not prove
-that the phone performed the action. Phone state updates reconcile the view.
+that the phone performed the action. Phone state updates reconcile the view. Notifications are grouped by app; the
+close button requests dismissal on the phone. Unrelated battery or media updates
+preserve the current list and keyboard focus.
 
 Choose which apps forward notifications in the Android app's Notifications page.
 The control center does not change phone forwarding preferences. Inline reply is
@@ -37,7 +42,8 @@ not yet exposed in this view.
 
 ## Sharing and recent activity
 
-Select a connected device, then choose Send file, Send link, or Send clipboard
+Use the actions on a device overview, or open Sharing and choose a phone.
+Choose Send file, Send link, or Send clipboard
 text. Clipboard text opens for review and is sent only after choosing Send.
 File and link controls require the device's reported file-sharing capability.
 The daemon validates the selected resource before accepting a share.
@@ -63,8 +69,8 @@ search to narrow larger lists. Contact photos and calling controls are not yet
 part of this view.
 
 Media shows reported phone players and their available Previous, Play, Pause,
-Play/Pause, and Next controls. Unsupported controls are omitted. Playback state
-changes only with device reports. Open Messages launches the separate native
+Play/Pause, and Next controls. Unsupported controls are omitted. The central Play or Pause button follows the reported playback state.
+Playback state changes only with device reports. Open Messages launches the separate native
 Messages app without opening another phone connection.
 
 ## Recovery and validation
@@ -76,7 +82,7 @@ never retried automatically. If a reply is lost, the UI reports an unknown outco
 and asks the user to check the device before trying again.
 
 Run `python3 scripts/test-handover-control.py` for the private-display GTK and IPC
-fixture test. `--dark`, `--width`, and `--screenshot` support layout checks. The
+fixture test. `--dark`, `--width`, `--page`, and `--screenshot` support layout checks. The
 runner requires Xvfb and dbus-daemon; screenshots also need ImageMagick. Fixtures
 use fictional devices and a private session bus. Physical-phone effects and
 desktop-specific window behavior need separate live validation.

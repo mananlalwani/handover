@@ -56,7 +56,24 @@ fn baseline() -> ServerPayload {
     ServerPayload::Subscribed {
         devices: vec![device(true), device(false)],
         notifications: vec![note(true), note(false)],
-        media_sessions: vec![],
+        media_sessions: vec![MediaSession {
+            id: MediaSessionId::new(device(true).id, "music"),
+            application: "Music".into(),
+            title: Some("Evening walk".into()),
+            artist: Some("Demo artist".into()),
+            album: None,
+            playback: PlaybackState::Playing,
+            position_ms: None,
+            duration_ms: None,
+            volume_percent: None,
+            controls: BTreeSet::from([
+                MediaControl::Previous,
+                MediaControl::Play,
+                MediaControl::Pause,
+                MediaControl::PlayPause,
+                MediaControl::Next,
+            ]),
+        }],
         calls: vec![],
         messaging_accounts: vec![],
         conversations: vec![],
@@ -91,7 +108,7 @@ fn button(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::Button {
     descendants(root)
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Button>().ok())
-        .find(|b| b.label().as_deref() == Some(label))
+        .find(|b| b.label().as_deref() == Some(label) || b.tooltip_text().as_deref() == Some(label))
         .unwrap_or_else(|| panic!("Button not found: {label}"))
 }
 fn has_text(root: &impl IsA<gtk::Widget>, value: &str) -> bool {
@@ -150,6 +167,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
                                 mutations.send(method.clone()).unwrap();
                                 match method {
                                     Method::NotificationDismiss {notification_id}=>{let _=events.send(ServerPayload::NotificationRemoved {notification_id:notification_id.clone()});ServerPayload::CommandCompleted {notification_id}},
+                                    Method::MediaControl {command}=>ServerPayload::MediaAccepted {id:command.id().clone()},
                                     Method::ShareUrl {device_id,..}=>ServerPayload::ShareAccepted {device_id,transfer_id:Some("fixture-share".into())},
                                     Method::ClipboardSend {..}=>return, // Simulate a lost acknowledgement after consuming the mutation.
                                     Method::NativePair {..}|Method::ContactsSync {..}=>ServerPayload::NativeAccepted,
@@ -182,16 +200,44 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             && ui.model.borrow().contacts.len() == 1
             && ui.model.borrow().pairing.len() == 1
             && ui.pending.borrow().is_empty()
+            && has_text(&ui.body, "81%")
     });
-    assert!(has_text(&ui.body, "81% battery"));
+    assert!(has_text(&ui.body, "81%"));
     assert!(received.try_recv().is_err());
+    assert_eq!(*ui.selected.borrow(), Some(device(true).id));
+    assert!(
+        !ui.status_bar.is_visible(),
+        "a healthy connection needs no permanent banner"
+    );
     // Actions are gated by actual device connection, not the presence of an old notification.
+    ui.selected.borrow_mut().take();
     ui.page.set(Page::Notifications);
     ui.render();
+    // Battery updates must not rebuild a notification list or steal its keyboard focus.
+    let notification_group = ui.body.first_child().unwrap();
+    let rail_row = ui.devices.row_at_index(1).unwrap();
+    let mut changed = device(true);
+    changed.battery = Some(BatteryState::new(80, true).unwrap());
+    events
+        .send(ServerPayload::DeviceUpdated { device: changed })
+        .unwrap();
+    spin(|| {
+        ui.model.borrow().devices[&device(true).id]
+            .battery
+            .unwrap()
+            .percentage()
+            == 80
+            && !ui.scheduled.get()
+    });
+    assert_eq!(ui.body.first_child().unwrap(), notification_group);
+    assert_eq!(ui.devices.row_at_index(1).unwrap(), rail_row);
     let buttons = descendants(&ui.body)
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Button>().ok())
-        .filter(|b| b.label().as_deref() == Some("Dismiss on phone"))
+        .filter(|b| {
+            b.label().as_deref() == Some("Dismiss on phone")
+                || b.tooltip_text().as_deref() == Some("Dismiss on phone")
+        })
         .collect::<Vec<_>>();
     assert_eq!(buttons.len(), 2);
     assert_eq!(buttons.iter().filter(|b| b.is_sensitive()).count(), 1);
@@ -223,6 +269,12 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
             code: "12345678".into()
         }
     );
+    // Overview shortcuts select the correct device and keep the sidebar in sync.
+    ui.navigate(Page::Overview);
+    button(&ui.body, "Contacts").emit_clicked();
+    assert_eq!(ui.page.get(), Page::Contacts);
+    assert_eq!(ui.navigation.selected_row().unwrap().index(), 3);
+    assert_eq!(*ui.selected.borrow(), Some(device(true).id));
     // Only this explicit dialog submission sends a URL.
     *ui.selected.borrow_mut() = Some(device(true).id);
     ui.page.set(Page::Sharing);
@@ -248,7 +300,7 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         }
     );
     assert!(ui.model.borrow().notice.contains("accepted"));
-    assert!(has_text(&ui.body, "Phone confirmed receipt"));
+    assert!(has_text(&ui.body, "Received by phone"));
     // Review clipboard contents explicitly, then lose the reply after the fixture consumes the command.
     ui.window.clipboard().set_text("Fictional clipboard text");
     button(&ui.body, "Send clipboard text").emit_clicked();
@@ -283,6 +335,27 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
         .unwrap()
         .unwrap();
     assert_eq!(text, "+1 312 555 0100");
+    // Show the control appropriate to the reported playback state, without optimistic changes.
+    ui.navigate(Page::Media);
+    assert!(has_text(&ui.body, "Evening walk"));
+    assert!(
+        !descendants(&ui.body)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Button>().ok())
+            .any(|b| b.tooltip_text().as_deref() == Some("Play"))
+    );
+    button(&ui.body, "Pause").emit_clicked();
+    spin(|| ui.pending.borrow().is_empty());
+    assert!(matches!(
+        received.try_recv().unwrap(),
+        Method::MediaControl {
+            command: MediaCommand::Pause { .. }
+        }
+    ));
+    assert_eq!(
+        ui.model.borrow().media.values().next().unwrap().playback,
+        PlaybackState::Playing
+    );
     // A replacement snapshot replaces the whole inventory, including removed notifications.
     let snapshot = ServerPayload::Snapshot {
         devices: vec![device(true)],
@@ -317,9 +390,15 @@ fn native_control_center_uses_daemon_state_and_never_replays_commands() {
     });
     assert!(received.try_recv().is_err());
     replacement.window.close();
-    ui.page.set(Page::Overview);
-    ui.search.set_text("");
-    ui.render();
+    let page = match std::env::var("HANDOVER_CONTROL_TEST_PAGE").as_deref() {
+        Ok("notifications") => Page::Notifications,
+        Ok("sharing") => Page::Sharing,
+        Ok("contacts") => Page::Contacts,
+        Ok("media") => Page::Media,
+        Ok("connection") => Page::Connection,
+        _ => Page::Overview,
+    };
+    ui.navigate(page);
     if let Some(path) = std::env::var_os("HANDOVER_CONTROL_TEST_SCREENSHOT") {
         let until = Instant::now() + Duration::from_millis(250);
         while Instant::now() < until {

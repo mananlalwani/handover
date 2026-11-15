@@ -1,14 +1,45 @@
 window.control { font-family: Inter, sans-serif; }
-.device-rail { background: alpha(currentColor, .035); border-right: 1px solid alpha(currentColor, .12); padding: 18px 12px; }
-.brand { font-size: 22px; font-weight: 700; padding: 2px 8px 16px; }
-.section-caption { font-size: 11px; font-weight: 700; opacity: .6; padding: 16px 8px 6px; }
+.device-rail { background: alpha(currentColor, .035); border-right: 1px solid alpha(currentColor, .10); padding: 14px 10px; }
+.brand { font-size: 19px; font-weight: 700; padding: 8px 10px 20px; }
+.section-caption { font-size: 11px; font-weight: 600; opacity: .55; padding: 12px 10px 6px; }
 .device-rail list { background: transparent; }
-.device-rail row { border-radius: 9px; padding: 10px; margin: 2px 0; }
-.page-header { padding: 16px 24px; border-bottom: 1px solid alpha(currentColor, .10); }
-.page-title { font-size: 23px; font-weight: 650; }
-.card { box-shadow: none; background: alpha(currentColor, .035); border: 1px solid alpha(currentColor, .10); border-radius: 14px; padding: 18px; }
-.card-title { font-size: 17px; font-weight: 650; }
-.card-subtitle { opacity: .65; font-size: 12px; }
-.body-copy { line-height: 1.4; }
-.status-strip { padding: 10px 24px; border-top: 1px solid alpha(currentColor, .10); font-size: 12px; }
+.device-rail row { border-radius: 7px; padding: 9px 10px; margin: 1px 0; }
+.device-rail image { opacity: .65; }
+.nav-label { font-size: 13px; }
+.device-status { font-size: 10px; opacity: .55; }
+.page-header { padding: 12px 12px 12px 28px; border-bottom: 1px solid alpha(currentColor, .10); min-height: 38px; }
+.page-title { font-size: 19px; font-weight: 650; }
+.device-panel { border: 1px solid alpha(currentColor, .10); border-radius: 12px; padding: 22px; }
+.device-icon { padding: 14px; background: alpha(@accent_bg_color, .10); color: @accent_bg_color; border-radius: 16px; }
+.device-name { font-size: 23px; font-weight: 600; }
+.connected-label { color: @success_color; font-size: 12px; }
+.battery-value { font-size: 27px; font-weight: 500; }
+.battery-bar trough { min-height: 3px; }
+.battery-bar progress { min-height: 3px; background: @success_color; }
+.share-action { padding: 10px 8px; box-shadow: none; }
+.action-label { font-size: 12px; }
+flowboxchild { padding: 0; }
+.detail-list { border: 1px solid alpha(currentColor, .10); border-radius: 9px; }
+.detail-row { padding: 11px 12px; border-radius: 0; border-bottom: 1px solid alpha(currentColor, .07); }
+.detail-row:last-child { border-bottom: 0; }
+.detail-row image { opacity: .6; }
+.list-heading { font-size: 13px; font-weight: 600; }
+.notification-row { padding: 12px 16px; border-bottom: 1px solid alpha(currentColor, .08); }
+.notification-row:last-child { border-bottom: 0; }
+.notification-title { font-size: 14px; font-weight: 600; }
+.card { box-shadow: none; background: transparent; border: 1px solid alpha(currentColor, .10); border-radius: 9px; padding: 16px; }
+.card-title { font-size: 15px; font-weight: 600; }
+.card-subtitle { opacity: .6; font-size: 12px; }
+.body-copy { font-size: 13px; line-height: 1.35; }
+.contact-row { border: 0; border-bottom: 1px solid alpha(currentColor, .08); border-radius: 0; padding: 12px 16px; }
+.contact-row:last-child { border-bottom: 0; }
+.contact-row .card-title { font-size: 14px; }
+.transfer-row { padding: 12px 16px; }
+.transfer-row .card-title { font-size: 14px; }
+.empty-state { padding: 60px 16px; }
+.empty-title { font-size: 18px; font-weight: 600; }
+.status-banner { background: alpha(@accent_bg_color, .08); padding: 6px 10px 6px 20px; }
+.status-strip { font-size: 12px; padding: 4px 0; }
 .pair-code { font-family: monospace; font-size: 30px; font-weight: 700; letter-spacing: 5px; padding: 12px; }
+
+.media-title { font-size: 19px; font-weight: 600; }

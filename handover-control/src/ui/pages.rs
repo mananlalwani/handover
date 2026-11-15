@@ -15,7 +15,29 @@ impl Window {
     pub(super) fn overview(self: &Rc<Self>) {
         let model = self.model.borrow();
         if model.devices.is_empty() {
-            self.body.append(&card("Your phone, on your desktop","Open Handover on your phone, connect to this computer, then review the comparison code in Connection."));
+            self.body.append(&empty(
+                "phone-symbolic",
+                if model.connected {
+                    "No devices"
+                } else {
+                    "Connecting…"
+                },
+                if model.connected {
+                    "Open Handover on your phone to connect."
+                } else {
+                    ""
+                },
+            ));
+            let weak = Rc::downgrade(self);
+            let button = gtk::Button::with_label("Add a device");
+            button.set_halign(gtk::Align::Center);
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.navigate(Page::Connection);
+                }
+            });
+            button.set_visible(model.connected);
+            self.body.append(&button);
             return;
         }
         for device in model
@@ -23,114 +45,219 @@ impl Window {
             .values()
             .filter(|d| self.matches_device(&d.id))
         {
-            let connected = model.connected && device.connected;
-            let card = card(
-                &device.name,
+            let connected = model.ready(&device.id);
+            let panel = gtk::Box::new(gtk::Orientation::Vertical, 20);
+            panel.add_css_class("device-panel");
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+            let icon = gtk::Image::from_icon_name("phone-symbolic");
+            icon.set_pixel_size(38);
+            icon.add_css_class("device-icon");
+            header.append(&icon);
+            let identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
+            identity.set_hexpand(true);
+            identity.append(&text(&device.name, "device-name"));
+            let status = text(
                 if connected {
-                    if device.paired {
-                        "Connected · Paired"
-                    } else {
-                        "Connected · Not paired"
-                    }
+                    "Connected"
+                } else if !device.paired {
+                    "Not paired"
                 } else {
-                    "Offline · Last reported state"
+                    "Offline"
+                },
+                if connected {
+                    "connected-label"
+                } else {
+                    "card-subtitle"
                 },
             );
-            if let Some(battery) = device.battery {
-                card.append(&text(
+            identity.append(&status);
+            if let Some(network) = device.connectivity
+                && connected
+            {
+                let transport = match network.transport {
+                    ConnectivityTransport::Wifi => "Wi-Fi",
+                    ConnectivityTransport::Ethernet => "Ethernet",
+                    ConnectivityTransport::Cellular => "Cellular",
+                    ConnectivityTransport::Bluetooth => "Bluetooth",
+                    ConnectivityTransport::Other => "Other network",
+                    ConnectivityTransport::None => "No network",
+                };
+                identity.append(&text(
                     &format!(
-                        "{}% battery{}{}",
-                        battery.percentage(),
-                        if battery.charging { " · Charging" } else { "" },
-                        if !connected { " · Last reported" } else { "" }
-                    ),
-                    "body-copy",
-                ));
-            } else {
-                card.append(&text("Battery not reported", "card-subtitle"));
-            }
-            if let Some(network) = device.connectivity {
-                card.append(&text(
-                    &format!(
-                        "Network: {}{}",
-                        match network.transport {
-                            ConnectivityTransport::Wifi => "Wi-Fi",
-                            ConnectivityTransport::Ethernet => "Ethernet",
-                            ConnectivityTransport::Cellular => "Cellular",
-                            ConnectivityTransport::Bluetooth => "Bluetooth",
-                            ConnectivityTransport::Other => "Other",
-                            ConnectivityTransport::None => "None",
-                        },
+                        "{transport}{}",
                         if network.metered { " · Metered" } else { "" }
                     ),
                     "card-subtitle",
                 ));
             }
+            header.append(&identity);
+            if let Some(battery) = device.battery {
+                let level = gtk::Box::new(gtk::Orientation::Vertical, 3);
+                level.set_halign(gtk::Align::End);
+                level.append(&text(
+                    &format!("{}%", battery.percentage()),
+                    "battery-value",
+                ));
+                level.append(&text(
+                    if !connected {
+                        "Last known"
+                    } else if battery.charging {
+                        "Charging"
+                    } else {
+                        "Battery"
+                    },
+                    "card-subtitle",
+                ));
+                let bar = gtk::ProgressBar::new();
+                bar.set_fraction(f64::from(battery.percentage()) / 100.0);
+                bar.set_width_request(70);
+                bar.add_css_class("battery-bar");
+                level.append(&bar);
+                header.append(&level);
+            }
+            panel.append(&header);
+            panel.append(&self.share_actions(&device.id));
+            let links = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            links.add_css_class("detail-list");
             let count = model
                 .notifications
                 .keys()
                 .filter(|id| id.device_id == device.id)
                 .count();
-            card.append(&text(
-                &format!(
-                    "{count} phone notifications · {} synced contacts",
-                    model
-                        .contacts
-                        .iter()
-                        .filter(|c| c.device_id == device.id)
-                        .count()
+            let contacts = model
+                .contacts
+                .iter()
+                .filter(|c| c.device_id == device.id)
+                .count();
+            let media = model.media.values().find(|p| p.id.device_id == device.id);
+            for (title, description, icon, page) in [
+                (
+                    "Notifications",
+                    format!("{count}"),
+                    "preferences-system-notifications-symbolic",
+                    Page::Notifications,
                 ),
-                "card-subtitle",
-            ));
-            if let Some(call) = model.calls.get(&device.id) {
-                card.append(&text(
-                    &format!(
-                        "Phone call: {}",
-                        match call.phase {
-                            CallPhase::Unknown => "State not reported",
-                            CallPhase::Idle => "No active call",
-                            CallPhase::Ringing => "Ringing",
-                            CallPhase::OffHook => "In progress",
-                        }
-                    ),
-                    "body-copy",
+                (
+                    "Contacts",
+                    if contacts == 0 {
+                        "Address book".into()
+                    } else {
+                        contacts.to_string()
+                    },
+                    "avatar-default-symbolic",
+                    Page::Contacts,
+                ),
+                (
+                    "Media",
+                    media
+                        .and_then(|p| p.title.clone())
+                        .unwrap_or_else(|| "No active players".into()),
+                    "multimedia-player-symbolic",
+                    Page::Media,
+                ),
+            ] {
+                let row = gtk::Button::new();
+                row.set_tooltip_text(Some(title));
+                row.add_css_class("detail-row");
+                row.add_css_class("flat");
+                let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                content.append(&gtk::Image::from_icon_name(icon));
+                let title = text(title, "body-copy");
+                title.set_hexpand(true);
+                content.append(&title);
+                let value = text(&description, "card-subtitle");
+                value.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                value.set_max_width_chars(24);
+                value.set_wrap(false);
+                content.append(&value);
+                content.append(&gtk::Image::from_icon_name("go-next-symbolic"));
+                row.set_child(Some(&content));
+                let weak = Rc::downgrade(self);
+                let id = device.id.clone();
+                row.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        *this.selected.borrow_mut() = Some(id.clone());
+                        this.navigate(page);
+                    }
+                });
+                links.append(&row);
+            }
+            if let Some(call) = model.calls.get(&device.id)
+                && matches!(call.phase, CallPhase::Ringing | CallPhase::OffHook)
+            {
+                links.append(&text(
+                    if call.phase == CallPhase::Ringing {
+                        "Incoming call"
+                    } else {
+                        "Call in progress"
+                    },
+                    "call-status",
                 ));
             }
-            let caps = device
-                .capabilities
-                .iter()
-                .map(|c| match c {
-                    Capability::Battery => "Battery",
-                    Capability::Connectivity => "Network",
-                    Capability::FileTransfer => "File sharing",
-                    Capability::Media => "Media",
-                    Capability::Notifications => "Notifications",
-                })
-                .collect::<Vec<_>>()
-                .join(" · ");
-            card.append(&text(
-                &format!("Reported capabilities: {caps}"),
-                "card-subtitle",
-            ));
-            self.body.append(&card);
+            panel.append(&links);
+            self.body.append(&panel);
         }
         if !model.pairing.is_empty() {
-            self.body.append(&card(
-                "Pairing request waiting",
-                "Open Connection to compare the code with your phone before approving.",
-            ));
+            let button =
+                gtk::Button::with_label(&format!("{} device waiting to pair", model.pairing.len()));
+            button.add_css_class("flat");
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.navigate(Page::Connection);
+                }
+            });
+            self.body.append(&button);
         }
-        if self.selected.borrow().is_none() {
-            self.body.append(&text(
-                "Choose a device to filter notifications, contacts, and media.",
-                "card-subtitle",
-            ));
+    }
+    fn share_actions(self: &Rc<Self>, id: &DeviceId) -> gtk::FlowBox {
+        let model = self.model.borrow();
+        let ready = model.ready(id);
+        let files = ready
+            && model
+                .devices
+                .get(id)
+                .is_some_and(|d| d.capabilities.contains(&Capability::FileTransfer));
+        let actions = gtk::FlowBox::new();
+        actions.set_selection_mode(gtk::SelectionMode::None);
+        actions.set_max_children_per_line(3);
+        actions.set_min_children_per_line(1);
+        actions.set_column_spacing(8);
+        actions.set_row_spacing(8);
+        actions.set_homogeneous(true);
+        for (label, icon, kind) in [
+            ("Send file", "folder-open-symbolic", 0),
+            ("Send link", "insert-link-symbolic", 1),
+            ("Send clipboard text", "edit-paste-symbolic", 2),
+        ] {
+            let button = gtk::Button::with_label(label);
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            content.set_halign(gtk::Align::Center);
+            content.append(&gtk::Image::from_icon_name(icon));
+            content.append(&text(label, "action-label"));
+            button.set_child(Some(&content));
+            button.set_tooltip_text(Some(label));
+            button.add_css_class("share-action");
+            button.set_sensitive((if kind == 2 { ready } else { files }) && !self.busy());
+            let weak = Rc::downgrade(self);
+            let id = id.clone();
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    if kind == 0 {
+                        this.choose_file_to(id.clone());
+                    } else {
+                        this.text_dialog_to(id.clone(), kind - 1);
+                    }
+                }
+            });
+            actions.insert(&button, -1);
         }
+        actions
     }
     pub(super) fn notifications(self: &Rc<Self>) {
         let model = self.model.borrow();
         let query = self.search.text().to_lowercase();
-        let notes = model
+        let mut notes = model
             .notifications
             .values()
             .filter(|n| {
@@ -140,100 +267,119 @@ impl Window {
                         .contains(&query)
             })
             .collect::<Vec<_>>();
+        notes.sort_by(|a, b| (&a.app_name, &a.id).cmp(&(&b.app_name, &b.id)));
         if notes.is_empty() {
-            self.body.append(&card("No notifications","Notifications from the selected devices appear here. Choose which apps forward them in Handover on your phone."));
+            self.body.append(&empty(
+                "preferences-system-notifications-symbolic",
+                if query.is_empty() {
+                    "No notifications"
+                } else {
+                    "No results"
+                },
+                if query.is_empty() {
+                    "Notifications from your phone appear here."
+                } else {
+                    "Try a different search."
+                },
+            ));
+            return;
         }
+        let mut group_key = None;
+        let mut group = gtk::Box::new(gtk::Orientation::Vertical, 0);
         for note in notes.iter().take(100) {
-            let card = card(
-                &note.title,
-                &format!("{} · {}", note.app_name, model.name(&note.id.device_id)),
-            );
+            let key = (&note.app_name, &note.id.device_id);
+            if group_key != Some(key) {
+                let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                header.append(&gtk::Image::from_icon_name(
+                    "application-x-executable-symbolic",
+                ));
+                header.append(&text(&note.app_name, "list-heading"));
+                let device = text(&model.name(&note.id.device_id), "card-subtitle");
+                device.set_hexpand(true);
+                device.set_xalign(1.0);
+                header.append(&device);
+                self.body.append(&header);
+                group = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                group.add_css_class("detail-list");
+                self.body.append(&group);
+                group_key = Some(key);
+            }
+            let item = gtk::Box::new(gtk::Orientation::Vertical, 6);
+            item.add_css_class("notification-row");
+            let title = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let label = text(&note.title, "notification-title");
+            label.set_hexpand(true);
+            title.append(&label);
+            if note.clearable {
+                let dismiss = self.button(
+                    "Dismiss on phone",
+                    model.ready(&note.id.device_id),
+                    Request::Dismiss(note.id.clone()),
+                );
+                dismiss.set_icon_name("window-close-symbolic");
+                dismiss.set_tooltip_text(Some("Dismiss on phone"));
+                dismiss.update_property(&[gtk::accessible::Property::Label("Dismiss on phone")]);
+                dismiss.add_css_class("flat");
+                dismiss.add_css_class("circular");
+                title.append(&dismiss);
+            }
+            item.append(&title);
             let body = text(&note.body, "body-copy");
             body.set_selectable(true);
-            body.set_lines(8);
+            body.set_lines(6);
             body.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            card.append(&body);
-            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let ready = model.ready(&note.id.device_id);
-            if note.clearable {
-                actions.append(&self.button(
-                    "Dismiss on phone",
-                    ready,
-                    Request::Dismiss(note.id.clone()),
-                ));
+            item.append(&body);
+            if !note.actions.is_empty() {
+                let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                for action in &note.actions {
+                    let button = self.button(
+                        &action.label,
+                        model.ready(&note.id.device_id),
+                        Request::Action(note.id.clone(), action.id.clone()),
+                    );
+                    button.add_css_class("flat");
+                    actions.append(&button);
+                }
+                item.append(&actions);
             }
-            for action in &note.actions {
-                actions.append(&self.button(
-                    &action.label,
-                    ready,
-                    Request::Action(note.id.clone(), action.id.clone()),
-                ));
-            }
-            let scroll = gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Automatic)
-                .vscrollbar_policy(gtk::PolicyType::Never)
-                .child(&actions)
-                .build();
-            card.append(&scroll);
-            self.body.append(&card);
+            group.append(&item);
         }
         if notes.len() > 100 {
             self.body.append(&text(
-                "Showing the first 100 notifications. Search to narrow the list.",
+                "100 shown. Search to narrow the list.",
                 "card-subtitle",
             ));
         }
     }
     pub(super) fn sharing(self: &Rc<Self>) {
         let model = self.model.borrow();
-        let selected = self.selected.borrow().clone();
-        let ready = selected.as_ref().is_some_and(|id| {
-            model.ready(id)
-                && model
-                    .devices
-                    .get(id)
-                    .is_some_and(|d| d.capabilities.contains(&Capability::FileTransfer))
-        });
-        let send = card(
-            "Send to your phone",
-            "Choose a connected device on the left. Files and links are sent only when you explicitly submit them.",
-        );
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let file = gtk::Button::with_label("Send file");
-        file.set_sensitive(ready && !self.busy());
-        let weak = Rc::downgrade(self);
-        file.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
-                this.choose_file();
+        if let Some(id) = self.selected.borrow().clone() {
+            self.body.append(&self.share_actions(&id));
+        } else {
+            self.body.append(&text("Send to", "list-heading"));
+            for device in model.devices.values() {
+                let row = gtk::Box::new(gtk::Orientation::Vertical, 8);
+                row.append(&text(&device.name, "notification-title"));
+                row.append(&self.share_actions(&device.id));
+                self.body.append(&row);
             }
-        });
-        actions.append(&file);
-        for (label, kind) in [("Send link", 0), ("Send clipboard text", 1)] {
-            let button = gtk::Button::with_label(label);
-            button.set_sensitive(
-                if kind == 0 {
-                    ready
-                } else {
-                    selected.as_ref().is_some_and(|id| model.ready(id))
-                } && !self.busy(),
-            );
-            let weak = Rc::downgrade(self);
-            button.connect_clicked(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    this.text_dialog(kind);
-                }
-            });
-            actions.append(&button);
         }
-        send.append(&actions);
-        self.body.append(&send);
-        self.body.append(&text("Recent activity · Up to 128 transfers observed by the current daemon session. This list resets when the daemon restarts. Accepted requests are not confirmed deliveries.","card-subtitle"));
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        heading.append(&text("Recent transfers", "list-heading"));
+        let note = text("This session", "card-subtitle");
+        note.set_hexpand(true);
+        note.set_xalign(1.0);
+        note.set_tooltip_text(Some(
+            "Keeps the last 128 observed transfers until Handover restarts.",
+        ));
+        heading.append(&note);
+        self.body.append(&heading);
         let mut count = 0;
         for item in &model.transfers {
             let (id, title, detail): (&DeviceId, String, String) = match &item.event {
                 TransferActivityEvent::Received { share } => (
                     &share.device_id,
-                    "Received on this computer".into(),
+                    "Received".into(),
                     match &share.resource {
                         SharedResource::File { path } => std::path::Path::new(path)
                             .file_name()
@@ -244,27 +390,23 @@ impl Window {
                 ),
                 TransferActivityEvent::Progress { progress } => (
                     &progress.device_id,
-                    "Transfer progress".into(),
+                    "Sending".into(),
                     format!(
-                        "{} of {} bytes written to the connection. Phone completion has not been reported.",
+                        "{} of {} bytes · Awaiting confirmation",
                         progress.bytes_sent, progress.total_bytes
                     ),
                 ),
                 TransferActivityEvent::Result { result } => (
                     &result.device_id,
                     match result.status {
-                        ShareStatus::Completed => "Phone confirmed receipt",
+                        ShareStatus::Completed => "Received by phone",
                         ShareStatus::Failed => "Transfer failed",
                     }
                     .into(),
-                    format!(
-                        "Transfer {}{}",
-                        result.transfer_id,
-                        result
-                            .reason
-                            .map(|r| format!(" · {}", failure(r)))
-                            .unwrap_or_default()
-                    ),
+                    result
+                        .reason
+                        .map(|r| failure(r).to_string())
+                        .unwrap_or_else(|| "Transfer complete".into()),
                 ),
             };
             if !self.matches_device(id) {
@@ -279,6 +421,7 @@ impl Window {
             .map(|s| s.to_string())
             .unwrap_or_default();
             let card = card(&title, &format!("{} · {time}", model.name(id)));
+            card.add_css_class("transfer-row");
             let label = text(&detail, "body-copy");
             label.set_lines(6);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -309,15 +452,16 @@ impl Window {
             self.body.append(&card);
         }
         if count == 0 {
-            self.body.append(&card("No recent transfers","Completed incoming shares and reported outgoing progress or results will appear here."));
+            self.body.append(&empty(
+                "folder-download-symbolic",
+                "No recent transfers",
+                "Send a file or link to get started.",
+            ));
         }
     }
-    fn choose_file(self: &Rc<Self>) {
-        let Some(id) = self.selected.borrow().clone() else {
-            return;
-        };
+    fn choose_file_to(self: &Rc<Self>, id: DeviceId) {
         let dialog = gtk::FileDialog::builder()
-            .title("Send file to phone")
+            .title(format!("Send to {}", self.model.borrow().name(&id)))
             .build();
         let weak = Rc::downgrade(self);
         dialog.open(
@@ -335,10 +479,7 @@ impl Window {
             },
         );
     }
-    fn text_dialog(self: &Rc<Self>, kind: u8) {
-        let Some(id) = self.selected.borrow().clone() else {
-            return;
-        };
+    fn text_dialog_to(self: &Rc<Self>, id: DeviceId, kind: u8) {
         let dialog = adw::MessageDialog::new(
             Some(&self.window),
             Some(if kind == 0 {
@@ -346,7 +487,7 @@ impl Window {
             } else {
                 "Send clipboard text"
             }),
-            Some("Review the content before sending it to your selected phone."),
+            Some(&format!("To {}", self.model.borrow().name(&id))),
         );
         dialog.set_application(self.window.application().as_ref());
         dialog.add_response("cancel", "Cancel");
@@ -415,13 +556,6 @@ impl Window {
     }
     pub(super) fn contacts(self: &Rc<Self>) {
         let model = self.model.borrow();
-        if let Some(id) = self.selected.borrow().clone() {
-            self.body.append(&self.button(
-                "Sync contacts from phone",
-                model.ready(&id),
-                Request::SyncContacts(id),
-            ));
-        }
         let query = self.search.text().to_lowercase();
         let contacts = model
             .contacts
@@ -438,32 +572,75 @@ impl Window {
                     .contains(&query)
             })
             .collect::<Vec<_>>();
-        self.body.append(&text(
+        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let count = text(
             &format!(
-                "{} synced contacts · Search by name, phone number, or email",
-                contacts.len()
+                "{} contact{}",
+                contacts.len(),
+                if contacts.len() == 1 { "" } else { "s" }
             ),
             "card-subtitle",
-        ));
+        );
+        count.set_hexpand(true);
+        toolbar.append(&count);
+        if let Some(id) = self.selected.borrow().clone() {
+            let sync = self.button(
+                "Sync contacts from phone",
+                model.ready(&id),
+                Request::SyncContacts(id),
+            );
+            sync.set_icon_name("view-refresh-symbolic");
+            sync.set_tooltip_text(Some("Sync contacts from phone"));
+            sync.update_property(&[gtk::accessible::Property::Label("Sync contacts from phone")]);
+            sync.add_css_class("flat");
+            toolbar.append(&sync);
+        }
+        self.body.append(&toolbar);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.add_css_class("detail-list");
+        if !contacts.is_empty() {
+            self.body.append(&list);
+        }
         for contact in contacts.iter().take(100) {
-            let card = card(&contact.display_name, &model.name(&contact.device_id));
+            let device = if self.selected.borrow().is_none() {
+                model.name(&contact.device_id)
+            } else {
+                String::new()
+            };
+            let card = card(&contact.display_name, &device);
+            card.add_css_class("contact-row");
             for address in contact.phones.iter().chain(&contact.emails) {
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
                 let label = text(address, "body-copy");
                 label.set_hexpand(true);
                 label.set_selectable(true);
                 row.append(&label);
-                let copy = gtk::Button::with_label("Copy");
+                let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+                copy.set_tooltip_text(Some("Copy"));
+                copy.update_property(&[gtk::accessible::Property::Label("Copy address")]);
+                copy.add_css_class("flat");
                 let value = address.clone();
                 let clipboard = self.window.clipboard();
                 copy.connect_clicked(move |_| clipboard.set_text(&value));
                 row.append(&copy);
                 card.append(&row);
             }
-            self.body.append(&card);
+            list.append(&card);
         }
         if contacts.is_empty() {
-            self.body.append(&card("Your address book","Select a connected phone and choose Sync contacts. Contact permission must be enabled on the phone."));
+            self.body.append(&empty(
+                "avatar-default-symbolic",
+                if query.is_empty() {
+                    "No contacts"
+                } else {
+                    "No results"
+                },
+                if query.is_empty() {
+                    "Sync contacts from a connected phone."
+                } else {
+                    "Try a different search."
+                },
+            ));
         }
         if contacts.len() > 100 {
             self.body.append(&text(
@@ -481,84 +658,144 @@ impl Window {
             .filter(|s| self.matches_device(&s.id.device_id))
         {
             count += 1;
-            let card = card(
+            let panel = gtk::Box::new(gtk::Orientation::Vertical, 18);
+            panel.add_css_class("device-panel");
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+            let icon = gtk::Image::from_icon_name("audio-x-generic-symbolic");
+            icon.set_pixel_size(32);
+            icon.add_css_class("device-icon");
+            header.append(&icon);
+            let identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
+            identity.set_hexpand(true);
+            identity.append(&text(
                 session.title.as_deref().unwrap_or(&session.application),
+                "media-title",
+            ));
+            if let Some(artist) = &session.artist {
+                identity.append(&text(artist, "body-copy"));
+            }
+            identity.append(&text(
                 &format!(
                     "{} · {}",
                     model.name(&session.id.device_id),
                     session.application
                 ),
-            );
-            if let Some(artist) = &session.artist {
-                card.append(&text(artist, "body-copy"));
+                "card-subtitle",
+            ));
+            header.append(&identity);
+            panel.append(&header);
+            let mut commands = Vec::new();
+            if session.controls.contains(&MediaControl::Previous) {
+                commands.push((
+                    "Previous",
+                    "media-skip-backward-symbolic",
+                    MediaCommand::Previous {
+                        id: session.id.clone(),
+                    },
+                ));
             }
-            card.append(&text(
+            if session.playback == PlaybackState::Playing
+                && session.controls.contains(&MediaControl::Pause)
+            {
+                commands.push((
+                    "Pause",
+                    "media-playback-pause-symbolic",
+                    MediaCommand::Pause {
+                        id: session.id.clone(),
+                    },
+                ));
+            } else if matches!(
+                session.playback,
+                PlaybackState::Paused | PlaybackState::Stopped
+            ) && session.controls.contains(&MediaControl::Play)
+            {
+                commands.push((
+                    "Play",
+                    "media-playback-start-symbolic",
+                    MediaCommand::Play {
+                        id: session.id.clone(),
+                    },
+                ));
+            } else if session.controls.contains(&MediaControl::PlayPause) {
+                commands.push((
+                    "Play / pause",
+                    "media-playback-start-symbolic",
+                    MediaCommand::PlayPause {
+                        id: session.id.clone(),
+                    },
+                ));
+            } else {
+                if session.controls.contains(&MediaControl::Play) {
+                    commands.push((
+                        "Play",
+                        "media-playback-start-symbolic",
+                        MediaCommand::Play {
+                            id: session.id.clone(),
+                        },
+                    ));
+                }
+                if session.controls.contains(&MediaControl::Pause) {
+                    commands.push((
+                        "Pause",
+                        "media-playback-pause-symbolic",
+                        MediaCommand::Pause {
+                            id: session.id.clone(),
+                        },
+                    ));
+                }
+            }
+            if session.controls.contains(&MediaControl::Next) {
+                commands.push((
+                    "Next",
+                    "media-skip-forward-symbolic",
+                    MediaCommand::Next {
+                        id: session.id.clone(),
+                    },
+                ));
+            }
+            let controls = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            controls.set_halign(gtk::Align::Center);
+            for (label, icon, command) in commands {
+                let button = self.button(
+                    label,
+                    model.ready(&session.id.device_id),
+                    Request::Media(command),
+                );
+                button.set_icon_name(icon);
+                button.set_tooltip_text(Some(label));
+                button.update_property(&[gtk::accessible::Property::Label(label)]);
+                button.add_css_class("circular");
+                if matches!(label, "Play" | "Pause" | "Play / pause") {
+                    button.add_css_class("suggested-action");
+                }
+                controls.append(&button);
+            }
+            panel.append(&controls);
+            panel.append(&text(
                 match session.playback {
                     PlaybackState::Playing => "Playing",
                     PlaybackState::Paused => "Paused",
                     PlaybackState::Stopped => "Stopped",
-                    PlaybackState::Unknown => "Playback state not reported",
+                    PlaybackState::Unknown => "Playback state unavailable",
                 },
                 "card-subtitle",
             ));
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            for (control, label, command) in [
-                (
-                    MediaControl::Previous,
-                    "Previous",
-                    MediaCommand::Previous {
-                        id: session.id.clone(),
-                    },
-                ),
-                (
-                    MediaControl::Play,
-                    "Play",
-                    MediaCommand::Play {
-                        id: session.id.clone(),
-                    },
-                ),
-                (
-                    MediaControl::Pause,
-                    "Pause",
-                    MediaCommand::Pause {
-                        id: session.id.clone(),
-                    },
-                ),
-                (
-                    MediaControl::PlayPause,
-                    "Play / pause",
-                    MediaCommand::PlayPause {
-                        id: session.id.clone(),
-                    },
-                ),
-                (
-                    MediaControl::Next,
-                    "Next",
-                    MediaCommand::Next {
-                        id: session.id.clone(),
-                    },
-                ),
-            ] {
-                if session.controls.contains(&control) {
-                    row.append(&self.button(
-                        label,
-                        model.ready(&session.id.device_id),
-                        Request::Media(command),
-                    ));
-                }
-            }
-            card.append(&row);
-            self.body.append(&card);
+            self.body.append(&panel);
         }
         if count == 0 {
-            self.body.append(&card(
-                "Nothing playing yet",
-                "Start media on your phone. Reported players and supported controls appear here.",
+            self.body.append(&empty(
+                "multimedia-player-symbolic",
+                "Nothing playing",
+                "Start playback on your phone.",
             ));
         }
     }
     pub(super) fn pairing(self: &Rc<Self>) {
-        self.body.append(&card("Connect your phone","Open Handover on Android and connect on the same network. If discovery is unavailable, enter this computer's reachable address and port 24837 on the phone. Refresh this view when a pairing request arrives."));
+        self.body.append(&text("Pair a device", "list-heading"));
+        self.body.append(&text(
+            "Open Handover on your phone, then connect to this computer.",
+            "card-subtitle",
+        ));
         let model = self.model.borrow();
         if model.pairing.is_empty() {
             self.body
@@ -594,7 +831,9 @@ impl Window {
             let card = card(&peer.name, "Trusted device");
             let fingerprint = text(&peer.fingerprint, "card-subtitle");
             fingerprint.set_selectable(true);
-            card.append(&fingerprint);
+            let details = gtk::Expander::new(Some("Device fingerprint"));
+            details.set_child(Some(&fingerprint));
+            card.append(&details);
             let forget = gtk::Button::with_label("Forget device…");
             forget.set_sensitive(model.connected && !self.busy());
             let weak = Rc::downgrade(self);
@@ -630,6 +869,9 @@ impl Window {
             card.append(&forget);
             self.body.append(&card);
         }
+        let help = gtk::Expander::new(Some("Phone not finding this computer?"));
+        help.set_child(Some(&text("Connect both devices to the same network. On the phone, enter this computer's address with port 24837.","card-subtitle")));
+        self.body.append(&help);
     }
 }
 fn failure(value: ShareFailure) -> &'static str {

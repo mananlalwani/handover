@@ -44,6 +44,7 @@ def main():
                         help="save the synthetic control center to this PNG path")
     parser.add_argument("--dark", action="store_true", help="use the native dark appearance")
     parser.add_argument("--width", type=int, default=1120, help="fixture window width in pixels")
+    parser.add_argument("--page",choices=["overview","notifications","sharing","contacts","media","connection"],default="overview")
     args = parser.parse_args()
     if args.screenshot and not shutil.which("import"):
         raise SystemExit("ImageMagick import is required for --screenshot")
@@ -65,6 +66,7 @@ def main():
         root = Path(temporary)
         environment = dict(os.environ, HANDOVER_CONTROL_TEST_ROOT=str(root))
         environment["HANDOVER_CONTROL_TEST_WIDTH"] = str(args.width)
+        environment["HANDOVER_CONTROL_TEST_PAGE"] = args.page
         if args.dark:
             environment["HANDOVER_CONTROL_TEST_DARK"] = "1"
         if args.screenshot:

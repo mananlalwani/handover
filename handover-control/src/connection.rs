@@ -146,7 +146,7 @@ pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<E
                         let mutation=command.request.read_key().is_none();
                         let result=match tokio::time::timeout(Duration::from_secs(12),execute(&path,command.request)).await {
                             Ok(Ok(reply))=>Ok(reply),
-                            Ok(Err(handover_ipc::IpcError::Server {code,..}))=>Err(format!("Request rejected: {code:?}.")),
+                            Ok(Err(handover_ipc::IpcError::Server {code,..}))=>Err(rejection(code).into()),
                             _=>Err(if mutation {"No confirmation received. The outcome is unknown; check the device before trying again."} else {"Could not refresh this view. Reopen it or reconnect to try again."}.into()),
                         };
                         if events.send(Event::Reply(command.id,result)).await.is_err(){reader.abort();return;}
@@ -158,4 +158,18 @@ pub fn start(path: PathBuf) -> (mpsc::Sender<Command>, async_channel::Receiver<E
         });
     });
     (commands, receiver)
+}
+
+fn rejection(code: handover_ipc::ErrorCode) -> &'static str {
+    use handover_ipc::ErrorCode;
+    match code {
+        ErrorCode::UnknownDevice | ErrorCode::DeviceDisconnected => {
+            "Phone disconnected. Reconnect and try again."
+        }
+        ErrorCode::DeviceNotPaired => "Pair this device before using this action.",
+        ErrorCode::UnsupportedCapability => "This action is not available on this device.",
+        ErrorCode::NotificationNotFound => "This notification is no longer available.",
+        ErrorCode::BackendUnavailable => "The device service is unavailable.",
+        _ => "The request was rejected. Check the device and try again.",
+    }
 }
