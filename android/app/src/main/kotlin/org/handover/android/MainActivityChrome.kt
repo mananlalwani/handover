@@ -76,7 +76,16 @@ internal fun MainActivity.refreshPermissionButtons() {
     permissionButtons.forEach { (button, granted) ->
         val enabled = granted()
         val label = (button.tag as? String) ?: button.text.toString().also { button.tag = it }
-        button.text = if (enabled) "${label.removePrefix("Enable ").replaceFirstChar { it.uppercase() }} · On" else label
+        val (name, allowed, denied) = when (label) {
+            "Enable notification access" -> Triple("Notification access", "Allowed", "Off")
+            "Enable app notifications" -> Triple("App notifications", "Allowed", "Off")
+            "Enable call controls" -> Triple("Call controls", "Allowed", "Off")
+            "Enable remote lock" -> Triple("Remote lock", "Allowed", "Off")
+            "Enable local network" -> Triple("Local network", "Available", "Off")
+            "Review battery optimization" -> Triple("Battery usage", "Unrestricted", "Optimized")
+            else -> Triple(label, "Allowed", "Off")
+        }
+        button.text = "$name: ${if (enabled) allowed else denied}"
         button.backgroundTintList = ColorStateList.valueOf(
             if (enabled) Color.rgb(232, 245, 237) else Color.rgb(238, 242, 253),
         )
@@ -140,12 +149,22 @@ internal fun MainActivity.showPage(page: View) {
     val previous = if (pageHost.childCount > 0) pageHost.getChildAt(0) else null
     if (previous === page) return
     pageScroll?.let { scroll -> previous?.let { pagePositions[it] = scroll.scrollY } }
+    currentFocus?.let { focused ->
+        (getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+            .hideSoftInputFromWindow(focused.windowToken, 0)
+        focused.clearFocus()
+    }
     pageHost.removeAllViews()
     (page.parent as? android.view.ViewGroup)?.removeView(page)
     pageHost.addView(page, LinearLayout.LayoutParams(-1, -2))
+    pageHost.requestFocus()
     pageScroll?.let { scroll ->
-        scroll.post {
-            if (pageHost.getChildAt(0) === page) scroll.scrollTo(0, pagePositions[page] ?: 0)
-        }
+        scroll.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(view: View, left: Int, top: Int, right: Int, bottom: Int,
+                oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int) {
+                view.removeOnLayoutChangeListener(this)
+                if (pageHost.getChildAt(0) === page) scroll.scrollTo(0, pagePositions[page] ?: 0)
+            }
+        })
     }
 }

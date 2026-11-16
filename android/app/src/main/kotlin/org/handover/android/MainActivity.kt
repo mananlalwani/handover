@@ -1214,6 +1214,7 @@ class MainActivity : android.app.Activity() {
         homePage = home
         pageHost = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            isFocusableInTouchMode = true
             setPadding(dp(20), dp(20), dp(20), dp(32))
         }
         showPage(home)
@@ -1223,16 +1224,24 @@ class MainActivity : android.app.Activity() {
             View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         window.statusBarColor = Color.rgb(238, 241, 247)
         window.navigationBarColor = Color.rgb(238, 241, 247)
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            window.setDecorFitsSystemWindows(true)
-        }
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         pageScroll = ScrollView(this).apply {
-            fitsSystemWindows = true
             clipToPadding = false
             setBackgroundColor(Color.rgb(238, 241, 247))
             addView(pageHost)
         }
-        setContentView(pageScroll)
+        val content = android.widget.FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(238, 241, 247))
+            addView(pageScroll, android.widget.FrameLayout.LayoutParams(-1, -1))
+        }
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+            val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars() or
+                androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+            val keyboard = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, keyboard.bottom))
+            insets
+        }
+        setContentView(content)
     }
 
     override fun onNewIntent(intent: Intent?) {
