@@ -16,15 +16,18 @@ internal fun MainActivity.featurePage(
     return LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         val back = activity.secondary(Button(activity).apply {
-            text = "‹  Back"
+            text = "‹  Handover"
+            contentDescription = "Back to Handover"
             setOnClickListener { activity.homePage?.let(activity::showPage) }
         })
+        back.background = null
         addView(back, LinearLayout.LayoutParams(-2, -2))
         addView(TextView(activity).apply {
             text = title
             textSize = 28f
             setTextColor(Color.rgb(24, 30, 44))
             setTypeface(typeface, Typeface.BOLD)
+            androidx.core.view.ViewCompat.setAccessibilityHeading(this, true)
             setPadding(0, activity.dp(10), 0, activity.dp(4))
         })
         addView(TextView(activity).apply {

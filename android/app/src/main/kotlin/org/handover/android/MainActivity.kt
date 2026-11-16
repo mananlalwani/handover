@@ -38,6 +38,7 @@ class MainActivity : android.app.Activity() {
     private val pickFileRequest = 47
     private val pickSharedFolderRequest = 48
     private lateinit var status: TextView
+    private lateinit var connectionDetails: TextView
     private lateinit var notificationStatus: TextView
     private lateinit var mediaStatus: TextView
     private lateinit var awakeStatus: TextView
@@ -50,6 +51,8 @@ class MainActivity : android.app.Activity() {
     internal lateinit var remoteResult: TextView
     private lateinit var updateStatus: TextView
     private lateinit var homeConnect: Button
+    internal var pageScroll: ScrollView? = null
+    internal val pagePositions = java.util.WeakHashMap<View, Int>()
     internal lateinit var pageHost: LinearLayout
     internal var homePage: View? = null
     private var shownPairCode: String? = null
@@ -153,7 +156,9 @@ class MainActivity : android.app.Activity() {
     internal fun refreshStatus() {
         connectionState = HandoverForegroundService.connectionState()
         val peer = NativeTransport.trustedPeerFingerprint(this) ?: "No paired desktop"
-        status.text = "Connection: ${connectionState.replaceFirstChar { it.uppercase() }}\n\nDevice identity: ${DeviceIdentityStore(this).deviceId}\n\nPaired desktop: $peer"
+        status.text = "${connectionState.replaceFirstChar { it.uppercase() }}\n" +
+            if (NativeTransport.trustedPeerFingerprint(this) == null) "Pair a desktop to get started." else "Your paired desktop reconnects automatically."
+        connectionDetails.text = "Device identity\n${DeviceIdentityStore(this).deviceId}\n\nPaired desktop fingerprint\n$peer"
         val listener = if (HandoverNotificationService.isEnabled(this)) "granted" else "not granted"
         val reply = TestNotificationReceiver.lastReply(this)?.let { "\nLast test reply: $it" }.orEmpty()
         notificationStatus.text = "Notification access: $listener$reply"
@@ -201,7 +206,12 @@ class MainActivity : android.app.Activity() {
         }
         if (::homeConnect.isInitialized) {
             val reconnect = AppUpdater.reconnectNeeded(this)
-            homeConnect.text = if (reconnect) "Reconnect after update" else "Connect / Pair desktop"
+            homeConnect.text = when {
+                reconnect -> "Reconnect after update"
+                connectionState == "connected" -> "Connection settings"
+                NativeTransport.trustedPeerFingerprint(this) == null -> "Pair desktop"
+                else -> "Connect to desktop"
+            }
             homeConnect.backgroundTintList = android.content.res.ColorStateList.valueOf(
                 if (reconnect) Color.rgb(232, 139, 22) else Color.rgb(48, 84, 210),
             )
@@ -721,6 +731,11 @@ class MainActivity : android.app.Activity() {
             textSize = 14f
             setTextColor(Color.rgb(70, 77, 94))
         }
+        connectionDetails = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.rgb(92, 99, 116))
+            setTextIsSelectable(true)
+        }
         notificationStatus = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.rgb(70, 77, 94))
@@ -908,11 +923,16 @@ class MainActivity : android.app.Activity() {
             "Connection", "Connect this phone to your trusted Linux desktop.",
             panel(sectionTitle("Handover service"), start),
             panel(sectionTitle("Manual connection"), address, manualConnect),
-            panel(sectionTitle("Pairing"), revoke),
+            panel(sectionTitle("Pairing details"), connectionDetails, revoke),
         )
+        homeConnect.setOnClickListener {
+            if (connectionState == "connected") showPage(connectionPage) else startHandoverConnection()
+        }
+        val permissionDetails = panel(sectionTitle("Current access"), capabilitiesStatus).apply {
+            visibility = View.GONE
+        }
         val permissionsPage = featurePage(
             "Permissions", "Enable only the capabilities you want Handover to provide.",
-            panel(sectionTitle("Current access"), capabilitiesStatus),
             panel(sectionTitle("Notifications"), notificationAccess, appNotificationAccess,
                 secondary(Button(this).apply {
                     text = "Choose apps to forward"
@@ -956,11 +976,19 @@ class MainActivity : android.app.Activity() {
                         Uri.parse("package:$packageName")))
                 }
             })),
+            secondary(Button(this).apply {
+                text = "Show permission details"
+                setOnClickListener {
+                    val show = permissionDetails.visibility != View.VISIBLE
+                    permissionDetails.visibility = if (show) View.VISIBLE else View.GONE
+                    text = if (show) "Hide permission details" else "Show permission details"
+                }
+            }),
+            permissionDetails,
         )
         val activityPage = featurePage(
             "Activity", "Current phone-side Handover activity.",
             panel(sectionTitle("Notifications"), notificationStatus),
-            panel(sectionTitle("Media"), mediaStatus),
             panel(sectionTitle("Stay awake"), awakeStatus, Switch(this).apply {
                 text = "Ask the desktop to stay awake"
                 isChecked = HandoverForegroundService.desktopAwakeRequested()
@@ -979,7 +1007,7 @@ class MainActivity : android.app.Activity() {
         val diagnosticsPage = featurePage(
             "Diagnostics", "Local test tools. These do not contact anyone.",
             panel(sectionTitle("Notification test"), postTest, updateTest, removeTest),
-            panel(sectionTitle("Media test"), startTestMedia, stopTestMedia),
+            panel(sectionTitle("Media test"), mediaStatus, startTestMedia, stopTestMedia),
         )
         val installUpdate = primary(Button(this).apply {
             text = "Install downloaded update"
@@ -1148,11 +1176,7 @@ class MainActivity : android.app.Activity() {
             })
             addView(panel(sectionTitle("Status"), status, homeConnect), LinearLayout.LayoutParams(-1, -2))
             addView(panel(
-                sectionTitle("On this phone"),
-                TextView(this@MainActivity).apply {
-                    text = "Choose a file here or share files and links from another app. Send clipboard from the tile or below. Slides, the Linux pointer, volume, files, and allowlisted commands are on the following pages."
-                    setTextColor(Color.rgb(70, 77, 94))
-                },
+                sectionTitle("Send to desktop"),
                 primary(Button(this@MainActivity).apply {
                     text = "Send file to desktop"
                     setOnClickListener {
@@ -1168,22 +1192,24 @@ class MainActivity : android.app.Activity() {
                     setOnClickListener { HandoverForegroundService.sendClipboard() }
                 }),
             ), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-            listOf(
-                menuButton("Connection", "Pair, connect, or troubleshoot discovery") { showPage(connectionPage) },
-                menuButton("Permissions", "Notifications, calls, network, and background access") { showPage(permissionsPage) },
+            addView(navigationGroup("Phone sharing",
                 menuButton("Notifications", "Choose which apps notify your laptop") { openNotificationForwarding() },
-                menuButton("Activity", "Notification and media service status") { showPage(activityPage) },
-                menuButton("Presentation", "Control slides and the pointer") { showPage(presentationPage) },
-                menuButton("Remote input", "Control the Linux pointer and keyboard") { showPage(remoteInputPage) },
-                menuButton("Remote desktop", "Browse files and run configured commands") { showPage(remotePage) },
-                menuButton("Laptop audio", "Pause or resume playback on Linux") { showPage(laptopAudioPage) },
-                menuButton("System volume", "Control Linux audio output") { showPage(volumePage) },
-                menuButton("Contacts", "Send an on-demand contacts snapshot") { showPage(contactsPage) },
-                menuButton("Updates", "Check GitHub or install a verified APK") { showPage(updatesPage) },
-                menuButton("Diagnostics", "Test notifications and media controls") { showPage(diagnosticsPage) },
-            ).forEach { item ->
-                addView(item, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-            }
+                menuButton("Contacts", "Share contacts with your desktop") { showPage(contactsPage) },
+                menuButton("Activity", "Transfers and service status") { showPage(activityPage) },
+            ))
+            addView(navigationGroup("Control your laptop",
+                menuButton("Remote input", "Mouse and keyboard") { showPage(remoteInputPage) },
+                menuButton("Presentation", "Slides and pointer") { showPage(presentationPage) },
+                menuButton("Remote desktop", "Files and configured commands") { showPage(remotePage) },
+                menuButton("Laptop audio", "Playback and streaming") { showPage(laptopAudioPage) },
+                menuButton("System volume", "Audio output level") { showPage(volumePage) },
+            ))
+            addView(navigationGroup("Settings",
+                menuButton("Connection", "Pairing and network settings") { showPage(connectionPage) },
+                menuButton("Permissions", "Choose what Handover can access") { showPage(permissionsPage) },
+                menuButton("Updates", "App version and downloads") { showPage(updatesPage) },
+                menuButton("Diagnostics", "Notification and media test tools") { showPage(diagnosticsPage) },
+            ))
         }
         homePage = home
         pageHost = LinearLayout(this).apply {
@@ -1200,12 +1226,13 @@ class MainActivity : android.app.Activity() {
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(true)
         }
-        setContentView(ScrollView(this).apply {
+        pageScroll = ScrollView(this).apply {
             fitsSystemWindows = true
             clipToPadding = false
             setBackgroundColor(Color.rgb(238, 241, 247))
             addView(pageHost)
-        })
+        }
+        setContentView(pageScroll)
     }
 
     override fun onNewIntent(intent: Intent?) {
