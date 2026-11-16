@@ -12,6 +12,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
+import android.widget.ImageView
 import android.widget.EditText
 import android.widget.Switch
 import android.widget.TextView
@@ -79,7 +81,7 @@ class NotificationForwardingInstrumentedTest {
                 }
                 fun pickerSwitch(activity: MainActivity): Switch? =
                     views(activity.window.decorView).filterIsInstance<Switch>()
-                        .firstOrNull { it.text.toString().endsWith("\n${context.packageName}") }
+                        .firstOrNull { it.tag == context.packageName }
                 fun pickerLoaded(): Boolean {
                     var loaded = false
                     scenario.onActivity { loaded = pickerSwitch(it) != null }
@@ -109,6 +111,75 @@ class NotificationForwardingInstrumentedTest {
             manager.cancel(tag, 173)
             manager.deleteNotificationChannel(channel)
             if (!listenerEnabled) shell("cmd notification disallow_listener ${context.packageName}/.HandoverNotificationService")
+        }
+    }
+
+    @Test
+    fun bulkChoicesApplyToAllAppsWhileSearchingAndSurviveReload() {
+        val preferences = context.getSharedPreferences("notification_forwarding", Context.MODE_PRIVATE)
+        val previous = preferences.getStringSet("blocked_packages", emptySet()).orEmpty().toSet()
+        val settings = NotificationForwarding(context)
+        val apps = settings.apps()
+        assertTrue("Fixture needs several apps to test filtered bulk changes", apps.size > 1)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                fun openPicker() {
+                    scenario.onActivity { activity ->
+                        val title = views(activity.window.decorView).filterIsInstance<TextView>()
+                            .first { it.text.toString() == "Notifications" }
+                        (title.parent as View).performClick()
+                        views(activity.window.decorView).filterIsInstance<EditText>()
+                            .first { it.hint.toString() == "Search apps" }.setText(context.packageName)
+                    }
+                    awaitCondition("Picker should load the app row") {
+                        var loaded = false
+                        scenario.onActivity { activity ->
+                            loaded = views(activity.window.decorView).filterIsInstance<Switch>()
+                                .any { it.tag == context.packageName }
+                        }
+                        loaded
+                    }
+                }
+                fun click(label: String) {
+                    scenario.onActivity { activity ->
+                        views(activity.window.decorView).filterIsInstance<Button>()
+                            .first { it.text.toString() == label }.performClick()
+                    }
+                }
+                openPicker()
+                scenario.onActivity { activity ->
+                    val toggle = views(activity.window.decorView).filterIsInstance<Switch>()
+                        .first { it.tag == context.packageName }
+                    val row = toggle.parent as View
+                    assertNotNull(views(row).filterIsInstance<ImageView>().single().drawable)
+                    val label = views(row).filterIsInstance<TextView>().first { it.text.toString() == "Handover" }
+                    val packageLabel = views(row).filterIsInstance<TextView>()
+                        .first { it.text.toString() == context.packageName }
+                    assertTrue(label.textSize > packageLabel.textSize)
+                    assertTrue(label.typeface.isBold)
+                }
+                click("Block all")
+                assertTrue("Bulk block includes apps outside the search", apps.all { !settings.isAllowed(it.packageName) })
+                assertTrue("Future apps keep the documented default", settings.isAllowed("org.handover.uninstalled.fixture"))
+                scenario.recreate()
+                openPicker()
+                scenario.onActivity { activity ->
+                    assertFalse(views(activity.window.decorView).filterIsInstance<Switch>()
+                        .first { it.tag == context.packageName }.isChecked)
+                }
+                click("Allow all")
+                assertTrue(apps.all { NotificationForwarding(context).isAllowed(it.packageName) })
+                scenario.onActivity { activity ->
+                    val toggle = views(activity.window.decorView).filterIsInstance<Switch>()
+                        .first { it.tag == context.packageName }
+                    (toggle.parent as View).performClick()
+                    assertFalse("The full row toggles forwarding", toggle.isChecked)
+                }
+                assertFalse(settings.isAllowed(context.packageName))
+            }
+        } finally {
+            preferences.edit().putStringSet("blocked_packages", previous).commit()
+            HandoverNotificationService.requestSync(context)
         }
     }
 
