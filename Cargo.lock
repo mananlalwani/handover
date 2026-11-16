@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "handover-control"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -1564,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "handover-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "handover-desktop"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "futures-util",
  "handover-core",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "handover-gmessages"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "handover-core",
  "serde",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "handover-google-messages"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "handover-ipc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "handover-core",
  "serde",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "handover-messages"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "handover-native"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "handoverctl"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "handoverd"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "handover-core",
  "handover-gmessages",
