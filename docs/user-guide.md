@@ -149,18 +149,17 @@ Android notification access, media control, call control, and background access
 are optional permissions. Enable only the capabilities in use.
 
 In the Android app, open **Notifications** to choose which apps can forward
-notifications to your laptop. Search by app name or package name, then turn off
-apps such as a battery monitor. The list includes launcher apps, active
-notification senders, and remembered senders. If an app is missing, let it post a
-notification and reopen the page. New apps are allowed by default.
+notifications to your laptop. Search by app name or package name. Each row
+shows the app icon, name, and package name. Tap the row to allow or block that
+app. **Allow all** and
+**Block all** apply to every app in the list. New apps are allowed by default.
+If an app is missing, let it post a notification and reopen the page.
 
-Choices are saved on the phone and apply to live updates, reconnects, and full
-notification syncs. Turning an app off removes its current forwarded entries
-from the laptop without dismissing them on the phone. With the phone offline,
-the laptop catches up on reconnect. Turning it back on shares its active
-notifications again. These controls affect Android notification forwarding;
-Google Messages received directly by the Linux helper use the conversation's
-desktop mute setting instead.
+Blocking an app stops forwarding its notifications and removes its current
+entries from the laptop. It does not dismiss them on the phone. Allowing it again
+forwards its active notifications. Preferences are saved on the phone and apply
+after reconnects. Google Messages received directly by the Linux helper uses the
+conversation's desktop mute setting instead.
 
 Native clipboard transfer is explicit rather than a background mirror. On the
 phone, use "Send current clipboard to Linux". From Linux, use:

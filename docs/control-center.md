@@ -11,25 +11,18 @@ installer.
 
 ## Phone and task views
 
-The window uses the native Messages app's neutral colors, sidebar selection,
-header sizing, and spacing. Select a phone once in the sidebar. Its scope stays
-visible as you move between Phone, Notifications, Calls, Files, Clipboard,
-Contacts, and Media. Device settings contains trust and pairing. Messages opens
-the separate native Messages app.
+Select a phone in the sidebar, then move between Phone, Notifications, Calls,
+Files, Clipboard, Contacts, and Media. Device settings contains trust and
+pairing. Messages opens the separate native Messages app.
 
 Phone groups device controls, including ringing, screen lock, awake-mode
 requests, and hotspot settings. Controls submit requests; they do not show an
 invented lock, awake, or hotspot state. Offline battery values are labeled as
 last known. File transfers and phone folder browsing share the Files view.
 
-The app selects the only connected paired device when there is one. Use the
-phone-name menu to switch devices or view all devices. Selection changes preserve
-files staged for review. Submitted files keep their original recipient.
-A daemon disconnect disables controls and retains last reported data until the
-subscription recovers. Slow request replies run separately from the live
-subscription. Work still queued when that session is lost is rejected; in-flight
-commands may finish, but are never resubmitted. Unrelated battery or media events preserve the current
-notification or contact view and keyboard focus.
+When one paired phone is connected, it is selected automatically. Use the
+phone-name menu to switch devices or view all devices. A disconnect disables
+controls until the daemon reconnects.
 
 ## Devices and pairing
 
@@ -72,11 +65,9 @@ ignored, and an oversized selection is rejected without partially adding it.
 Original filenames and bytes go through the existing file-sharing API; the app
 does not convert images or rename source-code files.
 
-Each selected file distinguishes submission, acceptance, confirmed receipt,
-reported failure, and an unknown outcome. Byte progress does not establish
-receipt. Lost replies leave files unconfirmed and are never retried automatically.
-Check the phone before submitting an unconfirmed file again. Progress-triggered
-activity refreshes are coalesced; terminal results refresh immediately.
+The transfer list shows progress and reported results. If the reply is lost, the
+outcome is unknown and Handover will not retry automatically. Check the phone
+before sending that file again.
 
 Selections belong to the current window. Closing with unsent, submitting, or
 unconfirmed files asks before discarding the selection. Closing or removing a
@@ -87,20 +78,16 @@ Send link and Send clipboard text open a review dialog. Nothing is sent until
 Send is chosen. File and link controls require the device's reported sharing
 capability, and the daemon validates each resource before accepting it.
 
-Recent transfers is owned by the daemon and survives closing the control center.
-It retains up to 128 observations for the current daemon session and resets on
-daemon restart. It is not a durable archive. Accepted requests without later
-observations may be absent. Completed incoming files have an explicit Open
-containing folder action. The control center never opens received paths or URLs
-automatically. Forgetting a device clears its activity metadata, not received files.
+Recent transfers remain available after closing the control center, but are
+cleared when the daemon restarts. Completed incoming files have an **Open
+containing folder** action. Received paths and URLs do not open automatically.
 
 ## Phone folders
 
 Files has Transfers and On phone tabs. On phone requests a directory listing
 under the selected phone's shared root. Open a folder or enter a relative path.
-Responses from another device or a different requested path do not replace the
-current listing. Changing phones resets the folder location. Listing is an
-explicit read; opening the tab does not submit a request.
+Changing phones resets the folder location. Opening the tab does not request a
+listing; choose a folder or enter a path to browse.
 
 In the Android app's Remote desktop page, select Share all phone storage and
 allow all-files access in Android settings once. On Android 11 or newer, the
@@ -125,17 +112,13 @@ folders preserve their directory structure, empty folders, filenames, and bytes.
 Downloads accept files up to 8 GiB and folders up to 10,000 entries. Handover limits
 reserved partial data to 16 GiB and runs at most two downloads at once.
 
-Preparing reports bytes the phone has hashed. Receiving reports bytes written on
-Linux. Verifying checks the completed file against the phone's SHA-256 hash.
-Saved appears after the whole requested file or folder moves atomically into
-Downloads/Handover. Partial files remain in a private staging directory.
+The list shows preparation, transfer, and verification progress. A download is
+marked saved when the requested file or folder is ready in Downloads/Handover.
 
-Cancel stops a request and removes its partial data. Disconnects and timeouts
-pause downloads. Reconnect and press Resume to continue with a new attempt; the
-phone must still expose the same source bytes. Changed files fail instead of
-mixing versions. Paused checkpoints survive daemon restart. Requests never resume
-automatically. Closing the desktop window leaves daemon downloads running.
-Older download-capable phones retain single-file downloads with a 100 MiB limit.
+Cancel removes partial data. Disconnects and timeouts pause downloads. Reconnect
+and press Resume to continue; requests do not resume automatically. Closing the
+window leaves downloads running. Older phones support single-file downloads up
+to 100 MiB.
 
 ## Calls
 
@@ -155,9 +138,8 @@ disconnection, or daemon exit stops them too. Global audio defaults do not chang
 The previous Bluetooth profile is restored when safe; an interrupted restoration
 is retried from the daemon's private recovery journal. Restart never arms a mic.
 
-Routing status requires the selected PipeWire links to be active in both
-directions. It does not prove audibility on a physical phone. Missing Bluetooth
-profiles or host tools produce an unavailable state instead of a guessed route.
+The routing status reports whether the selected PipeWire links are active. It
+does not confirm that audio is audible on the phone.
 
 Media and Calls also show reported phone volume streams. Adjust a slider and
 press Apply. The phone's actual report updates the displayed level. Acceptance
@@ -180,35 +162,24 @@ not change it. A successful change refreshes its reported state.
 ## Contacts and media
 
 Contacts reads synced address books. Select a connected phone and use the sync
-button to request a refresh, which still needs Android contact permission.
-Search by name, phone number, or email and copy an address. The view shows up to
-100 matches. Reported contact pictures decode and resize off the GTK thread;
-rebuilt rows reuse cached images. Invalid, oversized, or unsupported pictures
-fall back to initials. Call… opens the selected contact's number in Calls for
-review. It does not place a call automatically and requires a reported Place
-control.
+button to request a refresh; Android contact permission is required. Search by
+name, phone number, or email and copy an address. **Call…** opens the selected
+number in Calls for review; it does not place the call.
 
 Media groups laptop audio and phone playback. Phone playback offers the
 reported Previous, Play, Pause, Play/Pause, and Next controls without optimistic
 state changes.
 
-Laptop audio shows reported receiver state, Start/Stop, and available quality
-profiles. Streaming means receiver output started, not confirmation that a
-listener heard sound. Audio diagnostics show reported sender and receiver data.
-Laptop audio routing contains shared source, output, and playback-player
-choices. Output can be Phone, Laptop, or Both. Source can be all applications or
-an explicit application selection. Source edits remain drafts until Apply and
-survive unrelated state updates. Failed or unknown replies keep the draft.
-Missing application/player observations remain unavailable rather than being
-replaced with an invented default. Older snapshots cannot overwrite newer audio
-revisions. Diagnostic values update in place without rebuilding the routing choices.
+Laptop audio shows receiver state, Start/Stop, and available quality profiles.
+Routing lets you choose audio sources, output (Phone, Laptop, or Both), and
+playback players. Press Apply to submit source changes. Audio diagnostics show
+reported sender and receiver data.
 
 ## Remote input and desktop tools
 
 Phone contains Remote input for pointer moves, clicks, scrolling, and text.
-Text is limited to 512 UTF-8 bytes and belongs to the selected phone. A lost
-acknowledgement keeps the draft and never retries automatically. Closing with
-remote text or an unapplied audio-source draft asks before discarding it.
+Text is limited to 512 UTF-8 bytes. A lost acknowledgement keeps the draft and
+does not retry automatically.
 
 Device settings contains a phone connection test, Desktop behavior, and
 Configured commands. Desktop behavior offers Automatic, Keep desktop awake, and Allow desktop sleep policy
@@ -216,45 +187,7 @@ requests. It does not claim to observe actual sleep inhibition. Commands lists
 the desktop allowlist; Run submits only a reported command name. The app shows
 the returned result and exit code, not an invented execution success.
 
-Calls contains Call audio on this computer, a read-only inspection of local HFP
-gateway and duplex observations. Refresh and phone call-state events update it. These observations do not
-confirm the associated phone or microphone/speaker routing.
-
-Connection status and operation outcomes are separate. Reconnect retries do not
-erase rejected or unconfirmed command results. No mutation replays after the
-subscription session changes.
-
-## Capability coverage
-
-| Capability | Location |
-| --- | --- |
-| Device ring, lock, awake requests, hotspot settings | Phone |
-| Calls and local HFP audio observations | Calls |
-| File/link sharing and phone directory listings | Files |
-| Clipboard text, mirroring, history and pins | Clipboard |
-| Contact pictures, search, copy and call shortcuts | Contacts |
-| Laptop audio, shared routing and phone playback | Media |
-| Pairing, desktop sleep policy and configured commands | Device settings |
-| Pointer, click, scrolling and text input | Phone, under Remote input |
-| Messaging | Separate native Messages app |
-
-Phone folder grants and provider behavior, audio output, input effects, and call
-routing still require live device validation. The private TLS fixture checks
-download requests, exact saved bytes, permission failures, and disconnects.
-
-## Validation
-
-Run `python3 scripts/test-handover-control.py` for the private-display GTK and IPC
-fixture. `--dark`, `--width`, `--page`, and `--screenshot` support layout checks.
-The runner requires Xvfb and dbus-daemon; screenshots also need ImageMagick.
-Fictional devices and a private session bus exercise device selection,
-phone controls, call-generation guards, phone folder navigation and isolation,
-notification actions, reply drafts and lost acknowledgements, clipboard search,
-copy, mirroring, pinning and clearing, pairing comparison, drag-and-drop review,
-independent file outcomes, lost replies, contact pictures and call shortcuts,
-remote-input drafts, allowlisted commands, desktop sleep policy requests, local
-call-audio observations, laptop-audio controls, stale-snapshot ordering, and
-reconnect without command replay. Physical-phone effects need separate live validation.
+Calls also shows local Bluetooth call-audio status.
 
 ## Device names
 

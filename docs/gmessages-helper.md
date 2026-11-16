@@ -132,8 +132,7 @@ without logging or persistence.
 against a private GNOME Keyring instance with dummy authentication. It exercises
 locked and unavailable stores, real unlock notifications, restart persistence,
 record rejection, and deletion. This does not verify authenticated account
-reconnection or phone pairing. See the
-[credential-store validation record](audits/credential-store-2026-11-10.md).
+reconnection or phone pairing.
 
 Helper attachment paths must sit under an approved root, be regular
 non-symlink files, and stay size-bounded. Loopback uses

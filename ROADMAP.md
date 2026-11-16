@@ -1,33 +1,16 @@
 # Handover roadmap
 
-## Milestone 1: native device connection, complete
+## Current direction
 
-Native Handover is the Android/Linux connection. Device pairing, notifications,
-clipboard, file sharing, and media controls use backend-independent Handover
-models.
-
-## Milestone 2: own communications, complete
-
-Calls, contacts, SMS, and RCS use normalized Handover models. The independent MIT
-Google Messages client is the default messaging provider, with pairing, live
-updates, paged history, text and media sends, delivery evidence, and session
-recovery. It requires no mautrix dependency or separate repository.
-
-Product limits remain in [known limitations](docs/KNOWN_LIMITATIONS.md).
-
-## Milestone 3: Android ecosystem integration
-
-The next stage brings Android capabilities into Linux launchers, file managers,
-browsers, notifications, media controls, and shell panels. Activity handoff and
-draft continuation build on these shared services.
+Bring Android capabilities into Linux launchers, file managers, browsers,
+notifications, media controls, and shell panels. Activity handoff and draft
+continuation can build on these services.
 
 First-party Messages, Calls, or Contacts apps are useful where a shell panel is
 insufficient. They remain replaceable clients of the same public IPC.
 
-The [work plan](docs/work-plan.md) orders the current gaps into dependency
-remediation, validation, IPC compatibility, desktop workflows, messaging actions,
-history retention, and client scope, with completion criteria and dependencies
-for each.
+See the [work plan](docs/work-plan.md) for open gaps and dependencies. Product
+limits remain in [known limitations](docs/KNOWN_LIMITATIONS.md).
 
 ## Versioning
 

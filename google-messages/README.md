@@ -27,6 +27,9 @@ authentication is saved in desktop Secret Service. The temporary browser profile
 is deleted before native pairing. Authentication and keys never enter normalized
 Handover state.
 
+First-party source builds and observed field meanings are recorded in
+[protocol evidence](protocol-evidence.md).
+
 ## Integration and licensing
 
 The helper implements [helper IPC v1](../docs/gmessages-helper.md). Other backends

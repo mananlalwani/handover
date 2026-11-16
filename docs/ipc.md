@@ -37,8 +37,8 @@ older client understands every current response.
   bridge, and Quickshell. An Android transport change also needs its own wire
   validation; desktop IPC versioning does not version the phone protocol.
 
-See the [IPC coverage inventory](audits/ipc-2026-11-10.md) for the current
-automated evidence. This policy does not declare protocol 1 stable.
+Protocol 1 remains experimental. Compatibility checks run with the workspace
+and Quickshell test suites.
 
 ## Framing and limits
 

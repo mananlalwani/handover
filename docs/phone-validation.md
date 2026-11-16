@@ -1,4 +1,4 @@
-# Phone validation handoff
+# Phone validation
 
 The desktop send picker, notification bridge, MPRIS adapter, and IPC recovery
 have local fixture coverage. These checks need a phone and, for audible playback,

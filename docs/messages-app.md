@@ -1,9 +1,7 @@
 # Native Messages app
 
-`handover-messages` is a Rust GTK4/libadwaita Linux app. It connects to
-`handoverd` through the public Unix-socket IPC. The daemon owns accounts,
-history, drafts, and outgoing operations. The app does not open a separate phone
-session or handle Google credentials.
+`handover-messages` is the native Linux app for Handover conversations. Google
+Messages account setup remains in the separate helper.
 
 ## Start and use
 
@@ -27,51 +25,34 @@ controls require Python 3. Launch failures leave the QML fallback available.
 Choose an account and conversation. Offline accounts retain their saved history
 and drafts; send controls require the account's reported connection and
 capabilities. Search matches contacts, conversation names, participant addresses,
-and saved message text. It does
-not search messages that the daemon has never fetched. Selecting a message
+and saved message text. It does not search messages that the daemon has never fetched. Selecting a message
 result opens its saved context. Scrolling upward loads older messages before
 you reach the top and keeps the message you were reading in place. A small
 indicator appears during loading; failed requests offer Retry. Latest messages
 returns to the conversation's newest messages. Restored positions and search
 results can continue into older history when the daemon has a saved continuation.
 
-The layout follows the system light or dark appearance and accent color.
-The conversation list loads previews from locally saved messages in bounded
-batches. Phone-only conversations use a person icon and groups use a group
-icon. Accounts filters the list; Details shows the selected conversation's
-participants and account.
+The app follows the system light or dark appearance. Use Accounts to filter the
+conversation list and Details to view participants and account information.
 Hover a message, or tab to its reply button, to reply. Quoted replies show the
 original sender and saved text; click the quote to jump to the original message.
 If it is outside the current view, the app requests its saved context.
 Right-click a message or open its actions menu to copy text, reply, or add and
 remove reactions when the conversation supports them. Reaction counts change
-only when the daemon reports updated messages. Hover a bubble for its timestamp. Messages from the same sender group together; date markers separate
-longer gaps. The composer grows for multiline drafts.
+only when the daemon reports updated messages. Hover a bubble for its timestamp. Messages from the same
+sender group together; date markers separate longer gaps. The composer grows for multiline drafts.
 
-The composer supports text, replies, and attachments where the conversation
-advertises those capabilities. Choose files with the attachment button, drag files
-into the conversation, or paste copied images and files. Repeated image paste adds
-to the same draft, up to ten files. Removing attachments keeps the caption. Send
-submits the files and caption together as one message. Each file can be up to
-50 MiB; attachments cannot be combined with quoted replies. Every file is uploaded
-before the message is submitted. A failed upload does not send a partial group.
-A compact thumbnail grid keeps the selection visible, with a remove button for
-each file. More files can be added until the ten-file limit. Clipboard image
-preparation temporarily disables Send so the caption cannot be sent on its own.
-The files and caption remain saved while the send is pending. Only a reported
-Sent, Delivered, or Read status clears the selection. A failure or unknown outcome
-keeps it locked for review. Retry submits the retained files and caption after a
-confirmed failure. Keep editing restores the draft without resending.
-The saved send association survives normal app and daemon restarts.
-Submissions are not retried or split into separate messages automatically.
-The daemon saves a private copy of each selected file alongside the draft.
-Saved selections and captions survive app and daemon restarts, including after
-the original file moves or is deleted. Send waits for the attachment-save reply.
-Closing waits for pending saves and offers keep/discard if saving fails. A draft
-changed in another window requires reloading the saved attachment before replacing
-it. With persistence disabled, attachments last only for the daemon session. New-conversation creation is unavailable until
-the backend has verified support. The Quickshell reference client remains
-available for workflows the native app does not yet expose.
+The composer supports text, replies, and attachments when available. Add files
+with the attachment button, drag them into the conversation, or paste images and
+files. You can add up to ten files, each up to 50 MiB. Attachments cannot be sent
+with a quoted reply. Remove files to change the selection; removing them keeps
+the caption. Sending uploads all files before submitting one message, so a failed
+upload does not send a partial group.
+
+The app saves drafts and attachment selections across restarts. A pending or
+uncertain send is not retried automatically. After checking the conversation,
+retry a confirmed failure or choose Keep editing. New-conversation creation is
+not available yet. The Quickshell client remains available as an alternative.
 
 | Shortcut | Action |
 | --- | --- |
@@ -93,80 +74,23 @@ draft before overwriting it. Closing with unsaved edits offers a choice to keep
 the window open or discard those edits. See [message storage](message-storage.md)
 for file locations, limits, and how to disable persistence.
 
-Incoming typing appears above the message box with the participant name, and as
-a blue **Typing…** label beneath the contact name in
-the conversation header, matching QML's placement near the title. The chat-list
-preview also shows **Typing…**, including for conversations that are not open.
-Tooltips and screen-reader labels identify the reported participants. Typing
-updates preserve selection and scroll position; normal transport labels and
-message previews return when typing stops. Disconnects and authoritative
-snapshots clear or replace typing state. These indicators require an incoming
-typing event from the daemon.
+Typing indicators appear in the conversation header, above the composer, and in
+the conversation list when the daemon reports incoming typing activity.
 
-Chat-list unread dots follow reported read-state events and conversation unread
-counts. A later explicit count supersedes an earlier read-state event; an unknown
-count preserves reported read evidence. Initial subscriptions and recovery
-snapshots restore read state. A missing dot can mean unread state is unknown.
-A focused conversation at its newest messages requests mark-read when the backend
-advertises support. The native helper sends the observed phone command and then
-refreshes the conversation inventory. The dot clears only when reported state
-confirms no unread messages. Reading older history or leaving the app unfocused
-does not mark the newest messages read. Returning focus or reconnecting allows a
-new request; command acceptance alone does not change the dot.
+Unread dots and delivery labels follow state reported by the service. A missing
+unread dot can mean the state is unknown. Reading older history does not mark the
+newest messages as read. When read support is available, the app requests a
+read update while the conversation is focused at its newest messages. The dot
+changes only after the service reports the result.
 
-Reaction removal appears only when reported reaction participants include a
-participant identified as self in that conversation. Other people's reactions
-and reactions with unknown ownership remain visible without a removal action.
-The app rechecks current ownership when a removal is clicked, so an outdated
-menu cannot submit it after the reported reaction changes. Acceptance alone
-does not change the displayed reaction count.
+While viewing older messages, a floating indicator counts newly received
+messages. Select it to return to the newest messages. An unread divider and
+**First unread** action appear when the saved read position is available.
 
-Outgoing bubbles show status only when the daemon identifies that exact message.
-Accepted means command acceptance; Sent, Delivered, and Read require reported
-evidence. Historical messages without evidence have no status label. Local read
-state never stands in for the recipient's read receipt.
-
-While you read older history, a floating indicator counts newly observed incoming
-messages newer than the saved preview. Fetching history and updating existing
-messages do not increment it. Selecting the indicator returns to the newest
-messages and clears the count, including when another update arrives during the
-jump.
-
-When a conversation opens unread, an unread divider uses the reported read
-anchor, or the reported count and latest message identity when the loaded tail
-is sufficient. The app makes bounded older-page requests to find that position.
-First unread returns to it. The divider remains stable for that visit even if a
-read acknowledgement arrives. Missing read metadata never creates a guessed
-message identity; an unresolved jump reports that the position is unavailable.
-
-Message actions fade in on hover or keyboard focus and stay visible while their
-menu is open. Their space is reserved, so revealing them does not move a bubble.
-
-A send acknowledgement means the daemon accepted the command. Delivery labels
-use later provider evidence. If the connection drops before the acknowledgement,
-the app retains the draft and warns that the outcome is unknown. It does not
-resend automatically. Check the conversation before sending again.
-
-Text sends keep a private saved draft bound to the daemon's send record before
-submission. A pending bubble stays above the composer until the backend reports
-Sent, Delivered, or Read. A late failure offers Retry or Keep editing. Reopening
-the app restores the pending bubble and never resubmits it. An unknown outcome
-offers Keep editing after you check the conversation, without an automatic retry.
-
-Failed messages show the reported reason when one is available. Hover the status
-for its description. A failed text already in the timeline has Edit and resend in
-its message menu. This restores the text and original reply target for review;
-it sends nothing and cannot replace another draft or attachment selection.
-Unknown outcomes do not offer this shortcut.
-
-Conversation previews distinguish saved drafts from bound sends with Sending,
-Not sent, or Check send. Send-status changes update preview text in place so the
-conversation row and contact picture stay intact.
-
-
-Attachment sends show indeterminate activity while submission is pending. The
-current backend does not report byte progress or cancel a submitted message.
-Remove files or Clear all before sending to cancel a selection.
+Send acknowledgements mean the service accepted the request. Sent, Delivered,
+and Read labels require later provider evidence. If a send's outcome is unknown,
+check the conversation before trying again. Failed text messages may offer
+**Edit and resend**, which restores the text for review without sending it.
 
 ## Organizing conversations
 
@@ -176,45 +100,27 @@ settings belong to the daemon workspace and survive app restarts. They do not
 change the phone's conversation state. With persistence disabled, they last only
 for the daemon session.
 
-Pinned conversations appear first and have a star. Muted conversations have a
-muted-alert icon. The sidebar filter switches between Chats, Unread, Archived,
-and All conversations. Search includes archived chats. Mark unread here adds a
-local reminder; opening another conversation and returning clears it. The
-reminder does not create a phone read state or an unread-message boundary.
-Muting affects the optional Handover message-alert bridge, not phone alerts or
-notifications from other applications.
+Pinned conversations appear first. The sidebar filters Chats, Unread, Archived,
+and All conversations. Search includes archived chats. Mark unread adds a local
+reminder that clears when you leave and reopen the conversation. Muting affects
+Handover desktop message alerts, not phone alerts or other app notifications.
 
 Choose Select messages from the main menu or Select message from a message's
 actions. Select up to 100 loaded messages, then Copy or Save files. Copy preserves
 conversation order and includes sender names, text, and attachment filenames.
-Selection controls update without interrupting media playback. Changing
-conversations ends selection.
-
-Save files opens a folder chooser. It exports up to 64 attachments and attempts
-at most 512 MiB per operation. Missing local files are skipped. Original bytes
-and filenames are preserved; duplicate names get numbered suffixes and existing
-files are never overwritten. The completion dialog reports saved, skipped, and
-failed files. Export does not download missing attachments.
+Changing conversations ends selection. Save files opens a folder chooser. It
+exports up to 64 local attachments per operation. Missing files are skipped; the
+completion dialog lists saved, skipped, and failed files.
 
 ## Search, links, and saving files
 
-Use Find in conversation or Ctrl+F to search that chat's saved history.
-Matches highlight in the message text. Previous/Next and Shift+Enter/Enter move
-between matches, fetching the next saved-result page when needed. The counter
-shows the known result count, with + when more remain. Escape closes Find.
-Ctrl+K searches the synced address book, conversation titles and participant
-addresses, and saved message text. Results have separate Conversations,
-Contacts, and Saved messages sections. Contact cards can copy addresses or open
-an existing matching conversation within the account filter. They do not create
-a conversation. Phone-number search ignores formatting punctuation. Local
-results show up to 50 conversations and 30 distinct contacts; saved-message
-results use pages of 25. Enter opens the first selectable result and Down moves
-keyboard focus into the list. The main menu also has a keyboard shortcut reference.
-Opening a result shows its surrounding saved messages and highlights the query.
-The context bar moves between global results, including across result pages.
-Back to conversation, or Alt+Left, restores the conversation and visible message
-position from before the search. Returning from a search does not jump to the
-bottom of an older conversation.
+Use Find in conversation or Ctrl+F to search that chat's saved history. Use
+Enter and Shift+Enter to move between matches; Escape closes Find. Ctrl+K searches
+contacts, conversations, participant addresses, and saved message text. Select a
+result to open its saved context. Contact results can copy an address or open an
+existing conversation, but do not create one. Search cannot find messages the
+service has not fetched. Alt+Left returns to the conversation and its previous
+position.
 
 HTTP and HTTPS links open in your browser when clicked. Message actions include
 Copy link. Save attachment as opens a destination chooser for a locally available
@@ -223,92 +129,24 @@ controls. Saving writes a new local copy and never downloads missing media.
 
 ## Images, audio, video, and contact pictures
 
-Image attachments stored locally appear directly in the conversation.
-Multiple images in one message use a compact two-column grid. A three-photo
-message has a wider lead photo. Larger groups show four tiles and an explicit
-remaining-photo count. The viewer contains every image from that message, in
-order, rather than continuing into another message's images.
-Click an image to open the in-app viewer. Ctrl+scroll or pinch to zoom; drag a
-zoomed image to pan. Double-click toggles between Fit and a closer view. The zoom
-indicator is relative to the fitted image. Use plus and minus to zoom, F or Ctrl+0
-to fit, and Shift+arrow keys to pan. Ctrl+S saves a copy; Ctrl+O opens it externally.
-Escape closes the viewer. Open externally uses your system viewer when needed. Previous and Next, or the left and right
-arrow keys, move between images in the opened gallery. The app uses installed
-raster-image loaders, including JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, HEIC/HEIF,
-AVIF, and JPEG XL. It detects the format from file contents before using the
-provider's MIME hint. Contact photos use the same decoder. Original attachment
-files retain their format when saved or sent. If MIME metadata is absent or
-generic, a recognized image filename selects the preview UI; the decoder still
-validates the file contents.
+Images stored locally appear in the conversation. Click one to open the viewer.
+Use Ctrl+scroll or pinch to zoom, drag to pan, and arrow keys to move between
+images. Press F or Ctrl+0 to fit, Ctrl+S to save a copy, Ctrl+O to open it
+externally, or Escape to close the viewer. Available image formats depend on
+installed system image loaders. Unsupported or unavailable files can be opened
+externally or saved when local.
 
-HEIC/HEIF and AVIF need a HEIF-capable image loader. The Arch development package
-depends on `libheif`. On Ubuntu, install `heif-gdk-pixbuf` with
-`libheif-plugin-libde265` for HEIC and `libheif-plugin-aomdec` for AVIF, plus
-`webp-pixbuf-loader`; JPEG XL needs `libjxl-gdk-pixbuf` where available.
-See Ubuntu's [HEIF loader](https://packages.ubuntu.com/noble/heif-gdk-pixbuf)
-and [JPEG XL loader](https://packages.ubuntu.com/resolute/libjxl-gdk-pixbuf).
-Newer
-GdkPixbuf installations can provide these formats through Glycin instead.
-Restart the app after installing image loaders.
+HEIC/HEIF and AVIF require a system image loader. On Arch, install `libheif`.
+On Ubuntu, install `heif-gdk-pixbuf`, `libheif-plugin-libde265`, and
+`libheif-plugin-aomdec`. WebP uses `webp-pixbuf-loader`; JPEG XL uses
+`libjxl-gdk-pixbuf` where available. Restart the app after installing loaders.
+Animations show a still preview; SVG is not supported by the raster viewer.
 
-Support depends on the installed decoder and the encoding variant. For example,
-the current Glycin TIFF decoder rejects some low-bit-depth palette TIFFs.
-Animated images and HEIF sequences currently show a still preview. SVG and other
-vector documents remain outside the raster viewer. Input files are limited to
-25 MiB and 100 megapixels, with decoded textures scaled to the requested size.
-Unsupported files retain the Open externally and Save as actions. Attachments
-without a local file show that they are unavailable locally.
-
-Open Photos and files in the conversation header to browse saved attachments,
-including those outside the current chat view. Newer media and Older media page
-through saved messages with attachments. This lists the daemon's local archive;
-it does not fetch a complete provider media library. Filters select photos,
-video, audio, or files on the displayed saved page. Each item has Show in
-conversation to open its original saved message. Back to conversation or Alt+Left
-returns from that context. Missing local files remain unavailable, with their
-filenames and original-message links intact. Deleted messages are omitted.
-
-Audio and video attachments have inline Play controls. Media loads only after
-Play, and uses the system GTK media backend and installed codecs. Duration and
-seek controls use decoder reports. Both audio and video keep their playback
-controls visible. Loading, seeking, playing, paused, and finished states come from
-the decoder. Back and Forward move ten seconds within the reported duration;
-unsupported seeking stays disabled. Stop unloads the file and makes Play
-available again. At most four media files stay loaded;
-opening another unloads the oldest player. Removing or hiding a player's row
-pauses and unloads it. Delivery-status changes preserve the player. Unsupported
-formats show an external-player action. Playback does not start automatically.
-
-Contact pictures come from the daemon's synced address book. Direct
-conversations use a photo when a participant's phone number or email has an
-normalized match. Formatting punctuation is ignored for phone numbers. Valid
-North American 10-digit numbers match their country-code 1 form, preserving the
-QML client's behavior; other country codes are retained. Email matching ignores
-ASCII case. Conflicting photos remain ambiguous, while a duplicate contact
-without a photo does not hide the sole available photo. Direct conversations
-use one matched photo; groups combine up to four distinct available member
-photos. Missing photos use initials or a person/group icon. Display names alone
-never select a photo.
-Group sender labels, participant details, quotes, and unnamed conversation titles
-use synced contact names matched by the same normalized addresses. Contacts need
-no photo to supply a name. Conflicting names fall back to the reported identity.
-Unchanged address-book refreshes preserve decoded pictures instead of clearing
-them. Photo cache entries use image contents as their keys. Hidden avatars retain
-their small decoded textures; offscreen message images still release theirs.
-
-Pictures refresh when the daemon reports an address-book change. The app reads
-existing contacts and does not start a phone sync or fetch remote profile images.
-
-The interface uses custom GTK title bars, neutral fallback avatars, and Inter
-when available, with a system sans-serif fallback. GTK supplies native window
-dragging, keyboard input, menus, and accessibility behavior.
-
-Recent conversation switches can display the last loaded messages immediately.
-The app keeps up to eight recent threads in memory and still requests fresh
-history. Message changes, removals, account disconnects, and recovery snapshots
-invalidate affected cached views. Fresh history replaces cached rows while
-preserving updates received during the request. Cached history does not confirm
-connection, delivery, or read status.
+Open Photos and files in the conversation header to browse saved attachments.
+This view searches Handover's local archive; it does not fetch a complete media
+library. Audio and video play only after you select Play and depend on installed
+codecs. Playback does not start automatically. Contact pictures come from the
+synced address book; the app does not fetch profile photos from the phone.
 
 ## Account setup
 
@@ -354,13 +192,3 @@ state after reconnecting. Muted conversations still count as unread.
 Repeated launches route to the running application. The app rebuilds its view
 from daemon snapshots after reconnecting. Neither it nor the notification bridge
 replays queued sends across a disconnect.
-
-## Validation limits
-
-The native GUI runner requires Xvfb, ffmpeg, and xdotool. Mouse and keyboard
-checks run on its private display.
-
-Automated tests use a private display, session bus, and daemon fixture. They
-cover real widgets, socket framing, persistence, and reconnect handling. These
-checks do not establish live phone delivery, Google authentication, or the
-behavior of a particular desktop notification server.

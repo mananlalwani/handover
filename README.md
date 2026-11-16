@@ -5,9 +5,9 @@ and clipboard contents, shows phone notifications, controls media playback,
 and exposes calls and contacts. The Android app also provides presentation,
 pointer, keyboard, and Linux volume controls.
 
-`handoverd` runs in the background. Use `handoverctl` from the terminal or the
-native control center and `handover-messages` app, or the included Quickshell reference client. The Android app connects directly to the
-native Linux backend.
+`handoverd` runs in the background. Use `handoverctl` in a terminal, the native
+control center or Messages app, or the included Quickshell reference client.
+The Android app connects directly to the native Linux backend.
 
 Handover is pre-1.0. Some features need Android permissions or depend on the
 phone model. The IPC contract is still experimental. See the [known
@@ -24,8 +24,8 @@ They use the system OpenSSL 3 libraries. The native Messages app also needs
 GTK 4.10 or newer and libadwaita 1.4 or newer. Locally built tarballs inherit their
 builder's library requirements, which `BUILD.txt` records.
 
-The installer copies the binaries to `~/.local/bin` and starts `handoverd` as a
-systemd user service. Add `~/.local/bin` to your shell's `PATH`, then check it:
+The installer copies binaries to `~/.local/bin` and starts `handoverd` as a
+systemd user service. Add `~/.local/bin` to your shell's `PATH`, then check:
 
 ```sh
 systemctl --user status handoverd
@@ -174,7 +174,7 @@ handoverctl notify "Phone" app title body
 handoverctl monitor
 ```
 
-The [laptop audio guide](docs/laptop-audio.md) explains phone playback,
+The [laptop audio guide](docs/laptop-audio.md) covers phone playback,
 dependencies, and latency limits.
 
 To send the current Wayland clipboard, run `handoverctl clipboard "Phone"`
@@ -205,8 +205,7 @@ download. Tarball installs offer this component interactively, or accept
 
 See [Contributing](CONTRIBUTING.md) for build and test instructions,
 [Design](DESIGN.md) for the architecture, the [desktop IPC contract](docs/ipc.md)
-for client integration, and the [Roadmap](ROADMAP.md) and
-[Vision](VISION.md) for planned work.
+for client integration, and the [Roadmap](ROADMAP.md) for planned work.
 
 Report bugs through [GitHub Issues](https://github.com/mananlalwani/handover/issues).
 For security vulnerabilities, follow [SECURITY.md](SECURITY.md) and use private

@@ -1,82 +1,52 @@
-# Incoming typing investigation
+# Incoming typing
 
-Handover's native helper receives direct RCS composing signals through a
-separate authenticated Tachyon connection and publishes normalized `TypingState`
-updates to the daemon and Messages page.
+The native helper receives direct RCS composing signals through a separate
+Tachyon connection and publishes normalized `TypingState` updates. The ordinary
+phone-relay receive stream does not carry these signals.
 
-During a user-assisted observation on October 8, 2026, the phone showed typing
-while the native observer received 12 authenticated pushes: activation,
-settings, a user alert, message changes, and conversation changes. It received no
-recognizable typing update. The user also confirmed the indicator appeared in
-Google Messages for web.
+## First-party evidence
 
-Inspection of the first-party scripts loaded by that web conversation identified
-a separate RCS client. Its typing serializer uses the IETF `isComposing` XML
-format, with active and idle states and a 60-second refresh value. The RCS client
-uses its own Tachyon registration and receive connection, including
-`Registration/SignInSecondary`. Handover's existing phone-relay receive stream
-is not that connection.
+Google's public `mw_rcs_chat` and `mw_conversation` modules from build
+`messagesweb.mw.en.HdTbpeC64eA.O` use [RFC 3994](https://www.rfc-editor.org/rfc/rfc3994)
+`isComposing` XML with active/idle states and a 60-second refresh. The observed
+RCS module SHA-256 was
+`19d3834da42622b98faf6fa6ea959f66f334363524aec2136073daa96858e88c`.
+Registration uses `Registration/SignInSecondary` and a separate receive stream.
+No third-party implementation or generated definitions were used.
 
-Sources were Google's public `mw_rcs_chat` and `mw_conversation` script modules
-loaded by the shared Messages tab, version `messagesweb.mw.en.HdTbpeC64eA.O`.
-The observed RCS module bundle SHA-256 is `19d3834da42622b98faf6fa6ea959f66f334363524aec2136073daa96858e88c`.
-No third-party implementation or generated protocol definitions were used.
-The standard is [RFC 3994](https://www.rfc-editor.org/rfc/rfc3994).
+## Receiver behavior
 
-The helper extracts one RCS identity and service endpoint from authenticated
-phone settings. It registers through `SignInSecondary` using the saved Google
-account proof, its persisted web device identity, and a fresh P-256 public key.
-Reconnects reuse the device identity. Tokens and protocol models stay inside
-the native client. The RCS connection ends with its phone-relay receive owner.
-Transient failures retry with a bounded backoff; authentication and registration
-rejections wait for new settings or a new receive owner.
+Authenticated phone settings supply one RCS identity and service endpoint.
+Registration uses the saved account proof, persisted web device identity, and a
+fresh P-256 public key. Tokens and wire models remain inside the native client.
+Transient failures use bounded backoff; authentication and registration rejections
+wait for new settings or a new phone-relay receive owner.
 
-Plaintext composing events bind only to one known direct RCS conversation through
-an exact participant address match. Unknown senders, ambiguous matches, group
-events, and other content types remain unacknowledged. A supported event is
-acknowledged only after the helper publishes it. Active signals expire according
-to their refresh interval, with the RFC's 120-second default. Duplicate, old,
-future, and reordered signals cannot revive an indicator. Idle signals, changed
-registration settings, and account disconnection clear it. XML input and parser
-node counts are bounded, and DTD processing is disabled.
+Plaintext composing events require an exact participant-address match to one
+known direct RCS conversation. Unknown, ambiguous, group, and encrypted events
+remain unsupported and unacknowledged. Supported events are acknowledged after
+publication. Active state expires using the refresh interval or RFC default of
+120 seconds. Duplicate, stale, future, and reordered signals cannot revive it.
+Idle events, changed settings, and disconnection clear it. XML size and node
+counts are bounded; DTD processing is disabled.
 
-Multiple distinct RCS SIM identities and encrypted composing content remain
-unsupported. The existing phone-relay stream continues to own messages, history,
-and sends. The separate RCS receiver does not acknowledge unrelated messages or
-clear the inbox.
+## Registration status
 
-A live check confirmed registration and an open receive connection for 55 seconds.
-Unit and transport tests cover composing parsing, sender binding, stale events,
-publication before acknowledgement, expiry, and daemon disconnection. A real
-incoming typing event still needs user-assisted verification.
+An earlier live check reached registration and held a receive connection for
+55 seconds. The November 11 check instead failed with RPC status 3,
+`InvalidArgument`. A connected messaging account does not establish that this
+separate typing receiver works. Real incoming typing still needs verification.
 
-## November 11 registration check
-
-The native Messages UI displays and clears synthetic typing events in its GUI
-test, but the live RCS registration currently fails with RPC status 3,
-`InvalidArgument`. The service's error text was generic. Fixed helper lifecycle
-diagnostics distinguish this failure from waiting for settings or an open receive
-connection. The ordinary messaging account recovered as connected and
-authenticated; that does not establish a working RCS typing receiver.
-
-Inspected Google's publicly served `mw_rcs_chat` module from build
-`comms-messages.web-server_20261110.01_p0`, module version
-`messagesweb.mw.en_US.nzGU8ZMoY3I.O`. Its SHA-256 is
+Google's public module from build `comms-messages.web-server_20261110.01_p0`,
+module version `messagesweb.mw.en_US.nzGU8ZMoY3I.O`, had SHA-256
 `537120b73848685202260f13d960b8c3491656538daa640b3da020abbbd7f28c`.
-The declared SignInSecondary layout still uses the linked account identity,
-phone identity, web device information, SPKI public key, and receive features
-represented by the native request. This inspection did not establish which
-argument the service rejected.
+Its declared registration layout still matched the native request's account,
+phone, web-device information, SPKI key, and receive features. The inspection did
+not establish the rejected argument. Updating the observed client version did
+not resolve it, and that change was reverted. Probes stopped after one
+`ResourceExhausted` response.
 
-Temporary debug instrumentation checked only request metadata and fixed error
-categories. The native identity had E.164 shape, its device had web-device shape,
-and its SPKI public key had 91 bytes. No addresses, keys, tokens, or request bodies
-were printed or retained. Testing the current observed client version on the RCS
-path did not resolve the failure, so that change was reverted. One attempt
-returned RPC status 8, `ResourceExhausted`; further manual registration probes
-were stopped. The installed release retains the tested request behavior.
-
-The next comparison needs a successful first-party registration from the user's
-already-paired web session. The shared browser reached Google's sign-in page
-and had no authenticated Messages session. No new Google login or phone pairing
-was attempted. Incoming typing remains unresolved.
+The next step is comparing a successful registration from an already-paired web
+session. The attempted browser comparison had no authenticated Messages session.
+Keep request bodies, keys, addresses, tokens, and authenticated captures out of
+logs and committed records.
