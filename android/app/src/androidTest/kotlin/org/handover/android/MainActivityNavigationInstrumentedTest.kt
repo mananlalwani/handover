@@ -13,6 +13,11 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class MainActivityNavigationInstrumentedTest {
+    @org.junit.Before
+    fun clearUpdatePromptForNavigationFixture() {
+        AppUpdater.clearReconnectNeeded(androidx.test.core.app.ApplicationProvider.getApplicationContext())
+    }
+
     private fun views(root: View): Sequence<View> = sequence {
         yield(root)
         if (root is ViewGroup) for (index in 0 until root.childCount) yieldAll(views(root.getChildAt(index)))

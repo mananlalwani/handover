@@ -121,7 +121,7 @@ Check Linux installer behavior without changing the installed user services:
 ```sh
 python3 scripts/test-install-from-dist.py
 ./scripts/dist.sh
-python3 scripts/test-install-from-dist.py --archive dist/handover-0.4.2-x86_64-unknown-linux-gnu.tar.gz
+python3 scripts/test-install-from-dist.py --archive dist/handover-0.4.3-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 The installer tests use private directories and service/IPC fixtures. They check
@@ -137,7 +137,7 @@ manager. Native TCP port 24837 must be free. Build there with `build-essential`,
 
 ```sh
 sudo python3 scripts/test-package-runtime.py --disposable-environment \
-  --archive dist/handover-0.4.2-x86_64-unknown-linux-gnu.tar.gz \
+  --archive dist/handover-0.4.3-x86_64-unknown-linux-gnu.tar.gz \
   --previous-archive /path/to/previous-release.tar.gz
 ```
 
