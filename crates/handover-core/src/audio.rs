@@ -41,6 +41,7 @@ pub enum AudioStreamPhase {
     Idle,
     Starting,
     Streaming,
+    Standby,
     Reconnecting,
     Suspended,
     Failed,

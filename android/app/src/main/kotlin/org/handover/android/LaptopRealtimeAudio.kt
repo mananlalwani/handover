@@ -58,6 +58,7 @@ internal class LaptopRealtimeAudio(
         var wifiLock: WifiManager.WifiLock? = null
         var focusRequest: AudioFocusRequest? = null
         @Volatile var focusHeld = false
+        @Volatile var standby = false
 
         fun current(): Boolean = !closed.get() && synchronized(this@LaptopRealtimeAudio) { active === this }
 
@@ -135,7 +136,7 @@ internal class LaptopRealtimeAudio(
                         override fun onWebRtcAudioTrackStop() {
                             audioTrackStarted.set(false)
                             reportedPlaying.set(false)
-                            if (current() && focusHeld) {
+                            if (current() && focusHeld && !standby) {
                                 if (outputStoppedAt == 0L) outputStoppedAt = SystemClock.elapsedRealtime()
                                 stateChanged(id, "output_suspended")
                             }
@@ -240,9 +241,9 @@ internal class LaptopRealtimeAudio(
                     .setAcceptsDelayedFocusGain(true)
                     .setWillPauseWhenDucked(true)
                     .setOnAudioFocusChangeListener { change ->
-                        if (!current()) return@setOnAudioFocusChangeListener
+                        if (!current() || standby) return@setOnAudioFocusChangeListener
                         focusHeld = change == AudioManager.AUDIOFOCUS_GAIN
-                        runCatching { peer?.setAudioPlayout(focusHeld) }
+                        runCatching { peer?.setAudioPlayout(focusHeld && !standby) }
                         if (focusHeld) maybeReportPlaying() else {
                             reportedPlaying.set(false)
                             stateChanged(id, "suspended")
@@ -261,6 +262,27 @@ internal class LaptopRealtimeAudio(
             return focusHeld
         }
 
+        fun changeStandby(value: Boolean) {
+            if (!current() || standby == value) return
+            standby = value
+            reportedPlaying.set(false)
+            outputStoppedAt = 0L
+            if (value) {
+                audioTrackStarted.set(false)
+                peer?.setAudioPlayout(false)
+                val manager = appContext.getSystemService(AudioManager::class.java)
+                if (Build.VERSION.SDK_INT >= 26) focusRequest?.let(manager::abandonAudioFocusRequest)
+                focusHeld = false
+                runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
+                wifiLock = null
+                stateChanged(id, "standby")
+            } else {
+                if (!acquireResources()) { stateChanged(id, "focus_unavailable"); finish(); return }
+                peer?.setAudioPlayout(focusHeld)
+                maybeReportPlaying()
+            }
+        }
+
         private fun sendCompleteAnswer() {
             if (!current() || !answered.compareAndSet(false, true)) return
             val sdp = peer?.localDescription?.description ?: return fail("missing local SDP")
@@ -268,20 +290,20 @@ internal class LaptopRealtimeAudio(
         }
 
         private fun maybeReportPlaying() {
-            if (current() && focusHeld && peerConnected.get() && audioTrackStarted.get() &&
+            if (current() && !standby && focusHeld && peerConnected.get() && audioTrackStarted.get() &&
                 reportedPlaying.compareAndSet(false, true)) {
                 runCatching { playing(id) }
             }
         }
 
         fun resumeAfterCall() {
-            if (!current() || focusHeld || Build.VERSION.SDK_INT < 26) return
+            if (!current() || standby || focusHeld || Build.VERSION.SDK_INT < 26) return
             val request = focusRequest ?: return
             val manager = appContext.getSystemService(AudioManager::class.java)
             val result = manager.requestAudioFocus(request)
             if (!current()) return
             focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-            runCatching { peer?.setAudioPlayout(focusHeld) }
+            runCatching { peer?.setAudioPlayout(focusHeld && !standby) }
             if (focusHeld) maybeReportPlaying()
         }
 
@@ -291,7 +313,7 @@ internal class LaptopRealtimeAudio(
                 fail("connection recovery timed out")
                 return
             }
-            if (outputStoppedAt != 0L && focusHeld && SystemClock.elapsedRealtime() - outputStoppedAt >= 6_000) {
+            if (!standby && outputStoppedAt != 0L && focusHeld && SystemClock.elapsedRealtime() - outputStoppedAt >= 6_000) {
                 fail("audio output recovery timed out")
                 return
             }
@@ -328,6 +350,12 @@ internal class LaptopRealtimeAudio(
         val session = Session(id, profile)
         active = session
         session.executor.execute { session.start(sdp) }
+    }
+
+    fun setStandby(id: String, standby: Boolean) {
+        val session = synchronized(this) { active } ?: return
+        if (session.id != id) return
+        runCatching { session.executor.execute { if (session.current()) session.changeStandby(standby) } }
     }
 
     fun resumeAfterCall() {

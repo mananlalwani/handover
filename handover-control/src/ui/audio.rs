@@ -20,6 +20,7 @@ impl Window {
                     match stream.state {
                         AudioStreamPhase::Idle => "Not streaming",
                         AudioStreamPhase::Starting => "Starting",
+                        AudioStreamPhase::Standby => "Standby, waiting for audio",
                         AudioStreamPhase::Streaming => "Receiver output started",
                         AudioStreamPhase::Reconnecting => "Reconnecting",
                         AudioStreamPhase::Suspended => "Suspended",

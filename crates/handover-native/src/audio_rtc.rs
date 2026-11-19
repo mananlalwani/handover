@@ -29,22 +29,36 @@ use crate::audio::Event;
 pub(crate) struct RtcControl {
     stop: watch::Sender<bool>,
     answer: mpsc::Sender<String>,
+    ready: watch::Sender<bool>,
 }
 pub(crate) struct RtcInput {
     stop: watch::Receiver<bool>,
     answer: mpsc::Receiver<String>,
+    ready: watch::Receiver<bool>,
 }
 impl RtcControl {
     pub(crate) fn new() -> (Self, RtcInput) {
         let (stop, stopped) = watch::channel(false);
+        let (ready, receiver_ready) = watch::channel(true);
         let (answer, answers) = mpsc::channel(1);
         (
-            Self { stop, answer },
+            Self {
+                stop,
+                answer,
+                ready,
+            },
             RtcInput {
                 stop: stopped,
                 answer: answers,
+                ready: receiver_ready,
             },
         )
+    }
+    pub(crate) fn receiver_wait(&self) {
+        let _ = self.ready.send(false);
+    }
+    pub(crate) fn receiver_ready(&self) {
+        let _ = self.ready.send(true);
     }
     pub(crate) fn cancel(&self) {
         let _ = self.stop.send(true);
@@ -123,7 +137,7 @@ pub(crate) fn start(
                 // Cancellation covers ICE gathering, negotiation and blocked capture.
                 let failure = tokio::select! {
                     _ = input.stop.changed() => AudioStreamFailure::ConnectionFailed,
-                    result = stream(&backend, &peer, &id, &pc, &mut input.answer, &mut state_rx, &mut gathered_rx, profile, &event) => {
+                    result = stream(&backend, &peer, &id, &pc, &mut input.answer, &mut state_rx, &mut gathered_rx, profile, &event, &mut input.ready) => {
                         match result {
                             Err(error) if error.downcast_ref::<CaptureError>().is_some() => AudioStreamFailure::CaptureFailed,
                             _ => AudioStreamFailure::ConnectionFailed,
@@ -156,6 +170,7 @@ async fn stream(
     gathered: &mut watch::Receiver<bool>,
     profile: AudioProfile,
     event: &Event,
+    ready: &mut watch::Receiver<bool>,
 ) -> Result<(), StreamError> {
     let settings = EncoderSettings::for_profile(profile);
     let output = crate::audio_output::OutputRouter::acquire(&backend.audio_output)
@@ -242,25 +257,77 @@ async fn stream(
         .map_err(|_| CaptureError)?;
     let capture = child.stdout.take().ok_or(CaptureError)?;
     let (tx, mut packets) = mpsc::channel(3);
+    let supported = backend
+        .inner
+        .lock()
+        .unwrap()
+        .audio
+        .get(peer)
+        .is_some_and(|audio| audio.silence_standby);
+    let (quiet_tx, mut quiet) = watch::channel(false);
+    let _quiet_keepalive = quiet_tx.clone();
     let dropped = Arc::new(AtomicU64::new(0));
     let encoder_dropped = dropped.clone();
     let worker = std::thread::spawn(move || {
-        let _ = encode(capture, tx, settings, encoder_dropped);
+        let _ = encode_with_standby(
+            capture,
+            tx,
+            settings,
+            encoder_dropped,
+            supported.then_some(quiet_tx),
+        );
     });
     let _capture = Capture {
         child,
         worker: Some(worker),
     };
     let mut previous = None;
+    let mut last_capture: Option<Instant> = None;
+    let mut resume_clock = false;
     let mut disconnected = None;
     let mut observations = tokio::time::interval(Duration::from_secs(2));
     observations.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut waking = None;
+    let mut pending = std::collections::VecDeque::new();
     loop {
+        let buffered = waking.is_none() && !pending.is_empty();
         tokio::select! {
-            packet = packets.recv() => {
+            biased;
+            changed = quiet.changed() => {
+                changed.map_err(|_| CaptureError)?;
+                let standby = *quiet.borrow_and_update();
+                if !backend.request_audio_standby(peer, id, standby) { return Err("standby signaling failed".into()); }
+                previous = None;
+                if standby { pending.clear(); waking = None; }
+                else { resume_clock = true; if !*ready.borrow() { waking = Some(Instant::now()); } }
+            }
+            changed = ready.changed() => {
+                changed?;
+                if *ready.borrow_and_update() { waking = None; }
+            }
+            packet = async { if waking.is_none() && !pending.is_empty() { pending.pop_front() } else { packets.recv().await } } => {
                 let (sequence, captured, data) = packet.ok_or(CaptureError)?;
+                if waking.is_some() {
+                    if pending.len() >= 64 { pending.pop_front(); dropped.fetch_add(1, Ordering::Relaxed); }
+                    pending.push_back((sequence, captured, data));
+                    continue;
+                }
                 if !output.healthy() { return Err(CaptureError.into()); }
-                if captured.elapsed() > Duration::from_millis(settings.stale_ms) { dropped.fetch_add(1, Ordering::Relaxed); continue; }
+                if captured.elapsed() > Duration::from_millis(if buffered { 1500 } else { settings.stale_ms }) { dropped.fetch_add(1, Ordering::Relaxed); continue; }
+                if resume_clock {
+                    if let Some(last) = last_capture {
+                        let mut gap = captured.saturating_duration_since(last).saturating_sub(Duration::from_millis(u64::from(settings.packet_ms)));
+                        // Empty samples advance the RTP clock without emitting packets or
+                        // claiming intentionally silent frames were network losses.
+                        while !gap.is_zero() {
+                            let duration = gap.min(Duration::from_secs(600));
+                            track.sample_writer(ssrc, payload_type).write_sample(&Sample { duration, ..Sample::new(captured) }).await?;
+                            gap = gap.saturating_sub(duration);
+                        }
+                    }
+                    resume_clock = false;
+                }
+                last_capture = Some(captured);
                 let skipped = previous.map_or(0, |last| sequence - last - 1);
                 previous = Some(sequence);
                 track.sample_writer(ssrc, payload_type).write_sample(&Sample {
@@ -283,6 +350,8 @@ async fn stream(
                 }
             }
             _ = observations.tick() => {
+                if !output.healthy() { return Err(CaptureError.into()); }
+                if waking.is_some_and(|at: Instant| at.elapsed() >= Duration::from_secs(3)) && !backend.audio_focus_pending(peer, id) { return Err("audio wake timed out".into()); }
                 if disconnected.is_some_and(|at: Instant| at.elapsed() >= Duration::from_secs(6)) { return Err("connection recovery timed out".into()); }
                 backend.audio_sender_diagnostics(peer, id, AudioSenderDiagnostics {
                     encoder_bitrate_bps: settings.bitrate as u32,
@@ -343,12 +412,24 @@ impl EncoderSettings {
         }
     }
 }
+#[cfg(test)]
 fn encode(
-    mut capture: impl Read,
+    capture: impl Read,
     packets: mpsc::Sender<(u64, Instant, Vec<u8>)>,
     settings: EncoderSettings,
     dropped: Arc<AtomicU64>,
 ) -> Result<(), StreamError> {
+    encode_with_standby(capture, packets, settings, dropped, None)
+}
+fn encode_with_standby(
+    mut capture: impl Read,
+    packets: mpsc::Sender<(u64, Instant, Vec<u8>)>,
+    settings: EncoderSettings,
+    dropped: Arc<AtomicU64>,
+    quiet: Option<watch::Sender<bool>>,
+) -> Result<(), StreamError> {
+    let mut silent_ms = 0u64;
+    let mut standby = false;
     let mut encoder = opus::Encoder::new(48000, opus::Channels::Stereo, settings.application)?;
     encoder.set_bitrate(opus::Bitrate::Bits(settings.bitrate))?;
     encoder.set_inband_fec(true)?;
@@ -362,6 +443,21 @@ fn encode(
         for (value, bytes) in pcm.iter_mut().zip(raw.as_chunks::<2>().0) {
             *value = i16::from_le_bytes([bytes[0], bytes[1]]);
         }
+        if let Some(quiet) = &quiet {
+            silent_ms = if pcm.iter().all(|sample| *sample == 0) {
+                silent_ms.saturating_add(u64::from(settings.packet_ms))
+            } else {
+                0
+            };
+            let now_standby = silent_ms >= 30_000;
+            if now_standby != standby {
+                standby = now_standby;
+                let _ = quiet.send(standby);
+            }
+            if standby {
+                continue;
+            }
+        }
         let data = encoder.encode_vec(&pcm, 1200)?;
         if packets.try_send((sequence, Instant::now(), data)).is_err() {
             dropped.fetch_add(1, Ordering::Relaxed);
@@ -374,6 +470,63 @@ fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sustained_silence_stops_packets_and_the_first_audible_frame_wakes() {
+        let settings = EncoderSettings::for_profile(AudioProfile::Balanced);
+        let frame_bytes = 48 * usize::from(settings.packet_ms) * 4;
+        for audible in [false, true] {
+            let mut raw = vec![0u8; frame_bytes * 1510];
+            if audible {
+                raw.extend(vec![1u8; frame_bytes]);
+            }
+            let (tx, mut rx) = mpsc::channel(1600);
+            let (quiet, observed) = watch::channel(false);
+            let dropped = Arc::new(AtomicU64::new(0));
+            assert!(
+                encode_with_standby(
+                    std::io::Cursor::new(raw),
+                    tx,
+                    settings,
+                    dropped.clone(),
+                    Some(quiet)
+                )
+                .is_err()
+            );
+            assert_eq!(*observed.borrow(), !audible);
+            let mut packets = Vec::new();
+            while let Ok(packet) = rx.try_recv() {
+                packets.push(packet);
+            }
+            assert_eq!(packets.len(), 1499 + usize::from(audible));
+            assert_eq!(dropped.load(Ordering::Relaxed), 0);
+            if audible {
+                assert_eq!(packets.last().unwrap().0, 1499);
+            }
+        }
+    }
+
+    #[test]
+    fn quiet_nonzero_audio_never_enters_standby() {
+        let settings = EncoderSettings::for_profile(AudioProfile::Balanced);
+        let frame_bytes = 48 * usize::from(settings.packet_ms) * 4;
+        let raw: Vec<u8> = (0..frame_bytes * 1510)
+            .map(|i| if i % 2 == 0 { 1 } else { 0 })
+            .collect();
+        let (tx, _rx) = mpsc::channel(3);
+        let (quiet, observed) = watch::channel(false);
+        assert!(
+            encode_with_standby(
+                std::io::Cursor::new(raw),
+                tx,
+                settings,
+                Arc::new(AtomicU64::new(0)),
+                Some(quiet)
+            )
+            .is_err()
+        );
+        assert!(!*observed.borrow());
+    }
 
     #[test]
     fn every_profile_encodes_decodable_opus_with_its_declared_duration() {

@@ -1494,6 +1494,7 @@ impl NativeBackend {
                     self.handle_media_sync(&peer, sessions, event)?;
                 }
                 Ok(Message::AudioReady {
+                    silence_standby,
                     realtime,
                     managed,
                     pause_request,
@@ -1507,6 +1508,7 @@ impl NativeBackend {
                         return Err(NativeError::InvalidFrame);
                     }
                     self.audio_ready(&id, realtime, managed, pause_request.is_some(), event);
+                    self.set_silence_standby_support(&id, silence_standby);
                     if let Some(request_id) = pause_request {
                         self.audio_stream_result(&id, request_id, true);
                     }

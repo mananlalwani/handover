@@ -52,6 +52,11 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
                 broadcast(NativeTransport.ACTION_AUDIO_STATUS, JSONObject())
             }
         }
+        "audio_standby" -> {
+            if (serverFingerprint == null || !managedAudioServer) return
+            val id = message.optString("stream_id")
+            if (NativeTransport.isTransferId(id)) realtimeAudio.setStandby(id, message.optBoolean("standby", false))
+        }
         "audio_status" -> {
             if (serverFingerprint == null) return
             val status = message.optJSONObject("status") ?: return
@@ -174,7 +179,7 @@ internal fun NativeTransport.handleInbound(message: JSONObject, input: BufferedI
             serverFingerprint = fingerprint
             preferences.edit().remove(PENDING_CODE_KEY).apply()
             broadcast(ACTION_PAIRED, JSONObject().put("server_id", serverId))
-            send(JSONObject().put("type", "audio_ready").put("protocol", 1).put("realtime", true).put("managed", true)
+            send(JSONObject().put("type", "audio_ready").put("protocol", 1).put("realtime", true).put("managed", true).put("silence_standby", true)
                 .put("pause_request", preferences.getString("audio_pause_request", null)))
             sendBattery()
             if (volumeControlServer) sendPhoneVolumeState()

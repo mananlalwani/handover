@@ -29,6 +29,7 @@ pub(crate) struct AudioSession {
     enabled: bool,
     ready: bool,
     pub(crate) managed: bool,
+    pub(crate) silence_standby: bool,
     profile: AudioProfile,
     retry_attempt: u32,
     generation: u64,
@@ -50,6 +51,7 @@ impl AudioSession {
             enabled: false,
             ready: true,
             managed,
+            silence_standby: false,
             profile: AudioProfile::Balanced,
             retry_attempt: 0,
             generation: 0,
@@ -254,7 +256,9 @@ impl NativeBackend {
             if !replace
                 && matches!(
                     a.phase,
-                    AudioStreamPhase::Starting | AudioStreamPhase::Streaming
+                    AudioStreamPhase::Starting
+                        | AudioStreamPhase::Streaming
+                        | AudioStreamPhase::Standby
                 )
             {
                 return Ok(());
@@ -375,12 +379,14 @@ impl NativeBackend {
         Ok(())
     }
     pub fn audio_stream_is_playing(&self, peer: &str, id: &str) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
-            .audio
-            .get(peer)
-            .is_some_and(|a| !id.is_empty() && a.id == id && a.phase == AudioStreamPhase::Streaming)
+        self.inner.lock().unwrap().audio.get(peer).is_some_and(|a| {
+            !id.is_empty()
+                && a.id == id
+                && matches!(
+                    a.phase,
+                    AudioStreamPhase::Streaming | AudioStreamPhase::Standby
+                )
+        })
     }
     #[cfg(test)]
     pub(crate) fn audio_playback_toggle(&self, peer: &str, id: &str, event: &Event) {
@@ -402,6 +408,46 @@ impl NativeBackend {
             });
         }
     }
+    pub(crate) fn audio_focus_pending(&self, peer: &str, id: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .audio
+            .get(peer)
+            .is_some_and(|audio| {
+                audio.id == id
+                    && audio.enabled
+                    && audio.phase == AudioStreamPhase::Suspended
+                    && audio.failure == Some(AudioStreamFailure::AudioFocus)
+            })
+    }
+    pub(crate) fn set_silence_standby_support(&self, peer: &str, supported: bool) {
+        if let Some(audio) = self.inner.lock().unwrap().audio.get_mut(peer) {
+            audio.silence_standby = supported;
+        }
+    }
+    pub(crate) fn request_audio_standby(&self, peer: &str, id: &str, standby: bool) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(audio) = inner.audio.get(peer) else {
+            return false;
+        };
+        if audio.id != id || !audio.enabled || !audio.silence_standby {
+            return false;
+        }
+        if standby && let Some(rtc) = &audio.rtc {
+            rtc.receiver_wait();
+        }
+        let queue = inner.outbox.entry(peer.to_owned()).or_default();
+        if queue.len() >= crate::limits::MAX_OUTBOX_PER_PEER {
+            return false;
+        }
+        queue.push(Message::AudioStandby {
+            protocol: WIRE_VERSION,
+            stream_id: id.to_owned(),
+            standby,
+        });
+        true
+    }
     pub(crate) fn audio_playing(&self, peer: &str, id: &str, event: &Event) {
         {
             let mut inner = self.inner.lock().unwrap();
@@ -413,6 +459,8 @@ impl NativeBackend {
                 || !matches!(
                     a.phase,
                     AudioStreamPhase::Starting
+                        | AudioStreamPhase::Streaming
+                        | AudioStreamPhase::Standby
                         | AudioStreamPhase::Suspended
                         | AudioStreamPhase::Reconnecting
                 )
@@ -421,6 +469,9 @@ impl NativeBackend {
                 return;
             }
             a.reset_stable_retries();
+            if let Some(rtc) = &a.rtc {
+                rtc.receiver_ready();
+            }
             a.phase = AudioStreamPhase::Streaming;
             a.playing_since = Some(Instant::now());
             a.failure = None;
@@ -465,6 +516,24 @@ impl NativeBackend {
                 },
                 event,
             );
+            return;
+        }
+        if state == AudioReceiverState::Standby {
+            {
+                let mut inner = self.inner.lock().unwrap();
+                let Some(audio) = inner.audio.get_mut(peer) else {
+                    return;
+                };
+                if audio.id != id || !audio.enabled || !audio.silence_standby {
+                    return;
+                }
+                audio.reset_stable_retries();
+                audio.phase = AudioStreamPhase::Standby;
+                audio.failure = None;
+                audio.playing_since = None;
+                audio.revision += 1;
+            }
+            self.publish_audio(peer, event);
             return;
         }
         if state == AudioReceiverState::Playing {
@@ -902,6 +971,46 @@ mod tests {
         // Legacy offers avoid touching a real audio server in recovery tests.
         backend.audio_ready("phone", false, true, false, &event);
         (directory, backend, event)
+    }
+
+    #[test]
+    fn standby_is_confirmed_and_manual_stop_cancels_automatic_wake() {
+        let (_directory, backend, event) = audio_fixture();
+        backend.start_audio("phone", event.clone()).unwrap();
+        let id = backend.inner.lock().unwrap().audio["phone"].id.clone();
+        let (rtc, _input) = crate::audio_rtc::RtcControl::new();
+        {
+            let mut inner = backend.inner.lock().unwrap();
+            let audio = inner.audio.get_mut("phone").unwrap();
+            audio.rtc = Some(rtc);
+            audio.phase = AudioStreamPhase::Streaming;
+        }
+        assert!(!backend.request_audio_standby("phone", &id, true));
+        backend.set_silence_standby_support("phone", true);
+        assert!(!backend.request_audio_standby("phone", "stale", true));
+        assert!(backend.request_audio_standby("phone", &id, true));
+        assert_eq!(
+            backend.audio_streams()[0].state,
+            AudioStreamPhase::Streaming
+        );
+        backend.audio_receiver_state("phone", &id, AudioReceiverState::Standby, &event);
+        assert_eq!(backend.audio_streams()[0].state, AudioStreamPhase::Standby);
+        assert!(backend.audio_stream_is_playing("phone", &id));
+        backend
+            .set_audio_from_phone("phone", true, event.clone())
+            .unwrap();
+        assert_eq!(backend.audio_streams()[0].state, AudioStreamPhase::Standby);
+        assert!(backend.request_audio_standby("phone", &id, false));
+        backend.audio_playing("phone", &id, &event);
+        assert_eq!(
+            backend.audio_streams()[0].state,
+            AudioStreamPhase::Streaming
+        );
+        backend.stop_audio("phone", event.clone()).unwrap();
+        assert!(!backend.request_audio_standby("phone", &id, false));
+        backend.audio_receiver_state("phone", &id, AudioReceiverState::Standby, &event);
+        backend.audio_playing("phone", &id, &event);
+        assert_eq!(backend.audio_streams()[0].state, AudioStreamPhase::Idle);
     }
 
     #[test]

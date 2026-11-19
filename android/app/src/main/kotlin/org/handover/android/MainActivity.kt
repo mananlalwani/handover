@@ -251,6 +251,7 @@ class MainActivity : android.app.Activity() {
             val requestNotice = audio.optString("request_notice")
             if (requestNotice.isNotBlank()) append("$requestNotice\n\n")
             append("State: ${state.replace('_', ' ')}\nRequested streaming: $enabled\nConfirmed preset: $profile\nReconnect attempts: $retry")
+            if (state == "standby") append("\nSilent standby. Audio resumes automatically when laptop sound starts.")
             if (failure != null) append("\nReason: " + when (failure) {
                 "disconnected" -> "The connection was interrupted."
                 "connection_failed" -> "The audio connection failed."

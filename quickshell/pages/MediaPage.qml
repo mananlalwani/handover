@@ -237,7 +237,7 @@ Rectangle {
                         return d.id === modelData.device_id;
                     })
                     property bool hasIntent: modelData.enabled !== undefined && modelData.enabled !== null
-                    property bool active: hasIntent ? !!modelData.enabled : (modelData.state === "starting" || modelData.state === "streaming")
+                    property bool active: hasIntent ? !!modelData.enabled : (modelData.state === "starting" || modelData.state === "streaming" || modelData.state === "standby")
                     property bool retrying: modelData.state === "failed" && active
                     property var diagnostics: modelData.diagnostics || ({})
                     property double currentTimeMs: Date.now()
@@ -267,7 +267,7 @@ Rectangle {
                             Text {
                                 Layout.fillWidth: true
                                 color: "#edf1f7"
-                                text: (device ? device.name : "Phone") + " · " + modelData.state + (hasIntent ? (active ? " · enabled" : " · stopped") : " · intent unavailable")
+                                text: (device ? device.name : "Phone") + " · " + (modelData.state === "standby" ? "standby, wakes automatically" : modelData.state) + (hasIntent ? (active ? " · enabled" : " · stopped") : " · intent unavailable")
                                 wrapMode: Text.WordWrap
                                 textFormat: Text.PlainText
                             }

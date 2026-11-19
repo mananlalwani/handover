@@ -104,6 +104,11 @@ pub(crate) struct WireFileEntry {
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Message {
+    AudioStandby {
+        protocol: u32,
+        stream_id: String,
+        standby: bool,
+    },
     AudioControlsRequest {
         protocol: u32,
         request_id: String,
@@ -166,6 +171,8 @@ pub(crate) enum Message {
     },
     AudioReady {
         protocol: u32,
+        #[serde(default)]
+        silence_standby: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         realtime: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -668,6 +675,7 @@ impl Message {
             Self::AudioControlsRequest { protocol, .. }
             | Self::AudioControlsResult { protocol, .. }
             | Self::AudioControlsUpdated { protocol, .. }
+            | Self::AudioStandby { protocol, .. }
             | Self::AudioStatus { protocol, .. }
             | Self::AudioStreamResult { protocol, .. }
             | Self::AudioProfileSet { protocol, .. }
@@ -757,6 +765,7 @@ impl Message {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AudioReceiverState {
+    Standby,
     Suspended,
     Playing,
     Reconnecting,

@@ -86,6 +86,24 @@ after the last receiving stream stops. A private routing journal lets the next
 daemon startup restore outputs after an unexpected exit. Invalid saved routing
 settings fall back to laptop playback and an empty app selection until repaired.
 
+## Automatic silence standby
+
+Updated phones advertise silence standby support. After 30 seconds of exact
+digital silence, the sender skips Opus encoding and audio packets. The phone
+stops WebRTC playout, abandons audio focus, and releases its low-latency Wi-Fi
+lock. Status becomes `standby` after the phone acknowledges the change.
+
+The laptop still reads the selected mix to detect new audio. WebRTC and the
+paired control connection stay alive, so standby reduces work without making
+the session completely idle. Any nonzero sample wakes it, including very quiet
+music. The sender buffers up to 64 frames while waiting for the phone to
+confirm playback restarted. A longer audio-focus interruption retains only the
+most recent buffered frames instead of replaying a growing backlog. Waking can
+add a short delay; actual wake latency
+and battery savings have not been measured. Wake failure uses the normal
+bounded recovery path. Pause stream cancels the session and automatic wake.
+Older phones keep continuous streaming, and legacy PCM does not use standby.
+
 ## Latency and status
 
 Current apps use encrypted WebRTC with 48 kHz stereo Opus. Choose a preset in
