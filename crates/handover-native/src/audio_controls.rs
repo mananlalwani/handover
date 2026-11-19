@@ -106,7 +106,7 @@ impl NativeBackend {
                 .map(|(player, _)| player)
                 .collect(),
             revision: router.revision,
-            observed_at_ms: chrono::Utc::now().timestamp_millis(),
+            observed_at_ms: jiff::Timestamp::now().as_millisecond(),
             settings_available: router.settings_available,
         };
         // A catalog must fit the authenticated transport's frame limit. Do not

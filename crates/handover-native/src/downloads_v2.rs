@@ -1179,8 +1179,9 @@ impl NativeBackend {
                             let root = manager.root.as_ref().unwrap().clone();
                             let source = manager.stage(&id).join("payload").join(name);
                             let finalized = (|| -> Result<PathBuf, NativeError> {
-                                let stamp =
-                                    chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                                let stamp = jiff::ZonedDateTime::now()
+                                    .strftime("%Y-%m-%d_%H-%M-%S")
+                                    .to_string();
                                 let destination =
                                     create_received_directory(&root, &stamp)?.join(name);
                                 fs::rename(&source, &destination)?;

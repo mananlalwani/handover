@@ -721,7 +721,7 @@ impl NativeBackend {
                 return;
             }
             a.reset_stable_retries();
-            diagnostics.updated_at_ms = chrono::Utc::now().timestamp_millis();
+            diagnostics.updated_at_ms = jiff::Timestamp::now().as_millisecond();
             a.diagnostics.get_or_insert_with(Default::default).receiver = Some(diagnostics);
             a.revision += 1;
         }

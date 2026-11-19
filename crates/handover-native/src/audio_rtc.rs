@@ -357,7 +357,7 @@ async fn stream(
                     encoder_bitrate_bps: settings.bitrate as u32,
                     packet_duration_ms: settings.packet_ms,
                     capture_dropped_packets: dropped.load(Ordering::Relaxed),
-                    updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                    updated_at_ms: jiff::Timestamp::now().as_millisecond(),
                 }, event);
             }
         }

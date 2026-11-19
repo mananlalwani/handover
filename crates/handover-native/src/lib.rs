@@ -1262,7 +1262,9 @@ impl NativeBackend {
         fs::create_dir_all(&directory)?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         let reservation = self.reserve_received_quota(&directory, size)?;
-        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        let timestamp = jiff::ZonedDateTime::now()
+            .strftime("%Y-%m-%d_%H-%M-%S")
+            .to_string();
         let transfer_directory = create_received_directory(&directory, &timestamp)?;
         let destination = transfer_directory.join(name);
         let partial = transfer_directory.join(".partial");
@@ -1796,7 +1798,7 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap();
-            chrono::NaiveDateTime::parse_from_str(&folder[..19], "%Y-%m-%d_%H-%M-%S").unwrap();
+            jiff::civil::DateTime::strptime("%Y-%m-%d_%H-%M-%S", &folder[..19]).unwrap();
         }
         assert_eq!(fs::read(first).unwrap(), b"first");
         assert_eq!(fs::read(second).unwrap(), b"second");
