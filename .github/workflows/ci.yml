@@ -58,12 +58,6 @@ jobs:
           cache-on-failure: true
       - name: Install GTK development libraries
         run: |
-          # Point apt at Ubuntu's main archive instead of the slow regional EC2 mirror.
-          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
-            if [ -f "$f" ]; then
-              sudo sed -i -E 's|https?://[a-z0-9.-]*ec2\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
-            fi
-          done
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libgtk-4-dev libadwaita-1-dev
       - run: cargo fmt --all -- --check
@@ -92,12 +86,6 @@ jobs:
             third_party/ukey2 -> target
       - name: Install build and desktop integration dependencies
         run: |
-          # Point apt at Ubuntu's main archive instead of the slow regional EC2 mirror.
-          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
-            if [ -f "$f" ]; then
-              sudo sed -i -E 's|https?://[a-z0-9.-]*ec2\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
-            fi
-          done
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libgtk-4-dev libadwaita-1-dev dbus-daemon playerctl gnome-keyring xvfb xdotool ffmpeg heif-gdk-pixbuf libheif-plugin-libde265 libheif-plugin-aomdec webp-pixbuf-loader libgtk-4-media-gstreamer gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
       - run: cargo build --locked -p handover-gmessages --features loopback-test --bin handover-gmessages-helper
@@ -126,12 +114,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install GTK development libraries
         run: |
-          # Point apt at Ubuntu's main archive instead of the slow regional EC2 mirror.
-          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
-            if [ -f "$f" ]; then
-              sudo sed -i -E 's|https?://[a-z0-9.-]*ec2\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
-            fi
-          done
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libgtk-4-dev libadwaita-1-dev
       - run: cargo check --locked --workspace --all-targets
@@ -154,12 +136,6 @@ jobs:
         run: echo 'RUSTC_WRAPPER=sccache' >> "$GITHUB_ENV"
       - name: Install package build and validation tools
         run: |
-          # Point apt at Ubuntu's main archive instead of the slow regional EC2 mirror.
-          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
-            if [ -f "$f" ]; then
-              sudo sed -i -E 's|https?://[a-z0-9.-]*ec2\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
-            fi
-          done
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config libssl-dev libgtk-4-dev libadwaita-1-dev dbus-user-session iproute2
       - run: ./scripts/dist.sh

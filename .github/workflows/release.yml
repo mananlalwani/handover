@@ -21,12 +21,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install package build and validation tools
         run: |
-          # Point apt at Ubuntu's main archive instead of the slow regional EC2 mirror.
-          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
-            if [ -f "$f" ]; then
-              sudo sed -i -E 's|https?://[a-z0-9.-]*ec2\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
-            fi
-          done
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config libssl-dev libgtk-4-dev libadwaita-1-dev dbus-user-session iproute2
       - run: ./scripts/dist.sh
