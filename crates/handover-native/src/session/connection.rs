@@ -340,6 +340,7 @@ impl NativeBackend {
         let session_started = Instant::now();
         let mut snapshot_retry_sent = false;
         let mut contact_chunks = crate::contacts::ContactChunks::default();
+        let mut frames = FrameReader::default();
         loop {
             if contact_chunks.expire(Instant::now()) {
                 event(StateEvent::Contacts(ContactsEvent::SyncFailed {
@@ -573,7 +574,7 @@ impl NativeBackend {
                     }
                 }
             }
-            match read_frame(&mut tls) {
+            match frames.read(&mut tls) {
                 Ok(Message::ShareUrl {
                     protocol: WIRE_VERSION,
                     transfer_id,

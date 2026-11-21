@@ -2663,3 +2663,35 @@ fn volume_commands_use_real_reports_and_match_results_without_optimistic_state()
         }
     }
 }
+
+#[test]
+fn authenticated_control_survives_a_read_timeout_inside_a_frame() {
+    for split in [2, 12] {
+        let harness = harness();
+        let identity = test_identity();
+        let mut control = connect(harness.port, &identity);
+        pair_client(&harness, &identity, &mut control);
+        send(
+            &mut control,
+            serde_json::json!({"type":"ping","protocol":1}),
+        );
+        while recv(&mut control)["type"] != "pong" {}
+        let payload = serde_json::to_vec(&serde_json::json!({"type":"ping","protocol":1})).unwrap();
+        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+        frame.extend(payload);
+        control.tls.write_all(&frame[..split]).unwrap();
+        control.tls.flush().unwrap();
+        // Exceed the server's two-second control-read timeout, in both the
+        // length header and the body. No real phone or audio server is used.
+        std::thread::sleep(Duration::from_millis(2500));
+        control.tls.write_all(&frame[split..]).unwrap();
+        control.tls.flush().unwrap();
+        while recv(&mut control)["type"] != "pong" {}
+        // A following frame must still be aligned after the resumed frame.
+        send(
+            &mut control,
+            serde_json::json!({"type":"ping","protocol":1}),
+        );
+        while recv(&mut control)["type"] != "pong" {}
+    }
+}
