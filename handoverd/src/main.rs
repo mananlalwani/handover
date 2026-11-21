@@ -17,6 +17,7 @@ mod presentation;
 mod remote_input;
 mod screensaver;
 mod send_staging;
+mod startup;
 mod state;
 mod transfer_activity;
 mod volume;
@@ -67,6 +68,29 @@ pub(crate) fn set_manual_screensaver(inhibit: Option<bool>) {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    // Read-only version queries and invalid arguments must not initialize state.
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.len() == 1 && (arguments[0] == "--version" || arguments[0] == "-V") {
+        println!("handoverd {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if !arguments.is_empty() {
+        eprintln!("handoverd accepts only --version; use handoverctl for commands");
+        std::process::exit(2);
+    }
+    let _instance = match handover_ipc::runtime_directory() {
+        Ok(directory) => match startup::claim(&directory).await {
+            Ok(instance) => instance,
+            Err(error) => {
+                warn!(%error, "daemon startup rejected");
+                std::process::exit(1);
+            }
+        },
+        Err(error) => {
+            warn!(%error, "daemon runtime unavailable");
+            std::process::exit(1);
+        }
+    };
     info!("handoverd started");
     let _ = clipboard_history();
 
